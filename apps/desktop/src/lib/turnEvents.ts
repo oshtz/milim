@@ -1,0 +1,242 @@
+import type {
+  AgentEvent,
+  ChatMessage,
+  ChatStreamEventIcon,
+  ChatStreamPart,
+  ClaudeRunEvent,
+  CodexRunEvent,
+} from "../api";
+
+type ChatStreamEventPart = Extract<ChatStreamPart, { kind: "event" }>;
+type AccountRuntimeToolEvent = Extract<CodexRunEvent | ClaudeRunEvent, { type: "tool" }>;
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+function compactText(value: string, max = 96): string {
+  const text = value.trim().replace(/\s+/g, " ");
+  return text.length > max ? text.slice(0, max - 1).trimEnd() + "..." : text;
+}
+
+function parseToolArgs(args?: string): Record<string, unknown> | null {
+  if (!args?.trim()) return null;
+  try {
+    return asRecord(JSON.parse(args));
+  } catch {
+    return null;
+  }
+}
+
+function toolArg(args: Record<string, unknown> | null, key: string): string | undefined {
+  const value = args?.[key];
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+export function toolErrorMessage(result: unknown): string | undefined {
+  const error = asRecord(result)?.error;
+  return typeof error === "string" && error.trim() ? error.trim() : undefined;
+}
+
+function numericToolField(record: Record<string, unknown> | null, keys: string[]): number | undefined {
+  for (const key of keys) {
+    const value = record?.[key];
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+  }
+  return undefined;
+}
+
+function toolDiffStats(record: Record<string, unknown> | null): string | undefined {
+  const added = numericToolField(record, ["added", "additions", "insertions", "lines_added"]);
+  const removed = numericToolField(record, ["removed", "removals", "deletions", "lines_removed"]);
+  if (added == null && removed == null) return undefined;
+  return [`+${added ?? 0}`, `-${removed ?? 0}`].join(" ");
+}
+
+function toolEventIcon(name?: string): ChatStreamEventIcon {
+  switch (name) {
+    case "read_file":
+    case "read_file_anchors":
+    case "list_dir":
+    case "write_file":
+    case "edit_file":
+    case "patch_file":
+      return "file";
+    case "shell":
+    case "run_command":
+      return "command";
+    case "memory_register":
+      return "memory";
+    case "schedule_create":
+    case "schedule_update":
+    case "schedule_list":
+    case "schedule_delete":
+      return "schedule";
+    case "screenshot":
+    case "mouse_move":
+    case "mouse_click":
+    case "key_press":
+    case "type_text":
+      return "screen";
+    default:
+      return "tool";
+  }
+}
+
+function toolLabel(name: string | undefined, done: boolean): string {
+  switch (name) {
+    case "read_file":
+      return done ? "Read file" : "Reading file";
+    case "read_file_anchors":
+      return done ? "Read anchored file" : "Reading anchored file";
+    case "list_dir":
+      return done ? "Listed files" : "Listing files";
+    case "write_file":
+      return done ? "Created file" : "Creating file";
+    case "edit_file":
+      return done ? "Edited file" : "Editing file";
+    case "patch_file":
+      return done ? "Patched file" : "Patching file";
+    case "shell":
+      return done ? "Ran command" : "Running command";
+    case "run_command":
+      return done ? "Ran sandbox command" : "Running sandbox command";
+    case "http_fetch":
+      return done ? "Fetched URL" : "Fetching URL";
+    case "memory_register":
+      return done ? "Saved memory" : "Saving memory";
+    case "schedule_create":
+      return done ? "Created automation" : "Creating automation";
+    case "schedule_update":
+      return done ? "Updated automation" : "Updating automation";
+    case "schedule_delete":
+      return done ? "Deleted automation" : "Deleting automation";
+    case "schedule_list":
+      return done ? "Checked automations" : "Checking automations";
+    case "screenshot":
+      return done ? "Captured screen" : "Capturing screen";
+    case "mouse_move":
+    case "mouse_click":
+    case "key_press":
+    case "type_text":
+      return done ? "Used computer" : "Using computer";
+    default:
+      return done ? `Used ${name ?? "tool"}` : `Using ${name ?? "tool"}`;
+  }
+}
+
+function toolFailedLabel(name: string | undefined): string {
+  switch (name) {
+    case "read_file":
+      return "Read file failed";
+    case "read_file_anchors":
+      return "Read anchored file failed";
+    case "list_dir":
+      return "List files failed";
+    case "write_file":
+      return "Create file failed";
+    case "edit_file":
+      return "Edit file failed";
+    case "patch_file":
+      return "Patch file failed";
+    case "shell":
+      return "Command failed";
+    case "run_command":
+      return "Sandbox command failed";
+    case "http_fetch":
+      return "Fetch failed";
+    case "memory_register":
+      return "Save memory failed";
+    case "schedule_create":
+      return "Create automation failed";
+    case "schedule_update":
+      return "Update automation failed";
+    case "schedule_delete":
+      return "Delete automation failed";
+    case "schedule_list":
+      return "Check automations failed";
+    default:
+      return `${name ?? "Tool"} failed`;
+  }
+}
+
+function toolDetail(name: string | undefined, args: Record<string, unknown> | null, result?: unknown): string | undefined {
+  const path = toolArg(args, "path");
+  const url = toolArg(args, "url");
+  const command = toolArg(args, "command");
+  const record = asRecord(result);
+  const error = toolErrorMessage(result);
+  if (error) return compactText(path ? `${path}: ${error}` : error, 110);
+  const diffStats = name === "write_file" || name === "edit_file" || name === "patch_file" ? toolDiffStats(record) : undefined;
+  if (command) return compactText(command, 110);
+  if (path) return compactText(diffStats ? `${path} ${diffStats}` : path);
+  if (url) return compactText(url);
+
+  if (name === "shell" || name === "run_command") {
+    const exitCode = record?.exit_code;
+    return typeof exitCode === "number" ? `exit ${exitCode}` : undefined;
+  }
+  if (name === "list_dir" && Array.isArray(record?.entries)) return `${record.entries.length} entries`;
+  if (diffStats) return diffStats;
+  if ((name === "write_file" || name === "edit_file" || name === "patch_file") && typeof record?.bytes === "number") return `${record.bytes} bytes`;
+  if (name === "write_file" && typeof record?.written === "number") return `${record.written} bytes`;
+  const notice = asRecord(record?.memory_notice);
+  const summary = notice?.summary;
+  return typeof summary === "string" ? compactText(summary) : undefined;
+}
+
+export function toolStartedPart(ev: AgentEvent): ChatStreamEventPart {
+  const args = parseToolArgs(ev.arguments);
+  return {
+    kind: "event",
+    eventType: "tool",
+    label: toolLabel(ev.name, false),
+    detail: toolDetail(ev.name, args),
+    icon: toolEventIcon(ev.name),
+    name: ev.name ?? "tool",
+    callId: ev.call_id,
+    status: "running",
+  };
+}
+
+export function toolCompletedPart(ev: AgentEvent): ChatStreamEventPart {
+  const args = parseToolArgs(ev.arguments);
+  const error = toolErrorMessage(ev.result);
+  return {
+    kind: "event",
+    eventType: "tool",
+    label: error ? toolFailedLabel(ev.name) : toolLabel(ev.name, true),
+    detail: toolDetail(ev.name, args, ev.result),
+    icon: toolEventIcon(ev.name),
+    name: ev.name ?? "tool",
+    callId: ev.call_id,
+    status: error ? "error" : "done",
+  };
+}
+
+export function accountRuntimeToolPart(ev: AccountRuntimeToolEvent): ChatStreamEventPart {
+  return {
+    kind: "event",
+    eventType: "tool",
+    label: ev.label || (ev.status === "running" ? `Using ${ev.name}` : ev.status === "error" ? `${ev.name} failed` : `Used ${ev.name}`),
+    detail: ev.detail || undefined,
+    icon: ev.icon || toolEventIcon(ev.name),
+    name: ev.id || ev.name,
+    status: ev.status,
+  };
+}
+
+export function statusPart(label: string, detail?: string, tone: "status" | "warning" | "error" = "status"): ChatStreamEventPart {
+  return {
+    kind: "event",
+    eventType: tone,
+    label,
+    detail,
+    icon: tone === "error" ? "error" : "tool",
+    status: tone === "error" ? "error" : "done",
+  };
+}
+
+export function runtimeWarningMessage(label: string, detail: string): ChatMessage {
+  return { role: "assistant", content: "", streamParts: [statusPart(label, detail, "warning")] };
+}

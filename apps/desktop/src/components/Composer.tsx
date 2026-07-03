@@ -1,0 +1,1041 @@
+import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
+import { agentAvatarText, transcribe, type Agent, type ChatAttachment, type MediaKind, type SkillInfo, typeDictationText } from "../api";
+import type { WorkspaceFileSuggestion } from "../api";
+import { composerAutocompleteTriggerAt, replaceComposerAutocompleteTrigger } from "../lib/composerAutocomplete";
+import { canNavigateComposerHistory, moveComposerHistory, type ComposerHistoryDirection } from "../lib/composerHistory";
+import { recordWav, type Recorder } from "../lib/recordWav";
+import { useSettings, voiceVadConfigIssue } from "../settings/store";
+import { featureVisibleInMode } from "../ui/features";
+import { shortcutLabel, shortcutMatchesEvent } from "../ui/shortcuts";
+import { useUiPreferences } from "../ui/store";
+import { ArrowUp, ChevronDown, Folder, FolderOpen, Mic, Paperclip, PlusSquare, Slash, Square, UserRound, X } from "./icons";
+
+type GlobalShortcutEvent = {
+  state: "Pressed" | "Released";
+};
+
+type GlobalShortcutHandler = (event: GlobalShortcutEvent) => void;
+
+function isTauriRuntime(): boolean {
+  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+}
+
+type SlashCommand = {
+  id: string;
+  label: string;
+  hint: string;
+  group: "Commands" | "Settings";
+  placeholder?: string;
+};
+
+const SLASH_COMMANDS: SlashCommand[] = [
+  { id: "plan", label: "Plan mode", hint: "Toggle read-only planning", group: "Commands", placeholder: "/plan build feature X" },
+  { id: "goal", label: "Goal", hint: "Open the goal panel, or run with text", group: "Commands", placeholder: "/goal build feature X" },
+  { id: "model", label: "Model", hint: "Set the thread model", group: "Settings", placeholder: "/model llama3.2" },
+  { id: "folder", label: "Folder", hint: "Set or pick a working folder", group: "Settings", placeholder: "/folder C:\\project" },
+  { id: "sandbox", label: "Sandbox on", hint: "Enable Docker sandbox tools", group: "Settings" },
+  { id: "nosandbox", label: "Sandbox off", hint: "Disable Docker sandbox tools", group: "Settings" },
+  { id: "computer", label: "Computer on", hint: "Enable computer-use tools", group: "Settings" },
+  { id: "nocomputer", label: "Computer off", hint: "Disable computer-use tools", group: "Settings" },
+  { id: "memory", label: "Memory on", hint: "Enable scoped memories", group: "Settings" },
+  { id: "nomemory", label: "Memory off", hint: "Disable scoped memories", group: "Settings" },
+  { id: "privacy", label: "Privacy", hint: "Set privacy gate", group: "Settings", placeholder: "/privacy redact" },
+  { id: "approval", label: "Approval", hint: "Set tool approval mode", group: "Settings", placeholder: "/approval guarded" },
+  { id: "agent", label: "Agent", hint: "Set active agent or none", group: "Settings", placeholder: "/agent none" },
+  { id: "compact", label: "Compact thread", hint: "Summarize prior context into a fresh checkpoint", group: "Commands" },
+  { id: "export", label: "Export chat", hint: "Download this thread as JSON", group: "Commands" },
+  { id: "import", label: "Import chat", hint: "Import a Milim thread JSON file", group: "Commands" },
+  { id: "clear", label: "New chat", hint: "Start a fresh chat with current settings", group: "Commands" },
+];
+
+function agentMenuDetail(agent: Agent): string {
+  const model = agent.model.trim() || "current model";
+  const mode = agent.tool_mode ?? ((agent.enabled_tools ?? []).length === 0 ? "all" : "custom");
+  const tools = mode === "all" ? "all tools" : mode === "none" ? "no tools" : `${agent.enabled_tools?.length ?? 0} tools`;
+  const skillMode = agent.skill_mode ?? ((agent.enabled_skills ?? []).length === 0 ? "auto" : "custom");
+  const skills = skillMode === "auto" ? "auto skills" : skillMode === "none" ? "no skills" : `${agent.enabled_skills?.length ?? 0} skills`;
+  return `${model} / ${tools} / ${skills}`;
+}
+
+type Suggestion =
+  | { kind: "action"; group: "Add"; key: string; name: string; label: string; hint: string }
+  | { kind: "command"; group: SlashCommand["group"]; command: SlashCommand }
+  | { kind: "file"; group: "Files"; file: WorkspaceFileSuggestion }
+  | { kind: "skill"; group: "Skills"; skill: SkillInfo };
+
+type WorkspaceProject = {
+  name: string;
+  folder: string;
+};
+
+function parseSlashInput(value: string): { id: string; argument: string } | null {
+  const match = value.trim().match(/^\/([a-z-]+)(?:\s+(.*))?$/i);
+  if (!match) return null;
+  return { id: match[1].toLowerCase(), argument: match[2]?.trim() ?? "" };
+}
+
+function attachmentSizeLabel(size: number): string {
+  if (size >= 1024 * 1024) return `${(size / 1024 / 1024).toFixed(1)} MB`;
+  if (size >= 1024) return `${Math.round(size / 1024)} KB`;
+  return `${size} B`;
+}
+
+function folderLabel(folder: string): string {
+  return folder.split(/[\\/]/).filter(Boolean).pop() || folder || "No project";
+}
+
+function clipboardFiles(data: DataTransfer): File[] {
+  const byKey = new Map<string, File>();
+  for (const file of Array.from(data.files ?? [])) {
+    byKey.set(`${file.name}:${file.size}:${file.type}:${file.lastModified}`, file);
+  }
+  for (const item of Array.from(data.items ?? [])) {
+    if (item.kind !== "file") continue;
+    const file = item.getAsFile();
+    if (file) byKey.set(`${file.name}:${file.size}:${file.type}:${file.lastModified}`, file);
+  }
+  return Array.from(byKey.values());
+}
+
+async function registerGlobalVoiceShortcut(
+  shortcut: string,
+  handler: GlobalShortcutHandler,
+): Promise<() => Promise<void>> {
+  const { register, unregister } = await import("@tauri-apps/plugin-global-shortcut");
+  await unregister(shortcut).catch(() => undefined);
+  await register(shortcut, handler);
+  return async () => {
+    await unregister(shortcut).catch(() => undefined);
+  };
+}
+
+export function Composer({
+  value,
+  onChange,
+  onSend,
+  onStop,
+  attachments,
+  onAttachFiles,
+  onAttachWorkspaceFile,
+  onRemoveAttachment,
+  onSlashCommand,
+  agents,
+  activeAgentId,
+  onAgent,
+  onManageAgents,
+  instructions,
+  onInstructions,
+  skills = [],
+  workspaceFolder = "",
+  workspaceProjects = [],
+  onWorkspaceFolder,
+  onPickWorkspaceFolder,
+  listWorkspaceFiles,
+  mediaActive = false,
+  mediaKind = "image",
+  mediaTargetLabel,
+  sentHistory = [],
+  tokens,
+  contextBudgetTokens,
+  busy,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  onSend: () => void;
+  onStop: () => void;
+  attachments: ChatAttachment[];
+  onAttachFiles: (files?: File[]) => void;
+  onAttachWorkspaceFile: (file: WorkspaceFileSuggestion) => Promise<boolean>;
+  onRemoveAttachment: (id: string) => void;
+  onSlashCommand: (id: string, argument: string) => boolean;
+  agents: Agent[];
+  activeAgentId: string | null;
+  onAgent: (agent: Agent | null) => void;
+  onManageAgents: () => void;
+  instructions: string;
+  onInstructions: (v: string) => void;
+  skills?: SkillInfo[];
+  workspaceFolder?: string;
+  workspaceProjects?: WorkspaceProject[];
+  onWorkspaceFolder: (folder: string) => void;
+  onPickWorkspaceFolder: () => void;
+  listWorkspaceFiles: (workspace: string, query: string, limit?: number) => Promise<WorkspaceFileSuggestion[]>;
+  mediaActive?: boolean;
+  mediaKind?: MediaKind;
+  mediaTargetLabel?: string;
+  sentHistory?: string[];
+  tokens: number;
+  contextBudgetTokens?: number;
+  busy: boolean;
+}) {
+  const ref = useRef<HTMLTextAreaElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const personaRef = useRef<HTMLDivElement>(null);
+  const projectRef = useRef<HTMLDivElement>(null);
+  const voice = useSettings((s) => s.voice);
+  const composerSendShortcut = useUiPreferences((s) => s.composerSendShortcut);
+  const composerDensity = useUiPreferences((s) => s.composerDensity);
+  const interfaceMode = useUiPreferences((s) => s.interfaceMode);
+  const recRef = useRef<Recorder | null>(null);
+  const recordVoiceRef = useRef(voice);
+  const valueRef = useRef(value);
+  const recordingRef = useRef(false);
+  const transcribingRef = useRef(false);
+  const finishingRef = useRef(false);
+  const recordTickRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const applyingHistoryRef = useRef(false);
+  const historyDraftRef = useRef("");
+  const [recording, setRecording] = useState(false);
+  const [recordElapsedMs, setRecordElapsedMs] = useState(0);
+  const [transcribing, setTranscribing] = useState(false);
+  const [voiceNotice, setVoiceNotice] = useState<string | null>(null);
+  const [personaOpen, setPersonaOpen] = useState(false);
+  const [projectOpen, setProjectOpen] = useState(false);
+  const [slashOpen, setSlashOpen] = useState(false);
+  const [slashFocusIndex, setSlashFocusIndex] = useState(0);
+  const [slashDismissedValue, setSlashDismissedValue] = useState("");
+  const [cursor, setCursor] = useState(0);
+  const [workspaceFiles, setWorkspaceFiles] = useState<WorkspaceFileSuggestion[]>([]);
+  const [dragOver, setDragOver] = useState(false);
+  const [historyIndex, setHistoryIndex] = useState<number | null>(null);
+
+  const voiceProviderLabel =
+    voice.provider === "parakeet"
+      ? "Parakeet"
+      : voice.provider === "openai"
+        ? "OpenAI-compatible STT"
+        : voice.provider === "remote"
+          ? "Raw endpoint STT"
+          : "Whisper";
+  const hasWhisperModel = Boolean(voice.whisperModelPath.trim());
+  const hasRemoteEndpoint = Boolean(voice.remoteEndpoint.trim());
+  const hasOpenAiSttConfig = Boolean(voice.openAiEndpoint.trim() && voice.openAiModel.trim());
+  const hasParakeetCommand = Boolean(voice.parakeetCommand.trim());
+  const vadConfigIssue = voiceVadConfigIssue(voice);
+  const voiceReady =
+    voice.enabled &&
+    !vadConfigIssue &&
+    ((voice.provider === "whisper" && hasWhisperModel) ||
+      (voice.provider === "openai" && hasOpenAiSttConfig) ||
+      (voice.provider === "remote" && hasRemoteEndpoint) ||
+      (voice.provider === "parakeet" && hasParakeetCommand));
+  const showVoiceButton = voice.enabled || recording || transcribing;
+  const voiceTitle = recording
+    ? "Stop & transcribe"
+    : transcribing
+      ? "Transcribing..."
+      : !voice.enabled
+        ? "Voice input is disabled in Settings"
+        : voice.provider === "parakeet" && !hasParakeetCommand
+          ? "Choose a Parakeet command in Settings"
+          : voice.provider === "openai" && !hasOpenAiSttConfig
+            ? "Choose an OpenAI-compatible STT endpoint and model in Settings"
+          : voice.provider === "remote" && !hasRemoteEndpoint
+            ? "Choose a Remote STT endpoint in Settings"
+          : voice.provider === "whisper" && !hasWhisperModel
+            ? "Choose a Whisper model path in Settings"
+            : vadConfigIssue
+              ? vadConfigIssue
+            : `Voice input (${voiceProviderLabel})`;
+  const slashInput = parseSlashInput(value);
+  const activeTrigger = composerAutocompleteTriggerAt(value, cursor);
+  const suggestionPrefix = activeTrigger?.prefix ?? "";
+  const suggestionQuery = activeTrigger?.query ?? "";
+  const tokenLabel = tokens >= 1000 ? `~${(tokens / 1000).toFixed(1)}k` : `~${tokens}`;
+  const contextTokenLabel = contextBudgetTokens
+    ? `${tokenLabel} / ${contextBudgetTokens >= 1000 ? `${(contextBudgetTokens / 1000).toFixed(contextBudgetTokens < 10_000 ? 1 : 0)}k` : contextBudgetTokens} tokens`
+    : `${tokenLabel} tokens`;
+  const activeAgent = agents.find((agent) => agent.id === activeAgentId) ?? null;
+  const hasInstr = instructions.trim().length > 0;
+  const activeWorkspaceFolder = workspaceFolder.trim();
+  const activeWorkspaceLabel = activeWorkspaceFolder
+    ? workspaceProjects.find((project) => project.folder === activeWorkspaceFolder)?.name ?? folderLabel(activeWorkspaceFolder)
+    : "No project";
+  const showWorkspaceSelector = featureVisibleInMode("workspace", interfaceMode);
+  const availableSlashCommands = useMemo(() => {
+    if (featureVisibleInMode("workspace", interfaceMode)) return SLASH_COMMANDS;
+    return SLASH_COMMANDS.filter((cmd) =>
+      cmd.id === "model" ||
+      cmd.id === "plan" ||
+      cmd.id === "goal" ||
+      cmd.id === "memory" ||
+      cmd.id === "nomemory" ||
+      cmd.id === "privacy" ||
+      cmd.id === "approval" ||
+      cmd.id === "clear",
+    );
+  }, [interfaceMode]);
+  const suggestions = useMemo(() => {
+    const match = (text: string) => !suggestionQuery || text.toLowerCase().includes(suggestionQuery);
+    const items: Suggestion[] = [];
+    if (!suggestionPrefix && match("files folders attach")) {
+      items.push({ kind: "action", group: "Add", key: "files", name: "Files", label: "Files and folders", hint: "Attach local context" });
+    }
+    if (suggestionPrefix === "@") {
+      items.push(...workspaceFiles.map((file) => ({ kind: "file" as const, group: "Files" as const, file })));
+    }
+    if (suggestionPrefix !== "@") {
+      items.push(
+        ...availableSlashCommands
+          .filter((cmd) => match(`${cmd.id} ${cmd.label} ${cmd.hint}`))
+          .map((command) => ({ kind: "command" as const, group: command.group, command })),
+      );
+    }
+    if (suggestionPrefix !== "/") {
+      items.push(
+        ...skills
+          .filter((skill) => skill.enabled && match(`${skill.name} ${skill.description}`))
+          .slice(0, 8)
+          .map((skill) => ({ kind: "skill" as const, group: "Skills" as const, skill })),
+      );
+    }
+    return items;
+  }, [availableSlashCommands, skills, suggestionPrefix, suggestionQuery, workspaceFiles]);
+  const suggestionGroups = useMemo(() => {
+    const groups: Array<{ label: Suggestion["group"]; items: Suggestion[] }> = [];
+    for (const item of suggestions) {
+      const group = groups.find((g) => g.label === item.group);
+      if (group) group.items.push(item);
+      else groups.push({ label: item.group, items: [item] });
+    }
+    return groups;
+  }, [suggestions]);
+  const orderedSuggestions = useMemo(() => suggestionGroups.flatMap((group) => group.items), [suggestionGroups]);
+  const autoSlashMenuOpen = Boolean(activeTrigger) && orderedSuggestions.length > 0 && value !== slashDismissedValue;
+  const showSlashMenu = slashOpen || autoSlashMenuOpen;
+  const canSend = Boolean(value.trim() || attachments.length);
+  const sendShortcutLabel = composerSendShortcut === "modEnter" ? shortcutLabel("Mod+Enter") : "Enter";
+  const sentHistoryKey = useMemo(() => sentHistory.join("\0"), [sentHistory]);
+  const placeholder = mediaActive
+    ? `Describe the ${mediaKind} to generate...`
+    : "Message or attach files...";
+
+  // Auto-grow the textarea up to a cap.
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.style.height = "0px";
+    el.style.height = Math.min(el.scrollHeight, 160) + "px";
+  }, [value]);
+
+  useEffect(() => {
+    valueRef.current = value;
+  }, [value]);
+
+  useEffect(() => {
+    if (applyingHistoryRef.current) {
+      applyingHistoryRef.current = false;
+      return;
+    }
+    setHistoryIndex(null);
+  }, [value]);
+
+  useEffect(() => {
+    historyDraftRef.current = "";
+    setHistoryIndex(null);
+  }, [sentHistoryKey]);
+
+  useEffect(() => {
+    setSlashFocusIndex(0);
+  }, [suggestionPrefix, suggestionQuery, orderedSuggestions.length]);
+
+  useEffect(() => {
+    if (cursor > value.length) setCursor(value.length);
+  }, [cursor, value.length]);
+
+  useEffect(() => {
+    if (suggestionPrefix !== "@" || !workspaceFolder.trim()) {
+      setWorkspaceFiles([]);
+      return;
+    }
+    let cancelled = false;
+    void listWorkspaceFiles(workspaceFolder, suggestionQuery, 12)
+      .then((files) => {
+        if (!cancelled) setWorkspaceFiles(files);
+      })
+      .catch(() => {
+        if (!cancelled) setWorkspaceFiles([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [listWorkspaceFiles, suggestionPrefix, suggestionQuery, workspaceFolder]);
+
+  useEffect(() => {
+    recordingRef.current = recording;
+  }, [recording]);
+
+  useEffect(() => {
+    transcribingRef.current = transcribing;
+  }, [transcribing]);
+
+  useEffect(() => {
+    return () => {
+      if (recordTickRef.current) clearInterval(recordTickRef.current);
+      recRef.current?.cancel();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!personaOpen) return;
+    const onDoc = (e: MouseEvent) => {
+      if (personaRef.current && !personaRef.current.contains(e.target as Node)) setPersonaOpen(false);
+    };
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      if (e.key === "Escape") setPersonaOpen(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDoc);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [personaOpen]);
+
+  useEffect(() => {
+    if (!projectOpen) return;
+    const onDoc = (e: MouseEvent) => {
+      if (projectRef.current && !projectRef.current.contains(e.target as Node)) setProjectOpen(false);
+    };
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      if (e.key === "Escape") setProjectOpen(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDoc);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [projectOpen]);
+
+  function clearRecordTimer() {
+    if (recordTickRef.current) {
+      clearInterval(recordTickRef.current);
+      recordTickRef.current = null;
+    }
+  }
+
+  function formatRecordElapsed(ms: number): string {
+    const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return `${minutes}:${seconds.toString().padStart(2, "0")}`;
+  }
+
+  async function finishRecording(target: "composer" | "system" = "composer") {
+    if (finishingRef.current) return;
+    const rec = recRef.current;
+    recRef.current = null;
+    if (!rec) return;
+
+    finishingRef.current = true;
+    recordingRef.current = false;
+    clearRecordTimer();
+    setRecording(false);
+    transcribingRef.current = true;
+    setTranscribing(true);
+    try {
+      const activeVoice = recordVoiceRef.current;
+      const text = await transcribe(await rec.stop(), activeVoice);
+      if (text) {
+        setVoiceNotice(null);
+        if (target === "system" && activeVoice.dictationInjectText) {
+          await typeDictationText(text);
+        } else {
+          const currentValue = valueRef.current;
+          onChange(currentValue ? `${currentValue} ${text}` : text);
+        }
+      }
+    } catch (e) {
+      setVoiceNotice(`Voice transcription failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      finishingRef.current = false;
+      setRecordElapsedMs(0);
+      transcribingRef.current = false;
+      setTranscribing(false);
+    }
+  }
+
+  function cancelRecording() {
+    const rec = recRef.current;
+    recRef.current = null;
+    clearRecordTimer();
+    rec?.cancel();
+    finishingRef.current = false;
+    recordingRef.current = false;
+    setRecording(false);
+    setRecordElapsedMs(0);
+  }
+
+  async function startRecording(alertOnError = true) {
+    if (transcribingRef.current || recordingRef.current) return;
+    if (alertOnError) setVoiceNotice(null);
+    if (!voice.enabled) {
+      if (alertOnError) setVoiceNotice("Voice input is disabled. Enable it in Settings.");
+      return;
+    }
+    if (voice.provider === "parakeet" && !hasParakeetCommand) {
+      if (alertOnError) setVoiceNotice("Choose a Parakeet command in Settings.");
+      return;
+    }
+    if (voice.provider === "openai" && !hasOpenAiSttConfig) {
+      if (alertOnError) setVoiceNotice("Choose an OpenAI-compatible STT endpoint and model in Settings.");
+      return;
+    }
+    if (voice.provider === "remote" && !hasRemoteEndpoint) {
+      if (alertOnError) setVoiceNotice("Choose a Remote STT endpoint in Settings.");
+      return;
+    }
+    if (voice.provider === "whisper" && !hasWhisperModel) {
+      if (alertOnError) setVoiceNotice("Choose a Whisper model path in Settings.");
+      return;
+    }
+    if (vadConfigIssue) {
+      if (alertOnError) setVoiceNotice(vadConfigIssue);
+      return;
+    }
+    try {
+      recordVoiceRef.current = voice;
+      const recorder = await recordWav({
+        autoStopOnSilence: voice.vadEnabled,
+        silenceMs: voice.vadSilenceMs,
+        maxMs: voice.maxRecordingSeconds * 1000,
+        onAutoStop: () => {
+          void finishRecording();
+        },
+      });
+      recRef.current = recorder;
+      setRecordElapsedMs(0);
+      clearRecordTimer();
+      recordTickRef.current = setInterval(() => setRecordElapsedMs(recorder.elapsedMs()), 250);
+      recordingRef.current = true;
+      setRecording(true);
+    } catch {
+      if (alertOnError) setVoiceNotice("Microphone access was denied or unavailable.");
+    }
+  }
+
+  async function toggleMic() {
+    if (transcribing) return;
+    if (recording) {
+      await finishRecording();
+    } else {
+      await startRecording(true);
+    }
+  }
+
+  function attachFromPicker() {
+    if (isTauriRuntime()) {
+      onAttachFiles();
+      return;
+    }
+    fileRef.current?.click();
+  }
+
+  function syncCursor(target: HTMLTextAreaElement) {
+    setCursor(target.selectionStart);
+  }
+
+  function runSlash(id: string, argument = "") {
+    const handled = onSlashCommand(id, argument);
+    if (handled) {
+      setSlashOpen(false);
+      onChange("");
+    }
+    return handled;
+  }
+
+  function insertSkill(skill: SkillInfo) {
+    insertCompletion(`@${skill.name} `);
+  }
+
+  function insertCompletion(completion: string) {
+    const trigger = activeTrigger;
+    const next = trigger
+      ? replaceComposerAutocompleteTrigger(value, trigger, completion)
+      : value.slice(0, cursor) + completion + value.slice(cursor);
+    const nextCursor = (trigger?.start ?? cursor) + completion.length;
+    setSlashDismissedValue(next);
+    onChange(next);
+    setSlashOpen(false);
+    window.requestAnimationFrame(() => {
+      ref.current?.focus();
+      ref.current?.setSelectionRange(nextCursor, nextCursor);
+      setCursor(nextCursor);
+    });
+  }
+
+  async function completeSuggestion(item: Suggestion) {
+    if (item.kind === "action") {
+      setSlashOpen(false);
+      attachFromPicker();
+      return;
+    }
+    if (item.kind === "file") {
+      if (await onAttachWorkspaceFile(item.file)) {
+        const path = item.file.path.includes(" ") ? `"${item.file.path}"` : item.file.path;
+        insertCompletion(`@${path} `);
+      }
+      return;
+    }
+    if (item.kind === "skill") {
+      insertSkill(item.skill);
+      return;
+    }
+    insertCompletion(`/${item.command.id} `);
+  }
+
+  function selectedSuggestion(): Suggestion | undefined {
+    return orderedSuggestions[Math.min(slashFocusIndex, Math.max(0, orderedSuggestions.length - 1))];
+  }
+
+  function moveSlashFocus(step: number) {
+    if (!orderedSuggestions.length) return;
+    setSlashFocusIndex((index) => (index + step + orderedSuggestions.length) % orderedSuggestions.length);
+  }
+
+  function recallHistory(direction: ComposerHistoryDirection, target: HTMLTextAreaElement): boolean {
+    const currentIndex = historyIndex;
+    if (!canNavigateComposerHistory(target.value, target.selectionStart, target.selectionEnd, direction, currentIndex)) return false;
+    const draft = currentIndex === null ? target.value : historyDraftRef.current;
+    const next = moveComposerHistory(sentHistory, draft, currentIndex, direction);
+    if (!next) return false;
+    if (currentIndex === null) historyDraftRef.current = target.value;
+    applyingHistoryRef.current = next.value !== target.value;
+    setHistoryIndex(next.index);
+    setSlashOpen(false);
+    setSlashDismissedValue(next.value);
+    onChange(next.value);
+    window.requestAnimationFrame(() => {
+      ref.current?.focus();
+      ref.current?.setSelectionRange(next.value.length, next.value.length);
+      setCursor(next.value.length);
+    });
+    return true;
+  }
+
+  function submitComposer() {
+    if (!busy && slashInput && runSlash(slashInput.id, slashInput.argument)) return;
+    onSend();
+  }
+
+  function applyAgent(agent: Agent | null) {
+    onAgent(agent);
+    setPersonaOpen(false);
+  }
+
+  function applyWorkspaceFolder(folder: string) {
+    setProjectOpen(false);
+    onWorkspaceFolder(folder);
+  }
+
+  function pickWorkspaceFolder() {
+    setProjectOpen(false);
+    onPickWorkspaceFolder();
+  }
+
+  function shouldSubmitFromEnter(event: KeyboardEvent<HTMLTextAreaElement>): boolean {
+    if (event.key !== "Enter" || event.shiftKey) return false;
+    if (composerSendShortcut === "enter") return true;
+    return shortcutMatchesEvent("Mod+Enter", event);
+  }
+
+  useEffect(() => {
+    const shortcut = voice.hotkeyShortcut.trim();
+    if (!voice.hotkeyEnabled || !shortcut || !isTauriRuntime()) return;
+
+    let disposed = false;
+    const cleanupPromise = registerGlobalVoiceShortcut(shortcut, (event) => {
+      if (disposed) return;
+      if (event.state === "Pressed") {
+        void startRecording(false);
+      } else if (event.state === "Released" && recordingRef.current) {
+        void finishRecording(voice.dictationInjectText ? "system" : "composer");
+      }
+    }).catch((e) => {
+      console.warn(`Failed to register voice shortcut ${shortcut}:`, e);
+      return null;
+    });
+
+    return () => {
+      disposed = true;
+      void cleanupPromise.then((cleanup) => {
+        void cleanup?.();
+      });
+    };
+  }, [voice, hasParakeetCommand, hasOpenAiSttConfig, hasRemoteEndpoint, hasWhisperModel, vadConfigIssue]);
+
+  return (
+    <div
+      className={`composer ${composerDensity === "compact" ? "compact" : "comfortable"}${dragOver ? " drag-over" : ""}`}
+      data-testid="composer-drop-zone"
+      onDragOver={(e) => {
+        e.preventDefault();
+        setDragOver(true);
+      }}
+      onDragLeave={() => setDragOver(false)}
+      onDrop={(e) => {
+        e.preventDefault();
+        setDragOver(false);
+        const files = Array.from(e.dataTransfer.files ?? []);
+        if (files.length) onAttachFiles(files);
+      }}
+    >
+      <input
+        ref={fileRef}
+        type="file"
+        multiple
+        hidden
+        data-testid="composer-file-input"
+        onChange={(e) => {
+          const files = Array.from(e.currentTarget.files ?? []);
+          e.currentTarget.value = "";
+          if (files.length) onAttachFiles(files);
+        }}
+      />
+      {attachments.length > 0 && (
+        <div className="attachment-tray" data-testid="attachment-tray">
+          {attachments.map((attachment) => (
+            <span key={attachment.id} className="attachment-pill" data-testid={`attachment-pill-${attachment.id}`} title={attachment.name}>
+              {attachment.dataUrl ? <img className="attachment-thumb" src={attachment.dataUrl} alt="" /> : <Paperclip size={13} />}
+              <span className="attachment-name">{attachment.name}</span>
+              <span className="attachment-meta">
+                {attachmentSizeLabel(attachment.size)}
+                {attachment.truncated ? " clipped" : ""}
+              </span>
+              <button
+                type="button"
+                className="attachment-remove"
+                title="Remove attachment"
+                aria-label={`Remove attachment ${attachment.name}`}
+                onClick={() => onRemoveAttachment(attachment.id)}
+              >
+                <X size={12} />
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+      <textarea
+        ref={ref}
+        className="composer-input"
+        data-testid="composer-input"
+        rows={1}
+        value={value}
+        placeholder={placeholder}
+        onChange={(e) => {
+          syncCursor(e.currentTarget);
+          onChange(e.target.value);
+        }}
+        onClick={(e) => syncCursor(e.currentTarget)}
+        onKeyUp={(e) => syncCursor(e.currentTarget)}
+        onSelect={(e) => syncCursor(e.currentTarget)}
+        onKeyDown={(e) => {
+          if (e.key === "Escape" && showSlashMenu) {
+            e.preventDefault();
+            setSlashDismissedValue(value);
+            setSlashOpen(false);
+            return;
+          }
+          if (showSlashMenu && orderedSuggestions.length > 0) {
+            if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+              e.preventDefault();
+              moveSlashFocus(e.key === "ArrowDown" ? 1 : -1);
+              return;
+            }
+            if (e.key === "Enter" || e.key === "Tab") {
+              e.preventDefault();
+              const item = selectedSuggestion();
+              if (item) void completeSuggestion(item);
+              return;
+            }
+          }
+          if ((e.key === "ArrowUp" || e.key === "ArrowDown") && !e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
+            if (recallHistory(e.key === "ArrowUp" ? "previous" : "next", e.currentTarget)) {
+              e.preventDefault();
+              return;
+            }
+          }
+          if (shouldSubmitFromEnter(e)) {
+            e.preventDefault();
+            submitComposer();
+          }
+        }}
+        onPaste={(e) => {
+          const files = clipboardFiles(e.clipboardData);
+          if (!files.length) return;
+          e.preventDefault();
+          onAttachFiles(files);
+        }}
+      />
+      {showSlashMenu && (
+        <div className="slash-menu" data-testid="slash-menu">
+          {(() => {
+            let itemIndex = -1;
+            return suggestionGroups.map((group) => (
+            <div className="slash-group" key={group.label}>
+              <div className="slash-group-label">{group.label}</div>
+              {group.items.map((item) => {
+                itemIndex += 1;
+                const index = itemIndex;
+                if (item.kind === "action") {
+                  return (
+                    <button
+                      key={item.key}
+                      type="button"
+                      className={"slash-item" + (index === slashFocusIndex ? " active" : "")}
+                      data-testid={`suggestion-${item.key}`}
+                      onClick={() => {
+                        setSlashOpen(false);
+                        attachFromPicker();
+                      }}
+                    >
+                      <span className="slash-name">{item.name}</span>
+                      <span className="slash-label">{item.label}</span>
+                      <span className="slash-hint">{item.hint}</span>
+                    </button>
+                  );
+                }
+                if (item.kind === "skill") {
+                  return (
+                    <button
+                      key={item.skill.id}
+                      type="button"
+                      className={"slash-item" + (index === slashFocusIndex ? " active" : "")}
+                      data-testid={`skill-suggestion-${item.skill.id}`}
+                      onClick={() => void completeSuggestion(item)}
+                    >
+                      <span className="slash-name">@{item.skill.name}</span>
+                      <span className="slash-label">{item.skill.name}</span>
+                      <span className="slash-hint">{item.skill.description || "Use this skill"}</span>
+                    </button>
+                  );
+                }
+                if (item.kind === "file") {
+                  return (
+                    <button
+                      key={item.file.full_path}
+                      type="button"
+                      className={"slash-item" + (index === slashFocusIndex ? " active" : "")}
+                      data-testid={`file-suggestion-${item.file.path}`}
+                      onClick={() => void completeSuggestion(item)}
+                    >
+                      <span className="slash-name">@{item.file.path}</span>
+                      <span className="slash-label">{item.file.name}</span>
+                      <span className="slash-hint">{attachmentSizeLabel(item.file.size)}</span>
+                    </button>
+                  );
+                }
+                return (
+                  <button
+                    key={item.command.id}
+                    type="button"
+                    className={"slash-item" + (index === slashFocusIndex ? " active" : "")}
+                    data-testid={`slash-command-${item.command.id}`}
+                    onClick={() => activeTrigger ? void completeSuggestion(item) : runSlash(item.command.id, "")}
+                  >
+                    <span className="slash-name">/{item.command.id}</span>
+                    <span className="slash-label">{item.command.label}</span>
+                    <span className="slash-hint">{item.command.placeholder ?? item.command.hint}</span>
+                  </button>
+                );
+              })}
+            </div>
+            ));
+          })()}
+        </div>
+      )}
+      <div className="composer-bar">
+        <div className="composer-tools">
+          {showWorkspaceSelector && (
+            <div className="project-chip-wrap" ref={projectRef}>
+              <button
+                type="button"
+                className={"project-chip" + (activeWorkspaceFolder ? " active" : "")}
+                data-testid="composer-project-selector"
+                title={activeWorkspaceFolder || "Don't work in a project"}
+                aria-label={`Project, current ${activeWorkspaceLabel}`}
+                aria-expanded={projectOpen}
+                aria-haspopup="menu"
+                onClick={() => {
+                  setProjectOpen((open) => !open);
+                  setSlashOpen(false);
+                  setPersonaOpen(false);
+                }}
+              >
+                <Folder size={14} />
+                <span>{activeWorkspaceLabel}</span>
+                <ChevronDown size={12} />
+              </button>
+              {projectOpen && (
+                <div className="menu project-chip-menu" role="menu" aria-label="Project">
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className={"menu-item" + (!activeWorkspaceFolder ? " active" : "")}
+                    data-testid="composer-project-none"
+                    onClick={() => applyWorkspaceFolder("")}
+                  >
+                    <Folder size={14} />
+                    <span>Don't work in a project</span>
+                  </button>
+                  {workspaceProjects.length > 0 && <div className="menu-sep" />}
+                  {workspaceProjects.map((project) => (
+                    <button
+                      type="button"
+                      role="menuitem"
+                      key={project.folder}
+                      className={"menu-item" + (project.folder === activeWorkspaceFolder ? " active" : "")}
+                      title={project.folder}
+                      onClick={() => applyWorkspaceFolder(project.folder)}
+                    >
+                      <Folder size={14} />
+                      <span className="project-chip-menu-name">{project.name}</span>
+                    </button>
+                  ))}
+                  <div className="menu-sep" />
+                  <button type="button" role="menuitem" className="menu-item" onClick={pickWorkspaceFolder}>
+                    <FolderOpen size={14} />
+                    <span>Choose folder...</span>
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+          <button className="tool-btn" data-testid="attach-files" title="Attach files" aria-label="Attach files" onClick={attachFromPicker}>
+            <Paperclip size={16} />
+          </button>
+          <button
+            className="tool-btn"
+            data-testid="slash-command-trigger"
+            title="Commands and skills"
+            aria-label="Commands and skills"
+            aria-expanded={showSlashMenu}
+            aria-haspopup="menu"
+            onClick={() => {
+              setSlashOpen((v) => !v);
+              setPersonaOpen(false);
+            }}
+          >
+            <Slash size={16} />
+          </button>
+          <div className="persona-wrap" ref={personaRef}>
+            <button
+              className={"tool-btn persona-btn" + (activeAgent || hasInstr ? " active" : "")}
+              data-testid="agent-switcher"
+              title="Persona"
+              aria-label={`Persona, current ${activeAgent?.name ?? "Default chat"}`}
+              aria-expanded={personaOpen}
+              aria-haspopup="dialog"
+              onClick={() => {
+                setPersonaOpen((v) => !v);
+                setSlashOpen(false);
+              }}
+            >
+              <span className="agent-badge" aria-hidden="true">
+                {activeAgent ? agentAvatarText(activeAgent) : <UserRound size={13} />}
+              </span>
+            </button>
+            {personaOpen && (
+              <div className="menu menu-wide chat-menu persona-menu">
+                <div className="menu-title">Persona</div>
+                <button type="button" className={"menu-item" + (!activeAgentId ? " active" : "")} onClick={() => applyAgent(null)}>
+                  <span className="agent-badge" aria-hidden="true"><UserRound size={13} /></span>
+                  <span>Default chat</span>
+                </button>
+                {agents.map((agent) => (
+                  <button
+                    type="button"
+                    key={agent.id}
+                    className={"menu-item" + (agent.id === activeAgentId ? " active" : "")}
+                    data-testid={`agent-option-${agent.name}`}
+                    onClick={() => applyAgent(agent)}
+                  >
+                    <span className="agent-badge" aria-hidden="true">{agentAvatarText(agent)}</span>
+                    <span className="agent-mono">{agent.name}</span>
+                    <span className="agent-model">{agentMenuDetail(agent)}</span>
+                  </button>
+                ))}
+                <button
+                  type="button"
+                  className="menu-item"
+                  data-testid="manage-agents"
+                  onClick={() => {
+                    setPersonaOpen(false);
+                    onManageAgents();
+                  }}
+                >
+                  <PlusSquare size={15} />
+                  <span>Manage agents...</span>
+                </button>
+                <div className="menu-sep" />
+                <div className="menu-title">Instructions</div>
+                <textarea
+                  className="instr-input"
+                  value={instructions}
+                  placeholder="System prompt the assistant always follows..."
+                  onChange={(e) => onInstructions(e.target.value)}
+                />
+                {hasInstr && (
+                  <button type="button" className="menu-clear" onClick={() => onInstructions("")}>
+                    Clear
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+          {showVoiceButton && (
+            <button
+              className={"tool-btn" + (recording ? " recording" : "")}
+              title={recording ? `${voiceTitle} (${formatRecordElapsed(recordElapsedMs)})` : voiceTitle}
+              aria-label={recording ? `${voiceTitle} (${formatRecordElapsed(recordElapsedMs)})` : voiceTitle}
+              aria-pressed={recording}
+              onClick={toggleMic}
+              disabled={transcribing || (!recording && !voiceReady)}
+            >
+              <Mic size={16} />
+            </button>
+          )}
+          {recording && (
+            <button className="tool-btn" title="Cancel recording" aria-label="Cancel recording" onClick={cancelRecording}>
+              <X size={16} />
+            </button>
+          )}
+        </div>
+        <div className="composer-send">
+          <span
+            className={"composer-status" + (busy ? " shiny-text" : "")}
+            role={voiceNotice ? "alert" : "status"}
+            aria-live={voiceNotice ? "assertive" : "polite"}
+            title={voiceNotice ?? undefined}
+            style={voiceNotice ? { color: "var(--error)" } : undefined}
+          >
+            {voiceNotice ?? (
+              recording
+                ? `Recording ${formatRecordElapsed(recordElapsedMs)}`
+                : busy
+                  ? "generating..."
+                  : mediaActive
+                    ? mediaTargetLabel ?? `${mediaKind} mode`
+                    : contextTokenLabel
+            )}
+          </span>
+          {busy ? (
+            <>
+              <button className="send-btn" data-testid="composer-send" onClick={submitComposer} disabled={!canSend} title={`Queue (${sendShortcutLabel})`} aria-label="Queue message">
+                <ArrowUp size={18} />
+              </button>
+              <button className="send-btn stop" onClick={onStop} title="Stop generating" aria-label="Stop generating">
+                <Square size={13} />
+              </button>
+            </>
+          ) : (
+            <button className="send-btn" data-testid="composer-send" onClick={submitComposer} disabled={!canSend} title={`Send (${sendShortcutLabel})`} aria-label="Send message">
+              <ArrowUp size={18} />
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}

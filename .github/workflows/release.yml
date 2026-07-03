@@ -1,0 +1,192 @@
+# Builds and publishes the desktop app packages per OS on tag.
+# Requires signing secrets for production; unsigned artifacts build without them.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Release tag to publish, for example v0.1.0
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  MILIM_RELEASE_TAG: ${{ github.event.inputs.release_tag || github.ref_name }}
+
+concurrency:
+  group: release-${{ github.event.inputs.release_tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  create-draft-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - name: Validate release tag
+        working-directory: apps/desktop
+        run: node scripts/validate-release-tag.mjs
+      - name: Ensure draft release exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view "${MILIM_RELEASE_TAG}" >/dev/null 2>&1 || \
+            gh release create "${MILIM_RELEASE_TAG}" \
+              --draft \
+              --title "milim ${MILIM_RELEASE_TAG}" \
+              --verify-tag
+
+  desktop:
+    needs: create-draft-release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-latest, args: "--target universal-apple-darwin --bundles app,dmg", artifact: "macos-universal" }
+          - { os: windows-latest, args: "", artifact: "windows-x64" }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    env:
+      MILIM_RELEASE_ARTIFACT_NAME: milim-${{ matrix.artifact }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: pnpm/action-setup@v5
+        with:
+          version: 9
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: apps/desktop/pnpm-lock.yaml
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            apps/desktop/src-tauri -> target
+      - name: Validate release tag
+        working-directory: apps/desktop
+        run: node scripts/validate-release-tag.mjs
+      - name: Checkout release tag
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ env.MILIM_RELEASE_TAG }}
+      - name: macOS Rust targets
+        if: matrix.os == 'macos-latest'
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - run: pnpm -C apps/desktop install --frozen-lockfile
+      - name: Run pnpm -C apps/desktop verify
+        if: matrix.os == 'macos-latest'
+        shell: bash
+        run: GITHUB_REF_TYPE=tag GITHUB_REF_NAME="${MILIM_RELEASE_TAG}" pnpm -C apps/desktop verify
+      - name: Build macOS app and DMG
+        if: matrix.os == 'macos-latest'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: pnpm -C apps/desktop tauri build ${{ matrix.args }}
+      - name: Upload macOS direct download alias to draft release
+        if: matrix.os == 'macos-latest'
+        working-directory: apps/desktop
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          dmg="$(find src-tauri/target -path '*/release/bundle/dmg/*.dmg' -print -quit)"
+          if [ -z "$dmg" ]; then
+            echo "macOS DMG not found under src-tauri/target" >&2
+            exit 1
+          fi
+          alias_dir="${RUNNER_TEMP}/milim-release-aliases"
+          mkdir -p "$alias_dir"
+          alias_dmg="$alias_dir/milim-macos-universal.dmg"
+          cp "$dmg" "$alias_dmg"
+          hash="$(shasum -a 256 "$alias_dmg" | awk '{print $1}')"
+          printf "%s  milim-macos-universal.dmg\n" "$hash" > "$alias_dmg.sha256"
+          gh release upload "${{ env.MILIM_RELEASE_TAG }}" "$alias_dmg" "$alias_dmg.sha256" --clobber
+      - name: Create macOS app zip updater asset
+        if: matrix.os == 'macos-latest'
+        working-directory: apps/desktop
+        shell: bash
+        run: |
+          app_bundle="$(find src-tauri/target -path '*/release/bundle/macos/milim.app' -print -quit)"
+          if [ -z "$app_bundle" ]; then
+            echo "milim.app bundle not found under src-tauri/target" >&2
+            exit 1
+          fi
+          app_dir="$(dirname "$app_bundle")"
+          (cd "$app_dir" && rm -f milim.app.zip milim.app.zip.sha256 && ditto -c -k --keepParent milim.app milim.app.zip)
+          hash="$(shasum -a 256 "$app_dir/milim.app.zip" | awk '{print $1}')"
+          printf "%s  milim.app.zip\n" "$hash" > "$app_dir/milim.app.zip.sha256"
+      - name: Upload macOS updater asset to draft release
+        if: matrix.os == 'macos-latest'
+        working-directory: apps/desktop
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          app_zip="$(find src-tauri/target -path '*/release/bundle/macos/milim.app.zip' -print -quit)"
+          gh release upload "${{ env.MILIM_RELEASE_TAG }}" "$app_zip" "$app_zip.sha256" --clobber
+      - name: Build Windows portable binary
+        if: matrix.os == 'windows-latest'
+        run: pnpm -C apps/desktop tauri build --no-bundle
+      - name: Smoke release binary
+        working-directory: apps/desktop
+        run: node scripts/smoke-release-binary.mjs
+      - name: Stage Windows portable artifact
+        if: matrix.os == 'windows-latest'
+        working-directory: apps/desktop
+        run: node scripts/stage-portable-release-artifact.mjs
+      - name: Upload Windows direct download alias to draft release
+        if: matrix.os == 'windows-latest'
+        working-directory: apps/desktop
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: |
+          $portable = Get-ChildItem -Path "src-tauri/target/release/bundle/portable" -Filter "*.exe" | Select-Object -First 1
+          if (-not $portable) {
+            throw "Windows portable EXE not found under src-tauri/target/release/bundle/portable"
+          }
+          $aliasDir = Join-Path $env:RUNNER_TEMP "milim-release-aliases"
+          New-Item -ItemType Directory -Force -Path $aliasDir | Out-Null
+          $aliasExe = Join-Path $aliasDir "milim-windows-x64-portable.exe"
+          Copy-Item -LiteralPath $portable.FullName -Destination $aliasExe
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $aliasExe).Hash.ToLowerInvariant()
+          Set-Content -Encoding ASCII -LiteralPath "$aliasExe.sha256" -Value "$hash  milim-windows-x64-portable.exe"
+          gh release upload "${{ env.MILIM_RELEASE_TAG }}" $aliasExe "$aliasExe.sha256" --clobber
+      - name: Generate artifact manifest
+        working-directory: apps/desktop
+        run: node scripts/generate-release-manifest.mjs
+      - name: Verify artifact manifest
+        working-directory: apps/desktop
+        run: node scripts/verify-release-manifest.mjs
+
+  publish-release-checksums:
+    needs: desktop
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Publish SHA256SUMS.txt updater asset
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          rm -rf release-checksums
+          mkdir release-checksums
+          gh release download "${MILIM_RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --pattern "*.sha256" --dir release-checksums
+          if ! compgen -G "release-checksums/*.sha256" > /dev/null; then
+            echo "No updater checksum sidecars found on release ${MILIM_RELEASE_TAG}" >&2
+            exit 1
+          fi
+          cat release-checksums/*.sha256 | sort -k2 > SHA256SUMS.txt
+          gh release upload "${MILIM_RELEASE_TAG}" SHA256SUMS.txt --repo "${GITHUB_REPOSITORY}" --clobber

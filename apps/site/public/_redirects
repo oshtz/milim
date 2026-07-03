@@ -1,0 +1,12 @@
+https://www.milim.ai/* https://milim.ai/:splat 301
+https://milim.ai/docs/* https://docs.milim.ai/:splat 301
+https://milim.ai/docs https://docs.milim.ai/ 301
+https://milim.ai/wiki https://docs.milim.ai/ 301
+https://docs.milim.ai/docs/* https://docs.milim.ai/:splat 301
+https://docs.milim.ai/docs https://docs.milim.ai/ 301
+https://docs.milim.ai/wiki https://docs.milim.ai/ 301
+https://docs.milim.ai/* /index.html 200
+/docs/* /index.html 200
+/docs /index.html 200
+/wiki/* /index.html 200
+/wiki /index.html 200

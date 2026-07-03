@@ -1,0 +1,361 @@
+import type { ChatAttachment, ChatCompactionMetrics, ChatCompactionSummaryMetrics, ChatMessage, ModelInfo } from "../api";
+import { Tiktoken } from "js-tiktoken/lite";
+import cl100kBase from "js-tiktoken/ranks/cl100k_base";
+
+const LOCAL_CONTEXT_WINDOW = 4096;
+const HOSTED_CONTEXT_WINDOW = 32_768;
+const COMPACT_AT = 0.85;
+const COMPACT_TO = 0.7;
+const SUMMARY_MAX_TOKENS = 900;
+const SUMMARY_MIN_TOKENS = 128;
+const CHECKPOINT_HEADING = "### Context checkpoint";
+let defaultTokenizer: Tiktoken | null | undefined;
+
+export interface ModelContextBudget {
+  contextLength: number;
+  promptBudget: number;
+}
+
+export interface ContextCompactionResult {
+  messages: ChatMessage[];
+  compacted: boolean;
+  originalTokens: number;
+  sentTokens: number;
+  budget: ModelContextBudget | null;
+  error?: string;
+}
+
+export interface ContextSendPlan {
+  messages: ChatMessage[];
+  shouldCompact: boolean;
+  originalTokens: number;
+  sentTokens: number;
+  budget: ModelContextBudget | null;
+  error?: string;
+}
+
+export function estimateTextTokens(text: string): number {
+  const tokenizerTokens = estimateTextTokensWithTokenizer(text);
+  if (tokenizerTokens != null) return tokenizerTokens;
+  return estimateTextTokensFallback(text);
+}
+
+function estimateTextTokensWithTokenizer(text: string): number | null {
+  try {
+    defaultTokenizer ??= new Tiktoken(cl100kBase);
+    return defaultTokenizer.encode(text, "all").length;
+  } catch {
+    defaultTokenizer = null;
+    return null;
+  }
+}
+
+function estimateTextTokensFallback(text: string): number {
+  const chunks = text.match(/[\p{L}\p{M}\p{N}_'-]+|[^\s]/gu) ?? [];
+  let total = 0;
+  for (const chunk of chunks) {
+    if (/^[\x00-\x7f]+$/.test(chunk) && /[\p{L}\p{N}_]/u.test(chunk)) {
+      total += Math.max(1, Math.ceil(chunk.length / 4));
+    } else if (/[\p{L}\p{M}\p{N}]/u.test(chunk)) {
+      total += Math.max(1, Math.ceil(chunk.length / 2));
+    } else {
+      total += 1;
+    }
+  }
+  const newlineTokens = Math.floor((text.match(/\n/g)?.length ?? 0) / 2);
+  return total + newlineTokens;
+}
+
+export function estimateMessagesTokens(messages: readonly ChatMessage[]): number {
+  return messages.reduce((total, message) => total + estimateTextTokens(messageContentForEstimate(message)), 0);
+}
+
+export function modelContextBudget(model: string, models: readonly ModelInfo[]): ModelContextBudget | null {
+  if (!model.trim()) return null;
+  const info = models.find((item) => item.id === model);
+  const contextLength = positive(info?.context_length) ?? fallbackContextLength(model, info);
+  if (!contextLength) return null;
+  const reserve = positive(info?.max_completion_tokens) ?? outputReserve(contextLength);
+  const promptBudget = positive(info?.max_prompt_tokens) ?? Math.max(1, contextLength - reserve);
+  return { contextLength, promptBudget };
+}
+
+export function compactMessagesForModel(
+  messages: readonly ChatMessage[],
+  model: string,
+  models: readonly ModelInfo[],
+): ContextCompactionResult {
+  const budget = modelContextBudget(model, models);
+  const originalTokens = estimateMessagesTokens(messages);
+  if (!budget) {
+    return { messages: [...messages], compacted: false, originalTokens, sentTokens: originalTokens, budget };
+  }
+
+  const threshold = Math.floor(budget.promptBudget * COMPACT_AT);
+  if (originalTokens <= threshold) {
+    return { messages: [...messages], compacted: false, originalTokens, sentTokens: originalTokens, budget };
+  }
+
+  const setup = messages.filter((message) => message.role === "system");
+  const conversation = messages.filter((message) => message.role !== "system");
+  const target = Math.max(1, Math.floor(budget.promptBudget * COMPACT_TO));
+  const setupTokens = estimateMessagesTokens(setup);
+  const latest = conversation.slice(-1);
+  const latestTokens = estimateMessagesTokens(latest);
+
+  if (setupTokens + latestTokens > budget.promptBudget) {
+    return {
+      messages: [...messages],
+      compacted: false,
+      originalTokens,
+      sentTokens: originalTokens,
+      budget,
+      error: `The current message is too large for ${model}'s context window.`,
+    };
+  }
+
+  const summaryBudget = Math.min(SUMMARY_MAX_TOKENS, Math.max(SUMMARY_MIN_TOKENS, Math.floor(budget.promptBudget * 0.1)));
+  const suffix: ChatMessage[] = [];
+  let suffixTokens = 0;
+  const suffixTarget = Math.max(latestTokens, target - setupTokens - summaryBudget);
+  for (let i = conversation.length - 1; i >= 0; i--) {
+    const message = conversation[i];
+    const nextTokens = estimateTextTokens(messageContentForEstimate(message));
+    if (suffix.length > 0 && suffixTokens + nextTokens > suffixTarget) break;
+    suffix.unshift(message);
+    suffixTokens += nextTokens;
+  }
+
+  const older = conversation.slice(0, conversation.length - suffix.length);
+  if (older.length === 0) {
+    const sentTokens = setupTokens + suffixTokens;
+    return { messages: [...setup, ...suffix], compacted: false, originalTokens, sentTokens, budget };
+  }
+
+  const summary = compactedSummaryMessage(older, summaryBudget);
+  const compacted = [...setup, summary, ...suffix];
+  const sentTokens = estimateMessagesTokens(compacted);
+  if (sentTokens > budget.promptBudget) {
+    return {
+      messages: compacted,
+      compacted: true,
+      originalTokens,
+      sentTokens,
+      budget,
+      error: `The compacted prompt is still too large for ${model}'s context window.`,
+    };
+  }
+  return { messages: compacted, compacted: true, originalTokens, sentTokens, budget };
+}
+
+export function isCompactionCheckpoint(message: ChatMessage): boolean {
+  return message.compaction?.kind === "checkpoint" && message.content.trim().length > 0;
+}
+
+export function isTranscriptControlMessage(message: ChatMessage): boolean {
+  return Boolean(message.approval);
+}
+
+export function latestCompactionIndex(messages: readonly ChatMessage[]): number {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    if (isCompactionCheckpoint(messages[i])) return i;
+  }
+  return -1;
+}
+
+export function checkpointMessage(
+  summary: string,
+  options: {
+    auto: boolean;
+    sourceTokens: number;
+    createdAt?: number;
+    baseline?: ChatCompactionMetrics;
+    summaryMetrics?: ChatCompactionSummaryMetrics;
+  },
+): ChatMessage {
+  const clean = summary.trim();
+  return {
+    role: "assistant",
+    content: `${CHECKPOINT_HEADING}\n\n${clean}`,
+    compaction: {
+      kind: "checkpoint",
+      createdAt: options.createdAt ?? Date.now(),
+      sourceTokens: options.sourceTokens,
+      summaryTokens: estimateTextTokens(clean),
+      auto: options.auto || undefined,
+      baseline: options.baseline,
+      summary: options.summaryMetrics,
+    },
+  };
+}
+
+export function checkpointSummary(message: ChatMessage): string {
+  return message.content
+    .trim()
+    .replace(/^#{1,6}\s*Context checkpoint\s*/i, "")
+    .trim();
+}
+
+export function messagesForModelContext(contextMessages: readonly ChatMessage[], conversation: readonly ChatMessage[]): ChatMessage[] {
+  const checkpointIndex = latestCompactionIndex(conversation);
+  const modelMessage = (message: ChatMessage) => !isCompactionCheckpoint(message) && !isTranscriptControlMessage(message);
+  if (checkpointIndex < 0) {
+    return [...contextMessages, ...conversation.filter(modelMessage)];
+  }
+  const checkpoint = conversation[checkpointIndex];
+  return [
+    ...contextMessages,
+    {
+      role: "system",
+      content: [
+        "Previous thread context checkpoint. Treat this as the durable state for earlier messages that remain visible in the UI but are not replayed below.",
+        checkpointSummary(checkpoint),
+      ].join("\n\n"),
+    },
+    ...conversation.slice(checkpointIndex + 1).filter(modelMessage),
+  ];
+}
+
+export function contextSendPlan(
+  contextMessages: readonly ChatMessage[],
+  conversation: readonly ChatMessage[],
+  model: string,
+  models: readonly ModelInfo[],
+): ContextSendPlan {
+  const budget = modelContextBudget(model, models);
+  const messages = messagesForModelContext(contextMessages, conversation);
+  const sentTokens = estimateMessagesTokens(messages);
+  if (!budget) {
+    return { messages, shouldCompact: false, originalTokens: sentTokens, sentTokens, budget };
+  }
+  const canCompact = canCompactBeforeLatestUser(conversation);
+  const shouldCompact = canCompact && sentTokens > Math.floor(budget.promptBudget * COMPACT_AT);
+  const error = sentTokens > budget.promptBudget && !shouldCompact
+    ? `The current message is too large for ${model}'s context window.`
+    : undefined;
+  return {
+    messages,
+    shouldCompact,
+    originalTokens: sentTokens,
+    sentTokens,
+    budget,
+    error,
+  };
+}
+
+function canCompactBeforeLatestUser(conversation: readonly ChatMessage[]): boolean {
+  const checkpointIndex = latestCompactionIndex(conversation);
+  for (let i = conversation.length - 1; i >= 0; i -= 1) {
+    if (conversation[i].role !== "user") continue;
+    const start = checkpointIndex >= 0 ? checkpointIndex + 1 : 0;
+    if (i <= start) return false;
+    return conversation.slice(start, i).some((message) => !isCompactionCheckpoint(message));
+  }
+  return false;
+}
+
+export function compactionSummaryMessages(
+  messages: readonly ChatMessage[],
+  model: string,
+  models: readonly ModelInfo[],
+): ChatMessage[] {
+  const source = messagesForModelContext([], messages);
+  const sourceTokens = estimateMessagesTokens(source);
+  const budget = modelContextBudget(model, models);
+  const maxPromptTokens = Math.max(
+    SUMMARY_MIN_TOKENS,
+    Math.min(sourceTokens, (budget?.promptBudget ?? HOSTED_CONTEXT_WINDOW) - SUMMARY_MAX_TOKENS - 256),
+  );
+  const transcript = boundedTranscript(source, Math.max(SUMMARY_MIN_TOKENS, maxPromptTokens));
+  return [
+    {
+      role: "system",
+      content: [
+        "Summarize this Milim thread so a fresh model session can continue without replaying earlier messages.",
+        "Keep durable decisions, requirements, constraints, user preferences, active plans, open tasks, important file paths, tool results, and unresolved errors.",
+        "Omit filler, greetings, and transient wording. Return only the summary.",
+      ].join("\n"),
+    },
+    {
+      role: "user",
+      content: `Thread transcript to compact:\n\n${transcript}`,
+    },
+  ];
+}
+
+function compactedSummaryMessage(messages: readonly ChatMessage[], tokenBudget: number): ChatMessage {
+  const maxChars = tokenBudget * 4;
+  const lines = ["Context automatically compacted. Earlier conversation digest:"];
+  let used = lines[0].length + 1;
+  for (const message of messages) {
+    const prefix = `${message.role}: `;
+    const text = messageContentForEstimate(message).replace(/\s+/g, " ").trim();
+    if (!text) continue;
+    const remaining = maxChars - used - prefix.length - 1;
+    if (remaining <= 24) break;
+    const clipped = text.length > remaining ? `${text.slice(0, Math.max(0, remaining - 1)).trimEnd()}...` : text;
+    const line = `${prefix}${clipped}`;
+    lines.push(line);
+    used += line.length + 1;
+  }
+  return { role: "system", content: lines.join("\n") };
+}
+
+function boundedTranscript(messages: readonly ChatMessage[], tokenBudget: number): string {
+  const maxChars = tokenBudget * 4;
+  const lines: string[] = [];
+  let used = 0;
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    const text = messageContentForEstimate(message).replace(/\s+/g, " ").trim();
+    if (!text) continue;
+    const role = message.role === "assistant" ? "Assistant" : message.role === "system" ? "System" : "User";
+    const prefix = `${role}: `;
+    const remaining = maxChars - used - prefix.length - 1;
+    if (remaining <= 80) break;
+    const clipped = text.length > remaining ? `${text.slice(0, Math.max(0, remaining - 3)).trimEnd()}...` : text;
+    const line = `${prefix}${clipped}`;
+    lines.unshift(line);
+    used += line.length + 1;
+  }
+  return lines.join("\n\n");
+}
+
+function positive(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
+function fallbackContextLength(model: string, info?: ModelInfo): number {
+  const id = model.toLowerCase();
+  const owner = info?.owned_by.toLowerCase() ?? "";
+  if (owner === "milim" || owner === "local") return LOCAL_CONTEXT_WINDOW;
+  if (id.startsWith("claude:") || owner.includes("anthropic") || owner.includes("claude")) return 200_000;
+  if (id.startsWith("codex:") || owner.includes("codex")) return 128_000;
+  if (id.includes("gpt-4o") || id.includes("gpt-4.1") || id.startsWith("o1") || id.startsWith("o3")) return 128_000;
+  if (id.includes("gpt-3.5")) return 16_385;
+  return HOSTED_CONTEXT_WINDOW;
+}
+
+function outputReserve(contextLength: number): number {
+  return Math.min(4096, Math.max(512, Math.floor(contextLength * 0.15)));
+}
+
+function messageContentForEstimate(message: ChatMessage): string {
+  if (isTranscriptControlMessage(message)) return "";
+  const attachmentContext = attachmentEstimateContext(message.attachments);
+  if (!attachmentContext) return message.content;
+  return message.content ? `${message.content}\n\n${attachmentContext}` : attachmentContext;
+}
+
+function attachmentEstimateContext(attachments?: ChatAttachment[]): string {
+  if (!attachments?.length) return "";
+  return attachments
+    .map((attachment) => [
+      attachment.name,
+      attachment.mime,
+      String(attachment.size),
+      attachment.content ?? "",
+      attachment.dataUrl ? "[image preview]" : "",
+    ].filter(Boolean).join(" "))
+    .join("\n");
+}

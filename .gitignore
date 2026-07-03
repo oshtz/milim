@@ -1,0 +1,26 @@
+/target
+**/target
+**/*.rs.bk
+*.pdb
+# Tauri / node
+node_modules
+dist
+.DS_Store
+*.log
+.claude
+.playwright-mcp
+.env
+.env.*
+# Tauri generated files
+apps/desktop/src-tauri/gen
+apps/desktop/release-artifacts
+apps/desktop/tester-artifacts
+apps/desktop/downloaded-release-artifacts
+# Generated HyperFrames promo projects
+/promo/
+# Generated local screenshots
+milim-*.png
+# local model cache / runtime state
+/.milim-dev
+/.local-tools
+*.gguf

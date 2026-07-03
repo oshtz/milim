@@ -1,0 +1,110 @@
+import { createElement, type ComponentType } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { createServer } from "vite";
+import type { ChatArtifact } from "../src/api.js";
+
+type MarkdownProps = {
+  content: string;
+  previewArtifacts?: ChatArtifact[];
+  onOpenPreview?: (artifact: ChatArtifact) => void;
+  highlight?: boolean;
+  previewArtifactsStreaming?: boolean;
+};
+
+function assert(condition: unknown, message: string): asserts condition {
+  if (!condition) throw new Error(message);
+}
+
+function equal<T>(actual: T, expected: T, message: string): void {
+  if (actual !== expected) {
+    throw new Error(`${message}: expected ${String(expected)}, got ${String(actual)}`);
+  }
+}
+
+function count(haystack: string, needle: string): number {
+  return haystack.split(needle).length - 1;
+}
+
+const indexHtml: ChatArtifact = {
+  id: "artifact-index",
+  kind: "code",
+  title: "index.html",
+  filename: "index.html",
+  language: "html",
+  mime: "text/html",
+  content: "<div>Card</div>",
+  size: 15,
+};
+
+const server = await createServer({
+  root: process.cwd(),
+  appType: "custom",
+  logLevel: "silent",
+  server: { middlewareMode: true },
+});
+
+try {
+  const { Markdown, isHttpHref } = await server.ssrLoadModule("/src/components/Markdown.tsx") as {
+    Markdown: ComponentType<MarkdownProps>;
+    isHttpHref: (href: string | undefined) => boolean;
+  };
+
+  function renderMarkdown(content: string, previewArtifacts?: ChatArtifact[], previewArtifactsStreaming = false): string {
+    return renderToStaticMarkup(createElement(Markdown, {
+      content,
+      previewArtifacts,
+      onOpenPreview: () => {},
+      highlight: false,
+      previewArtifactsStreaming,
+    }));
+  }
+
+  assert(isHttpHref("https://milim.ai/docs"), "https links should use the native browser opener");
+  assert(isHttpHref("http://localhost:5173"), "localhost http links should use the native browser opener");
+  assert(!isHttpHref("#section"), "page anchors should keep default markdown behavior");
+  assert(!isHttpHref("mailto:test@example.com"), "non-http links should keep default markdown behavior");
+
+  const emptyFences = renderMarkdown([
+    "```html",
+    "```",
+    "",
+    "```css",
+    "```",
+  ].join("\n"));
+  equal(count(emptyFences, "code-block"), 0, "empty fences should not render copy-only code blocks");
+  assert(!emptyFences.includes("Copy"), "empty fences should not render copy buttons");
+
+  const mixedFences = renderMarkdown([
+    "```html",
+    "```",
+    "",
+    "```html",
+    indexHtml.content,
+    "```",
+  ].join("\n"), [indexHtml]);
+  equal(count(mixedFences, "code-block-collapsed"), 1, "only the matching html block should collapse to an artifact card");
+  equal(count(mixedFences, "code-artifact-title"), 1, "artifact title should appear once");
+  assert(mixedFences.includes("index.html"), "collapsed artifact card should keep the artifact filename");
+
+  const matchingFence = renderMarkdown([
+    "```html",
+    indexHtml.content,
+    "```",
+  ].join("\n"), [indexHtml]);
+  equal(count(matchingFence, "code-block-collapsed"), 1, "matching html block should collapse to an artifact card");
+  assert(!matchingFence.includes("<pre>"), "collapsed artifact should not render a raw pre block");
+
+  const streamingFence = renderMarkdown([
+    "```html",
+    `${indexHtml.content}   `,
+    "```",
+  ].join("\n"), [indexHtml], true);
+  equal(count(streamingFence, "code-block-collapsed"), 1, "streaming preview artifact blocks should stay collapsed");
+  assert(!streamingFence.includes("<pre>"), "streaming preview artifact should not render a raw pre block");
+  assert(streamingFence.includes("Streaming..."), "streaming preview artifact should show streaming status");
+  assert(!streamingFence.includes("15 B"), "streaming preview artifact should hide final byte size");
+} finally {
+  await server.close();
+}
+
+export {};

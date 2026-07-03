@@ -1,0 +1,318 @@
+// On-theme form controls - no native checkboxes/toggles/sliders/selects/color.
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { Check, ChevronDown } from "./icons";
+
+// ---- color math ----
+const clamp01 = (n: number) => Math.max(0, Math.min(1, n));
+const byte = (n: number) => Math.max(0, Math.min(255, Math.round(n)));
+function rgbToHex(r: number, g: number, b: number): string {
+  return "#" + [r, g, b].map((x) => byte(x).toString(16).padStart(2, "0")).join("");
+}
+function hexToRgb(hex: string): { r: number; g: number; b: number } {
+  let h = hex.replace("#", "");
+  if (h.length === 3) h = h.split("").map((c) => c + c).join("");
+  const n = parseInt(h || "0", 16);
+  return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
+}
+function rgbToHsv(r: number, g: number, b: number): { h: number; s: number; v: number } {
+  r /= 255;
+  g /= 255;
+  b /= 255;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const d = max - min;
+  let h = 0;
+  if (d) {
+    if (max === r) h = ((g - b) / d) % 6;
+    else if (max === g) h = (b - r) / d + 2;
+    else h = (r - g) / d + 4;
+    h *= 60;
+    if (h < 0) h += 360;
+  }
+  return { h, s: max ? d / max : 0, v: max };
+}
+function hsvToRgb(h: number, s: number, v: number): { r: number; g: number; b: number } {
+  const c = v * s;
+  const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+  const m = v - c;
+  let r = 0;
+  let g = 0;
+  let b = 0;
+  if (h < 60) [r, g] = [c, x];
+  else if (h < 120) [r, g] = [x, c];
+  else if (h < 180) [g, b] = [c, x];
+  else if (h < 240) [g, b] = [x, c];
+  else if (h < 300) [r, b] = [x, c];
+  else [r, b] = [c, x];
+  return { r: (r + m) * 255, g: (g + m) * 255, b: (b + m) * 255 };
+}
+
+function drag(onMove: (e: PointerEvent) => void) {
+  const up = () => {
+    window.removeEventListener("pointermove", onMove);
+    window.removeEventListener("pointerup", up);
+  };
+  window.addEventListener("pointermove", onMove);
+  window.addEventListener("pointerup", up);
+}
+
+/** A themed color picker (swatch -> popover with SV square, hue slider, hex). */
+export function ColorField({
+  value,
+  onChange,
+  label,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  label?: ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [open]);
+
+  const { r, g, b } = hexToRgb(value);
+  const { h, s, v } = rgbToHsv(r, g, b);
+  const emit = (nh: number, ns: number, nv: number) => {
+    const c = hsvToRgb(nh, ns, nv);
+    onChange(rgbToHex(c.r, c.g, c.b));
+  };
+
+  return (
+    <div className="ui-color" ref={ref}>
+      <button type="button" className="ui-color-swatch" style={{ background: value }} title={value} onClick={() => setOpen((o) => !o)} />
+      {label && <span className="ui-color-label">{label}</span>}
+      {open && (
+        <div className="ui-color-pop" onMouseDown={(e) => e.stopPropagation()}>
+          <div
+            className="ui-sv"
+            style={{ background: `linear-gradient(to top, #000, transparent), linear-gradient(to right, #fff, hsl(${h}, 100%, 50%))` }}
+            onPointerDown={(e) => {
+              const el = e.currentTarget;
+              const set = (cx: number, cy: number) => {
+                const rect = el.getBoundingClientRect();
+                emit(h, clamp01((cx - rect.left) / rect.width), 1 - clamp01((cy - rect.top) / rect.height));
+              };
+              set(e.clientX, e.clientY);
+              drag((ev) => set(ev.clientX, ev.clientY));
+            }}
+          >
+            <span className="ui-sv-dot" style={{ left: `${s * 100}%`, top: `${(1 - v) * 100}%` }} />
+          </div>
+          <div
+            className="ui-hue"
+            onPointerDown={(e) => {
+              const el = e.currentTarget;
+              const set = (cx: number) => {
+                const rect = el.getBoundingClientRect();
+                emit(clamp01((cx - rect.left) / rect.width) * 360, s || 1, v || 1);
+              };
+              set(e.clientX);
+              drag((ev) => set(ev.clientX));
+            }}
+          >
+            <span className="ui-hue-thumb" style={{ left: `${(h / 360) * 100}%` }} />
+          </div>
+          <input
+            className="ui-hex"
+            value={value}
+            onChange={(e) => {
+              const x = e.target.value.trim();
+              if (/^#?[0-9a-fA-F]{0,6}$/.test(x)) onChange(x.startsWith("#") ? x : "#" + x);
+            }}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** A pill switch (on = accent). */
+export function Toggle({
+  checked,
+  onChange,
+  label,
+  testId,
+}: {
+  checked: boolean;
+  onChange: (v: boolean) => void;
+  label?: ReactNode;
+  testId?: string;
+}) {
+  const sw = (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      data-testid={testId}
+      className={"ui-switch" + (checked ? " on" : "")}
+      onClick={() => onChange(!checked)}
+    >
+      <span className="ui-switch-knob" />
+    </button>
+  );
+  if (!label) return sw;
+  return (
+    <label className="ui-toggle-row">
+      {sw}
+      <span>{label}</span>
+    </label>
+  );
+}
+
+/** A custom checkbox (box + check). */
+export function Checkbox({
+  checked,
+  onChange,
+  children,
+  title,
+}: {
+  checked: boolean;
+  onChange: (v: boolean) => void;
+  children?: ReactNode;
+  title?: string;
+}) {
+  return (
+    <label className="ui-check" title={title}>
+      <button
+        type="button"
+        role="checkbox"
+        aria-checked={checked}
+        className={"ui-check-box" + (checked ? " on" : "")}
+        onClick={() => onChange(!checked)}
+      >
+        {checked && <Check size={11} />}
+      </button>
+      {children && <span>{children}</span>}
+    </label>
+  );
+}
+
+/** A pointer/keyboard-driven slider (no native range). */
+export function Slider({
+  min,
+  max,
+  step,
+  value,
+  onChange,
+  ariaLabel,
+}: {
+  min: number;
+  max: number;
+  step: number;
+  value: number;
+  onChange: (v: number) => void;
+  ariaLabel?: string;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const pct = max > min ? ((value - min) / (max - min)) * 100 : 0;
+
+  const clamp = (v: number) => Math.max(min, Math.min(max, v));
+  const fromX = (clientX: number) => {
+    const el = ref.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const r = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+    const raw = min + r * (max - min);
+    onChange(clamp(Math.round(raw / step) * step));
+  };
+
+  const onPointerDown = (e: React.PointerEvent) => {
+    e.preventDefault();
+    fromX(e.clientX);
+    const move = (ev: PointerEvent) => fromX(ev.clientX);
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  };
+
+  return (
+    <div
+      className="ui-slider"
+      ref={ref}
+      role="slider"
+      aria-label={ariaLabel}
+      aria-valuenow={value}
+      aria-valuemin={min}
+      aria-valuemax={max}
+      tabIndex={0}
+      onPointerDown={onPointerDown}
+      onKeyDown={(e) => {
+        if (e.key === "ArrowLeft" || e.key === "ArrowDown") onChange(clamp(value - step));
+        if (e.key === "ArrowRight" || e.key === "ArrowUp") onChange(clamp(value + step));
+      }}
+    >
+      <div className="ui-slider-track">
+        <div className="ui-slider-fill" style={{ width: `${pct}%` }} />
+      </div>
+      <div className="ui-slider-thumb" style={{ left: `${pct}%` }} />
+    </div>
+  );
+}
+
+export interface Option {
+  value: string;
+  label: string;
+}
+
+/** A themed dropdown (no native select). */
+export function Select({
+  value,
+  options,
+  onChange,
+  placeholder = "Select...",
+  testId,
+}: {
+  value: string;
+  options: Option[];
+  onChange: (v: string) => void;
+  placeholder?: string;
+  testId?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [open]);
+
+  const current = options.find((o) => o.value === value);
+  return (
+    <div className="ui-select" ref={ref}>
+      <button type="button" className="ui-select-btn" data-testid={testId} onClick={() => setOpen((v) => !v)}>
+        <span className={"ui-select-value" + (current ? "" : " placeholder")}>{current?.label ?? placeholder}</span>
+        <ChevronDown size={13} />
+      </button>
+      {open && (
+        <div className="ui-select-menu">
+          {options.map((o) => (
+            <button
+              key={o.value}
+              className={"ui-select-item" + (o.value === value ? " active" : "")}
+              onClick={() => {
+                onChange(o.value);
+                setOpen(false);
+              }}
+            >
+              {o.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}

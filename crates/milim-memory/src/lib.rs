@@ -1,0 +1,1185 @@
+//! `milim-memory` - an embedding-backed memory/RAG store.
+//!
+//! [`MemoryStore::add`] embeds text (via any [`ModelService`]) and persists it
+//! through `milim-storage`; [`MemoryStore::search`] embeds a query and returns
+//! the most cosine-similar entries. Scoped graph memory builds on the same
+//! store for thread and project recall.
+
+use std::sync::Mutex;
+
+use rusqlite::{params, OptionalExtension};
+use serde::{Deserialize, Serialize};
+
+use milim_core::{Error, Result};
+use milim_inference::SharedService;
+use milim_storage::{Database, Migration};
+
+/// Schema for the memory store.
+pub const MEMORY_MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        name: "memories",
+        sql: "CREATE TABLE memories (
+            id         TEXT PRIMARY KEY,
+            text       TEXT NOT NULL,
+            dim        INTEGER NOT NULL,
+            embedding  BLOB NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+          );",
+    },
+    Migration {
+        version: 2,
+        name: "memory_graph",
+        sql: "CREATE TABLE memory_scopes (
+            id           TEXT PRIMARY KEY,
+            kind         TEXT NOT NULL,
+            label        TEXT NOT NULL,
+            locator      TEXT NOT NULL,
+            locator_hash TEXT NOT NULL,
+            created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at   TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(kind, locator_hash)
+          );
+          CREATE INDEX memory_scopes_kind_idx ON memory_scopes(kind);
+
+          CREATE TABLE memory_nodes (
+            id          TEXT PRIMARY KEY,
+            scope_id    TEXT NOT NULL REFERENCES memory_scopes(id) ON DELETE CASCADE,
+            kind        TEXT NOT NULL DEFAULT 'fact',
+            title       TEXT NOT NULL,
+            body        TEXT NOT NULL,
+            dim         INTEGER NOT NULL DEFAULT 0,
+            embedding   BLOB NOT NULL DEFAULT X'',
+            confidence  REAL NOT NULL DEFAULT 1.0,
+            source      TEXT NOT NULL DEFAULT '',
+            created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+            archived_at TEXT
+          );
+          CREATE INDEX memory_nodes_scope_idx ON memory_nodes(scope_id);
+          CREATE INDEX memory_nodes_kind_idx ON memory_nodes(kind);
+          CREATE INDEX memory_nodes_archived_idx ON memory_nodes(archived_at);
+
+          CREATE TABLE memory_edges (
+            id           TEXT PRIMARY KEY,
+            scope_id     TEXT NOT NULL REFERENCES memory_scopes(id) ON DELETE CASCADE,
+            from_node_id TEXT NOT NULL REFERENCES memory_nodes(id) ON DELETE CASCADE,
+            predicate    TEXT NOT NULL,
+            to_node_id   TEXT NOT NULL REFERENCES memory_nodes(id) ON DELETE CASCADE,
+            confidence   REAL NOT NULL DEFAULT 1.0,
+            created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+          );
+          CREATE INDEX memory_edges_scope_idx ON memory_edges(scope_id);
+          CREATE INDEX memory_edges_from_idx ON memory_edges(from_node_id);
+          CREATE INDEX memory_edges_to_idx ON memory_edges(to_node_id);
+
+          CREATE TABLE memory_events (
+            id         TEXT PRIMARY KEY,
+            scope_id   TEXT NOT NULL REFERENCES memory_scopes(id) ON DELETE CASCADE,
+            node_id    TEXT REFERENCES memory_nodes(id) ON DELETE SET NULL,
+            action     TEXT NOT NULL,
+            thread_id  TEXT NOT NULL DEFAULT '',
+            message_id TEXT NOT NULL DEFAULT '',
+            summary    TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+          );
+          CREATE INDEX memory_events_scope_idx ON memory_events(scope_id);
+          CREATE INDEX memory_events_node_idx ON memory_events(node_id);",
+    },
+];
+
+/// A search hit: the stored text and its similarity to the query.
+#[derive(Debug, Clone, Serialize)]
+pub struct MemoryHit {
+    pub id: String,
+    pub text: String,
+    pub score: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryScopeInput {
+    pub kind: String,
+    pub label: String,
+    pub locator: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryNodeInput {
+    #[serde(default = "default_node_kind")]
+    pub kind: String,
+    pub title: String,
+    pub body: String,
+    #[serde(default = "default_confidence")]
+    pub confidence: f32,
+    #[serde(default)]
+    pub source: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct MemoryNodeUpdate {
+    #[serde(default)]
+    pub kind: Option<String>,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub body: Option<String>,
+    #[serde(default)]
+    pub confidence: Option<f32>,
+    #[serde(default)]
+    pub source: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryEdgeInput {
+    pub predicate: String,
+    pub to_node_id: String,
+    #[serde(default = "default_confidence")]
+    pub confidence: f32,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct MemoryEventInput {
+    #[serde(default)]
+    pub thread_id: String,
+    #[serde(default)]
+    pub message_id: String,
+    #[serde(default)]
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryScopeRef {
+    pub kind: String,
+    pub locator: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MemoryScope {
+    pub id: String,
+    pub kind: String,
+    pub label: String,
+    pub locator: String,
+    pub locator_hash: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MemoryNode {
+    pub id: String,
+    pub scope_id: String,
+    pub scope_kind: String,
+    pub scope_label: String,
+    pub kind: String,
+    pub title: String,
+    pub body: String,
+    pub confidence: f32,
+    pub source: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub archived_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MemoryEdge {
+    pub id: String,
+    pub scope_id: String,
+    pub from_node_id: String,
+    pub predicate: String,
+    pub to_node_id: String,
+    pub confidence: f32,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MemoryEvent {
+    pub id: String,
+    pub scope_id: String,
+    pub node_id: Option<String>,
+    pub action: String,
+    pub thread_id: String,
+    pub message_id: String,
+    pub summary: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MemoryNotice {
+    pub id: String,
+    pub node_id: String,
+    pub scope_kind: String,
+    pub scope_label: String,
+    pub summary: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MemoryRegistration {
+    pub scope: MemoryScope,
+    pub node: MemoryNode,
+    pub event: MemoryEvent,
+    pub notice: MemoryNotice,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MemoryGraphHit {
+    pub node: MemoryNode,
+    pub score: f32,
+}
+
+/// An embedding-backed memory store.
+///
+/// The `Database` lives behind a `Mutex` so the async methods stay `Send`
+/// (rusqlite's `Connection` is not `Sync`); the lock is only held for the
+/// synchronous SQL section, never across an `await`.
+pub struct MemoryStore {
+    db: Mutex<Database>,
+    embedder: SharedService,
+}
+
+impl MemoryStore {
+    /// Open a memory store, applying the schema migration.
+    pub fn new(db: Database, embedder: SharedService) -> Result<Self> {
+        db.migrate(MEMORY_MIGRATIONS)?;
+        Ok(Self {
+            db: Mutex::new(db),
+            embedder,
+        })
+    }
+
+    /// Embed `text` with `model` and persist it. Returns the new id.
+    pub async fn add(&self, model: &str, text: &str) -> Result<String> {
+        let embedding = self.embed_one(model, text).await?;
+        let id = uuid::Uuid::new_v4().to_string();
+        let bytes = vec_to_bytes(&embedding);
+
+        let db = self.db.lock().expect("memory db poisoned");
+        db.conn()
+            .execute(
+                "INSERT INTO memories (id, text, dim, embedding) VALUES (?1, ?2, ?3, ?4)",
+                params![id, text, embedding.len() as i64, bytes],
+            )
+            .map_err(sqlite)?;
+        Ok(id)
+    }
+
+    /// Register a structured graph memory in a thread/project/global scope.
+    pub async fn register(
+        &self,
+        model: &str,
+        scope: MemoryScopeInput,
+        node: MemoryNodeInput,
+        edges: Vec<MemoryEdgeInput>,
+        event: MemoryEventInput,
+    ) -> Result<MemoryRegistration> {
+        let scope = normalize_scope(scope)?;
+        let node = normalize_node(node)?;
+        let text = memory_text(&node.title, &node.body);
+        let embedding = match self.embed_one(model, &text).await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("memory graph embedding unavailable; storing without vector: {e}");
+                Vec::new()
+            }
+        };
+        let bytes = vec_to_bytes(&embedding);
+        let node_id = uuid::Uuid::new_v4().to_string();
+        let event_id = uuid::Uuid::new_v4().to_string();
+        let summary = if event.summary.trim().is_empty() {
+            node.title.clone()
+        } else {
+            event.summary.trim().to_string()
+        };
+
+        let db = self.db.lock().expect("memory db poisoned");
+        upsert_scope(db.conn(), &scope)?;
+        db.conn()
+            .execute(
+                "INSERT INTO memory_nodes
+                 (id, scope_id, kind, title, body, dim, embedding, confidence, source)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    node_id,
+                    scope.id,
+                    node.kind,
+                    node.title,
+                    node.body,
+                    embedding.len() as i64,
+                    bytes,
+                    clamp_confidence(node.confidence),
+                    node.source
+                ],
+            )
+            .map_err(sqlite)?;
+
+        for edge in edges
+            .into_iter()
+            .filter(|e| !e.to_node_id.trim().is_empty())
+        {
+            db.conn()
+                .execute(
+                    "INSERT INTO memory_edges
+                     (id, scope_id, from_node_id, predicate, to_node_id, confidence)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    params![
+                        uuid::Uuid::new_v4().to_string(),
+                        scope.id,
+                        node_id,
+                        clean_default(&edge.predicate, "related_to"),
+                        edge.to_node_id.trim(),
+                        clamp_confidence(edge.confidence)
+                    ],
+                )
+                .map_err(sqlite)?;
+        }
+
+        db.conn()
+            .execute(
+                "INSERT INTO memory_events
+                 (id, scope_id, node_id, action, thread_id, message_id, summary)
+                 VALUES (?1, ?2, ?3, 'created', ?4, ?5, ?6)",
+                params![
+                    event_id,
+                    scope.id,
+                    node_id,
+                    event.thread_id.trim(),
+                    event.message_id.trim(),
+                    summary
+                ],
+            )
+            .map_err(sqlite)?;
+
+        let scope = get_scope_by_id(db.conn(), &scope.id)?;
+        let node = get_node_by_id(db.conn(), &node_id)?.ok_or_else(|| {
+            Error::Other("registered memory node could not be reloaded".to_string())
+        })?;
+        let event = get_event_by_id(db.conn(), &event_id)?.ok_or_else(|| {
+            Error::Other("registered memory event could not be reloaded".to_string())
+        })?;
+        let notice = MemoryNotice {
+            id: event.id.clone(),
+            node_id: node.id.clone(),
+            scope_kind: scope.kind.clone(),
+            scope_label: scope.label.clone(),
+            summary: event.summary.clone(),
+            created_at: event.created_at.clone(),
+        };
+        Ok(MemoryRegistration {
+            scope,
+            node,
+            event,
+            notice,
+        })
+    }
+
+    pub fn list_scopes(&self) -> Result<Vec<MemoryScope>> {
+        let db = self.db.lock().expect("memory db poisoned");
+        let mut stmt = db
+            .conn()
+            .prepare(
+                "SELECT id, kind, label, locator, locator_hash, created_at, updated_at
+                 FROM memory_scopes
+                 ORDER BY updated_at DESC, label COLLATE NOCASE",
+            )
+            .map_err(sqlite)?;
+        let rows = stmt.query_map([], row_to_scope).map_err(sqlite)?;
+        collect_rows(rows)
+    }
+
+    pub fn list_nodes(
+        &self,
+        scope: Option<MemoryScopeRef>,
+        include_archived: bool,
+        limit: usize,
+    ) -> Result<Vec<MemoryNode>> {
+        let db = self.db.lock().expect("memory db poisoned");
+        let limit = limit.clamp(1, 500) as i64;
+        let archived_clause = if include_archived {
+            ""
+        } else {
+            "AND n.archived_at IS NULL"
+        };
+
+        if let Some(scope) = scope {
+            let scope_id = scope_id_for(&normalize_scope_ref(&scope)?);
+            let sql = format!(
+                "SELECT n.id, n.scope_id, s.kind, s.label, n.kind, n.title, n.body,
+                        n.confidence, n.source, n.created_at, n.updated_at, n.archived_at
+                 FROM memory_nodes n
+                 JOIN memory_scopes s ON s.id = n.scope_id
+                 WHERE n.scope_id = ?1 {archived_clause}
+                 ORDER BY n.updated_at DESC
+                 LIMIT ?2"
+            );
+            let mut stmt = db.conn().prepare(&sql).map_err(sqlite)?;
+            let rows = stmt
+                .query_map(params![scope_id, limit], row_to_node)
+                .map_err(sqlite)?;
+            return collect_rows(rows);
+        }
+
+        let sql = format!(
+            "SELECT n.id, n.scope_id, s.kind, s.label, n.kind, n.title, n.body,
+                    n.confidence, n.source, n.created_at, n.updated_at, n.archived_at
+             FROM memory_nodes n
+             JOIN memory_scopes s ON s.id = n.scope_id
+             WHERE 1 = 1 {archived_clause}
+             ORDER BY n.updated_at DESC
+             LIMIT ?1"
+        );
+        let mut stmt = db.conn().prepare(&sql).map_err(sqlite)?;
+        let rows = stmt
+            .query_map(params![limit], row_to_node)
+            .map_err(sqlite)?;
+        collect_rows(rows)
+    }
+
+    pub fn list_edges(&self, node_id: Option<&str>) -> Result<Vec<MemoryEdge>> {
+        let db = self.db.lock().expect("memory db poisoned");
+        if let Some(node_id) = node_id {
+            let mut stmt = db
+                .conn()
+                .prepare(
+                    "SELECT id, scope_id, from_node_id, predicate, to_node_id, confidence, created_at
+                     FROM memory_edges
+                     WHERE from_node_id = ?1 OR to_node_id = ?1
+                     ORDER BY created_at DESC",
+                )
+                .map_err(sqlite)?;
+            let rows = stmt
+                .query_map(params![node_id], row_to_edge)
+                .map_err(sqlite)?;
+            return collect_rows(rows);
+        }
+        let mut stmt = db
+            .conn()
+            .prepare(
+                "SELECT id, scope_id, from_node_id, predicate, to_node_id, confidence, created_at
+                 FROM memory_edges
+                 ORDER BY created_at DESC",
+            )
+            .map_err(sqlite)?;
+        let rows = stmt.query_map([], row_to_edge).map_err(sqlite)?;
+        collect_rows(rows)
+    }
+
+    pub async fn update_node(
+        &self,
+        model: &str,
+        id: &str,
+        update: MemoryNodeUpdate,
+    ) -> Result<Option<MemoryNode>> {
+        let current = {
+            let db = self.db.lock().expect("memory db poisoned");
+            get_node_by_id(db.conn(), id)?
+        };
+        let Some(current) = current else {
+            return Ok(None);
+        };
+
+        let kind = update
+            .kind
+            .as_deref()
+            .map(clean_node_kind)
+            .unwrap_or_else(|| current.kind.clone());
+        let title = update
+            .title
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or(&current.title)
+            .to_string();
+        let body = update
+            .body
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or(&current.body)
+            .to_string();
+        let confidence = update
+            .confidence
+            .map(clamp_confidence)
+            .unwrap_or(current.confidence);
+        let source = update.source.unwrap_or(current.source);
+
+        let embedding = match self.embed_one(model, &memory_text(&title, &body)).await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("memory graph re-embedding unavailable; keeping empty vector: {e}");
+                Vec::new()
+            }
+        };
+        let bytes = vec_to_bytes(&embedding);
+
+        let db = self.db.lock().expect("memory db poisoned");
+        db.conn()
+            .execute(
+                "UPDATE memory_nodes
+                 SET kind = ?2, title = ?3, body = ?4, dim = ?5, embedding = ?6,
+                     confidence = ?7, source = ?8, updated_at = datetime('now')
+                 WHERE id = ?1",
+                params![
+                    id,
+                    kind,
+                    title,
+                    body,
+                    embedding.len() as i64,
+                    bytes,
+                    confidence,
+                    source
+                ],
+            )
+            .map_err(sqlite)?;
+        get_node_by_id(db.conn(), id)
+    }
+
+    pub fn delete_node(&self, id: &str) -> Result<bool> {
+        let db = self.db.lock().expect("memory db poisoned");
+        let n = db
+            .conn()
+            .execute("DELETE FROM memory_nodes WHERE id = ?1", params![id])
+            .map_err(sqlite)?;
+        Ok(n > 0)
+    }
+
+    pub fn archive_node(&self, id: &str) -> Result<bool> {
+        let db = self.db.lock().expect("memory db poisoned");
+        let n = db
+            .conn()
+            .execute(
+                "UPDATE memory_nodes
+                 SET archived_at = COALESCE(archived_at, datetime('now')),
+                     updated_at = datetime('now')
+                 WHERE id = ?1",
+                params![id],
+            )
+            .map_err(sqlite)?;
+        Ok(n > 0)
+    }
+
+    pub async fn search_graph(
+        &self,
+        model: &str,
+        query: &str,
+        scopes: &[MemoryScopeRef],
+        top_k: usize,
+        include_archived: bool,
+    ) -> Result<Vec<MemoryGraphHit>> {
+        let q = match self.embed_one(model, query).await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(
+                    "memory graph search embedding unavailable; returning lexical order: {e}"
+                );
+                Vec::new()
+            }
+        };
+        let rows: Vec<(MemoryNode, Vec<u8>)> = {
+            let db = self.db.lock().expect("memory db poisoned");
+            let archived_clause = if include_archived {
+                ""
+            } else {
+                "AND n.archived_at IS NULL"
+            };
+            if scopes.is_empty() {
+                let sql = format!(
+                    "SELECT n.id, n.scope_id, s.kind, s.label, n.kind, n.title, n.body,
+                            n.confidence, n.source, n.created_at, n.updated_at, n.archived_at,
+                            n.embedding
+                     FROM memory_nodes n
+                     JOIN memory_scopes s ON s.id = n.scope_id
+                     WHERE 1 = 1 {archived_clause}"
+                );
+                let mut stmt = db.conn().prepare(&sql).map_err(sqlite)?;
+                let mapped = stmt
+                    .query_map([], row_to_node_with_embedding)
+                    .map_err(sqlite)?;
+                collect_rows(mapped)?
+            } else {
+                let ids = scopes
+                    .iter()
+                    .map(normalize_scope_ref)
+                    .collect::<Result<Vec<_>>>()?
+                    .into_iter()
+                    .map(|scope| scope_id_for(&scope))
+                    .collect::<Vec<_>>();
+                let mut out = Vec::new();
+                let sql = format!(
+                    "SELECT n.id, n.scope_id, s.kind, s.label, n.kind, n.title, n.body,
+                            n.confidence, n.source, n.created_at, n.updated_at, n.archived_at,
+                            n.embedding
+                     FROM memory_nodes n
+                     JOIN memory_scopes s ON s.id = n.scope_id
+                     WHERE n.scope_id = ?1 {archived_clause}"
+                );
+                let mut stmt = db.conn().prepare(&sql).map_err(sqlite)?;
+                for id in ids {
+                    let mapped = stmt
+                        .query_map(params![id], row_to_node_with_embedding)
+                        .map_err(sqlite)?;
+                    for row in mapped {
+                        out.push(row.map_err(sqlite)?);
+                    }
+                }
+                out
+            }
+        };
+
+        let mut hits = rows
+            .into_iter()
+            .map(|(node, blob)| MemoryGraphHit {
+                score: if q.is_empty() {
+                    0.0
+                } else {
+                    cosine(&q, &bytes_to_vec(&blob))
+                },
+                node,
+            })
+            .collect::<Vec<_>>();
+        hits.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| b.node.updated_at.cmp(&a.node.updated_at))
+        });
+        hits.truncate(top_k.clamp(1, 50));
+        Ok(hits)
+    }
+
+    /// Return the `top_k` entries most similar to `query`.
+    pub async fn search(&self, model: &str, query: &str, top_k: usize) -> Result<Vec<MemoryHit>> {
+        let q = self.embed_one(model, query).await?;
+
+        let rows: Vec<(String, String, Vec<u8>)> = {
+            let db = self.db.lock().expect("memory db poisoned");
+            let conn = db.conn();
+            let mut stmt = conn
+                .prepare("SELECT id, text, embedding FROM memories")
+                .map_err(sqlite)?;
+            let mapped = stmt
+                .query_map([], |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, Vec<u8>>(2)?,
+                    ))
+                })
+                .map_err(sqlite)?;
+            let mut out = Vec::new();
+            for row in mapped {
+                out.push(row.map_err(sqlite)?);
+            }
+            out
+        };
+
+        let mut hits: Vec<MemoryHit> = rows
+            .into_iter()
+            .map(|(id, text, blob)| {
+                let score = cosine(&q, &bytes_to_vec(&blob));
+                MemoryHit { id, text, score }
+            })
+            .collect();
+        hits.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        hits.truncate(top_k);
+        Ok(hits)
+    }
+
+    /// Number of stored memories.
+    pub fn count(&self) -> Result<usize> {
+        let db = self.db.lock().expect("memory db poisoned");
+        let n: i64 = db
+            .conn()
+            .query_row("SELECT COUNT(*) FROM memories", [], |r| r.get(0))
+            .map_err(sqlite)?;
+        Ok(n as usize)
+    }
+
+    async fn embed_one(&self, model: &str, text: &str) -> Result<Vec<f32>> {
+        let mut vecs = self.embedder.embed(model, vec![text.to_string()]).await?;
+        vecs.pop()
+            .ok_or_else(|| Error::Other("embedder returned no vector".to_string()))
+    }
+}
+
+fn default_node_kind() -> String {
+    "fact".to_string()
+}
+
+fn default_confidence() -> f32 {
+    1.0
+}
+
+#[derive(Debug, Clone)]
+struct NormalizedScope {
+    id: String,
+    kind: String,
+    label: String,
+    locator: String,
+    locator_hash: String,
+}
+
+fn normalize_scope(scope: MemoryScopeInput) -> Result<NormalizedScope> {
+    let kind = clean_scope_kind(&scope.kind)?;
+    let locator = scope.locator.trim().to_string();
+    if locator.is_empty() {
+        return Err(Error::InvalidRequest(
+            "memory scope locator is required".to_string(),
+        ));
+    }
+    let label = clean_default(&scope.label, &locator);
+    let locator_hash = stable_hash_hex(&format!("{kind}:{locator}"));
+    let id = format!("memscope-{kind}-{locator_hash}");
+    Ok(NormalizedScope {
+        id,
+        kind,
+        label,
+        locator,
+        locator_hash,
+    })
+}
+
+fn normalize_scope_ref(scope: &MemoryScopeRef) -> Result<NormalizedScope> {
+    normalize_scope(MemoryScopeInput {
+        kind: scope.kind.clone(),
+        label: scope.locator.clone(),
+        locator: scope.locator.clone(),
+    })
+}
+
+fn scope_id_for(scope: &NormalizedScope) -> String {
+    scope.id.clone()
+}
+
+fn clean_scope_kind(kind: &str) -> Result<String> {
+    let kind = kind.trim().to_ascii_lowercase();
+    match kind.as_str() {
+        "thread" | "project" | "global" => Ok(kind),
+        _ => Err(Error::InvalidRequest(
+            "memory scope kind must be thread, project, or global".to_string(),
+        )),
+    }
+}
+
+fn normalize_node(node: MemoryNodeInput) -> Result<MemoryNodeInput> {
+    let title = node.title.trim().to_string();
+    let body = node.body.trim().to_string();
+    if title.is_empty() && body.is_empty() {
+        return Err(Error::InvalidRequest(
+            "memory title or body is required".to_string(),
+        ));
+    }
+    Ok(MemoryNodeInput {
+        kind: clean_node_kind(&node.kind),
+        title: if title.is_empty() {
+            first_line(&body)
+        } else {
+            title
+        },
+        body,
+        confidence: clamp_confidence(node.confidence),
+        source: node.source.trim().to_string(),
+    })
+}
+
+fn clean_node_kind(kind: &str) -> String {
+    let kind = kind.trim().to_ascii_lowercase();
+    if kind.is_empty() {
+        "fact".to_string()
+    } else {
+        kind.chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect()
+    }
+}
+
+fn clean_default(value: &str, default: &str) -> String {
+    let value = value.trim();
+    if value.is_empty() {
+        default.trim().to_string()
+    } else {
+        value.to_string()
+    }
+}
+
+fn first_line(value: &str) -> String {
+    value
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .map(|line| line.trim().to_string())
+        .unwrap_or_else(|| "Memory".to_string())
+}
+
+fn clamp_confidence(value: f32) -> f32 {
+    if value.is_finite() {
+        value.clamp(0.0, 1.0)
+    } else {
+        1.0
+    }
+}
+
+fn memory_text(title: &str, body: &str) -> String {
+    if body.trim().is_empty() {
+        title.trim().to_string()
+    } else {
+        format!("{}\n{}", title.trim(), body.trim())
+    }
+}
+
+fn stable_hash_hex(input: &str) -> String {
+    const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+    const FNV_PRIME: u64 = 0x100000001b3;
+    let mut hash = FNV_OFFSET;
+    for byte in input.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    format!("{hash:016x}")
+}
+
+fn upsert_scope(conn: &rusqlite::Connection, scope: &NormalizedScope) -> Result<()> {
+    conn.execute(
+        "INSERT INTO memory_scopes (id, kind, label, locator, locator_hash)
+         VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT(kind, locator_hash) DO UPDATE SET
+           label = excluded.label,
+           locator = excluded.locator,
+           updated_at = datetime('now')",
+        params![
+            scope.id,
+            scope.kind,
+            scope.label,
+            scope.locator,
+            scope.locator_hash
+        ],
+    )
+    .map_err(sqlite)?;
+    Ok(())
+}
+
+fn get_scope_by_id(conn: &rusqlite::Connection, id: &str) -> Result<MemoryScope> {
+    conn.query_row(
+        "SELECT id, kind, label, locator, locator_hash, created_at, updated_at
+         FROM memory_scopes WHERE id = ?1",
+        params![id],
+        row_to_scope,
+    )
+    .map_err(sqlite)
+}
+
+fn get_node_by_id(conn: &rusqlite::Connection, id: &str) -> Result<Option<MemoryNode>> {
+    conn.query_row(
+        "SELECT n.id, n.scope_id, s.kind, s.label, n.kind, n.title, n.body,
+                n.confidence, n.source, n.created_at, n.updated_at, n.archived_at
+         FROM memory_nodes n
+         JOIN memory_scopes s ON s.id = n.scope_id
+         WHERE n.id = ?1",
+        params![id],
+        row_to_node,
+    )
+    .optional()
+    .map_err(sqlite)
+}
+
+fn get_event_by_id(conn: &rusqlite::Connection, id: &str) -> Result<Option<MemoryEvent>> {
+    conn.query_row(
+        "SELECT id, scope_id, node_id, action, thread_id, message_id, summary, created_at
+         FROM memory_events WHERE id = ?1",
+        params![id],
+        row_to_event,
+    )
+    .optional()
+    .map_err(sqlite)
+}
+
+fn row_to_scope(r: &rusqlite::Row) -> rusqlite::Result<MemoryScope> {
+    Ok(MemoryScope {
+        id: r.get(0)?,
+        kind: r.get(1)?,
+        label: r.get(2)?,
+        locator: r.get(3)?,
+        locator_hash: r.get(4)?,
+        created_at: r.get(5)?,
+        updated_at: r.get(6)?,
+    })
+}
+
+fn row_to_node(r: &rusqlite::Row) -> rusqlite::Result<MemoryNode> {
+    Ok(MemoryNode {
+        id: r.get(0)?,
+        scope_id: r.get(1)?,
+        scope_kind: r.get(2)?,
+        scope_label: r.get(3)?,
+        kind: r.get(4)?,
+        title: r.get(5)?,
+        body: r.get(6)?,
+        confidence: r.get::<_, f64>(7)? as f32,
+        source: r.get(8)?,
+        created_at: r.get(9)?,
+        updated_at: r.get(10)?,
+        archived_at: r.get(11)?,
+    })
+}
+
+fn row_to_node_with_embedding(r: &rusqlite::Row) -> rusqlite::Result<(MemoryNode, Vec<u8>)> {
+    Ok((row_to_node(r)?, r.get(12)?))
+}
+
+fn row_to_edge(r: &rusqlite::Row) -> rusqlite::Result<MemoryEdge> {
+    Ok(MemoryEdge {
+        id: r.get(0)?,
+        scope_id: r.get(1)?,
+        from_node_id: r.get(2)?,
+        predicate: r.get(3)?,
+        to_node_id: r.get(4)?,
+        confidence: r.get::<_, f64>(5)? as f32,
+        created_at: r.get(6)?,
+    })
+}
+
+fn row_to_event(r: &rusqlite::Row) -> rusqlite::Result<MemoryEvent> {
+    Ok(MemoryEvent {
+        id: r.get(0)?,
+        scope_id: r.get(1)?,
+        node_id: r.get(2)?,
+        action: r.get(3)?,
+        thread_id: r.get(4)?,
+        message_id: r.get(5)?,
+        summary: r.get(6)?,
+        created_at: r.get(7)?,
+    })
+}
+
+fn collect_rows<T>(
+    rows: rusqlite::MappedRows<'_, impl FnMut(&rusqlite::Row<'_>) -> rusqlite::Result<T>>,
+) -> Result<Vec<T>> {
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row.map_err(sqlite)?);
+    }
+    Ok(out)
+}
+
+fn vec_to_bytes(v: &[f32]) -> Vec<u8> {
+    v.iter().flat_map(|f| f.to_le_bytes()).collect()
+}
+
+fn bytes_to_vec(b: &[u8]) -> Vec<f32> {
+    b.chunks_exact(4)
+        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect()
+}
+
+/// Cosine similarity; 0.0 if either vector is zero or lengths differ.
+fn cosine(a: &[f32], b: &[f32]) -> f32 {
+    if a.len() != b.len() {
+        return 0.0;
+    }
+    let mut dot = 0.0;
+    let mut na = 0.0;
+    let mut nb = 0.0;
+    for (x, y) in a.iter().zip(b.iter()) {
+        dot += x * y;
+        na += x * x;
+        nb += y * y;
+    }
+    let denom = na.sqrt() * nb.sqrt();
+    if denom == 0.0 {
+        0.0
+    } else {
+        dot / denom
+    }
+}
+
+fn sqlite(e: rusqlite::Error) -> Error {
+    Error::Other(format!("sqlite: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    fn store() -> MemoryStore {
+        let db = Database::open_in_memory().unwrap();
+        let embedder: SharedService = Arc::new(milim_inference::test_backend::TestBackend::new());
+        MemoryStore::new(db, embedder).unwrap()
+    }
+
+    #[tokio::test]
+    async fn add_then_search_ranks_exact_match_first() {
+        let mem = store();
+        mem.add("m", "alpha").await.unwrap();
+        mem.add("m", "beta").await.unwrap();
+        mem.add("m", "gamma").await.unwrap();
+        assert_eq!(mem.count().unwrap(), 3);
+
+        let hits = mem.search("m", "beta", 3).await.unwrap();
+        assert_eq!(hits.len(), 3);
+        // Identical text -> identical test backend embedding -> cosine 1.0 -> ranked first.
+        assert_eq!(hits[0].text, "beta");
+        assert!(hits[0].score >= hits[1].score);
+        assert!(hits[1].score >= hits[2].score);
+        assert!((hits[0].score - 1.0).abs() < 1e-3);
+    }
+
+    #[tokio::test]
+    async fn top_k_limits_results() {
+        let mem = store();
+        for t in ["one", "two", "three", "four"] {
+            mem.add("m", t).await.unwrap();
+        }
+        let hits = mem.search("m", "three", 2).await.unwrap();
+        assert_eq!(hits.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn graph_memories_are_scoped_and_searchable() {
+        let mem = store();
+        let thread = MemoryScopeInput {
+            kind: "thread".into(),
+            label: "Planning chat".into(),
+            locator: "thread-1".into(),
+        };
+        let project = MemoryScopeInput {
+            kind: "project".into(),
+            label: "milim".into(),
+            locator: "C:\\dev\\milim".into(),
+        };
+
+        let t = mem
+            .register(
+                "m",
+                thread.clone(),
+                MemoryNodeInput {
+                    kind: "decision".into(),
+                    title: "Thread decision".into(),
+                    body: "Use explicit memory breadcrumbs in chat.".into(),
+                    confidence: 0.9,
+                    source: "test".into(),
+                },
+                Vec::new(),
+                MemoryEventInput {
+                    thread_id: "thread-1".into(),
+                    summary: "Remembered breadcrumb decision".into(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(t.notice.scope_kind, "thread");
+        assert_eq!(t.notice.summary, "Remembered breadcrumb decision");
+
+        mem.register(
+            "m",
+            project.clone(),
+            MemoryNodeInput {
+                kind: "fact".into(),
+                title: "Project storage".into(),
+                body: "Graph memory is stored in SQLite.".into(),
+                confidence: 1.0,
+                source: "test".into(),
+            },
+            Vec::new(),
+            MemoryEventInput::default(),
+        )
+        .await
+        .unwrap();
+
+        let scopes = mem.list_scopes().unwrap();
+        assert_eq!(scopes.len(), 2);
+
+        let thread_nodes = mem
+            .list_nodes(
+                Some(MemoryScopeRef {
+                    kind: "thread".into(),
+                    locator: "thread-1".into(),
+                }),
+                false,
+                10,
+            )
+            .unwrap();
+        assert_eq!(thread_nodes.len(), 1);
+        assert_eq!(thread_nodes[0].title, "Thread decision");
+
+        let hits = mem
+            .search_graph(
+                "m",
+                "SQLite storage",
+                &[MemoryScopeRef {
+                    kind: "project".into(),
+                    locator: "C:\\dev\\milim".into(),
+                }],
+                5,
+                false,
+            )
+            .await
+            .unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].node.scope_kind, "project");
+        assert_eq!(hits[0].node.title, "Project storage");
+    }
+
+    #[tokio::test]
+    async fn graph_memory_update_and_delete() {
+        let mem = store();
+        let reg = mem
+            .register(
+                "m",
+                MemoryScopeInput {
+                    kind: "thread".into(),
+                    label: "Chat".into(),
+                    locator: "thread-2".into(),
+                },
+                MemoryNodeInput {
+                    kind: "fact".into(),
+                    title: "Old".into(),
+                    body: "Old body".into(),
+                    confidence: 1.0,
+                    source: String::new(),
+                },
+                Vec::new(),
+                MemoryEventInput::default(),
+            )
+            .await
+            .unwrap();
+
+        let updated = mem
+            .update_node(
+                "m",
+                &reg.node.id,
+                MemoryNodeUpdate {
+                    title: Some("New".into()),
+                    body: Some("New body".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(updated.title, "New");
+        assert_eq!(updated.body, "New body");
+
+        assert!(mem.archive_node(&reg.node.id).unwrap());
+        assert!(mem
+            .list_nodes(
+                Some(MemoryScopeRef {
+                    kind: "thread".into(),
+                    locator: "thread-2".into()
+                }),
+                false,
+                10
+            )
+            .unwrap()
+            .is_empty());
+        assert!(mem.delete_node(&reg.node.id).unwrap());
+    }
+}

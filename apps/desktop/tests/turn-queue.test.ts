@@ -1,0 +1,80 @@
+class MemoryStorage implements Storage {
+  private values = new Map<string, string>();
+
+  get length(): number {
+    return this.values.size;
+  }
+
+  clear(): void {
+    this.values.clear();
+  }
+
+  getItem(key: string): string | null {
+    return this.values.get(key) ?? null;
+  }
+
+  key(index: number): string | null {
+    return Array.from(this.values.keys())[index] ?? null;
+  }
+
+  removeItem(key: string): void {
+    this.values.delete(key);
+  }
+
+  setItem(key: string, value: string): void {
+    this.values.set(key, value);
+  }
+}
+
+Object.defineProperty(globalThis, "localStorage", {
+  value: new MemoryStorage(),
+  configurable: true,
+});
+
+const { useSessions } = await import("../src/sessions/store.js");
+const { drainQueuedMessages, hasQueuedMessages, queuedModelForSession } = await import("../src/lib/turnQueue.js");
+
+function assert(condition: unknown, message: string): asserts condition {
+  if (!condition) throw new Error(message);
+}
+
+function equal<T>(actual: T, expected: T, message: string): void {
+  if (actual !== expected) {
+    throw new Error(`${message}: expected ${String(expected)}, got ${String(actual)}`);
+  }
+}
+
+const sessionId = useSessions.getState().activeId;
+equal(queuedModelForSession(sessionId, "fallback-model"), "fallback-model", "fallback model should be used when the thread has none");
+
+useSessions.getState().updateSettings(sessionId, {
+  model: "thread-model",
+  activeAgentId: "agent-1",
+});
+const agents = [{ id: "agent-1", model: "agent-model" }];
+equal(queuedModelForSession(sessionId, undefined, agents), "agent-model", "active agent model should win over thread model");
+
+useSessions.getState().updateSettings(sessionId, { activeAgentId: null });
+useSessions.getState().enqueueQueuedMessage(sessionId, { content: "first" });
+useSessions.getState().enqueueQueuedMessage(sessionId, { content: "second" });
+assert(hasQueuedMessages(sessionId), "queued messages should be visible before drain");
+
+const ran: string[] = [];
+await drainQueuedMessages({
+  sessionId,
+  queueDrainRef: { current: new Set<string>() },
+  generationControllersRef: { current: new Map<string, AbortController>() },
+  agents,
+  setChatNotice: () => {},
+  sessionMessages: () => [],
+  runTurn: async (convo, selectedModel) => {
+    equal(selectedModel, "thread-model", "drain should use the thread model");
+    ran.push(convo[convo.length - 1]?.content ?? "");
+    return { status: "done", messages: convo };
+  },
+});
+
+equal(ran.join(","), "first,second", "drain should run queued messages in order");
+assert(!hasQueuedMessages(sessionId), "drain should clear queued messages");
+
+export {};

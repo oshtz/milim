@@ -1,0 +1,21 @@
+[package]
+name = "milim-memory"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Embedding-backed memory / RAG store over milim-storage."
+
+[dependencies]
+milim-core.workspace = true
+milim-inference.workspace = true
+milim-storage.workspace = true
+rusqlite.workspace = true
+uuid.workspace = true
+serde.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+milim-inference = { workspace = true, features = ["test-backend"] }
+tokio = { workspace = true }

@@ -1,0 +1,33 @@
+# milim site
+
+Static Vite/React site for `milim.ai`, deployed with Cloudflare Pages.
+
+## Cloudflare Pages
+
+- Project name: `milim-site`
+- Production branch: `main`
+- Custom domains: `milim.ai`, `www.milim.ai`, `docs.milim.ai`
+
+Deploys are owned by GitHub Actions with Wrangler direct upload. Create a GitHub environment named `production` and add these environment secrets:
+
+- `CLOUDFLARE_ACCOUNT_ID`
+- `CLOUDFLARE_API_TOKEN`
+
+The Cloudflare token only needs `Account > Cloudflare Pages > Edit`.
+
+Create the Pages project once:
+
+```powershell
+$env:CLOUDFLARE_ACCOUNT_ID="..."
+$env:CLOUDFLARE_API_TOKEN="..."
+pnpm exec wrangler pages project create milim-site --production-branch main
+```
+
+Then run the `Site` workflow from GitHub Actions or push to `main`. Attach the custom domains in Workers & Pages > `milim-site` > Custom domains. The domain is already in Cloudflare, so Cloudflare should create the DNS records during setup.
+
+## Local check
+
+```powershell
+pnpm install --frozen-lockfile
+pnpm build
+```

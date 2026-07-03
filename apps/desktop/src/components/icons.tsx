@@ -1,0 +1,160 @@
+// Minimal stroke icons (Lucide-style) matching the SF Symbols milim uses.
+import type { ReactNode, SVGProps } from "react";
+
+type P = SVGProps<SVGSVGElement> & { size?: number };
+
+function Svg({ size = 16, children, ...rest }: P & { children: ReactNode }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.8}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      {...rest}
+    >
+      {children}
+    </svg>
+  );
+}
+
+export const Lightbulb = (p: P) => (
+  <Svg {...p}><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1h6c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2Z" /></Svg>
+);
+export const FileText = (p: P) => (
+  <Svg {...p}><path d="M14 3v4a1 1 0 0 0 1 1h4" /><path d="M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2Z" /><path d="M9 9h1M9 13h6M9 17h6" /></Svg>
+);
+export const Code = (p: P) => (
+  <Svg {...p}><path d="m9 8-4 4 4 4M15 8l4 4-4 4" /></Svg>
+);
+export const Pencil = (p: P) => (
+  <Svg {...p}><path d="M12 20h9" /><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" /></Svg>
+);
+export const Paperclip = (p: P) => (
+  <Svg {...p}><path d="M21 11.5 12.5 20a4.5 4.5 0 0 1-6.4-6.4l8.5-8.5a3 3 0 0 1 4.3 4.3l-8.6 8.5a1.5 1.5 0 0 1-2.1-2.1l7.8-7.8" /></Svg>
+);
+export const Slash = (p: P) => (
+  <Svg {...p}><path d="M9 20 15 4" /></Svg>
+);
+export const Mic = (p: P) => (
+  <Svg {...p}><rect x="9" y="2" width="6" height="11" rx="3" /><path d="M5 11a7 7 0 0 0 14 0M12 18v3" /></Svg>
+);
+export const UserRound = (p: P) => (
+  <Svg {...p}><circle cx="12" cy="8" r="4" /><path d="M4 21a8 8 0 0 1 16 0" /></Svg>
+);
+export const Smartphone = (p: P) => (
+  <Svg {...p}><rect x="7" y="2" width="10" height="20" rx="2" /><path d="M11 18h2" /></Svg>
+);
+export const Volume2 = (p: P) => (
+  <Svg {...p}><path d="M11 5 6 9H3v6h3l5 4Z" /><path d="M16 8.5a5 5 0 0 1 0 7M19 5a9 9 0 0 1 0 14" /></Svg>
+);
+export const Shield = (p: P) => (
+  <Svg {...p}><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z" /><path d="m9 12 2 2 4-5" /></Svg>
+);
+export const ArrowUp = (p: P) => (
+  <Svg {...p}><path d="M12 19V5M6 11l6-6 6 6" /></Svg>
+);
+export const ArrowRight = (p: P) => (
+  <Svg {...p}><path d="M5 12h14M13 6l6 6-6 6" /></Svg>
+);
+export const ArrowLeft = (p: P) => (
+  <Svg {...p}><path d="M19 12H5M11 6l-6 6 6 6" /></Svg>
+);
+export const Gear = (p: P) => (
+  <Svg {...p}><circle cx="12" cy="12" r="3" /><path d="M19.4 13.5a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 0 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 0 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 0 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 0 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z" /></Svg>
+);
+export const Pin = (p: P) => (
+  <Svg {...p}><path d="M9 4h6l-1 6 3 3v2H7v-2l3-3-1-6ZM12 15v5" /></Svg>
+);
+export const Sidebar = (p: P) => (
+  <Svg {...p}><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M9 4v16" /></Svg>
+);
+export const ChevronDown = (p: P) => (
+  <Svg {...p}><path d="m6 9 6 6 6-6" /></Svg>
+);
+export const Folder = (p: P) => (
+  <Svg {...p}><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" /></Svg>
+);
+export const FolderOpen = (p: P) => (
+  <Svg {...p}><path d="M3 7a2 2 0 0 1 2-2h4l2 2h4a2 2 0 0 1 2 2v1" /><path d="M3 17.5V9a2 2 0 0 1 2-2h14a2 2 0 0 1 1.9 2.6l-2.1 7A2 2 0 0 1 17 18H5a2 2 0 0 1-2-2Z" /></Svg>
+);
+export const Cube = (p: P) => (
+  <Svg {...p}><path d="M12 2 3 7v10l9 5 9-5V7Z" /><path d="m3 7 9 5 9-5M12 12v10" /></Svg>
+);
+export const Sparkles = (p: P) => (
+  <Svg {...p}><path d="M12 4l1.4 3.6L17 9l-3.6 1.4L12 14l-1.4-3.6L7 9l3.6-1.4ZM19 14l.7 1.8L21.5 16l-1.8.7L19 18.5l-.7-1.8L16.5 16l1.8-.5Z" /></Svg>
+);
+export const Image = (p: P) => (
+  <Svg {...p}><rect x="3" y="5" width="18" height="14" rx="2" /><circle cx="8.5" cy="10" r="1.5" /><path d="m21 15-4.5-4.5L9 18" /></Svg>
+);
+export const Sun = (p: P) => (
+  <Svg {...p}><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" /></Svg>
+);
+export const Check = (p: P) => (
+  <Svg {...p}><path d="m5 12 5 5 9-10" /></Svg>
+);
+export const PlusSquare = (p: P) => (
+  <Svg {...p}><rect x="3" y="3" width="18" height="18" rx="3" /><path d="M12 8v8M8 12h8" /></Svg>
+);
+export const Plus = (p: P) => (
+  <Svg {...p}><path d="M12 5v14M5 12h14" /></Svg>
+);
+export const Trash = (p: P) => (
+  <Svg {...p}><path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M6 7l1 13a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-13" /></Svg>
+);
+export const Archive = (p: P) => (
+  <Svg {...p}><path d="M4 4h16v5H4Z" /><path d="M6 9v9a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V9" /><path d="M10 13h4" /></Svg>
+);
+export const X = (p: P) => (
+  <Svg {...p}><path d="M6 6l12 12M18 6 6 18" /></Svg>
+);
+export const MoreHorizontal = (p: P) => (
+  <Svg {...p}><circle cx="5" cy="12" r="1" /><circle cx="12" cy="12" r="1" /><circle cx="19" cy="12" r="1" /></Svg>
+);
+export const Square = (p: P) => (
+  <Svg {...p} fill="currentColor" stroke="none"><rect x="6" y="6" width="12" height="12" rx="2.5" /></Svg>
+);
+export const Download = (p: P) => (
+  <Svg {...p}><path d="M12 3v12M7 10l5 5 5-5M5 21h14" /></Svg>
+);
+export const Eye = (p: P) => (
+  <Svg {...p}><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z" /><circle cx="12" cy="12" r="3" /></Svg>
+);
+export const Globe = (p: P) => (
+  <Svg {...p}><circle cx="12" cy="12" r="9" /><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18" /></Svg>
+);
+export const Bolt = (p: P) => (
+  <Svg {...p} fill="currentColor" stroke="none"><path d="M13 2 4 14h6l-1 8 9-12h-6l1-8Z" /></Svg>
+);
+export const Search = (p: P) => (
+  <Svg {...p}><circle cx="11" cy="11" r="7" /><path d="m21 21-4.3-4.3" /></Svg>
+);
+export const Copy = (p: P) => (
+  <Svg {...p}><rect x="9" y="9" width="11" height="11" rx="2" /><path d="M5 15V5a2 2 0 0 1 2-2h8" /></Svg>
+);
+export const Refresh = (p: P) => (
+  <Svg {...p}><path d="M21 12a9 9 0 1 1-2.6-6.4M21 4v5h-5" /></Svg>
+);
+export const GitBranch = (p: P) => (
+  <Svg {...p}><circle cx="6" cy="5" r="2" /><circle cx="18" cy="6" r="2" /><circle cx="6" cy="19" r="2" /><path d="M6 7v10M8 19h3a7 7 0 0 0 7-7V8" /></Svg>
+);
+export const GitRemote = (p: P) => (
+  <Svg {...p}><path d="M7 16.5H6a3 3 0 0 1-.6-5.9A5.5 5.5 0 0 1 16 9.8a3.5 3.5 0 0 1 1 6.7h-1" /><path d="M8.5 16h7M10.5 13.8 8.3 16l2.2 2.2M13.5 13.8l2.2 2.2-2.2 2.2" /></Svg>
+);
+export const GitLogo = ({ size = 16, ...rest }: P) => (
+  <svg width={size} height={size} viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" {...rest}>
+    <path d="M6.766 11.328c-2.063-.25-3.516-1.734-3.516-3.656 0-.781.281-1.625.75-2.188-.203-.515-.172-1.609.063-2.062.625-.078 1.468.25 1.968.703.594-.187 1.219-.281 1.985-.281.765 0 1.39.094 1.953.265.484-.437 1.344-.765 1.969-.687.218.422.25 1.515.046 2.047.5.593.766 1.39.766 2.203 0 1.922-1.453 3.375-3.547 3.64.531.344.89 1.094.89 1.954v1.625c0 .468.391.734.86.547C13.781 14.359 16 11.53 16 8.03 16 3.61 12.406 0 7.984 0 3.563 0 0 3.61 0 8.031a7.88 7.88 0 0 0 5.172 7.422c.422.156.828-.125.828-.547v-1.25c-.219.094-.5.156-.75.156-1.031 0-1.64-.562-2.078-1.609-.172-.422-.36-.672-.719-.719-.187-.015-.25-.093-.25-.187 0-.188.313-.328.625-.328.453 0 .844.281 1.25.86.313.452.64.655 1.031.655s.641-.14 1-.5c.266-.265.47-.5.657-.656" />
+  </svg>
+);
+export const GitCommit = (p: P) => (
+  <Svg {...p}><path d="M3 12h6M15 12h6" /><circle cx="12" cy="12" r="3" /></Svg>
+);
+export const GitPullRequest = (p: P) => (
+  <Svg {...p}><circle cx="6" cy="6" r="2" /><circle cx="18" cy="18" r="2" /><circle cx="6" cy="18" r="2" /><path d="M6 8v8M18 16v-5a5 5 0 0 0-5-5h-1" /><path d="m14 3-3 3 3 3" /></Svg>
+);
+export const Calendar = (p: P) => (
+  <Svg {...p}><rect x="4" y="5" width="16" height="15" rx="2" /><path d="M8 3v4M16 3v4M4 10h16M8 14h2M14 14h2M8 17h2" /></Svg>
+);

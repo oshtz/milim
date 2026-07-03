@@ -1,0 +1,22 @@
+[package]
+name = "milim-automation"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Scheduled (cron) agent runs and their persistence."
+
+[dependencies]
+milim-core.workspace = true
+milim-storage.workspace = true
+rusqlite.workspace = true
+uuid.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+cron.workspace = true
+chrono.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true }

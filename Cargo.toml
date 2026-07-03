@@ -1,0 +1,92 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/milim-core",
+    "crates/milim-inference",
+    "crates/milim-server",
+    "crates/milim-storage",
+    "crates/milim-identity",
+    "crates/milim-tools",
+    "crates/milim-agents",
+    "crates/milim-memory",
+    "crates/milim-automation",
+    "crates/milim-skills",
+    "crates/milim-privacy",
+    "crates/milim-sandbox",
+    "crates/milim-mcp-client",
+    "crates/milim-voice",
+    "crates/milim-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["Omer Shatzberg <omershatzberg@gmail.com>"]
+repository = "https://github.com/oshtz/milim"
+rust-version = "1.82"
+
+[workspace.dependencies]
+# async / runtime
+tokio = { version = "1", features = ["full"] }
+futures = "0.3"
+async-trait = "0.1"
+async-stream = "0.3"
+# http
+axum = "0.8"
+tower-http = { version = "0.6", features = ["cors", "limit", "trace"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "stream", "rustls-tls"] }
+bytes = "1"
+flate2 = "1"
+tar = "0.4"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+# serde
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ort = "2.0.0-rc.12"
+espeak-ng = { version = "0.1.2", default-features = false, features = ["bundled-data-en"] }
+# cli / config
+clap = { version = "4", features = ["derive", "env"] }
+directories = "5"
+# observability
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# errors / util
+thiserror = "2"
+anyhow = "1"
+uuid = { version = "1", features = ["v4"] }
+time = { version = "0.3", features = ["formatting"] }
+hound = "3.5"
+
+# internal crates
+milim-core = { path = "crates/milim-core" }
+milim-inference = { path = "crates/milim-inference" }
+milim-server = { path = "crates/milim-server" }
+milim-storage = { path = "crates/milim-storage" }
+milim-identity = { path = "crates/milim-identity" }
+milim-tools = { path = "crates/milim-tools" }
+milim-agents = { path = "crates/milim-agents" }
+milim-memory = { path = "crates/milim-memory" }
+milim-skills = { path = "crates/milim-skills" }
+milim-privacy = { path = "crates/milim-privacy" }
+milim-sandbox = { path = "crates/milim-sandbox" }
+milim-mcp-client = { path = "crates/milim-mcp-client" }
+milim-voice = { path = "crates/milim-voice" }
+regex = "1"
+milim-automation = { path = "crates/milim-automation" }
+# storage
+rusqlite = { version = "0.32", features = ["bundled"] }
+aes-gcm = "0.10"
+rand = "0.8"
+# identity / crypto
+k256 = { version = "0.13", features = ["ecdsa"] }
+sha3 = "0.10"
+base64 = "0.22"
+hex = "0.4"
+# automation
+cron = "0.12"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

@@ -1,0 +1,68 @@
+[package]
+name = "milim-desktop"
+version = "0.1.0"
+edition = "2021"
+description = "milim desktop app"
+authors = ["Omer Shatzberg <omershatzberg@gmail.com>"]
+license = "MIT"
+
+# Standalone - not part of the backend cargo workspace (keeps Tauri's heavy
+# dependency tree out of the server/CLI build).
+[workspace]
+
+[lib]
+name = "app_lib"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[features]
+default = ["computer-use"]
+# Local Whisper speech-to-text for the mic path. Requires
+# `MILIM_WHISPER_MODEL=/path/to/ggml-*.bin` at runtime.
+whisper = ["milim-voice/whisper"]
+# Native Silero ONNX VAD through ONNX Runtime. The UI setting remains opt-in.
+native-vad = ["milim-server/native-vad", "milim-voice/native-vad"]
+# Native Piper ONNX TTS through ONNX Runtime. Default desktop builds avoid this
+# heavier dependency; enable with `--features native-tts`.
+native-tts = ["milim-server/native-tts", "milim-voice/native-tts"]
+# Adds GPL-3.0-or-later eSpeak NG phonemization for mainstream Piper voices.
+native-tts-espeak = ["native-tts", "milim-server/native-tts-espeak", "milim-voice/native-tts-espeak"]
+# Screen capture + mouse/keyboard control (the computer-use layer). Pulls in
+# enigo (input) + xcap (capture) + image/base64 (encode the screenshot as a
+# data-URI for vision models). Dormant at runtime until the user enables the
+# "Computer" toggle, which is off by default.
+computer-use = ["dep:enigo", "dep:xcap", "dep:image", "dep:base64", "dep:core-graphics"]
+
+[dependencies]
+tauri = { version = "2", features = ["unstable", "tray-icon"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-window-state = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# Embedded milim backend (the app hosts the server in-process).
+milim-core = { path = "../../../crates/milim-core" }
+milim-server = { path = "../../../crates/milim-server" }
+milim-inference = { path = "../../../crates/milim-inference" }
+milim-tools = { path = "../../../crates/milim-tools" }
+milim-storage = { path = "../../../crates/milim-storage" }
+milim-agents = { path = "../../../crates/milim-agents" }
+milim-memory = { path = "../../../crates/milim-memory" }
+milim-skills = { path = "../../../crates/milim-skills" }
+milim-automation = { path = "../../../crates/milim-automation" }
+milim-sandbox = { path = "../../../crates/milim-sandbox" }
+milim-mcp-client = { path = "../../../crates/milim-mcp-client" }
+milim-voice = { path = "../../../crates/milim-voice" }
+async-trait = "0.1"
+tokio = { version = "1", features = ["rt"] }
+# Computer-use layer (optional; gated by the `computer-use` feature).
+enigo = { version = "0.6", optional = true }
+xcap = { version = "0.9", features = ["image"], optional = true }
+image = { version = "0.25", optional = true }
+base64 = { version = "0.22", optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-graphics = { version = "0.25", optional = true }

@@ -1,0 +1,58 @@
+[package]
+name = "milim-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Axum HTTP server exposing the OpenAI/Ollama-compatible API."
+
+[features]
+default = []
+native-vad = ["milim-voice/native-vad"]
+native-tts = ["milim-voice/native-tts"]
+native-tts-espeak = ["native-tts", "milim-voice/native-tts-espeak"]
+
+[dependencies]
+milim-core.workspace = true
+milim-inference.workspace = true
+milim-storage.workspace = true
+milim-identity.workspace = true
+milim-tools.workspace = true
+milim-agents.workspace = true
+milim-memory.workspace = true
+milim-automation.workspace = true
+milim-skills.workspace = true
+milim-privacy.workspace = true
+milim-sandbox.workspace = true
+milim-mcp-client.workspace = true
+milim-voice.workspace = true
+tokio.workspace = true
+reqwest.workspace = true
+axum.workspace = true
+tower-http.workspace = true
+futures.workspace = true
+async-stream.workspace = true
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+time.workspace = true
+bytes.workspace = true
+flate2.workspace = true
+tar.workspace = true
+zip.workspace = true
+
+[dev-dependencies]
+milim-inference = { workspace = true, features = ["test-backend"] }
+tokio = { workspace = true }
+reqwest = { workspace = true }
+serde_json.workspace = true
+milim-identity.workspace = true
+milim-tools.workspace = true
+milim-agents.workspace = true
+milim-memory.workspace = true
+milim-storage.workspace = true
+milim-automation.workspace = true
+milim-skills.workspace = true
