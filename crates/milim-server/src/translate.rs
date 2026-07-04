@@ -5,7 +5,8 @@ use milim_core::api::anthropic::{
 };
 use milim_core::api::ollama::{OllamaChatRequest, OllamaMessage};
 use milim_core::api::openai::{
-    ChatCompletionRequest, ChatMessage, Content, FunctionCall, Tool, ToolCall, ToolFunction,
+    ChatCompletionRequest, ChatMessage, Content, FunctionCall, ReasoningEffort, Tool, ToolCall,
+    ToolFunction,
 };
 use milim_inference::{CompletionRequest, SamplingParams};
 use serde_json::Value;
@@ -55,7 +56,7 @@ pub fn ollama_to_completion(req: OllamaChatRequest) -> CompletionRequest {
         prompt: None,
         suffix: None,
         sampling,
-        reasoning_effort: None,
+        reasoning_effort: ollama_think_effort(req.think.as_ref()),
     }
 }
 
@@ -66,7 +67,16 @@ fn ollama_message(m: OllamaMessage) -> ChatMessage {
         name: None,
         tool_calls: m.tool_calls,
         tool_call_id: None,
-        reasoning_content: None,
+        reasoning_content: m.thinking,
+    }
+}
+
+pub(crate) fn ollama_think_effort(think: Option<&Value>) -> Option<ReasoningEffort> {
+    match think? {
+        Value::Bool(true) => Some(ReasoningEffort::Medium),
+        Value::Bool(false) => Some(ReasoningEffort::None),
+        Value::String(value) => serde_json::from_value(Value::String(value.clone())).ok(),
+        _ => None,
     }
 }
 

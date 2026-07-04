@@ -118,6 +118,26 @@ pub fn ollama_ndjson(
                                 content,
                                 images: None,
                                 tool_calls: None,
+                                thinking: None,
+                            },
+                            done: false,
+                            done_reason: None,
+                            total_duration: None,
+                            prompt_eval_count: None,
+                            eval_count: None,
+                        };
+                        yield Ok(ndjson_line(&resp));
+                    }
+                    if let Some(thinking) = d.reasoning {
+                        let resp = OllamaChatResponse {
+                            model: model.clone(),
+                            created_at: crate::rfc3339_now(),
+                            message: OllamaMessage {
+                                role: "assistant".to_string(),
+                                content: String::new(),
+                                images: None,
+                                tool_calls: None,
+                                thinking: Some(thinking),
                             },
                             done: false,
                             done_reason: None,
@@ -138,6 +158,7 @@ pub fn ollama_ndjson(
                             content: String::new(),
                             images: None,
                             tool_calls: (!calls.is_empty()).then_some(calls),
+                            thinking: None,
                         },
                         done: true,
                         done_reason: Some(finish_reason),
@@ -157,6 +178,7 @@ pub fn ollama_ndjson(
                             content: String::new(),
                             images: None,
                             tool_calls: None,
+                            thinking: None,
                         },
                         done: true,
                         done_reason: Some(format!("error: {e}")),

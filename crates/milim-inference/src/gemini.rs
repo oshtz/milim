@@ -478,7 +478,7 @@ fn gemini_thinking_config(effort: Option<ReasoningEffort>, model: &str) -> Optio
             ReasoningEffort::High | ReasoningEffort::Xhigh | ReasoningEffort::Max => {
                 Some(json!({ "thinkingLevel": "HIGH" }))
             }
-            ReasoningEffort::None | ReasoningEffort::Auto => None,
+            ReasoningEffort::None | ReasoningEffort::Auto | ReasoningEffort::On => None,
         };
     }
     if id.contains("gemini-2.5") {
@@ -491,7 +491,7 @@ fn gemini_thinking_config(effort: Option<ReasoningEffort>, model: &str) -> Optio
             ReasoningEffort::Xhigh | ReasoningEffort::Max => {
                 Some(json!({ "thinkingBudget": 16384 }))
             }
-            ReasoningEffort::Auto | ReasoningEffort::None => None,
+            ReasoningEffort::Auto | ReasoningEffort::None | ReasoningEffort::On => None,
         };
     }
     None

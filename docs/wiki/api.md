@@ -21,7 +21,7 @@ The standalone server accepts static bearer keys or `msk-v1` access keys when co
 | OpenAI models | `GET /v1/models` | Model discovery. |
 | OpenAI embeddings | `POST /v1/embeddings` | Embedding-compatible clients. |
 | Anthropic messages | `POST /anthropic/v1/messages` | Claude Messages-compatible clients. |
-| Ollama chat | `POST /api/chat` | Ollama clients that speak `/api/chat`. |
+| Ollama chat | `POST /api/chat` | Ollama clients that speak `/api/chat`, including `think` and streamed or final `message.thinking`. |
 | Ollama generate | `POST /api/generate` | Ollama prompt-style generation, including `prompt`, `suffix`, `raw`, `options`, `think`, and `format`; empty-prompt `keep_alive` lifecycle calls are forwarded to native Ollama backends when available. |
 | Ollama tags | `GET /api/tags` | Ollama-style model discovery. |
 

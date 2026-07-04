@@ -26,6 +26,8 @@ pub struct OllamaChatRequest {
     pub format: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keep_alive: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub think: Option<Value>,
 }
 
 impl OllamaChatRequest {
@@ -46,6 +48,8 @@ pub struct OllamaMessage {
     pub images: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<ToolCall>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<String>,
 }
 
 /// A streamed or final `/api/chat` response object.
@@ -120,6 +124,7 @@ mod tests {
                 content: String::new(),
                 images: None,
                 tool_calls: None,
+                thinking: None,
             },
             done: true,
             done_reason: Some("stop".into()),

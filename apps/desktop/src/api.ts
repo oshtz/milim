@@ -781,7 +781,7 @@ export interface ModelInfo {
   };
 }
 
-export type ReasoningEffort = "auto" | "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+export type ReasoningEffort = "auto" | "none" | "minimal" | "low" | "medium" | "high" | "on" | "xhigh" | "max";
 
 export interface ModelReasoningMetadata {
   supported_efforts: ReasoningEffort[];
@@ -856,7 +856,7 @@ function numberOrUndefined(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
 }
 
-const REASONING_EFFORTS: ReasoningEffort[] = ["auto", "none", "minimal", "low", "medium", "high", "xhigh", "max"];
+const REASONING_EFFORTS: ReasoningEffort[] = ["auto", "none", "minimal", "low", "medium", "high", "on", "xhigh", "max"];
 
 function normalizeModelReasoning(value: unknown): ModelReasoningMetadata | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;

@@ -49,7 +49,7 @@ curl http://127.0.0.1:7377/v1/chat/completions \
   -d '{"model":"llama3.2","messages":[{"role":"user","content":"hello"}],"stream":true}'
 ```
 
-Ollama clients can use `http://127.0.0.1:7377/api/chat` or prompt-style `http://127.0.0.1:7377/api/generate`; empty-prompt `keep_alive` lifecycle calls are forwarded to native Ollama backends when available.
+Ollama clients can use `http://127.0.0.1:7377/api/chat` or prompt-style `http://127.0.0.1:7377/api/generate`; `/api/chat` accepts `think` and returns `message.thinking` for reasoning models, and empty-prompt `keep_alive` lifecycle calls are forwarded to native Ollama backends when available.
 
 ## Backends
 
@@ -59,7 +59,7 @@ The CLI server chooses a backend from the environment. If none is configured, `/
 |---|---|---|
 | **Remote / local provider** | `MILIM_REMOTE_BASE_URL` (+ `MILIM_REMOTE_API_KEY`) | Forwards to any OpenAI-compatible endpoint such as Ollama `/v1`, LM Studio `/v1`, vLLM, OpenAI, or OpenRouter. |
 
-Milim does not ship a GGUF runtime. Local GGUF inference belongs in dedicated runtimes such as Ollama or LM Studio; Milim integrates with them through their API surfaces. Ollama thinking models can use Milim reasoning effort controls through `/v1/chat/completions`; LM Studio `gpt-oss` models use LM Studio's `/v1/responses` reasoning effort path. Structured-output controls are forwarded through OpenAI `response_format`, Ollama `format`, and Responses `text.format` where the selected backend supports them. The desktop app manages encrypted provider records for OpenAI, OpenRouter, Groq, Anthropic, Gemini, Replicate, fal, local Ollama, local LM Studio, and custom OpenAI-compatible endpoints. Codex and Claude Code are account runtimes backed by their installed CLIs; they are separate from saved provider records, appear in the model picker after authentication, and use Milim approval modes with visible tool events.
+Milim does not ship a GGUF runtime. Local GGUF inference belongs in dedicated runtimes such as Ollama or LM Studio; Milim integrates with them through their API surfaces. Ollama thinking models can use Milim reasoning effort controls through `/v1/chat/completions`; LM Studio models with native reasoning metadata use LM Studio's `/api/v1/chat` reasoning settings, while `gpt-oss` low/medium/high effort keeps using LM Studio's `/v1/responses` path. Structured-output controls are forwarded through OpenAI `response_format`, Ollama `format`, and Responses `text.format` where the selected backend supports them. The desktop app manages encrypted provider records for OpenAI, OpenRouter, Groq, Anthropic, Gemini, Replicate, fal, local Ollama, local LM Studio, and custom OpenAI-compatible endpoints. Codex and Claude Code are account runtimes backed by their installed CLIs; they are separate from saved provider records, appear in the model picker after authentication, and use Milim approval modes with visible tool events.
 
 ## API Surface
 

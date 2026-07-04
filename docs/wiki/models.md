@@ -29,7 +29,7 @@ Model routing is provider-agnostic. The provider registry stores enabled remotes
 |---|---|---|
 | Best local privacy | Ollama or LM Studio | Prompts stay on your machine unless that runtime is configured otherwise. |
 | General reasoning | OpenAI, Anthropic, Gemini, or OpenRouter | Use hosted providers when quality, context length, or latency matters more than staying fully local. |
-| Local reasoning control | Ollama thinking models or LM Studio `gpt-oss` | Ollama uses `/v1/chat/completions`; LM Studio `gpt-oss` uses `/v1/responses` for `low`, `medium`, and `high` effort. |
+| Local reasoning control | Ollama thinking models or LM Studio models with reasoning metadata | Ollama uses `/v1/chat/completions`; LM Studio uses `/api/v1/chat` for advertised native reasoning options, while `gpt-oss` still uses `/v1/responses` for `low`, `medium`, and `high` effort. |
 | Media workflow | Replicate, fal, or OpenRouter media models | Use image/video generation from the same milim surface. |
 | Agent coding loop | Codex or Claude runtime | Use account runtimes when you want resumable turns and visible tool events in the thread UI. |
 

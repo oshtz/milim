@@ -14,7 +14,7 @@ use axum::http::HeaderMap;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use futures::StreamExt;
-use milim_core::api::openai::{DeltaFunction, DeltaToolCall, Model, Usage};
+use milim_core::api::openai::{DeltaFunction, DeltaToolCall, Model, ReasoningEffort, Usage};
 use milim_core::config::ServerConfiguration;
 use milim_inference::test_backend::TestBackend;
 use milim_inference::{CompletionRequest, DeltaEvent, EventStream, ModelService, StreamEvent};
@@ -154,6 +154,39 @@ impl ModelService for FormatCaptureBackend {
         self.seen.write().unwrap().push(req.response_format.clone());
         let stream = async_stream::stream! {
             yield Ok(StreamEvent::Delta(DeltaEvent::text("ok")));
+            yield Ok(StreamEvent::Done {
+                finish_reason: "stop".to_string(),
+                usage: Usage::new(1, 1),
+            });
+        };
+        Ok(Box::pin(stream))
+    }
+
+    async fn embed(&self, _model: &str, inputs: Vec<String>) -> milim_core::Result<Vec<Vec<f32>>> {
+        Ok(inputs.iter().map(|_| vec![0.0]).collect())
+    }
+}
+
+#[derive(Debug, Default)]
+struct ReasoningStreamBackend;
+
+#[async_trait]
+impl ModelService for ReasoningStreamBackend {
+    fn name(&self) -> &str {
+        "reasoning-stream"
+    }
+
+    async fn list_models(&self) -> milim_core::Result<Vec<Model>> {
+        Ok(vec![Model::local("reasoning-stream", 0)])
+    }
+
+    async fn stream(&self, _req: CompletionRequest) -> milim_core::Result<EventStream> {
+        let stream = async_stream::stream! {
+            yield Ok(StreamEvent::Delta(DeltaEvent {
+                reasoning: Some("checking".to_string()),
+                ..Default::default()
+            }));
+            yield Ok(StreamEvent::Delta(DeltaEvent::text("done")));
             yield Ok(StreamEvent::Done {
                 finish_reason: "stop".to_string(),
                 usage: Usage::new(1, 1),
@@ -4214,6 +4247,79 @@ async fn ollama_chat_non_streaming() {
     assert_eq!(v["done"], true);
     assert_eq!(v["message"]["content"], "Echo: x");
     assert_eq!(v["done_reason"], "stop");
+}
+
+#[tokio::test]
+async fn ollama_chat_maps_think_to_reasoning_effort() {
+    let backend = TestBackend::new();
+    let base = spawn(AppState::new(
+        Arc::new(backend.clone()),
+        ServerConfiguration::default(),
+    ))
+    .await;
+    let client = reqwest::Client::new();
+
+    client
+        .post(format!("{base}/api/chat"))
+        .json(&json!({
+            "model":"test-echo",
+            "messages":[{"role":"user","content":"x"}],
+            "stream":false,
+            "think":"high"
+        }))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap();
+    assert_eq!(backend.last_reasoning_effort(), Some(ReasoningEffort::High));
+
+    client
+        .post(format!("{base}/api/chat"))
+        .json(&json!({
+            "model":"test-echo",
+            "messages":[{"role":"user","content":"x"}],
+            "stream":false,
+            "think":false
+        }))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap();
+    assert_eq!(backend.last_reasoning_effort(), Some(ReasoningEffort::None));
+}
+
+#[tokio::test]
+async fn ollama_chat_streams_thinking() {
+    let state = AppState::new(
+        Arc::new(ReasoningStreamBackend),
+        ServerConfiguration::default(),
+    );
+    let base = spawn(state).await;
+    let client = reqwest::Client::new();
+    let text = client
+        .post(format!("{base}/api/chat"))
+        .json(&json!({"model":"reasoning-stream","messages":[{"role":"user","content":"x"}]}))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+
+    let lines: Vec<Value> = text
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert!(lines.iter().any(|v| v["message"]["thinking"] == "checking"));
+
+    let content: String = lines
+        .iter()
+        .filter_map(|v| v["message"]["content"].as_str().map(str::to_string))
+        .collect();
+    assert_eq!(content, "done");
 }
 
 #[tokio::test]
