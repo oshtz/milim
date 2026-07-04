@@ -13,7 +13,6 @@ import {
   getWorkspaceGitStatus,
   getMediaModelSchema,
   getMediaStatus,
-  isAccountRuntimeModel,
   isClaudeModel,
   isCliPathWarningMessage,
   isCodexModel,
@@ -98,7 +97,7 @@ import {
   modelContextBudget,
 } from "../lib/contextCompaction";
 import { reasoningEffortForModel } from "../lib/reasoningEffort";
-import { AI_THREAD_TITLE_SYSTEM_PROMPT, sanitizeAiThreadTitle, shouldReplaceThreadTitle } from "../lib/threadTitles";
+import { AI_THREAD_TITLE_SYSTEM_PROMPT, isThreadNamingModel, sanitizeAiThreadTitle, shouldReplaceThreadTitle } from "../lib/threadTitles";
 import { chatExportFilename, exportedSessionCandidate, markdownSessionCandidate, sessionExportPayload, sessionMarkdownExport, type ThreadExportFormat } from "../lib/threadExport";
 import {
   DEFAULT_GOAL_SETTINGS,
@@ -1884,24 +1883,37 @@ export function ChatView({
     if (!session || session.messages.filter((message) => message.role === "user").length !== 1) return;
     if (!shouldReplaceThreadTitle(session.title, session.messages)) return;
     const namingModel = (prefs.aiThreadNameModel || turnModel).trim();
-    if (!namingModel || isAccountRuntimeModel(namingModel)) return;
+    const namingModelInfo = pickerModels.find((item) => item.id === namingModel);
+    if (!isThreadNamingModel(namingModelInfo ?? namingModel)) {
+      console.info("AI thread naming skipped: choose a provider chat model for Codex, Claude, or media chats.");
+      return;
+    }
     const firstUser = session.messages.find((message) => message.role === "user");
     const firstAssistant = session.messages.find((message) => message.role === "assistant" && message.content.trim());
     if (!firstUser || !firstAssistant) return;
-    const rawTitle = await completeChat(namingModel, [
-      { role: "system", content: AI_THREAD_TITLE_SYSTEM_PROMPT },
-      {
-        role: "user",
-        content: [
-          `User: ${compactText(wireMessageContent(firstUser), 700)}`,
-          `Assistant: ${compactText(firstAssistant.content, 700)}`,
-        ].join("\n"),
-      },
-    ], { maxTokens: 16, temperature: 0 });
+    let rawTitle: string;
+    try {
+      rawTitle = await completeChat(namingModel, [
+        { role: "system", content: AI_THREAD_TITLE_SYSTEM_PROMPT },
+        {
+          role: "user",
+          content: [
+            `User: ${compactText(wireMessageContent(firstUser), 700)}`,
+            `Assistant: ${compactText(firstAssistant.content, 700)}`,
+          ].join("\n"),
+        },
+      ], { maxTokens: 16, temperature: 0 });
+    } catch (error) {
+      console.warn(`AI thread naming failed: ${error instanceof Error ? error.message : String(error)}`);
+      return;
+    }
     const title = sanitizeAiThreadTitle(rawTitle);
+    if (!title) {
+      console.info("AI thread naming skipped: model returned an unusable title.");
+      return;
+    }
     const latest = useSessions.getState().sessions.find((item) => item.id === sessionId);
     if (
-      title &&
       latest &&
       latest.messages.filter((message) => message.role === "user").length === 1 &&
       shouldReplaceThreadTitle(latest.title, latest.messages)

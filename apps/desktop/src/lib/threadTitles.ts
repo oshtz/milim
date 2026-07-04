@@ -22,8 +22,11 @@ export function sanitizeAiThreadTitle(raw: string): string | null {
     .find((line) => line.trim());
   const title = (firstLine ?? "")
     .trim()
+    .replace(/^(?:[-*]|\d+[.)]|\u2022)\s*/, "")
     .replace(/^(?:thread title|title)\s*:\s*/i, "")
-    .replace(/^["'`]+|["'`.!?:;,]+$/g, "")
+    .replace(/^["'`]+|["'`]+$/g, "")
+    .replace(/[.!?:;,]+$/g, "")
+    .replace(/[\/&-]+/g, " ")
     .replace(/\s+/g, " ")
     .trim();
   const words = title.split(" ").filter(Boolean);
@@ -35,4 +38,10 @@ export function sanitizeAiThreadTitle(raw: string): string | null {
 export function shouldReplaceThreadTitle(currentTitle: string, messages: ChatMessage[]): boolean {
   const title = currentTitle.trim();
   return title === NEW_CHAT_TITLE || title === deriveThreadTitle(messages);
+}
+
+export function isThreadNamingModel(model: string | { id: string; capabilities?: { imageOutput?: boolean; videoOutput?: boolean } }): boolean {
+  const id = (typeof model === "string" ? model : model.id).trim().toLowerCase();
+  if (!id || id === "mock-echo" || id.startsWith("codex:") || id.startsWith("claude:")) return false;
+  return typeof model === "string" || (!model.capabilities?.imageOutput && !model.capabilities?.videoOutput);
 }
