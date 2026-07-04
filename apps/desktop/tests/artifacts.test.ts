@@ -368,6 +368,23 @@ assert(
   "artifact log bridge should run before standalone script modules",
 );
 
+const anonymousTsxArtifacts = extractArtifactsFromContent([
+  "```tsx",
+  `// ${"standalone anonymous TSX preview ".repeat(16)}`,
+  'const previewNotes = "anonymous standalone TSX preview ".repeat(20);',
+  "export default function Dashboard() {",
+  '  return <main data-notes={previewNotes}><h1>Anonymous TSX</h1></main>;',
+  "}",
+  "```",
+].join("\n"));
+equal(anonymousTsxArtifacts.length, 1, "long anonymous TSX fences should create an artifact");
+assert(isPreviewableArtifact(anonymousTsxArtifacts[0]), "anonymous TSX artifacts should be previewable");
+const anonymousTsxPreview = await buildArtifactPreviewDocument(anonymousTsxArtifacts[0], anonymousTsxArtifacts);
+assert(anonymousTsxPreview.source.includes('await import("data:text/javascript'), "anonymous TSX should run as a compiled module");
+assert(anonymousTsxPreview.source.includes("React.createElement(previewModule.default)"), "anonymous default TSX components should auto-mount");
+assert(anonymousTsxPreview.source.includes("https://esm.sh/react-dom@18.3.1/client"), "anonymous TSX auto-mount should use browser React DOM");
+assert(!anonymousTsxPreview.source.includes("export default function Dashboard()"), "anonymous TSX should not render raw source as HTML");
+
 const webglArtifacts = extractArtifactsFromContent([
   "```html file=index.html",
   '<canvas id="scene"></canvas><script type="module" src="./scene.js"></script>',
