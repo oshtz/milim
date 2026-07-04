@@ -187,9 +187,7 @@ impl RemoteBackend {
         if !self.is_lm_studio() {
             return None;
         }
-        let Some(effort) = req.reasoning_effort.filter(|e| !e.is_auto()) else {
-            return None;
-        };
+        let effort = req.reasoning_effort.filter(|e| !e.is_auto())?;
         if is_gpt_oss_model(&req.model)
             && matches!(
                 effort,
