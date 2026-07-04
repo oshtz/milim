@@ -23,7 +23,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
+use reqwest::header::ACCEPT;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Manager, WindowEvent};
@@ -1562,6 +1564,8 @@ async fn voice_type_text(_text: String) -> std::result::Result<usize, String> {
 
 const UPDATE_DIR_NAME: &str = "milim-updates";
 const UPDATE_RECOVERY_ERROR_NAME: &str = "install-error.txt";
+const MAX_UPDATE_PACKAGE_BYTES: usize = 512 * 1024 * 1024;
+const MAX_UPDATE_CHECKSUM_BYTES: usize = 1024 * 1024;
 
 fn update_dir(app: &tauri::AppHandle) -> std::result::Result<PathBuf, String> {
     let data_dir = app
@@ -1677,17 +1681,151 @@ fn get_update_platform() -> &'static str {
     }
 }
 
+fn staged_update_file_path(
+    update_root: &Path,
+    file_name: &str,
+) -> std::result::Result<PathBuf, String> {
+    validate_update_archive_name(file_name)?;
+    Ok(update_root.join(file_name))
+}
+
+fn validate_update_download_url(url: &str, label: &str) -> std::result::Result<String, String> {
+    let parsed = reqwest::Url::parse(url).map_err(|e| format!("{label} is invalid: {e}"))?;
+    if parsed.scheme() != "https" {
+        return Err(format!("{label} must use https."));
+    }
+    match parsed.host_str() {
+        Some("github.com" | "api.github.com") => Ok(parsed.to_string()),
+        _ => Err(format!("{label} must be a GitHub release URL.")),
+    }
+}
+
+fn first_sha256_hex(line: &str) -> Option<String> {
+    line.split(|ch: char| !ch.is_ascii_hexdigit())
+        .find(|part| part.len() == 64 && part.chars().all(|ch| ch.is_ascii_hexdigit()))
+        .map(|part| part.to_ascii_lowercase())
+}
+
+fn parse_expected_sha256(checksum_text: &str, asset_name: &str) -> Option<String> {
+    let lines: Vec<&str> = checksum_text
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    let asset_base_name = asset_name.rsplit(['/', '\\']).next().unwrap_or(asset_name);
+    let matching_line = lines
+        .iter()
+        .copied()
+        .find(|line| line.contains(asset_name) && first_sha256_hex(line).is_some())
+        .or_else(|| {
+            lines
+                .iter()
+                .copied()
+                .find(|line| line.contains(asset_base_name) && first_sha256_hex(line).is_some())
+        })
+        .or_else(|| {
+            (lines.len() == 1)
+                .then(|| lines[0])
+                .filter(|line| first_sha256_hex(line).is_some())
+        });
+    matching_line.and_then(first_sha256_hex)
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn verify_update_checksum(
+    bytes: &[u8],
+    checksum_text: &str,
+    asset_name: &str,
+) -> std::result::Result<(), String> {
+    let expected = parse_expected_sha256(checksum_text, asset_name).ok_or_else(|| {
+        format!("Checksum file does not contain a SHA-256 hash for {asset_name}.")
+    })?;
+    let actual = sha256_hex(bytes);
+    if actual != expected {
+        return Err(format!("Update checksum mismatch for {asset_name}."));
+    }
+    Ok(())
+}
+
+async fn fetch_update_bytes(
+    client: &reqwest::Client,
+    url: &str,
+    accept: &str,
+    label: &str,
+    max_bytes: usize,
+) -> std::result::Result<Vec<u8>, String> {
+    let response = client
+        .get(url)
+        .header(ACCEPT, accept)
+        .send()
+        .await
+        .map_err(|e| format!("{label} download failed: {e}"))?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(format!("{label} download failed ({status})."));
+    }
+    if response
+        .content_length()
+        .is_some_and(|length| length > max_bytes as u64)
+    {
+        return Err(format!("{label} is too large."));
+    }
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|e| format!("{label} download failed: {e}"))?;
+    if bytes.is_empty() {
+        return Err(format!("{label} returned no bytes."));
+    }
+    if bytes.len() > max_bytes {
+        return Err(format!("{label} is too large."));
+    }
+    Ok(bytes.to_vec())
+}
+
 #[tauri::command]
-fn write_update_file(
+async fn download_update_file(
     app: tauri::AppHandle,
+    download_url: String,
+    checksum_url: String,
+    asset_name: String,
     file_name: String,
-    contents: Vec<u8>,
 ) -> std::result::Result<String, String> {
-    validate_update_archive_name(&file_name)?;
+    validate_update_archive_name(&asset_name)?;
+    let download_url = validate_update_download_url(&download_url, "Update download URL")?;
+    let checksum_url = validate_update_download_url(&checksum_url, "Checksum download URL")?;
     let update_root = update_dir(&app)?;
     fs::create_dir_all(&update_root).map_err(|e| e.to_string())?;
-    let update_file = update_root.join(file_name);
-    fs::write(&update_file, contents).map_err(|e| e.to_string())?;
+    let update_file = staged_update_file_path(&update_root, &file_name)?;
+
+    let client = reqwest::Client::builder()
+        .user_agent("milim-updater")
+        .build()
+        .map_err(|e| e.to_string())?;
+    let package = fetch_update_bytes(
+        &client,
+        &download_url,
+        "application/octet-stream",
+        "Update package",
+        MAX_UPDATE_PACKAGE_BYTES,
+    )
+    .await?;
+    let checksum = fetch_update_bytes(
+        &client,
+        &checksum_url,
+        "text/plain, application/octet-stream",
+        "Update checksum",
+        MAX_UPDATE_CHECKSUM_BYTES,
+    )
+    .await?;
+    let checksum_text =
+        String::from_utf8(checksum).map_err(|_| "Checksum file is not valid UTF-8.".to_string())?;
+    verify_update_checksum(&package, &checksum_text, &asset_name)?;
+    fs::write(&update_file, package).map_err(|e| e.to_string())?;
     Ok(update_file.to_string_lossy().to_string())
 }
 
@@ -2429,7 +2567,7 @@ pub fn run() {
             voice_type_text,
             get_update_platform,
             take_update_recovery_error,
-            write_update_file,
+            download_update_file,
             extract_app_zip,
             apply_update
         ])
@@ -2476,6 +2614,68 @@ mod artifact_save_tests {
         assert!(validate_update_archive_name("updates/milim.exe").is_err());
         assert!(validate_update_archive_name("milim.zip").is_err());
         assert!(validate_update_archive_name(".milim.exe").is_err());
+    }
+
+    #[test]
+    fn updater_validates_download_urls() {
+        assert!(validate_update_download_url(
+            "https://github.com/oshtz/milim/releases/download/v0.1.1/milim-windows-x64-portable.exe",
+            "Update download URL"
+        )
+        .is_ok());
+        assert!(validate_update_download_url(
+            "https://api.github.com/repos/oshtz/milim/releases/assets/1",
+            "Update download URL"
+        )
+        .is_ok());
+        assert!(validate_update_download_url(
+            "http://github.com/oshtz/milim/releases/download/v0.1.1/milim.exe",
+            "Update download URL"
+        )
+        .is_err());
+        assert!(validate_update_download_url(
+            "https://example.com/milim.exe",
+            "Update download URL"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn updater_stages_only_safe_update_file_names() {
+        let root = Path::new(r"C:\Users\USER\AppData\Local\milim\milim-updates");
+        assert_eq!(
+            staged_update_file_path(root, "milim-0.1.30.exe").unwrap(),
+            root.join("milim-0.1.30.exe")
+        );
+        assert!(staged_update_file_path(root, "../milim.exe").is_err());
+        assert!(staged_update_file_path(root, "milim.txt").is_err());
+    }
+
+    #[test]
+    fn updater_verifies_sha256_sidecars_and_aggregate_sums() {
+        let package = b"milim-update";
+        let hash = sha256_hex(package);
+
+        assert!(verify_update_checksum(
+            package,
+            &format!("{hash}  milim-windows-x64-portable.exe"),
+            "milim-windows-x64-portable.exe"
+        )
+        .is_ok());
+        assert!(verify_update_checksum(
+            package,
+            &format!(
+                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef  other.zip\n{hash}  bundle/portable/milim-windows-x64-portable.exe"
+            ),
+            "milim-windows-x64-portable.exe"
+        )
+        .is_ok());
+        assert!(verify_update_checksum(
+            package,
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef  milim-windows-x64-portable.exe",
+            "milim-windows-x64-portable.exe"
+        )
+        .is_err());
     }
 
     #[test]
