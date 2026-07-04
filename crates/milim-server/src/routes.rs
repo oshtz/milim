@@ -60,7 +60,8 @@ use crate::state::AppState;
 use crate::threads::{missing_threads_error, ChildRunSpec, ThreadSupervisor};
 use crate::translate::{
     anthropic_response_blocks, anthropic_stop_reason, anthropic_to_completion,
-    ollama_format_to_response_format, ollama_to_completion, openai_to_completion,
+    ollama_format_to_response_format, ollama_think_effort, ollama_to_completion,
+    openai_to_completion,
 };
 use crate::{gen_id, now_unix, rfc3339_now};
 
@@ -2858,6 +2859,7 @@ pub(crate) async fn ollama_chat(
                 content: out.message.text_content(),
                 images: None,
                 tool_calls: out.message.tool_calls,
+                thinking: out.message.reasoning_content,
             },
             done: true,
             done_reason: Some(out.finish_reason),
@@ -3007,14 +3009,6 @@ fn ollama_keep_alive_response(model: &str, done_reason: &str) -> Value {
         "eval_count": 0,
         "eval_duration": 0,
     })
-}
-
-fn ollama_think_effort(think: Option<&Value>) -> Option<ReasoningEffort> {
-    match think? {
-        Value::Bool(true) => Some(ReasoningEffort::Medium),
-        Value::String(value) => serde_json::from_value(Value::String(value.clone())).ok(),
-        _ => None,
-    }
 }
 
 fn ollama_generate_ndjson(

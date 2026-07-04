@@ -24,7 +24,7 @@ assert.match(claudePicker, /getClaudeStatus\(ctrl\.signal\)/);
 assert.match(claudePicker, /CLAUDE_MODEL_PREFIX/);
 assert.match(claudePicker, /supported_efforts: \["low", "medium", "high", "xhigh", "max"\]/);
 assert.match(claudePicker, /finally \{[\s\S]*clearTimeout\(timer\);[\s\S]*\}/);
-assert.match(api, /export type ReasoningEffort = "auto" \| "none" \| "minimal" \| "low" \| "medium" \| "high" \| "xhigh" \| "max";/);
+assert.match(api, /export type ReasoningEffort = "auto" \| "none" \| "minimal" \| "low" \| "medium" \| "high" \| "on" \| "xhigh" \| "max";/);
 assert.match(api, /function reasoningEffortBody\(reasoningEffort\?: ReasoningEffort\): \{ reasoning_effort\?: ReasoningEffort \}/);
 assert.match(api, /return reasoningEffort && reasoningEffort !== "auto" \? \{ reasoning_effort: reasoningEffort \} : \{\};/);
 assert.equal((api.match(/reasoningEffortBody\(reasoningEffort\)/g) ?? []).length, 2);

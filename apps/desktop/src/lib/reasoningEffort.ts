@@ -7,6 +7,7 @@ export const REASONING_EFFORT_LABEL: Record<ReasoningEffort, string> = {
   low: "Low",
   medium: "Medium",
   high: "High",
+  on: "On",
   xhigh: "X-high",
   max: "Max",
 };
@@ -17,6 +18,7 @@ const GEMINI_25_BUDGET_LABEL: Partial<Record<ReasoningEffort, string>> = {
   low: "budget 1k",
   medium: "budget 4k",
   high: "budget 8k",
+  on: "thinking on",
   xhigh: "budget 16k",
   max: "budget 16k",
 };
@@ -35,6 +37,9 @@ export function reasoningEffortDisplay(effort: ReasoningEffort, model?: Pick<Mod
     return { label: REASONING_EFFORT_LABEL[effort], detail: `effort ${effort}` };
   }
   if (owner.includes("openrouter")) {
+    return { label: REASONING_EFFORT_LABEL[effort], detail: `reasoning ${effort}` };
+  }
+  if (owner.includes("lm studio")) {
     return { label: REASONING_EFFORT_LABEL[effort], detail: `reasoning ${effort}` };
   }
   return { label: REASONING_EFFORT_LABEL[effort], detail: `effort ${effort}` };

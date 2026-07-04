@@ -8,11 +8,13 @@
 use async_trait::async_trait;
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use milim_core::api::openai::{
     ChatCompletionChunk, ChatCompletionRequest, Content, ContentPart, DeltaFunction, DeltaToolCall,
-    Model, ModelsResponse, ReasoningEffort, StreamOptions, StringOrArray, Tool, Usage,
+    Model, ModelReasoningMetadata, ModelsResponse, ReasoningEffort, StreamOptions, StringOrArray,
+    Tool, Usage,
 };
 use milim_core::{Error, Result};
 use serde_json::{json, Map, Value};
@@ -171,29 +173,30 @@ impl RemoteBackend {
         format!("{root}/api/generate")
     }
 
-    fn lm_studio_responses_effort(
-        &self,
-        req: &CompletionRequest,
-    ) -> Result<Option<ReasoningEffort>> {
+    fn lm_studio_api_endpoint(&self, path: &str) -> String {
+        let base = self.base_url.trim_end_matches('/');
+        let root = base
+            .strip_suffix("/v1")
+            .or_else(|| base.strip_suffix("/api/v1"))
+            .unwrap_or(base)
+            .trim_end_matches('/');
+        format!("{root}/api/v1/{}", path.trim_start_matches('/'))
+    }
+
+    fn lm_studio_responses_effort(&self, req: &CompletionRequest) -> Option<ReasoningEffort> {
         if !self.is_lm_studio() {
-            return Ok(None);
+            return None;
         }
-        let Some(effort) = req.reasoning_effort.filter(|e| !e.is_auto()) else {
-            return Ok(None);
-        };
+        let effort = req.reasoning_effort.filter(|e| !e.is_auto())?;
         if is_gpt_oss_model(&req.model)
             && matches!(
                 effort,
                 ReasoningEffort::Low | ReasoningEffort::Medium | ReasoningEffort::High
             )
         {
-            Ok(Some(effort))
+            Some(effort)
         } else {
-            Err(Error::InvalidRequest(format!(
-                "LM Studio reasoning effort is only supported for gpt-oss models with low, medium, or high effort (got {} for {}).",
-                effort.as_str(),
-                req.model
-            )))
+            None
         }
     }
 }
@@ -231,7 +234,16 @@ impl ModelService for RemoteBackend {
                 resp.status()
             )));
         }
-        let parsed: ModelsResponse = resp.json().await.map_err(upstream)?;
+        let mut parsed: ModelsResponse = resp.json().await.map_err(upstream)?;
+        if self.is_lm_studio() {
+            if let Ok(reasoning) = self.lm_studio_native_reasoning_metadata().await {
+                for model in &mut parsed.data {
+                    if let Some(meta) = reasoning.get(&model.id).cloned() {
+                        model.reasoning = Some(meta);
+                    }
+                }
+            }
+        }
         Ok(parsed.data)
     }
 
@@ -267,8 +279,11 @@ impl ModelService for RemoteBackend {
         if req.prompt.is_some() {
             return self.stream_legacy_completion(req).await;
         }
-        if let Some(effort) = self.lm_studio_responses_effort(&req)? {
+        if let Some(effort) = self.lm_studio_responses_effort(&req) {
             return self.stream_lm_studio_responses(req, effort).await;
+        }
+        if self.is_lm_studio() && req.reasoning_effort.is_some_and(|e| !e.is_auto()) {
+            return self.stream_lm_studio_native_chat(req).await;
         }
         let body = self.build_body(&req, true);
         let resp = self
@@ -523,6 +538,378 @@ impl RemoteBackend {
         };
 
         Ok(Box::pin(stream))
+    }
+
+    async fn stream_lm_studio_native_chat(&self, req: CompletionRequest) -> Result<EventStream> {
+        let body = build_lm_studio_native_chat_body(&req, true)?;
+        let resp = self
+            .auth(self.client.post(self.lm_studio_api_endpoint("chat")))
+            .json(&body)
+            .send()
+            .await
+            .map_err(upstream)?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(Error::Upstream(format!(
+                "{} api/v1/chat -> {status}: {text}",
+                self.label
+            )));
+        }
+
+        let stream = async_stream::stream! {
+            let mut bytes = resp.bytes_stream();
+            let mut buf: Vec<u8> = Vec::new();
+            let mut usage = Usage::default();
+            let mut saw_done = false;
+
+            while let Some(chunk) = bytes.next().await {
+                let chunk = match chunk {
+                    Ok(b) => b,
+                    Err(e) => {
+                        yield Err(upstream(e));
+                        return;
+                    }
+                };
+                buf.extend_from_slice(&chunk);
+
+                while let Some(pos) = buf.iter().position(|&b| b == b'\n') {
+                    let line_bytes: Vec<u8> = buf.drain(..=pos).collect();
+                    let line = String::from_utf8_lossy(&line_bytes);
+                    match parse_native_sse_line(line.trim_end()) {
+                        NativeLineOutcome::Event(value) => match native_chat_event_to_stream_event(&value) {
+                            Ok(Some(StreamEvent::Delta(delta))) => {
+                                if !delta.is_empty() {
+                                    yield Ok(StreamEvent::Delta(delta));
+                                }
+                            }
+                            Ok(Some(StreamEvent::Done { usage: done_usage, .. })) => {
+                                usage = done_usage;
+                                saw_done = true;
+                            }
+                            Ok(None) => {}
+                            Err(e) => {
+                                yield Err(e);
+                                return;
+                            }
+                        },
+                        NativeLineOutcome::Ignore => {}
+                    }
+                }
+                if saw_done {
+                    break;
+                }
+            }
+
+            yield Ok(StreamEvent::Done {
+                finish_reason: "stop".to_string(),
+                usage,
+            });
+        };
+
+        Ok(Box::pin(stream))
+    }
+
+    async fn lm_studio_native_reasoning_metadata(
+        &self,
+    ) -> Result<BTreeMap<String, ModelReasoningMetadata>> {
+        let resp = self
+            .auth(self.client.get(self.lm_studio_api_endpoint("models")))
+            .send()
+            .await
+            .map_err(upstream)?;
+        if !resp.status().is_success() {
+            return Err(Error::Upstream(format!(
+                "{} GET /api/v1/models -> {}",
+                self.label,
+                resp.status()
+            )));
+        }
+        let parsed: LmStudioNativeModelsResponse = resp.json().await.map_err(upstream)?;
+        Ok(lm_studio_native_reasoning_map(parsed))
+    }
+}
+
+#[derive(Deserialize)]
+struct LmStudioNativeModelsResponse {
+    #[serde(default)]
+    models: Vec<LmStudioNativeModel>,
+}
+
+#[derive(Deserialize)]
+struct LmStudioNativeModel {
+    key: String,
+    #[serde(default)]
+    selected_variant: Option<String>,
+    #[serde(default)]
+    loaded_instances: Vec<LmStudioLoadedInstance>,
+    #[serde(default)]
+    capabilities: Option<LmStudioCapabilities>,
+}
+
+#[derive(Deserialize)]
+struct LmStudioLoadedInstance {
+    id: String,
+}
+
+#[derive(Deserialize)]
+struct LmStudioCapabilities {
+    #[serde(default)]
+    reasoning: Option<LmStudioReasoningCapability>,
+}
+
+#[derive(Clone, Deserialize)]
+struct LmStudioReasoningCapability {
+    #[serde(default)]
+    allowed_options: Vec<String>,
+    #[serde(default)]
+    default: Option<String>,
+}
+
+fn lm_studio_native_reasoning_map(
+    parsed: LmStudioNativeModelsResponse,
+) -> BTreeMap<String, ModelReasoningMetadata> {
+    let mut out = BTreeMap::new();
+    for model in parsed.models {
+        let Some(meta) = model
+            .capabilities
+            .and_then(|cap| cap.reasoning)
+            .and_then(lm_studio_reasoning_meta)
+        else {
+            continue;
+        };
+        out.insert(model.key.clone(), meta.clone());
+        if let Some(selected) = model.selected_variant {
+            out.insert(selected, meta.clone());
+        }
+        for loaded in model.loaded_instances {
+            out.insert(loaded.id, meta.clone());
+        }
+    }
+    out
+}
+
+fn lm_studio_reasoning_meta(
+    capability: LmStudioReasoningCapability,
+) -> Option<ModelReasoningMetadata> {
+    let supported_efforts = capability
+        .allowed_options
+        .iter()
+        .filter_map(|value| lm_studio_reasoning_effort(value))
+        .collect::<Vec<_>>();
+    if supported_efforts.is_empty() {
+        return None;
+    }
+    let default_effort = capability
+        .default
+        .as_deref()
+        .and_then(lm_studio_reasoning_effort);
+    let mandatory = !supported_efforts.contains(&ReasoningEffort::None);
+    Some(ModelReasoningMetadata {
+        supported_efforts,
+        default_effort,
+        default_enabled: Some(default_effort != Some(ReasoningEffort::None)),
+        mandatory: Some(mandatory),
+    })
+}
+
+fn lm_studio_reasoning_effort(value: &str) -> Option<ReasoningEffort> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "off" => Some(ReasoningEffort::None),
+        "on" => Some(ReasoningEffort::On),
+        "low" => Some(ReasoningEffort::Low),
+        "medium" => Some(ReasoningEffort::Medium),
+        "high" => Some(ReasoningEffort::High),
+        _ => None,
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct LmStudioNativeChatRequest {
+    model: String,
+    input: String,
+    stream: bool,
+    store: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    system_prompt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    temperature: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    top_p: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    max_output_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reasoning: Option<&'static str>,
+}
+
+fn build_lm_studio_native_chat_body(
+    req: &CompletionRequest,
+    stream: bool,
+) -> Result<LmStudioNativeChatRequest> {
+    if !req.tools.is_empty() || req.tool_choice.is_some() {
+        return Err(Error::InvalidRequest(
+            "LM Studio native reasoning does not support Milim function tools yet; use a gpt-oss low/medium/high effort model or Auto.".to_string(),
+        ));
+    }
+    if req.response_format.is_some() {
+        return Err(Error::InvalidRequest(
+            "LM Studio native reasoning does not support structured output yet; use Auto or remove response_format.".to_string(),
+        ));
+    }
+    if !req.sampling.stop.is_empty()
+        || req.sampling.seed.is_some()
+        || req.sampling.frequency_penalty.is_some()
+        || req.sampling.presence_penalty.is_some()
+    {
+        return Err(Error::InvalidRequest(
+            "LM Studio native reasoning only maps temperature, top_p, and max tokens.".to_string(),
+        ));
+    }
+    Ok(LmStudioNativeChatRequest {
+        model: req.model.clone(),
+        input: lm_studio_native_input(&req.messages)?,
+        stream,
+        store: false,
+        system_prompt: lm_studio_system_prompt(&req.messages),
+        temperature: req.sampling.temperature,
+        top_p: req.sampling.top_p,
+        max_output_tokens: req.sampling.max_tokens,
+        reasoning: match req.reasoning_effort {
+            Some(effort) => lm_studio_native_reasoning(effort)?,
+            None => None,
+        },
+    })
+}
+
+fn lm_studio_native_reasoning(effort: ReasoningEffort) -> Result<Option<&'static str>> {
+    match effort {
+        ReasoningEffort::Auto => Ok(None),
+        ReasoningEffort::None => Ok(Some("off")),
+        ReasoningEffort::Low => Ok(Some("low")),
+        ReasoningEffort::Medium => Ok(Some("medium")),
+        ReasoningEffort::High => Ok(Some("high")),
+        ReasoningEffort::On => Ok(Some("on")),
+        ReasoningEffort::Minimal | ReasoningEffort::Xhigh | ReasoningEffort::Max => {
+            Err(Error::InvalidRequest(format!(
+                "LM Studio native reasoning supports off, on, low, medium, and high (got {}).",
+                effort.as_str()
+            )))
+        }
+    }
+}
+
+fn lm_studio_native_input(messages: &[milim_core::api::openai::ChatMessage]) -> Result<String> {
+    let mut lines = Vec::new();
+    for message in messages.iter().filter(|m| m.role != "system") {
+        if message.tool_calls.is_some() || message.tool_call_id.is_some() {
+            return Err(Error::InvalidRequest(
+                "LM Studio native reasoning does not support tool-call history yet.".to_string(),
+            ));
+        }
+        let text = lm_studio_text_content(message)?;
+        if !text.trim().is_empty() {
+            lines.push(format!("{}: {text}", message.role));
+        }
+    }
+    Ok(lines.join("\n\n"))
+}
+
+fn lm_studio_system_prompt(messages: &[milim_core::api::openai::ChatMessage]) -> Option<String> {
+    let systems = messages
+        .iter()
+        .filter(|m| m.role == "system")
+        .map(|m| m.text_content())
+        .filter(|text| !text.trim().is_empty())
+        .collect::<Vec<_>>();
+    (!systems.is_empty()).then(|| systems.join("\n\n"))
+}
+
+fn lm_studio_text_content(message: &milim_core::api::openai::ChatMessage) -> Result<String> {
+    match &message.content {
+        Some(Content::Text(text)) => Ok(text.clone()),
+        Some(Content::Parts(parts)) => {
+            let mut out = String::new();
+            for part in parts {
+                match part {
+                    ContentPart::Text { text } => out.push_str(text),
+                    ContentPart::ImageUrl { .. }
+                    | ContentPart::InputAudio { .. }
+                    | ContentPart::Unknown => {
+                        return Err(Error::InvalidRequest(
+                            "LM Studio native reasoning currently supports text-only messages."
+                                .to_string(),
+                        ));
+                    }
+                }
+            }
+            Ok(out)
+        }
+        None => Ok(String::new()),
+    }
+}
+
+enum NativeLineOutcome {
+    Event(Value),
+    Ignore,
+}
+
+fn parse_native_sse_line(line: &str) -> NativeLineOutcome {
+    let Some(data) = line.strip_prefix("data:") else {
+        return NativeLineOutcome::Ignore;
+    };
+    let data = data.trim();
+    if data.is_empty() {
+        return NativeLineOutcome::Ignore;
+    }
+    match serde_json::from_str::<Value>(data) {
+        Ok(value) => NativeLineOutcome::Event(value),
+        Err(_) => NativeLineOutcome::Ignore,
+    }
+}
+
+fn native_chat_event_to_stream_event(value: &Value) -> Result<Option<StreamEvent>> {
+    match value.get("type").and_then(Value::as_str) {
+        Some("message.delta") => Ok(value
+            .get("content")
+            .and_then(Value::as_str)
+            .map(DeltaEvent::text)
+            .map(StreamEvent::Delta)),
+        Some("reasoning.delta") => Ok(value.get("content").and_then(Value::as_str).map(|text| {
+            StreamEvent::Delta(DeltaEvent {
+                reasoning: Some(text.to_string()),
+                ..Default::default()
+            })
+        })),
+        Some("chat.end") => Ok(Some(StreamEvent::Done {
+            finish_reason: "stop".to_string(),
+            usage: native_chat_usage(value),
+        })),
+        Some("error") => Err(Error::Upstream(format!(
+            "LM Studio native chat failed: {}",
+            value
+                .pointer("/error/message")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown error")
+        ))),
+        _ => Ok(None),
+    }
+}
+
+fn native_chat_usage(value: &Value) -> Usage {
+    let stats = value.pointer("/result/stats").unwrap_or(&Value::Null);
+    let prompt = stats
+        .get("input_tokens")
+        .and_then(Value::as_u64)
+        .unwrap_or_default() as u32;
+    let completion = stats
+        .get("total_output_tokens")
+        .and_then(Value::as_u64)
+        .unwrap_or_default() as u32;
+    Usage {
+        prompt_tokens: prompt,
+        completion_tokens: completion,
+        total_tokens: prompt + completion,
     }
 }
 
@@ -973,6 +1360,7 @@ fn chunk_to_delta(chunk: &ChatCompletionChunk) -> (DeltaEvent, Option<String>, O
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
     #[test]
@@ -1045,6 +1433,113 @@ mod tests {
     }
 
     #[test]
+    fn builds_lm_studio_native_endpoints() {
+        let backend = RemoteBackend::new("LM Studio", "http://localhost:1234/v1", None);
+        assert_eq!(
+            backend.lm_studio_api_endpoint("models"),
+            "http://localhost:1234/api/v1/models"
+        );
+        assert_eq!(
+            backend.lm_studio_api_endpoint("/chat"),
+            "http://localhost:1234/api/v1/chat"
+        );
+    }
+
+    #[test]
+    fn parses_lm_studio_native_reasoning_metadata() {
+        let parsed: LmStudioNativeModelsResponse = serde_json::from_value(json!({
+            "models": [
+                {
+                    "key": "google/gemma-4-26b-a4b",
+                    "selected_variant": "google/gemma-4-26b-a4b@q4_k_m",
+                    "loaded_instances": [{"id":"google/gemma-4-26b-a4b-loaded"}],
+                    "capabilities": {
+                        "reasoning": {
+                            "allowed_options": ["off", "on"],
+                            "default": "on"
+                        }
+                    }
+                },
+                {
+                    "key": "deepseek-r1",
+                    "capabilities": {
+                        "reasoning": {
+                            "allowed_options": ["on"],
+                            "default": "on"
+                        }
+                    }
+                },
+                {
+                    "key": "plain",
+                    "capabilities": {"vision": false}
+                }
+            ]
+        }))
+        .unwrap();
+
+        let map = lm_studio_native_reasoning_map(parsed);
+        let gemma = map.get("google/gemma-4-26b-a4b").unwrap();
+        assert_eq!(
+            gemma.supported_efforts,
+            vec![ReasoningEffort::None, ReasoningEffort::On]
+        );
+        assert_eq!(gemma.default_effort, Some(ReasoningEffort::On));
+        assert_eq!(gemma.mandatory, Some(false));
+        assert!(map.contains_key("google/gemma-4-26b-a4b@q4_k_m"));
+        assert!(map.contains_key("google/gemma-4-26b-a4b-loaded"));
+
+        let deepseek = map.get("deepseek-r1").unwrap();
+        assert_eq!(deepseek.supported_efforts, vec![ReasoningEffort::On]);
+        assert_eq!(deepseek.mandatory, Some(true));
+        assert!(!map.contains_key("plain"));
+    }
+
+    #[tokio::test]
+    async fn list_models_enriches_lm_studio_native_reasoning_metadata() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let _server = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut buf = vec![0u8; 4096];
+                let n = socket.read(&mut buf).await.unwrap();
+                let req = String::from_utf8_lossy(&buf[..n]);
+                let body = if req.starts_with("GET /v1/models ") {
+                    json!({
+                        "object":"list",
+                        "data":[{"id":"deepseek-r1","object":"model","created":0,"owned_by":"lmstudio"}]
+                    })
+                } else {
+                    json!({
+                        "models":[{
+                            "key":"deepseek-r1",
+                            "capabilities":{
+                                "reasoning":{
+                                    "allowed_options":["on"],
+                                    "default":"on"
+                                }
+                            }
+                        }]
+                    })
+                }
+                .to_string();
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                socket.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+
+        let backend = RemoteBackend::new("LM Studio", format!("http://{addr}/v1"), None);
+        let models = backend.list_models().await.unwrap();
+        let reasoning = models[0].reasoning.as_ref().unwrap();
+        assert_eq!(reasoning.supported_efforts, vec![ReasoningEffort::On]);
+        assert_eq!(reasoning.default_effort, Some(ReasoningEffort::On));
+    }
+
+    #[test]
     fn builds_reasoning_effort_for_reasoning_openai_models() {
         let backend = RemoteBackend::new("openai", "https://api.openai.com/v1/", None);
         let mut req = empty_req();
@@ -1098,19 +1593,53 @@ mod tests {
         assert!(body.reasoning_effort.is_none());
         assert!(body.extra.is_empty());
         assert_eq!(
-            backend.lm_studio_responses_effort(&req).unwrap(),
+            backend.lm_studio_responses_effort(&req),
             Some(ReasoningEffort::High)
         );
     }
 
     #[test]
-    fn lm_studio_rejects_unsupported_reasoning_effort() {
-        let backend = RemoteBackend::new("LM Studio", "http://localhost:1234/v1", None);
+    fn lm_studio_rejects_native_unsupported_reasoning_effort() {
         let mut req = empty_req();
-        req.model = "openai/gpt-oss-20b".into();
+        req.model = "deepseek-r1".into();
         req.reasoning_effort = Some(ReasoningEffort::Max);
-        let err = backend.lm_studio_responses_effort(&req).unwrap_err();
-        assert!(err.to_string().contains("low, medium, or high"));
+        let err = build_lm_studio_native_chat_body(&req, true).unwrap_err();
+        assert!(err.to_string().contains("off, on, low, medium, and high"));
+    }
+
+    #[test]
+    fn builds_lm_studio_native_chat_body() {
+        let mut req = empty_req();
+        req.model = "deepseek-r1".into();
+        req.messages = vec![
+            milim_core::api::openai::ChatMessage::text("system", "brief"),
+            milim_core::api::openai::ChatMessage::text("user", "hello"),
+            milim_core::api::openai::ChatMessage::text("assistant", "hi"),
+        ];
+        req.sampling.temperature = Some(0.2);
+        req.sampling.top_p = Some(0.9);
+        req.sampling.max_tokens = Some(128);
+        req.reasoning_effort = Some(ReasoningEffort::On);
+
+        let body = build_lm_studio_native_chat_body(&req, true).unwrap();
+        let value = serde_json::to_value(body).unwrap();
+        assert_eq!(value["model"], "deepseek-r1");
+        assert_eq!(value["stream"], true);
+        assert_eq!(value["store"], false);
+        assert_eq!(value["system_prompt"], "brief");
+        assert_eq!(value["input"], "user: hello\n\nassistant: hi");
+        assert_eq!(value["max_output_tokens"], 128);
+        assert_eq!(value["reasoning"], "on");
+    }
+
+    #[test]
+    fn rejects_lm_studio_native_unsafe_request_shape() {
+        let mut req = empty_req();
+        req.model = "deepseek-r1".into();
+        req.reasoning_effort = Some(ReasoningEffort::On);
+        req.response_format = Some(json!({"type":"json_object"}));
+        let err = build_lm_studio_native_chat_body(&req, true).unwrap_err();
+        assert!(err.to_string().contains("structured output"));
     }
 
     #[test]
@@ -1204,6 +1733,38 @@ mod tests {
         else {
             panic!("expected done");
         };
+        assert_eq!(usage.total_tokens, 7);
+    }
+
+    #[test]
+    fn parses_lm_studio_native_chat_events() {
+        let text = json!({"type":"message.delta","content":"hi"});
+        let reasoning = json!({"type":"reasoning.delta","content":"thinking"});
+        let done = json!({
+            "type":"chat.end",
+            "result":{"stats":{"input_tokens":3,"total_output_tokens":4,"reasoning_output_tokens":2}}
+        });
+
+        let Some(StreamEvent::Delta(delta)) = native_chat_event_to_stream_event(&text).unwrap()
+        else {
+            panic!("expected text delta");
+        };
+        assert_eq!(delta.content.as_deref(), Some("hi"));
+
+        let Some(StreamEvent::Delta(delta)) =
+            native_chat_event_to_stream_event(&reasoning).unwrap()
+        else {
+            panic!("expected reasoning delta");
+        };
+        assert_eq!(delta.reasoning.as_deref(), Some("thinking"));
+
+        let Some(StreamEvent::Done { usage, .. }) =
+            native_chat_event_to_stream_event(&done).unwrap()
+        else {
+            panic!("expected done");
+        };
+        assert_eq!(usage.prompt_tokens, 3);
+        assert_eq!(usage.completion_tokens, 4);
         assert_eq!(usage.total_tokens, 7);
     }
 

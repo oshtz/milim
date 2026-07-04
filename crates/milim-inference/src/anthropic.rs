@@ -500,7 +500,10 @@ fn anthropic_reasoning_effort(
         ReasoningEffort::High => Some("high"),
         ReasoningEffort::Xhigh => Some("xhigh"),
         ReasoningEffort::Max => Some("max"),
-        ReasoningEffort::Auto | ReasoningEffort::None | ReasoningEffort::Minimal => None,
+        ReasoningEffort::Auto
+        | ReasoningEffort::None
+        | ReasoningEffort::Minimal
+        | ReasoningEffort::On => None,
     }
 }
 

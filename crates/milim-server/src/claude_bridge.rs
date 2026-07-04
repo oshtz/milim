@@ -525,7 +525,10 @@ fn claude_effort(effort: Option<ReasoningEffort>) -> Option<&'static str> {
         ReasoningEffort::High => Some("high"),
         ReasoningEffort::Xhigh => Some("xhigh"),
         ReasoningEffort::Max => Some("max"),
-        ReasoningEffort::Auto | ReasoningEffort::None | ReasoningEffort::Minimal => None,
+        ReasoningEffort::Auto
+        | ReasoningEffort::None
+        | ReasoningEffort::Minimal
+        | ReasoningEffort::On => None,
     }
 }
 
