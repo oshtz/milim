@@ -1751,6 +1751,19 @@ fn verify_update_checksum(
     Ok(())
 }
 
+fn append_update_chunk(
+    bytes: &mut Vec<u8>,
+    chunk: &[u8],
+    label: &str,
+    max_bytes: usize,
+) -> std::result::Result<(), String> {
+    if bytes.len().saturating_add(chunk.len()) > max_bytes {
+        return Err(format!("{label} is too large."));
+    }
+    bytes.extend_from_slice(chunk);
+    Ok(())
+}
+
 async fn fetch_update_bytes(
     client: &reqwest::Client,
     url: &str,
@@ -1774,17 +1787,19 @@ async fn fetch_update_bytes(
     {
         return Err(format!("{label} is too large."));
     }
-    let bytes = response
-        .bytes()
+    let mut response = response;
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
         .await
-        .map_err(|e| format!("{label} download failed: {e}"))?;
+        .map_err(|e| format!("{label} download failed: {e}"))?
+    {
+        append_update_chunk(&mut bytes, &chunk, label, max_bytes)?;
+    }
     if bytes.is_empty() {
         return Err(format!("{label} returned no bytes."));
     }
-    if bytes.len() > max_bytes {
-        return Err(format!("{label} is too large."));
-    }
-    Ok(bytes.to_vec())
+    Ok(bytes)
 }
 
 #[tauri::command]
@@ -2676,6 +2691,14 @@ mod artifact_save_tests {
             "milim-windows-x64-portable.exe"
         )
         .is_err());
+    }
+
+    #[test]
+    fn updater_rejects_chunks_that_would_exceed_limit() {
+        let mut bytes = vec![1, 2, 3];
+        let err = append_update_chunk(&mut bytes, &[4, 5], "Update package", 4).unwrap_err();
+        assert!(err.contains("too large"));
+        assert_eq!(bytes, vec![1, 2, 3]);
     }
 
     #[test]
