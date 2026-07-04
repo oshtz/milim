@@ -47,7 +47,7 @@ The first run can open as Simple or Workbench. Simple keeps the chat core visibl
 
 Named artifacts from later assistant messages become selectable revisions of the same logical file or title. Revisions are immutable snapshots from chat history; preview, copy, download, diff review, apply, and save actions use the selected revision, while disk writes still require a selected working folder. Saved workspace files record the source app session, message turn, and artifact revision when available.
 
-HTTP and HTTPS links rendered in assistant responses open in the system browser. When the side panel is open to artifacts, generated artifacts and localhost, 127.0.0.1, or [::1] URLs from completed shell or sandbox commands update the panel preview; the small browser button can also open or switch that panel to a blank browser state, the selected side-panel mode persists per thread, and the panel accepts public HTTPS URLs. Generated artifacts still preview through sandboxed iframe/srcDoc rendering.
+HTTP and HTTPS links rendered in assistant responses open in the system browser. When the side panel is open to artifacts, generated artifacts and localhost, 127.0.0.1, or [::1] URLs from completed shell or sandbox commands update the panel preview; the small browser button can also open or switch that panel to a blank browser state, the selected side-panel mode persists per thread, and the panel accepts public HTTPS URLs. Generated artifacts still preview through sandboxed iframe/srcDoc rendering, with anonymous script and TSX artifacts compiled through a lightweight standalone fallback when no filename is provided.
 
 ## Workspace checkpoints
 

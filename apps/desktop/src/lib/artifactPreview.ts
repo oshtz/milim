@@ -116,7 +116,7 @@ async function standaloneScriptPreview(entry: ArtifactFile, ctx: PreviewBuildCon
     .filter((file) => isCssFile(file))
     .map((file) => `<style data-artifact-file="${escapeAttribute(file.path)}">${escapeStyleText(rewriteCssUrls(file.artifact.content, file.path, ctx))}</style>`)
     .join("\n");
-  const source = await moduleSourceForFile(entry, ctx);
+  const source = standaloneScriptBootstrap(await moduleUrlForFile(entry, ctx), entry);
   return [
     "<!doctype html>",
     '<html lang="en">',
@@ -133,6 +133,23 @@ async function standaloneScriptPreview(entry: ArtifactFile, ctx: PreviewBuildCon
     `<script type="module">${escapeScriptText(source)}</script>`,
     "</body>",
     "</html>",
+  ].filter(Boolean).join("\n");
+}
+
+function standaloneScriptBootstrap(entryUrl: string, entry: ArtifactFile): string {
+  const autoMountReact = entry.ext === "jsx" || entry.ext === "tsx";
+  return [
+    `const previewModule = await import(${JSON.stringify(entryUrl)});`,
+    autoMountReact
+      ? [
+        'const root = document.getElementById("root");',
+        'if (root && !root.childNodes.length && typeof previewModule.default === "function") {',
+        `  const React = await import(${JSON.stringify(BARE_IMPORT_OVERRIDES.get("react"))});`,
+        `  const { createRoot } = await import(${JSON.stringify(BARE_IMPORT_OVERRIDES.get("react-dom/client"))});`,
+        "  createRoot(root).render(React.createElement(previewModule.default));",
+        "}",
+      ].join("\n")
+      : "",
   ].filter(Boolean).join("\n");
 }
 
@@ -296,7 +313,10 @@ function candidatePaths(path: string): string[] {
 }
 
 function artifactPath(artifact: ChatArtifact): string | null {
-  return normalizePath(artifact.filename ?? artifact.title);
+  const path = normalizePath(artifact.filename ?? artifact.title);
+  if (!path || extensionOf(path)) return path;
+  const source = artifactSource(artifact);
+  return SCRIPT_EXTENSIONS.has(source) ? `${path}.${source}` : path;
 }
 
 function normalizePath(path: string): string | null {
