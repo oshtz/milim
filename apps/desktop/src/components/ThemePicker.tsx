@@ -1,7 +1,6 @@
 import { type KeyboardEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import {
   checkVoiceSetup,
-  isAccountRuntimeModel,
   listModelsDetailed,
   installKokoroPreset,
   installPiperExecutable,
@@ -17,6 +16,7 @@ import {
   type VadPresetInstallProgress,
   type VoiceSetupTarget,
 } from "../api";
+import { isThreadNamingModel } from "../lib/threadTitles";
 import {
   KOKORO_PRESETS,
   PIPER_PRESETS,
@@ -513,7 +513,7 @@ export function ThemePicker({ onClose }: { onClose: () => void }) {
     let cancelled = false;
     listModelsDetailed()
       .then((items) => {
-        if (!cancelled) setThreadNameModels(items.filter((item) => !isAccountRuntimeModel(item.id)));
+        if (!cancelled) setThreadNameModels(items.filter(isThreadNamingModel));
       })
       .catch(() => {});
     return () => {
@@ -538,11 +538,9 @@ export function ThemePicker({ onClose }: { onClose: () => void }) {
 
   const threadNameModelOptions = [
     { value: "", label: "Use chat model" },
-    ...threadNameModels
-      .filter((item) => item.id === aiThreadNameModel || !isAccountRuntimeModel(item.id))
-      .map((item) => ({ value: item.id, label: item.id })),
+    ...threadNameModels.map((item) => ({ value: item.id, label: item.id })),
   ];
-  if (aiThreadNameModel && !threadNameModelOptions.some((option) => option.value === aiThreadNameModel)) {
+  if (aiThreadNameModel && isThreadNamingModel(aiThreadNameModel) && !threadNameModelOptions.some((option) => option.value === aiThreadNameModel)) {
     threadNameModelOptions.push({ value: aiThreadNameModel, label: aiThreadNameModel });
   }
 
@@ -1199,7 +1197,7 @@ export function ThemePicker({ onClose }: { onClose: () => void }) {
                       testId="chat-ai-title-model"
                     />
                     <p className="sheet-hint">
-                      {autoTitleChats ? "Leave empty to use the chat model for that turn." : "Auto-title new chats is off."}
+                      {autoTitleChats ? "Leave empty to use compatible chat models. Choose a provider model for Codex, Claude, or media chats." : "Auto-title new chats is off."}
                     </p>
                   </div>
                 )}
