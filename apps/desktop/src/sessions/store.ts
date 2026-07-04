@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 import type { ChatArtifact, ChatAttachment, ChatMessage, ChatStreamPart, ChildThreadInfo, ChildThreadStatus, MemoryNotice, PrivacyMode, ReasoningEffort, ResponseMetrics, RunTrace, SavedArtifactFile, ThreadEvent, ToolApprovalMode } from "../api";
-import { extractArtifactsFromMessage } from "../lib/artifacts.js";
+import { extractArtifactsFromMessage, normalizeArtifactDisposition } from "../lib/artifacts.js";
 import { DEFAULT_GOAL_SETTINGS, normalizeGoalSettings, type GoalSettings } from "../lib/goals.js";
 import { recordPerfMeasure, startPerfMeasure } from "../lib/perf.js";
 import { deriveThreadTitle, NEW_CHAT_TITLE } from "../lib/threadTitles.js";
@@ -378,11 +378,11 @@ function normalizeMessageArtifacts(message: ChatMessage): ChatMessage {
 }
 
 function mergeArtifactState(artifacts: ChatArtifact[], previous?: ChatArtifact[]): ChatArtifact[] {
-  if (!previous?.length) return artifacts;
+  if (!previous?.length) return artifacts.map(normalizeArtifactDisposition);
   const savedById = new Map(previous.filter((artifact) => artifact.saved).map((artifact) => [artifact.id, artifact.saved]));
   return artifacts.map((artifact) => {
     const saved = savedById.get(artifact.id);
-    return saved ? { ...artifact, saved } : artifact;
+    return normalizeArtifactDisposition(saved ? { ...artifact, saved } : artifact);
   });
 }
 

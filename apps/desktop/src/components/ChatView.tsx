@@ -13,6 +13,7 @@ import {
   getWorkspaceGitStatus,
   getMediaModelSchema,
   getMediaStatus,
+  getPreviewAppStatus,
   isClaudeModel,
   isCliPathWarningMessage,
   isCodexModel,
@@ -29,6 +30,7 @@ import {
   publishMobileThreadSnapshot,
   previewArtifactFile,
   readAttachmentFile,
+  restartPreviewApp,
   runWorkspaceGitAction,
   saveArtifactFile,
   searchGraphMemory,
@@ -37,7 +39,10 @@ import {
   setPrivacyMode,
   setWorkspace,
   speakText,
+  stagePreviewApp,
+  startPreviewApp,
   stopChildThread,
+  stopPreviewApp,
   streamAgentRun,
   streamChat,
   streamChildThreadEvents,
@@ -69,6 +74,8 @@ import {
   type MobileRelayEvent,
   type MemoryNotice,
   type ModelInfo,
+  type PreviewAppFile,
+  type PreviewAppStatus,
   type PrivacyMode,
   type ProviderInfo,
   type ReasoningEffort,
@@ -85,7 +92,7 @@ import {
   type WorkspaceGitStatus,
 } from "../api";
 import { DEFAULT_THREAD_SETTINGS, useSessions, type Project, type QueuedMessage, type Session, type SessionSidebarState, type SessionSidePanelMode } from "../sessions/store";
-import { artifactPreviewAutoOpenKey, extractLivePreviewArtifactFromContent, extractLocalhostUrlFromRunTrace, isPreviewableArtifact } from "../lib/artifacts";
+import { artifactPreviewAutoOpenKey, extractLivePreviewArtifactFromContent, extractLocalhostUrlFromRunTrace, isFileArtifact, isPreviewableArtifact } from "../lib/artifacts";
 import { artifactOccurrenceKey, artifactRevisionChoiceByOccurrence, artifactRevisionGroups, type ArtifactRevision, type ArtifactRevisionGroup } from "../lib/artifactRevisions";
 import { hiddenArtifactIdsForMessage } from "../lib/artifactVisibility";
 import {
@@ -406,6 +413,7 @@ function localhostPreviewArtifact(url: string): ChatArtifact {
     content: url,
     size: url.length,
     language: "url",
+    disposition: "preview",
   };
 }
 
@@ -418,6 +426,7 @@ function blankBrowserArtifact(): ChatArtifact {
     content: "",
     size: 0,
     language: "url",
+    disposition: "preview",
   };
 }
 
@@ -428,6 +437,31 @@ function blankBrowserPreviewSelection(): PreviewSelection {
 
 function sidePanelModeForArtifact(artifact: ChatArtifact): SessionSidePanelMode {
   return artifact.mime === "text/uri-list" ? "browser" : "artifact";
+}
+
+function previewRuntimeFiles(artifacts?: readonly ChatArtifact[]): PreviewAppFile[] {
+  const seen = new Set<string>();
+  const files: PreviewAppFile[] = [];
+  for (const artifact of artifacts ?? []) {
+    if (!isFileArtifact(artifact) || !artifact.filename?.trim()) continue;
+    const path = normalizePreviewRuntimePath(artifact.filename);
+    if (!path || seen.has(path)) continue;
+    seen.add(path);
+    files.push({ path, content: artifact.content });
+  }
+  return files;
+}
+
+function hasPreviewPackageJson(files: readonly PreviewAppFile[]): boolean {
+  return files.some((file) => normalizePreviewRuntimePath(file.path).toLowerCase() === "package.json");
+}
+
+function isPreviewAppActive(status: PreviewAppStatus | null): boolean {
+  return status?.status === "installing" || status?.status === "starting" || status?.status === "running";
+}
+
+function normalizePreviewRuntimePath(path: string): string {
+  return path.trim().replace(/\\/g, "/").replace(/^(\.\/)+/, "");
 }
 
 function extensionOf(filename: string): string {
@@ -1180,6 +1214,8 @@ export function ChatView({
   const [speakingIndex, setSpeakingIndex] = useState<number | null>(null);
   const [pendingAttachments, setPendingAttachments] = useState<ChatAttachment[]>([]);
   const [previewSelection, setPreviewSelection] = useState<PreviewSelection | null>(null);
+  const [previewAppStatus, setPreviewAppStatus] = useState<PreviewAppStatus | null>(null);
+  const [previewAppBusy, setPreviewAppBusy] = useState<"start" | "stop" | "restart" | null>(null);
   const [previewPanelClosing, setPreviewPanelClosing] = useState(false);
   const [gitStatus, setGitStatus] = useState<WorkspaceGitStatus | null>(null);
   const [dismissedPreviewKey, setDismissedPreviewKey] = useState<string | null>(null);
@@ -1261,6 +1297,28 @@ export function ChatView({
     () => showMedia ? mediaModelsForPicker(enabledMediaProviders, mediaSettings, mediaCatalog) : [],
     [enabledMediaProviders, mediaSettings, mediaCatalog, showMedia],
   );
+
+  useEffect(() => {
+    if (folder.trim()) {
+      setPreviewAppStatus(null);
+      return;
+    }
+    let cancelled = false;
+    async function pollPreviewApp() {
+      try {
+        const status = await getPreviewAppStatus(activeId);
+        if (!cancelled) setPreviewAppStatus(status);
+      } catch {
+        if (!cancelled) setPreviewAppStatus(null);
+      }
+    }
+    void pollPreviewApp();
+    const timer = window.setInterval(() => void pollPreviewApp(), 2500);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [activeId, folder]);
   const pickerModels = useMemo(() => mergeModelLists(models, mediaModelEntries), [models, mediaModelEntries]);
   const activeMediaTarget = useMemo(
     () => showMedia ? resolveActiveMediaTarget(effectiveModel, enabledMediaProviders, mediaSettings, mediaCatalog) : null,
@@ -1763,6 +1821,72 @@ export function ChatView({
 
   function openArtifactBrowser() {
     openPreviewArtifact(blankBrowserArtifact());
+  }
+
+  async function startPreviewRuntimeForArtifacts(artifacts?: readonly ChatArtifact[]) {
+    const files = previewRuntimeFiles(artifacts);
+    if (!files.length) {
+      setChatNotice({ tone: "error", message: "Preview runtime needs named artifact files." });
+      return;
+    }
+    if (!hasPreviewPackageJson(files)) {
+      setChatNotice({ tone: "error", message: "Preview runtime needs a named package.json artifact." });
+      return;
+    }
+    setPreviewAppBusy("start");
+    try {
+      await stagePreviewApp(activeId, files);
+      const status = await startPreviewApp(activeId);
+      setPreviewAppStatus(status);
+      if (status.url) {
+        openPreviewArtifact(localhostPreviewArtifact(status.url));
+      } else {
+        openArtifactBrowser();
+      }
+      setSessionSidePanelMode(activeId, "browser");
+      setSessionSidePanelOpen(activeId, true);
+    } catch (error) {
+      setChatNotice({ tone: "error", message: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setPreviewAppBusy(null);
+    }
+  }
+
+  async function startPreviewRuntime() {
+    setPreviewAppBusy("start");
+    try {
+      const status = await startPreviewApp(activeId);
+      setPreviewAppStatus(status);
+      if (status.url) openPreviewArtifact(localhostPreviewArtifact(status.url));
+    } catch (error) {
+      setChatNotice({ tone: "error", message: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setPreviewAppBusy(null);
+    }
+  }
+
+  async function stopPreviewRuntime() {
+    setPreviewAppBusy("stop");
+    try {
+      setPreviewAppStatus(await stopPreviewApp(activeId));
+    } catch (error) {
+      setChatNotice({ tone: "error", message: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setPreviewAppBusy(null);
+    }
+  }
+
+  async function restartPreviewRuntime() {
+    setPreviewAppBusy("restart");
+    try {
+      const status = await restartPreviewApp(activeId);
+      setPreviewAppStatus(status);
+      if (status.url) openPreviewArtifact(localhostPreviewArtifact(status.url));
+    } catch (error) {
+      setChatNotice({ tone: "error", message: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setPreviewAppBusy(null);
+    }
   }
 
   function openArtifactSidePanel() {
@@ -3813,6 +3937,8 @@ export function ChatView({
                   const hasAssistantOutput = Boolean(m.content || hasStreamTranscript);
                   const metricsLabel = formatResponseMetrics(m.metrics);
                   const canExecutePlan = m.role === "assistant" && m.plan?.status === "proposed" && !assistantStreaming && Boolean(m.content.trim());
+                  const runtimeFiles = !folder.trim() && !assistantStreaming ? previewRuntimeFiles(m.artifacts) : [];
+                  const canStartRuntime = runtimeFiles.length > 0 && hasPreviewPackageJson(runtimeFiles);
                   if (editing === i) {
                     return (
                       <div key={i} className={"msg " + m.role}>
@@ -3865,6 +3991,20 @@ export function ChatView({
                               revisionForArtifact={(artifactIndex) => artifactRevisionChoice(i, artifactIndex)}
                               autoSaveArtifacts={toolApproval === "open" && !assistantStreaming}
                             />
+                            {canStartRuntime && (
+                              <div className="artifact-runtime-actions">
+                                <button
+                                  className="msg-act msg-act-text"
+                                  data-testid="preview-app-start"
+                                  title="Stage named files and start preview app"
+                                  disabled={previewAppBusy != null || isPreviewAppActive(previewAppStatus)}
+                                  onClick={() => void startPreviewRuntimeForArtifacts(m.artifacts)}
+                                >
+                                  <Globe size={13} />
+                                  <span>{previewAppBusy === "start" ? "Starting preview..." : "Start preview app"}</span>
+                                </button>
+                              </div>
+                            )}
                             {metricsLabel && <div className="response-metrics">{metricsLabel}</div>}
                           </>
                         ) : (
@@ -4067,9 +4207,15 @@ export function ChatView({
                 noEnterMotion={sidePanelAlreadyOpen}
                 onClose={closePreview}
                 onSelectRevision={selectPreviewRevision}
+                onOpenBrowser={openArtifactBrowser}
                 onSendArtifactFixPrompt={sendArtifactFixPrompt}
                 activeTab={sidePanelMode === "artifact" && !visiblePreviewSelection.previewDeferred ? artifactPanelTab : undefined}
                 onActiveTabChange={sidePanelMode === "artifact" && !visiblePreviewSelection.previewDeferred ? (tab) => setArtifactPanelTab(activeId, tab) : undefined}
+                runtimeStatus={!folder.trim() ? previewAppStatus : null}
+                runtimeBusy={previewAppBusy != null}
+                onRuntimeStart={() => void startPreviewRuntime()}
+                onRuntimeStop={() => void stopPreviewRuntime()}
+                onRuntimeRestart={() => void restartPreviewRuntime()}
                 modeSwitcher={sidePanelModeSwitcher}
                 style={previewPanelStyle}
               />

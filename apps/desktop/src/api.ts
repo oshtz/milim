@@ -27,6 +27,7 @@ export interface WorkspaceFileSuggestion {
 }
 
 export type ChatArtifactKind = "code" | "json" | "csv" | "table" | "text";
+export type ChatArtifactDisposition = "file" | "inline" | "preview";
 
 export interface ChatArtifact {
   id: string;
@@ -37,6 +38,7 @@ export interface ChatArtifact {
   size: number;
   language?: string;
   filename?: string;
+  disposition?: ChatArtifactDisposition;
   saved?: SavedArtifactFile;
 }
 
@@ -561,6 +563,81 @@ export interface MobileModelSummary {
 async function parseJsonResponse<T>(resp: Response, fallback: string): Promise<T> {
   if (!resp.ok) throw new Error(await responseErrorMessage(resp, fallback));
   return (await resp.json()) as T;
+}
+
+export type PreviewAppState = "idle" | "staged" | "installing" | "starting" | "running" | "stopped" | "error";
+
+export interface PreviewAppFile {
+  path: string;
+  content: string;
+}
+
+export interface PreviewAppLog {
+  ts: number;
+  stream: "stdout" | "stderr" | "system" | string;
+  line: string;
+}
+
+export interface PreviewAppStatus {
+  thread_id: string;
+  status: PreviewAppState | string;
+  cwd: string;
+  url?: string | null;
+  pid?: number | null;
+  command?: string | null;
+  message?: string | null;
+  logs: PreviewAppLog[];
+}
+
+function previewAppUrl(threadId: string, suffix = ""): string {
+  return `${BASE}/preview-apps/${encodeURIComponent(threadId)}${suffix}`;
+}
+
+export async function getPreviewAppStatus(threadId: string): Promise<PreviewAppStatus> {
+  return await parseJsonResponse<PreviewAppStatus>(
+    await authFetch(previewAppUrl(threadId)),
+    "preview app status failed",
+  );
+}
+
+export async function stagePreviewApp(threadId: string, files: PreviewAppFile[]): Promise<PreviewAppStatus> {
+  return await parseJsonResponse<PreviewAppStatus>(
+    await authFetch(previewAppUrl(threadId, "/stage"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ files }),
+    }),
+    "preview app stage failed",
+  );
+}
+
+export async function startPreviewApp(threadId: string): Promise<PreviewAppStatus> {
+  return await parseJsonResponse<PreviewAppStatus>(
+    await authFetch(previewAppUrl(threadId, "/start"), { method: "POST" }),
+    "preview app start failed",
+  );
+}
+
+export async function stopPreviewApp(threadId: string): Promise<PreviewAppStatus> {
+  return await parseJsonResponse<PreviewAppStatus>(
+    await authFetch(previewAppUrl(threadId, "/stop"), { method: "POST" }),
+    "preview app stop failed",
+  );
+}
+
+export async function restartPreviewApp(threadId: string): Promise<PreviewAppStatus> {
+  return await parseJsonResponse<PreviewAppStatus>(
+    await authFetch(previewAppUrl(threadId, "/restart"), { method: "POST" }),
+    "preview app restart failed",
+  );
+}
+
+export async function getPreviewAppLogs(threadId: string): Promise<PreviewAppLog[]> {
+  const payload = await parseJsonResponse<{ logs: PreviewAppLog[] }>(
+    await authFetch(previewAppUrl(threadId, "/logs")),
+    "preview app logs failed",
+  );
+  return payload.logs ?? [];
 }
 
 export async function getMobileCompanionStatus(): Promise<MobileCompanionStatus> {

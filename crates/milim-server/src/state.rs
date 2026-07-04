@@ -16,6 +16,7 @@ use milim_tools::ToolRegistry;
 use serde::Serialize;
 
 use crate::companion::MobileCompanionBridge;
+use crate::preview_runtime::PreviewRuntimeManager;
 use crate::threads::ThreadSupervisor;
 
 pub type TranscriberFactory =
@@ -117,6 +118,8 @@ pub struct AppState {
     /// Relay-only mobile companion bridge. Disabled by default and only grants
     /// paired phones permission to submit text to the active desktop composer.
     pub mobile_companion: Option<Arc<MobileCompanionBridge>>,
+    /// Managed no-folder preview app runtime rooted under `~/.milim/runtime`.
+    pub preview_runtime: Arc<PreviewRuntimeManager>,
 }
 
 impl AppState {
@@ -153,6 +156,12 @@ impl AppState {
             computer_use: Arc::new(AtomicBool::new(false)),
             privacy: Arc::new(crate::privacy::PrivacyGate::default()),
             mobile_companion: None,
+            preview_runtime: Arc::new(PreviewRuntimeManager::new(
+                milim_core::paths::Paths::resolve()
+                    .root()
+                    .join("runtime")
+                    .join("preview-apps"),
+            )),
         }
     }
 

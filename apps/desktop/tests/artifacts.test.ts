@@ -1,4 +1,4 @@
-import { artifactPreviewAutoOpenKey, defaultArtifactTargetPath, extractArtifactsFromContent, extractArtifactsFromRunTrace, extractLivePreviewArtifactFromContent, extractLocalhostUrlFromRunTrace, isArtifactBrowserUrl, isLocalhostPreviewUrl, isPreviewableArtifact, normalizeArtifactBrowserUrl } from "../src/lib/artifacts.js";
+import { artifactDisposition, artifactPreviewAutoOpenKey, defaultArtifactTargetPath, extractArtifactsFromContent, extractArtifactsFromRunTrace, extractLivePreviewArtifactFromContent, extractLocalhostUrlFromRunTrace, isArtifactBrowserUrl, isFileArtifact, isLocalhostPreviewUrl, isPreviewableArtifact, markdownTableToCsv, normalizeArtifactBrowserUrl } from "../src/lib/artifacts.js";
 import { artifactOccurrenceKey, artifactRevisionChoiceByOccurrence, artifactRevisionGroups } from "../src/lib/artifactRevisions.js";
 import { buildArtifactPreviewDocument } from "../src/lib/artifactPreview.js";
 import { planModeInstructionMessages, threadArtifactInstructionMessages } from "../src/lib/chatInstructions.js";
@@ -30,20 +30,23 @@ equal(codeArtifacts.length, 1, "filename fenced block should create one artifact
 equal(codeArtifacts[0].kind, "code", "filename fenced block should be code");
 equal(codeArtifacts[0].language, "ts", "fenced info should keep the language");
 equal(codeArtifacts[0].filename, "src/generated/greeting.ts", "fenced info should keep the filename");
+equal(codeArtifacts[0].disposition, "file", "named fenced blocks should be file artifacts");
+assert(isFileArtifact(codeArtifacts[0]), "named fenced blocks should be eligible for workspace file actions");
 assert(codeArtifacts[0].content.includes("export function greeting"), "code artifact should keep block content");
 
 const jsonArtifacts = extractArtifactsFromContent('{"name":"milim","features":["chat","artifacts"]}');
 equal(jsonArtifacts.length, 1, "standalone JSON should create one artifact");
 equal(jsonArtifacts[0].kind, "json", "standalone JSON artifact should be json");
 equal(jsonArtifacts[0].filename, "response.json", "standalone JSON should use response.json");
+equal(jsonArtifacts[0].disposition, "inline", "standalone JSON should stay display/export-only");
 
 const tableArtifacts = extractArtifactsFromContent([
   "| Name | Status |",
   "| --- | --- |",
   "| Artifacts | Ready |",
 ].join("\n"));
-equal(tableArtifacts.length, 1, "markdown table should create one artifact");
-equal(tableArtifacts[0].kind, "table", "markdown table artifact should be table");
+equal(tableArtifacts.length, 0, "markdown tables should stay inline instead of creating table.csv file artifacts");
+equal(markdownTableToCsv(["| Name | Status |", "| --- | --- |", "| Artifacts | Ready |"]), "Name,Status\nArtifacts,Ready", "markdown tables should still be convertible for explicit export flows");
 
 const pipeProseAfterTable = extractArtifactsFromContent([
   "| JS piece | SwiftUI equivalent |",
@@ -51,8 +54,7 @@ const pipeProseAfterTable = extractArtifactsFromContent([
   "| Math.imul | UInt32 overflow ops |",
   "semantics using UInt32 overflow arithmetic || generators returning {pts,c,w} || pure Swift functions",
 ].join("\n"));
-equal(pipeProseAfterTable.length, 1, "pipe-heavy prose after a table should not create extra table rows");
-equal(pipeProseAfterTable[0].content.split("\n").length, 2, "markdown table artifact should stop before pipe-heavy prose");
+equal(pipeProseAfterTable.length, 0, "markdown tables followed by pipe-heavy prose should stay inline");
 
 const partialStreamingTable = extractArtifactsFromContent([
   "| JS piece | SwiftUI equivalent |",
@@ -63,8 +65,11 @@ equal(partialStreamingTable.length, 0, "partial streamed table rows should stay 
 
 const shortSnippet = extractArtifactsFromContent("```ts\nconst x = 1;\n```");
 equal(shortSnippet.length, 0, "short anonymous code snippets should stay inline only");
-equal(defaultArtifactTargetPath({ filename: "src/generated.ts" }), "src/generated.ts", "named artifacts should default to their filename when saving");
-equal(defaultArtifactTargetPath({}), "", "anonymous artifact display titles should not become workspace file paths");
+equal(defaultArtifactTargetPath({ filename: "src/generated.ts", kind: "code" }), "src/generated.ts", "named artifacts should default to their filename when saving");
+equal(defaultArtifactTargetPath({ kind: "code" }), "", "anonymous artifact display titles should not become workspace file paths");
+equal(defaultArtifactTargetPath({ filename: "response.json", kind: "json", disposition: "inline" }), "", "inline data exports should not become workspace file paths");
+equal(artifactDisposition({ filename: "src/generated.ts", kind: "code" }), "file", "persisted named artifacts without disposition should default to file");
+equal(artifactDisposition({ kind: "table" }), "inline", "persisted table artifacts without disposition should default to inline");
 
 const collapsedNamedFence = extractArtifactsFromContent("Echo: ```ts file=src/e2e-artifact.ts export const e2eArtifact = true; ```");
 equal(collapsedNamedFence.length, 1, "single-line named fences should create an artifact");
@@ -82,6 +87,7 @@ const liveHtml = extractLivePreviewArtifactFromContent([
 assert(liveHtml, "open html fence should create a live preview artifact before the response finishes");
 equal(liveHtml.language, "html", "live preview should keep the html language");
 equal(liveHtml.mime, "text/html", "live preview should be rendered as html");
+equal(liveHtml.disposition, "preview", "live preview artifacts should be transient previews");
 assert(liveHtml.content.includes("<button>Toggle</button>"), "live preview should keep streamed html content");
 assert(isPreviewableArtifact(liveHtml), "live html artifact should be previewable");
 
@@ -123,6 +129,7 @@ const generatedHtml = extractArtifactsFromRunTrace({
 });
 equal(generatedHtml.length, 1, "completed write_file html calls should create an artifact");
 equal(generatedHtml[0].filename, "tarot.html", "write_file artifact should keep the target path");
+equal(generatedHtml[0].disposition, "file", "write_file artifacts should be file artifacts");
 equal(generatedHtml[0].mime, "text/html", "write_file html artifact should use html mime");
 assert(isPreviewableArtifact(generatedHtml[0]), "write_file html artifact should be previewable");
 
@@ -368,6 +375,35 @@ assert(
   "artifact log bridge should run before standalone script modules",
 );
 
+const reactDependencyArtifacts = extractArtifactsFromContent([
+  "```html file=index.html",
+  '<div id="root"></div><script type="module" src="./src/main.tsx"></script>',
+  "```",
+  "```tsx file=src/main.tsx",
+  'import { motion } from "framer-motion";',
+  'import { Activity } from "lucide-react";',
+  'import { AreaChart } from "recharts";',
+  "export default function Dashboard() {",
+  "  return <motion.main><Activity /><AreaChart data={[]} /></motion.main>;",
+  "}",
+  "```",
+].join("\n"));
+const reactDependencyIndex = reactDependencyArtifacts.find((artifact) => artifact.filename === "index.html");
+assert(reactDependencyIndex, "react dependency artifact set should include index.html");
+const reactDependencyPreview = await buildArtifactPreviewDocument(reactDependencyIndex, reactDependencyArtifacts);
+assert(
+  reactDependencyPreview.source.includes("https://esm.sh/framer-motion?deps=react@18.3.1,react-dom@18.3.1"),
+  "React ecosystem bare imports should pin esm.sh React peers",
+);
+assert(
+  reactDependencyPreview.source.includes("https://esm.sh/lucide-react?deps=react@18.3.1,react-dom@18.3.1"),
+  "React icon imports should pin esm.sh React peers",
+);
+assert(
+  reactDependencyPreview.source.includes("https://esm.sh/recharts?deps=react@18.3.1,react-dom@18.3.1"),
+  "React chart imports should pin esm.sh React peers",
+);
+
 const anonymousTsxArtifacts = extractArtifactsFromContent([
   "```tsx",
   `// ${"standalone anonymous TSX preview ".repeat(16)}`,
@@ -378,6 +414,8 @@ const anonymousTsxArtifacts = extractArtifactsFromContent([
   "```",
 ].join("\n"));
 equal(anonymousTsxArtifacts.length, 1, "long anonymous TSX fences should create an artifact");
+equal(anonymousTsxArtifacts[0].disposition, "inline", "long anonymous TSX fences should stay inline/display-only");
+assert(!isFileArtifact(anonymousTsxArtifacts[0]), "long anonymous TSX fences should not be workspace file artifacts");
 assert(isPreviewableArtifact(anonymousTsxArtifacts[0]), "anonymous TSX artifacts should be previewable");
 const anonymousTsxPreview = await buildArtifactPreviewDocument(anonymousTsxArtifacts[0], anonymousTsxArtifacts);
 assert(anonymousTsxPreview.source.includes('await import("data:text/javascript'), "anonymous TSX should run as a compiled module");
@@ -416,6 +454,9 @@ equal(regularNoFolderTurn.length, 2, "regular no-folder artifact requests should
 equal(regularNoFolderTurn[0].role, "system", "no-folder artifact instruction should be a system message");
 assert(regularNoFolderTurn[0].content.includes("current chat's artifact panel"), "no-folder instruction should route generated files to chat artifacts");
 assert(regularNoFolderTurn[0].content.includes("```html file=index.html"), "no-folder instruction should teach named fenced HTML artifacts");
+assert(regularNoFolderTurn[0].content.includes("package.json"), "no-folder instruction should require named package.json for runnable apps");
+assert(regularNoFolderTurn[0].content.includes("anonymous tsx blocks"), "no-folder instruction should reject anonymous TSX app output");
+assert(regularNoFolderTurn[0].content.includes("Markdown tables should stay as markdown tables"), "no-folder instruction should keep markdown tables inline by default");
 assert(regularNoFolderTurn[0].content.includes("instead of asking for a folder"), "no-folder instruction should avoid blocking on folder selection for new artifacts");
 equal(regularNoFolderTurn[1].content, earthPrompt, "regression prompt should remain the user turn");
 equal(threadArtifactInstructionMessages("C:\\project").length, 0, "project chats should not receive no-folder artifact instructions");

@@ -1,4 +1,5 @@
 import type { ChatArtifact } from "../api";
+import { isFileArtifact } from "./artifacts.js";
 
 export type ArtifactPreviewKind = "html" | "markdown";
 
@@ -36,6 +37,7 @@ const BARE_IMPORT_OVERRIDES = new Map<string, string>([
   ["three", "https://esm.sh/three"],
   ["ogl", "https://esm.sh/ogl"],
 ]);
+const REACT_PEER_DEPS = "deps=react@18.3.1,react-dom@18.3.1";
 const PREVIEW_CSP = [
   "default-src 'none'",
   "script-src 'unsafe-inline' https: data: blob:",
@@ -96,7 +98,8 @@ export async function buildArtifactPreviewDocument(
   const kind = previewKindForArtifact(artifact);
   if (kind === "markdown") return { kind, source: artifact.content };
 
-  const files = indexArtifactFiles(artifacts.length ? artifacts : [artifact]);
+  const contextArtifacts = (artifacts.length ? artifacts : [artifact]).filter((item) => isFileArtifact(item) || item.id === artifact.id);
+  const files = indexArtifactFiles(contextArtifacts);
   const entry = fileForArtifact(artifact, files);
   const ctx: PreviewBuildContext = { files, moduleUrls: new Map() };
 
@@ -252,7 +255,7 @@ async function resolveModuleSpecifier(specifier: string, fromPath: string, ctx: 
   if (isExternalSpecifier(specifier)) return specifier;
   const file = resolveArtifactFile(ctx.files, fromPath, specifier);
   if (file) return await moduleUrlForFile(file, ctx);
-  if (isBareSpecifier(specifier)) return BARE_IMPORT_OVERRIDES.get(specifier) ?? `https://esm.sh/${specifier}`;
+  if (isBareSpecifier(specifier)) return BARE_IMPORT_OVERRIDES.get(specifier) ?? `https://esm.sh/${specifier}?${REACT_PEER_DEPS}`;
   return specifier;
 }
 

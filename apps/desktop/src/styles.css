@@ -2732,6 +2732,82 @@ button.git-row:hover svg {
   cursor: default;
   opacity: 0.55;
 }
+.preview-managed-runtime {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg-secondary) 92%, var(--accent));
+}
+.preview-managed-runtime-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+.preview-managed-runtime-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.preview-managed-runtime-copy strong {
+  color: var(--primary-text);
+  font-size: 12px;
+  font-weight: 650;
+}
+.preview-managed-runtime-copy span,
+.preview-managed-runtime-meta {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--tertiary-text);
+  font-size: 11px;
+}
+.preview-managed-runtime-actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.preview-managed-runtime-meta {
+  display: flex;
+  gap: 8px;
+}
+.preview-managed-runtime-logs {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 112px;
+  overflow: auto;
+  padding: 5px 6px;
+  border: 1px solid var(--border-primary);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--bg-primary) 88%, black);
+}
+.preview-managed-runtime-log {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr);
+  gap: 6px;
+  min-width: 0;
+  font-size: 11px;
+}
+.preview-managed-runtime-log span,
+.preview-managed-runtime-empty {
+  color: var(--tertiary-text);
+}
+.preview-managed-runtime-log code {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--secondary-text);
+  font-family: var(--mono);
+}
 .preview-browser-form {
   flex: 1 1 auto;
   min-width: 0;
@@ -3631,6 +3707,11 @@ button.git-row:hover svg {
   flex-direction: column;
   gap: 0;
   margin: 10px 0 8px;
+}
+.artifact-runtime-actions {
+  display: flex;
+  justify-content: flex-start;
+  margin: 6px 0 8px;
 }
 .artifact-card {
   display: grid;

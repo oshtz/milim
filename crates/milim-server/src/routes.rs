@@ -54,6 +54,7 @@ use crate::companion::{
     MobileCompanionBridge, MobilePairRequest, MobileRelayRequest, MobileThreadUpdateRequest,
 };
 use crate::error::ApiError;
+use crate::preview_runtime::PreviewAppStageRequest;
 use crate::privacy::{kinds_summary, PrivacyMode};
 use crate::sse::{agent_sse, anthropic_sse, ollama_ndjson, openai_sse, ChunkCtx};
 use crate::state::AppState;
@@ -4682,6 +4683,73 @@ pub(crate) async fn workspace_set(
         *g = folder.clone();
     }
     Ok(Json(json!({ "folder": folder.map(|p| p.to_string_lossy().to_string()) })).into_response())
+}
+
+/// `GET /preview-apps/{thread_id}` - status for a managed no-folder preview app.
+pub(crate) async fn preview_app_get(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    peer: Peer,
+    Path(thread_id): Path<String>,
+) -> Result<Response, ApiError> {
+    authorize(&st, &headers, peer_addr(peer))?;
+    Ok(Json(st.preview_runtime.status(&thread_id)?).into_response())
+}
+
+/// `POST /preview-apps/{thread_id}/stage` - stage named artifact files.
+pub(crate) async fn preview_app_stage(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    peer: Peer,
+    Path(thread_id): Path<String>,
+    Json(req): Json<PreviewAppStageRequest>,
+) -> Result<Response, ApiError> {
+    authorize(&st, &headers, peer_addr(peer))?;
+    Ok(Json(st.preview_runtime.stage(&thread_id, &req.files)?).into_response())
+}
+
+/// `POST /preview-apps/{thread_id}/start` - install and start the preview app.
+pub(crate) async fn preview_app_start(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    peer: Peer,
+    Path(thread_id): Path<String>,
+) -> Result<Response, ApiError> {
+    authorize(&st, &headers, peer_addr(peer))?;
+    Ok(Json(st.preview_runtime.start(&thread_id)?).into_response())
+}
+
+/// `POST /preview-apps/{thread_id}/stop` - stop the preview app process tree.
+pub(crate) async fn preview_app_stop(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    peer: Peer,
+    Path(thread_id): Path<String>,
+) -> Result<Response, ApiError> {
+    authorize(&st, &headers, peer_addr(peer))?;
+    Ok(Json(st.preview_runtime.stop(&thread_id).await?).into_response())
+}
+
+/// `POST /preview-apps/{thread_id}/restart` - stop, then start the preview app.
+pub(crate) async fn preview_app_restart(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    peer: Peer,
+    Path(thread_id): Path<String>,
+) -> Result<Response, ApiError> {
+    authorize(&st, &headers, peer_addr(peer))?;
+    Ok(Json(st.preview_runtime.restart(&thread_id).await?).into_response())
+}
+
+/// `GET /preview-apps/{thread_id}/logs` - recent preview app logs.
+pub(crate) async fn preview_app_logs(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    peer: Peer,
+    Path(thread_id): Path<String>,
+) -> Result<Response, ApiError> {
+    authorize(&st, &headers, peer_addr(peer))?;
+    Ok(Json(json!({ "logs": st.preview_runtime.logs(&thread_id)? })).into_response())
 }
 
 /// `GET /workspace/git` - Git status for the current host working folder.

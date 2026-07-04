@@ -1,8 +1,8 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type KeyboardEvent, type PointerEvent, type ReactNode } from "react";
-import { openExternalUrl, type ChatArtifact } from "../api";
+import { openExternalUrl, type ChatArtifact, type PreviewAppStatus } from "../api";
 import type { ArtifactRevision, ArtifactRevisionGroup } from "../lib/artifactRevisions";
 import { buildArtifactPreviewDocument, previewKindForArtifact } from "../lib/artifactPreview";
-import { normalizeArtifactBrowserUrl } from "../lib/artifacts";
+import { isFileArtifact, normalizeArtifactBrowserUrl } from "../lib/artifacts";
 import { ArrowLeft, ArrowRight, Bolt, Code, Copy, Download, Eye, FileText, Globe, Plus, Refresh, X } from "./icons";
 import { Logo } from "./Logo";
 
@@ -47,8 +47,14 @@ export function PreviewPanel({
   activeTab: controlledActiveTab,
   onClose,
   onSelectRevision,
+  onOpenBrowser,
   onSendArtifactFixPrompt,
   onActiveTabChange,
+  runtimeStatus,
+  runtimeBusy = false,
+  onRuntimeStart,
+  onRuntimeStop,
+  onRuntimeRestart,
   modeSwitcher,
   style,
 }: {
@@ -62,8 +68,14 @@ export function PreviewPanel({
   activeTab?: PreviewTab;
   onClose: () => void;
   onSelectRevision?: (revision: ArtifactRevision) => void;
+  onOpenBrowser?: () => void;
   onSendArtifactFixPrompt?: (prompt: string) => void;
   onActiveTabChange?: (tab: PreviewTab) => void;
+  runtimeStatus?: PreviewAppStatus | null;
+  runtimeBusy?: boolean;
+  onRuntimeStart?: () => void;
+  onRuntimeStop?: () => void;
+  onRuntimeRestart?: () => void;
   modeSwitcher?: ReactNode;
   style?: CSSProperties;
 }) {
@@ -373,6 +385,11 @@ export function PreviewPanel({
               <Refresh size={14} />
             </button>
           )}
+          {!isUrlPreview && onOpenBrowser && (
+            <button className="preview-action" data-testid="preview-open-browser" title="Open browser panel" aria-label="Open browser panel" onClick={onOpenBrowser}>
+              <Globe size={14} />
+            </button>
+          )}
           <button className="preview-action" title={copied ? "Copied" : isUrlPreview ? "Copy URL" : "Copy source"} aria-label={copied ? "Copied" : isUrlPreview ? "Copy URL" : "Copy source"} onClick={() => void copySource()}>
             <Copy size={14} />
           </button>
@@ -411,6 +428,15 @@ export function PreviewPanel({
           <div className="preview-runtime-shell">
             {isUrlPreview ? (
               <>
+                {runtimeStatus && (
+                  <PreviewRuntimeStatus
+                    status={runtimeStatus}
+                    busy={runtimeBusy}
+                    onStart={onRuntimeStart}
+                    onStop={onRuntimeStop}
+                    onRestart={onRuntimeRestart}
+                  />
+                )}
                 <div className="preview-browser-bar" data-testid="preview-browser-bar">
                   <button className="preview-browser-action" title="Back" aria-label="Back" disabled={!canGoBack} onClick={() => navigateBrowser(-1)}>
                     <ArrowLeft size={14} />
@@ -542,6 +568,56 @@ export function PreviewPanel({
         </div>
       </div>
     </aside>
+  );
+}
+
+function PreviewRuntimeStatus({
+  status,
+  busy,
+  onStart,
+  onStop,
+  onRestart,
+}: {
+  status: PreviewAppStatus;
+  busy: boolean;
+  onStart?: () => void;
+  onStop?: () => void;
+  onRestart?: () => void;
+}) {
+  const running = status.status === "installing" || status.status === "starting" || status.status === "running";
+  const logs = status.logs.slice(-8);
+  return (
+    <div className={`preview-managed-runtime ${status.status}`} data-testid="preview-managed-runtime">
+      <div className="preview-managed-runtime-head">
+        <div className="preview-managed-runtime-copy">
+          <strong>Preview runtime</strong>
+          <span title={status.cwd}>{status.status}{status.message ? ` - ${status.message}` : ""}</span>
+        </div>
+        <div className="preview-managed-runtime-actions">
+          <button className="preview-browser-action" data-testid="preview-runtime-start" title="Start runtime" disabled={busy || running || !onStart} onClick={onStart}>
+            <Globe size={14} />
+          </button>
+          <button className="preview-browser-action" data-testid="preview-runtime-stop" title="Stop runtime" disabled={busy || !running || !onStop} onClick={onStop}>
+            <X size={14} />
+          </button>
+          <button className="preview-browser-action" data-testid="preview-runtime-restart" title="Restart runtime" disabled={busy || !onRestart} onClick={onRestart}>
+            <Refresh size={14} />
+          </button>
+        </div>
+      </div>
+      <div className="preview-managed-runtime-meta">
+        {status.url && <span>{status.url}</span>}
+        {status.command && <span>{status.command}</span>}
+      </div>
+      <div className="preview-managed-runtime-logs" data-testid="preview-runtime-logs">
+        {logs.length ? logs.map((log, index) => (
+          <div className={`preview-managed-runtime-log ${log.stream}`} key={`${log.ts}-${index}`}>
+            <span>{log.stream}</span>
+            <code>{log.line}</code>
+          </div>
+        )) : <div className="preview-managed-runtime-empty">No runtime logs</div>}
+      </div>
+    </div>
   );
 }
 
@@ -732,6 +808,7 @@ function formatErrorLog(log: PreviewLogEntry): string {
 }
 
 function artifactLabel(artifact: ChatArtifact): string {
+  if (!isFileArtifact(artifact) && !artifact.filename) return "Preview source";
   return artifact.filename ?? artifact.title;
 }
 

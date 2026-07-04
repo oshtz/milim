@@ -1,4 +1,4 @@
-import type { ChatArtifact, ChatArtifactKind, RunStep, RunTrace, SavedArtifactFile } from "../api";
+import type { ChatArtifact, ChatArtifactDisposition, ChatArtifactKind, RunStep, RunTrace, SavedArtifactFile } from "../api";
 
 const MAX_ARTIFACTS = 12;
 const MIN_ANON_CODE_CHARS = 400;
@@ -55,9 +55,6 @@ export function extractArtifactsFromContent(content: string): ChatArtifact[] {
   if (artifacts.length === 0) {
     collectStandaloneJson(trimmed, artifacts);
   }
-  if (artifacts.length < MAX_ARTIFACTS) {
-    collectMarkdownTableArtifact(content, artifacts);
-  }
   if (artifacts.length === 0) {
     collectCsvArtifact(trimmed, artifacts);
   }
@@ -90,6 +87,7 @@ export function extractArtifactsFromRunTrace(run: RunTrace | undefined, startInd
       language,
       title: written.path,
       kind: kindForSource(written.path, language, "code"),
+      disposition: "file",
     });
     const saved = savedFileForToolWrite(run, step, written.path, artifact.size);
     artifacts.push(saved ? { ...artifact, saved } : artifact);
@@ -238,6 +236,7 @@ export function extractLivePreviewArtifactFromContent(content: string): ChatArti
     language: language || "html",
     title: latest.info.title ?? latest.info.filename ?? "HTML preview",
     kind: "code",
+    disposition: "preview",
   });
   return { ...artifact, id: `live-preview-${latest.start}-${artifact.language ?? "html"}` };
 }
@@ -251,8 +250,24 @@ export function artifactPreviewAutoOpenKey(artifact: ChatArtifact): string {
   return `${artifact.filename?.toLowerCase() ?? ""}\0${source}\0${artifact.mime.toLowerCase()}`;
 }
 
-export function defaultArtifactTargetPath(artifact: Pick<ChatArtifact, "filename">): string {
-  return artifact.filename ?? "";
+export function artifactDisposition(artifact: Pick<ChatArtifact, "disposition" | "filename" | "kind">): ChatArtifactDisposition {
+  if (artifact.disposition === "file" || artifact.disposition === "inline" || artifact.disposition === "preview") {
+    return artifact.disposition;
+  }
+  if (artifact.kind === "table") return "inline";
+  return artifact.filename ? "file" : "inline";
+}
+
+export function isFileArtifact(artifact: Pick<ChatArtifact, "disposition" | "filename" | "kind">): boolean {
+  return artifactDisposition(artifact) === "file";
+}
+
+export function normalizeArtifactDisposition<T extends ChatArtifact>(artifact: T): T {
+  return artifact.disposition ? artifact : { ...artifact, disposition: artifactDisposition(artifact) };
+}
+
+export function defaultArtifactTargetPath(artifact: Pick<ChatArtifact, "disposition" | "filename" | "kind">): string {
+  return isFileArtifact(artifact) ? artifact.filename ?? "" : "";
 }
 
 function collectFencedArtifacts(content: string, artifacts: ChatArtifact[]): void {
@@ -268,6 +283,7 @@ function collectFencedArtifacts(content: string, artifacts: ChatArtifact[]): voi
       language: info.language,
       title: info.title ?? info.filename ?? `Code block ${artifacts.length + 1}`,
       kind: kindForSource(info.filename, info.language, "code"),
+      disposition: info.filename ? "file" : "inline",
     }));
   }
 }
@@ -283,6 +299,7 @@ function collectCollapsedNamedFencedArtifacts(content: string, artifacts: ChatAr
       language: parsed.info.language,
       title: parsed.info.title ?? parsed.info.filename ?? `Code block ${artifacts.length + 1}`,
       kind: kindForSource(parsed.info.filename, parsed.info.language, "code"),
+      disposition: "file",
     }));
   }
 }
@@ -326,22 +343,11 @@ function collectStandaloneJson(trimmed: string, artifacts: ChatArtifact[]): void
       language: "json",
       title: "response.json",
       kind: "json",
+      disposition: "inline",
     }));
   } catch {
     /* not JSON */
   }
-}
-
-function collectMarkdownTableArtifact(content: string, artifacts: ChatArtifact[]): void {
-  const table = extractMarkdownTable(content);
-  if (!table) return;
-  artifacts.push(makeArtifact(artifacts.length, {
-    content: markdownTableToCsv(table),
-    filename: "table.csv",
-    language: "csv",
-    title: "table.csv",
-    kind: "table",
-  }));
 }
 
 function collectCsvArtifact(trimmed: string, artifacts: ChatArtifact[]): void {
@@ -352,6 +358,7 @@ function collectCsvArtifact(trimmed: string, artifacts: ChatArtifact[]): void {
     language: "csv",
     title: "table.csv",
     kind: "csv",
+    disposition: "inline",
   }));
 }
 
@@ -361,6 +368,7 @@ function makeArtifact(index: number, input: {
   language?: string;
   title: string;
   kind: ChatArtifactKind;
+  disposition?: ChatArtifactDisposition;
 }): ChatArtifact {
   const content = input.content.replace(/\s+$/g, "");
   return {
@@ -372,6 +380,7 @@ function makeArtifact(index: number, input: {
     size: new Blob([content]).size,
     language: input.language,
     filename: input.filename,
+    disposition: input.disposition ?? (input.filename ? "file" : "inline"),
   };
 }
 
@@ -478,23 +487,6 @@ function hashArtifact(title: string, content: string): string {
     hash = Math.imul(hash, 16777619);
   }
   return (hash >>> 0).toString(36);
-}
-
-function extractMarkdownTable(content: string): string[] | null {
-  const lines = content.split(/\r?\n/);
-  for (let i = 1; i < lines.length; i++) {
-    if (!isMarkdownSeparator(lines[i]) || !lines[i - 1]?.includes("|")) continue;
-    const columnCount = markdownCells(lines[i]).length;
-    if (markdownCells(lines[i - 1]).length !== columnCount) continue;
-    const table = [lines[i - 1], lines[i]];
-    let end = i + 1;
-    while (end < lines.length && lines[end].trim() && lines[end].includes("|") && !isMarkdownSeparator(lines[end]) && markdownCells(lines[end]).length === columnCount) {
-      table.push(lines[end]);
-      end++;
-    }
-    if (table.length >= 3) return table;
-  }
-  return null;
 }
 
 function isMarkdownSeparator(line: string): boolean {

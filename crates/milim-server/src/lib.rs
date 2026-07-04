@@ -10,6 +10,7 @@ mod codex_bridge;
 pub mod companion;
 mod error;
 pub mod mcp_bridge;
+pub mod preview_runtime;
 pub mod privacy;
 pub mod providers;
 mod routes;
@@ -119,6 +120,28 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/workspace/git", get(routes::workspace_git_status))
         .route("/workspace/git/action", post(routes::workspace_git_action))
+        // Managed preview apps for no-folder chat artifacts.
+        .route("/preview-apps/{thread_id}", get(routes::preview_app_get))
+        .route(
+            "/preview-apps/{thread_id}/stage",
+            post(routes::preview_app_stage),
+        )
+        .route(
+            "/preview-apps/{thread_id}/start",
+            post(routes::preview_app_start),
+        )
+        .route(
+            "/preview-apps/{thread_id}/stop",
+            post(routes::preview_app_stop),
+        )
+        .route(
+            "/preview-apps/{thread_id}/restart",
+            post(routes::preview_app_restart),
+        )
+        .route(
+            "/preview-apps/{thread_id}/logs",
+            get(routes::preview_app_logs),
+        )
         // Computer-use gate (screen capture + mouse/keyboard)
         .route(
             "/computer",

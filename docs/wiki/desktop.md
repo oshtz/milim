@@ -6,7 +6,7 @@ title: Desktop app
 summary: Simple and Workbench modes, threads, projects, composer controls, artifacts, plan mode, goals, search, rendering, settings, and slash commands.
 group: Workbench
 order: 30
-updated: 2026-07-03
+updated: 2026-07-05
 ---
 
 The first run can open as Simple or Workbench. Simple keeps the chat core visible with model switching, themes, memory, and voice basics; Workbench exposes project, agent, MCP, media, sandbox, schedule, and computer-use controls. In both modes, the Tauri process starts the embedded backend, connects persisted MCP servers, refreshes provider models, and runs schedules in the background. Closing the desktop window hides it to the system tray so those background services keep running; use the tray menu to reopen or quit.
@@ -45,9 +45,9 @@ The first run can open as Simple or Workbench. Simple keeps the chat core visibl
 
 ## Artifacts
 
-Named artifacts from later assistant messages become selectable revisions of the same logical file or title. Revisions are immutable snapshots from chat history; preview, copy, download, diff review, apply, and save actions use the selected revision, while disk writes still require a selected working folder. Saved workspace files record the source app session, message turn, and artifact revision when available.
+Named artifacts from later assistant messages become selectable revisions of the same logical file or title. Revisions are immutable snapshots from chat history; preview, copy, download, diff review, apply, and save actions use the selected revision, while disk writes still require a selected working folder. Inline artifacts, including anonymous code fences, markdown tables, standalone JSON, and standalone CSV, remain display/export content and do not get workspace target paths, batch apply, or save controls. Saved workspace files record the source app session, message turn, and artifact revision when available.
 
-HTTP and HTTPS links rendered in assistant responses open in the system browser. When the side panel is open to artifacts, generated artifacts and localhost, 127.0.0.1, or [::1] URLs from completed shell or sandbox commands update the panel preview; the small browser button can also open or switch that panel to a blank browser state, the selected side-panel mode persists per thread, and the panel accepts public HTTPS URLs. Generated artifacts still preview through sandboxed iframe/srcDoc rendering, with anonymous script and TSX artifacts compiled through a lightweight standalone fallback when no filename is provided.
+HTTP and HTTPS links rendered in assistant responses open in the system browser. When the side panel is open to artifacts, generated artifacts and localhost, 127.0.0.1, or [::1] URLs from completed shell or sandbox commands update the panel preview; the small browser button can also open or switch that panel to a blank browser state, the selected side-panel mode persists per thread, and the panel accepts public HTTPS URLs. Generated artifacts still preview through sandboxed iframe/srcDoc rendering, with anonymous script and TSX artifacts compiled through a lightweight standalone fallback when no filename is provided. No-folder chats can stage named file artifacts that include `package.json` into a managed Node preview app under `~/.milim/runtime/preview-apps/<thread-id>/`; the runtime detects npm, pnpm, Yarn, or Bun from `packageManager` and lockfiles, requires `scripts.dev`, and ignores inline artifacts.
 
 ## Workspace checkpoints
 

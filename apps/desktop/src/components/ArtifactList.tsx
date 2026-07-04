@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { ArtifactFileStatus, ArtifactOpenTarget, ArtifactWritePreview, ChatArtifact, SavedArtifactFile } from "../api";
 import type { ArtifactRevision, ArtifactRevisionChoice } from "../lib/artifactRevisions";
-import { defaultArtifactTargetPath, isPreviewableArtifact } from "../lib/artifacts";
+import { artifactDisposition, defaultArtifactTargetPath, isFileArtifact, isPreviewableArtifact } from "../lib/artifacts";
 import { Check, Code, Copy, Download, Eye, FileText, Folder, Search } from "./icons";
 
 type SaveArtifactOptions = {
@@ -100,6 +100,7 @@ export function ArtifactList({
     if (!candidateItems.length || !onCheckSavedArtifact) return;
     let cancelled = false;
     for (const { artifact } of candidateItems) {
+      if (!isFileArtifact(artifact)) continue;
       const saved = savedById[artifact.id] ?? artifact.saved;
       if (!saved) continue;
       const current = statusById[artifact.id];
@@ -126,6 +127,7 @@ export function ArtifactList({
     if (!autoSaveArtifacts || !onPreviewArtifact || !onSaveToWorkspace || !candidateItems.length) return;
     for (const item of candidateItems) {
       const { artifact, revision } = item;
+      if (!isFileArtifact(artifact)) continue;
       if (savedById[artifact.id] || artifact.saved || previewById[artifact.id] || errorById[artifact.id] || autoSavingById[artifact.id]) continue;
       const path = targetPathFor(artifact);
       if (!path) continue;
@@ -153,9 +155,11 @@ export function ArtifactList({
 
   const visibleItems = candidateItems.filter((item) => {
     if (!autoSaveArtifacts || !onPreviewArtifact || !onSaveToWorkspace) return true;
+    if (!isFileArtifact(item.artifact)) return true;
     if (!targetPathFor(item.artifact)) return true;
     return Boolean(savedById[item.artifact.id] || item.artifact.saved || previewById[item.artifact.id] || errorById[item.artifact.id]);
   });
+  const fileItems = visibleItems.filter((item) => isFileArtifact(item.artifact));
 
   if (!visibleItems.length) return null;
 
@@ -205,7 +209,7 @@ export function ArtifactList({
   }
 
   function selectedItemsForBatch(): ArtifactCardItem[] {
-    return visibleItems.filter((item) => isArtifactSelected(item));
+    return fileItems.filter((item) => isArtifactSelected(item));
   }
 
   function clearBatchProgress() {
@@ -219,10 +223,10 @@ export function ArtifactList({
   }
 
   function setAllArtifactsSelected(selected: boolean) {
-    if (!visibleItems.length) return;
+    if (!fileItems.length) return;
     setBatchSelectionById((items) => {
       const next = { ...items };
-      for (const item of visibleItems) next[item.cardId] = selected;
+      for (const item of fileItems) next[item.cardId] = selected;
       return next;
     });
     clearBatchProgress();
@@ -323,7 +327,7 @@ export function ArtifactList({
   }
 
   async function previewAllArtifacts() {
-    if (!visibleItems.length || !onPreviewArtifact) return;
+    if (!fileItems.length || !onPreviewArtifact) return;
     const selectedItems = selectedItemsForBatch().filter((item) => targetPathFor(item.artifact));
     if (selectedItems.length === 0) {
       setBatchStatus("Enter a target path for at least one selected artifact.");
@@ -345,7 +349,7 @@ export function ArtifactList({
   }
 
   async function applyAllArtifacts() {
-    if (!visibleItems.length || !onSaveToWorkspace) return;
+    if (!fileItems.length || !onSaveToWorkspace) return;
     const selectedItems = selectedItemsForBatch().filter((item) => targetPathFor(item.artifact));
     if (selectedItems.length === 0) {
       setBatchStatus("Enter a target path for at least one selected artifact.");
@@ -419,7 +423,7 @@ export function ArtifactList({
     return savedById[result.artifactId] ?? artifact?.saved ?? { path: result.path, bytes: 0, overwritten: false };
   }
 
-  const batchSelectable = visibleItems.length > 1 && Boolean(onSaveToWorkspace && onPreviewArtifact);
+  const batchSelectable = fileItems.length > 1 && Boolean(onSaveToWorkspace && onPreviewArtifact);
   const selectedArtifactCount = selectedItemsForBatch().length;
 
   return (
@@ -428,9 +432,9 @@ export function ArtifactList({
         <div className="artifact-batch">
           <div className="artifact-batch-top">
             <div className="artifact-batch-copy">
-              <strong>{visibleItems.length} generated files</strong>
+              <strong>{fileItems.length} generated files</strong>
               <span className="artifact-batch-selection" data-testid="artifact-batch-selection-count">
-                {selectedArtifactCount} of {visibleItems.length} selected
+                {selectedArtifactCount} of {fileItems.length} selected
               </span>
               <span data-testid="artifact-batch-status">{batchStatus ?? "Review and apply this response as one change set."}</span>
             </div>
@@ -438,7 +442,7 @@ export function ArtifactList({
               <button
                 className="artifact-overwrite"
                 data-testid="artifact-batch-select-all"
-                disabled={batchBusy != null || selectedArtifactCount === visibleItems.length}
+                disabled={batchBusy != null || selectedArtifactCount === fileItems.length}
                 onClick={() => setAllArtifactsSelected(true)}
               >
                 All
@@ -512,9 +516,11 @@ export function ArtifactList({
       {visibleItems.map((item) => {
         const { artifact, revision, revisionChoice } = item;
         const revisionGroup = revisionChoice?.group;
+        const fileArtifact = isFileArtifact(artifact);
+        const disposition = artifactDisposition(artifact);
         const batchSelected = isArtifactSelected(item);
         return (
-        <section className={`artifact-card${batchSelectable && !batchSelected ? " deselected" : ""}`} data-testid="artifact-card" key={item.cardId}>
+        <section className={`artifact-card${batchSelectable && fileArtifact && !batchSelected ? " deselected" : ""}`} data-testid="artifact-card" key={item.cardId}>
           {(() => {
             const saved = savedById[artifact.id] ?? artifact.saved;
             const status = saved ? statusById[artifact.id] : undefined;
@@ -541,7 +547,7 @@ export function ArtifactList({
           </div>
           <div className="artifact-body">
             <div className="artifact-head">
-              {batchSelectable && (
+              {batchSelectable && fileArtifact && (
                 <button
                   className={`artifact-select-toggle${batchSelected ? " selected" : ""}`}
                   data-testid="artifact-select-toggle"
@@ -561,7 +567,7 @@ export function ArtifactList({
                 </div>
                 <div className="artifact-meta">
                   {artifact.kind}
-                  {artifact.language ? `/${artifact.language}` : ""} - {formatBytes(artifact.size)}
+                  {artifact.language ? `/${artifact.language}` : ""} - {disposition} - {formatBytes(artifact.size)}
                 </div>
                 {revisionChoice && revisionGroup && revision && revisionGroup.revisions.length > 1 && (
                   <label className="artifact-revision-control" title={`${revisionGroup.label} revision`}>
@@ -582,7 +588,7 @@ export function ArtifactList({
                 )}
               </div>
               <div className="artifact-actions">
-                {onOpenPreview && isPreviewableArtifact(artifact) && (
+                {fileArtifact && onOpenPreview && isPreviewableArtifact(artifact) && (
                   <button
                     className="artifact-action"
                     data-testid="artifact-open-preview"
@@ -593,7 +599,7 @@ export function ArtifactList({
                     <Eye size={14} />
                   </button>
                 )}
-                {onPreviewArtifact && (
+                {fileArtifact && onPreviewArtifact && (
                   <button
                     className="artifact-action"
                     data-testid="artifact-review-workspace"
@@ -605,16 +611,18 @@ export function ArtifactList({
                     <Search size={14} />
                   </button>
                 )}
-                <button
-                  className="artifact-action"
-                  data-testid="artifact-save-workspace"
-                  title={missingTarget ? "Enter a target path" : savedFileUnavailable ? "Resave to folder" : saved ? "Saved to folder" : "Save to folder"}
-                  aria-label={missingTarget ? "Enter a target path" : savedFileUnavailable ? "Resave to folder" : saved ? "Saved to folder" : "Save to folder"}
-                  disabled={missingTarget || savingId === artifact.id}
-                  onClick={() => void saveToWorkspace(item)}
-                >
-                  <Folder size={14} />
-                </button>
+                {fileArtifact && onSaveToWorkspace && (
+                  <button
+                    className="artifact-action"
+                    data-testid="artifact-save-workspace"
+                    title={missingTarget ? "Enter a target path" : savedFileUnavailable ? "Resave to folder" : saved ? "Saved to folder" : "Save to folder"}
+                    aria-label={missingTarget ? "Enter a target path" : savedFileUnavailable ? "Resave to folder" : saved ? "Saved to folder" : "Save to folder"}
+                    disabled={missingTarget || savingId === artifact.id}
+                    onClick={() => void saveToWorkspace(item)}
+                  >
+                    <Folder size={14} />
+                  </button>
+                )}
                 <button
                   className="artifact-action"
                   data-testid="artifact-copy"
@@ -635,19 +643,21 @@ export function ArtifactList({
                 </button>
               </div>
             </div>
-            <label className="artifact-target">
-              <span>Target</span>
-              <input
-                className="artifact-target-input"
-                data-testid="artifact-target-path"
-                aria-label="Artifact target path"
-                value={targetPathById[artifact.id] ?? defaultTargetPath(artifact)}
-                placeholder="relative/path.ext"
-                onChange={(event) => updateTargetPath(artifact, event.currentTarget.value)}
-              />
-            </label>
+            {fileArtifact && (
+              <label className="artifact-target">
+                <span>Target</span>
+                <input
+                  className="artifact-target-input"
+                  data-testid="artifact-target-path"
+                  aria-label="Artifact target path"
+                  value={targetPathById[artifact.id] ?? defaultTargetPath(artifact)}
+                  placeholder="relative/path.ext"
+                  onChange={(event) => updateTargetPath(artifact, event.currentTarget.value)}
+                />
+              </label>
+            )}
             <pre className="artifact-preview">{previewText(artifact.content)}</pre>
-            {saved && (
+            {fileArtifact && saved && (
               <div className="artifact-saved">
                 <div className="artifact-saved-main">
                   <span className="artifact-saved-path" data-testid="artifact-saved-path" title={saved.path}>
@@ -688,7 +698,7 @@ export function ArtifactList({
                 </div>
               </div>
             )}
-            {conflict && (
+            {fileArtifact && conflict && (
               <div className="artifact-conflict" data-testid="artifact-conflict">
                 <span>File already exists.</span>
                 {onPreviewArtifact && (
@@ -715,7 +725,7 @@ export function ArtifactList({
                 {error}
               </div>
             )}
-            {writePreview && (
+            {fileArtifact && writePreview && (
               <div className={`artifact-diff-preview${previewUnchanged ? " unchanged" : ""}`}>
                 <div className="artifact-diff-head">
                   <span>
