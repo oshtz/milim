@@ -1,4 +1,4 @@
-import { deepEqual, equal, rejects, throws } from "node:assert/strict";
+import { deepEqual, equal, throws } from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
   AUTO_UPDATE_INTERVAL_MS,
@@ -7,10 +7,8 @@ import {
   getAssetConfigForPlatform,
   getAssetDownloadUrl,
   getUpdateFileName,
-  parseExpectedSha256,
   selectUpdateAssets,
   shouldRunAutoUpdateCheck,
-  verifyChecksum,
   type GitHubReleaseAsset,
   type UpdateDownloadServices,
   type UpdateInfo,
@@ -18,7 +16,6 @@ import {
 
 const SHA_A = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 const SHA_B = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
-const UPDATE_BYTES = new TextEncoder().encode("milim-update");
 const updateStoreSource = readFileSync("src/update/store.ts", "utf8");
 
 function asset(
@@ -27,13 +24,6 @@ function asset(
   apiUrl = `https://api.github.com/repos/oshtz/milim/releases/assets/${encodeURIComponent(name)}`,
 ): GitHubReleaseAsset {
   return { name, url: apiUrl, browser_download_url: browserUrl };
-}
-
-async function sha256(bytes: Uint8Array): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", Uint8Array.from(bytes).buffer);
-  return Array.from(new Uint8Array(digest))
-    .map((byte) => byte.toString(16).padStart(2, "0"))
-    .join("");
 }
 
 function updateInfo(overrides: Partial<UpdateInfo> = {}): UpdateInfo {
@@ -48,23 +38,16 @@ function updateInfo(overrides: Partial<UpdateInfo> = {}): UpdateInfo {
   };
 }
 
-function createDownloadServices(os: string, checksumText: string, events: string[]): UpdateDownloadServices {
+function createDownloadServices(os: string, events: string[]): UpdateDownloadServices {
   return {
-    downloadBinary: async (url) => {
-      events.push(`download:${url}`);
-      return UPDATE_BYTES;
-    },
-    fetchText: async (url) => {
-      events.push(`checksum:${url}`);
-      return checksumText;
-    },
     getPlatform: async () => {
       events.push("platform");
       return os;
     },
-    writeUpdateFile: async (fileName, contents) => {
-      events.push(`write:${fileName}:${contents.length}`);
-      return `C:/Users/USER/AppData/Local/com.omershatz.milim/milim-updates/${fileName}`;
+    downloadUpdateFile: async (request) => {
+      events.push(`native:${request.fileName}:${request.assetName}:${request.downloadUrl}:${request.checksumUrl}`);
+      events.push(`native-checksum:${request.checksumUrl.includes(".sha256") ? SHA_A : SHA_B}`);
+      return `C:/Users/USER/AppData/Local/com.omershatz.milim/milim-updates/${request.fileName}`;
     },
     extractAppZip: async (zipPath) => {
       events.push(`extract:${zipPath}`);
@@ -107,28 +90,23 @@ const macSelected = selectUpdateAssets([asset("milim.app.zip"), asset("SHA256SUM
 equal(macSelected.asset.name, "milim.app.zip");
 equal(macSelected.checksumAsset.name, "SHA256SUMS.txt");
 
-equal(getAssetDownloadUrl(asset("milim.app.zip")), "https://api.github.com/repos/oshtz/milim/releases/assets/milim.app.zip");
-equal(parseExpectedSha256(`${SHA_A}  milim_0.1.30_x64-portable.exe`, "milim_0.1.30_x64-portable.exe"), SHA_A);
-equal(parseExpectedSha256(`${SHA_A}  other.zip\n${SHA_B}  bundle/macos/milim.app.zip`, "milim.app.zip"), SHA_B);
-
-const hash = await sha256(UPDATE_BYTES);
-await verifyChecksum(UPDATE_BYTES, `${hash}  milim_0.1.30_x64-portable.exe`, "milim_0.1.30_x64-portable.exe");
-await rejects(
-  verifyChecksum(UPDATE_BYTES, `${SHA_A}  milim_0.1.30_x64-portable.exe`, "milim_0.1.30_x64-portable.exe"),
-  /Update checksum mismatch/,
+equal(getAssetDownloadUrl(asset("milim.app.zip")), "https://github.com/oshtz/milim/releases/download/v1/milim.app.zip");
+equal(
+  getAssetDownloadUrl({ name: "milim.app.zip", url: "https://api.github.com/repos/oshtz/milim/releases/assets/1" }),
+  "https://api.github.com/repos/oshtz/milim/releases/assets/1",
 );
+throws(() => getAssetDownloadUrl({ name: "milim.app.zip" }), /no download URL/);
 
 const events: string[] = [];
 const downloaded = await downloadUpdateWithServices(
   updateInfo(),
-  createDownloadServices("win32", `${hash}  milim_0.1.30_x64-portable.exe`, events),
+  createDownloadServices("win32", events),
 );
 equal(downloaded.endsWith("milim-0.1.30.exe"), true);
 deepEqual(events, [
-  "download:https://example.test/milim_0.1.30_x64-portable.exe",
-  "checksum:https://example.test/milim_0.1.30_x64-portable.exe.sha256",
   "platform",
-  "write:milim-0.1.30.exe:12",
+  "native:milim-0.1.30.exe:milim_0.1.30_x64-portable.exe:https://example.test/milim_0.1.30_x64-portable.exe:https://example.test/milim_0.1.30_x64-portable.exe.sha256",
+  `native-checksum:${SHA_A}`,
 ]);
 
 const macEvents: string[] = [];
@@ -138,19 +116,6 @@ await downloadUpdateWithServices(
     downloadUrl: "https://example.test/milim.app.zip",
     checksumUrl: "https://example.test/milim.app.zip.sha256",
   }),
-  createDownloadServices("darwin", `${hash}  milim.app.zip`, macEvents),
+  createDownloadServices("darwin", macEvents),
 );
 equal(macEvents.at(-1)?.includes("extract:"), true);
-
-const failedEvents: string[] = [];
-await rejects(
-  downloadUpdateWithServices(
-    updateInfo(),
-    createDownloadServices("win32", `${SHA_A}  milim_0.1.30_x64-portable.exe`, failedEvents),
-  ),
-  /Update checksum mismatch/,
-);
-deepEqual(failedEvents, [
-  "download:https://example.test/milim_0.1.30_x64-portable.exe",
-  "checksum:https://example.test/milim_0.1.30_x64-portable.exe.sha256",
-]);

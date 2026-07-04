@@ -1,7 +1,7 @@
 export type GitHubReleaseAsset = {
   name: string;
   url?: string;
-  browser_download_url: string;
+  browser_download_url?: string;
 };
 
 type GitHubRelease = {
@@ -99,38 +99,6 @@ async function fetchJson<T>(url: string): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-async function downloadBinary(url: string): Promise<Uint8Array> {
-  const response = await fetch(url, {
-    method: "GET",
-    headers: {
-      Accept: "application/octet-stream",
-    },
-  });
-
-  if (!response.ok) throw new Error(`Update download failed (${response.status})`);
-  return new Uint8Array(await response.arrayBuffer());
-}
-
-async function fetchText(url: string): Promise<string> {
-  const response = await fetch(url, {
-    method: "GET",
-    headers: {
-      Accept: "text/plain, application/octet-stream",
-    },
-  });
-
-  if (!response.ok) throw new Error(`Checksum download failed (${response.status})`);
-  return response.text();
-}
-
-async function sha256Hex(bytes: Uint8Array): Promise<string> {
-  const hashInput = Uint8Array.from(bytes);
-  const digest = await crypto.subtle.digest("SHA-256", hashInput.buffer);
-  return Array.from(new Uint8Array(digest))
-    .map((byte) => byte.toString(16).padStart(2, "0"))
-    .join("");
-}
-
 export function selectUpdateAssets(
   assets: GitHubReleaseAsset[],
   assetConfig: AssetConfig,
@@ -148,36 +116,25 @@ export function selectUpdateAssets(
 }
 
 export function getAssetDownloadUrl(asset: GitHubReleaseAsset): string {
-  return asset.url ?? asset.browser_download_url;
-}
-
-export function parseExpectedSha256(checksumText: string, assetName: string): string | null {
-  const lines = checksumText.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-  const hashPattern = /[a-f0-9]{64}/i;
-  const assetBaseName = assetName.split(/[\\/]/).pop() ?? assetName;
-  const matchingLine = lines.find((line) => line.includes(assetName) && hashPattern.test(line))
-    ?? lines.find((line) => line.includes(assetBaseName) && hashPattern.test(line));
-  const fallbackLine = lines.length === 1 ? lines.find((line) => hashPattern.test(line)) : undefined;
-  const match = (matchingLine ?? fallbackLine)?.match(hashPattern);
-  return match?.[0].toLowerCase() ?? null;
-}
-
-export async function verifyChecksum(bytes: Uint8Array, checksumText: string, assetName: string): Promise<void> {
-  const expected = parseExpectedSha256(checksumText, assetName);
-  if (!expected) throw new Error(`Checksum file does not contain a SHA-256 hash for ${assetName}.`);
-  const actual = await sha256Hex(bytes);
-  if (actual !== expected) throw new Error(`Update checksum mismatch for ${assetName}.`);
+  const url = asset.browser_download_url || asset.url;
+  if (!url) throw new Error(`Release asset ${asset.name} has no download URL.`);
+  return url;
 }
 
 export function getUpdateFileName(update: UpdateInfo, os: string): string {
   return os === "darwin" ? `milim-${update.version}.app.zip` : `milim-${update.version}.exe`;
 }
 
+export type UpdateDownloadFileRequest = {
+  downloadUrl: string;
+  checksumUrl: string;
+  assetName: string;
+  fileName: string;
+};
+
 export type UpdateDownloadServices = {
-  downloadBinary: (url: string) => Promise<Uint8Array>;
-  fetchText: (url: string) => Promise<string>;
   getPlatform: () => Promise<string>;
-  writeUpdateFile: (fileName: string, contents: Uint8Array) => Promise<string>;
+  downloadUpdateFile: (request: UpdateDownloadFileRequest) => Promise<string>;
   extractAppZip: (zipPath: string) => Promise<string>;
 };
 
@@ -185,12 +142,13 @@ export async function downloadUpdateWithServices(
   update: UpdateInfo,
   services: UpdateDownloadServices,
 ): Promise<string> {
-  const binary = await services.downloadBinary(update.downloadUrl);
-  const checksumText = await services.fetchText(update.checksumUrl);
-  await verifyChecksum(binary, checksumText, update.assetName);
-
   const os = await services.getPlatform();
-  const updatePath = await services.writeUpdateFile(getUpdateFileName(update, os), binary);
+  const updatePath = await services.downloadUpdateFile({
+    downloadUrl: update.downloadUrl,
+    checksumUrl: update.checksumUrl,
+    assetName: update.assetName,
+    fileName: getUpdateFileName(update, os),
+  });
   return os === "darwin" ? services.extractAppZip(updatePath) : updatePath;
 }
 
@@ -221,11 +179,8 @@ export async function downloadUpdate(update: UpdateInfo): Promise<string> {
 
   const { invoke } = await import("@tauri-apps/api/core");
   return downloadUpdateWithServices(update, {
-    downloadBinary,
-    fetchText,
     getPlatform: () => invoke<string>("get_update_platform"),
-    writeUpdateFile: (fileName, contents) =>
-      invoke<string>("write_update_file", { fileName, contents: Array.from(contents) }),
+    downloadUpdateFile: (request) => invoke<string>("download_update_file", request),
     extractAppZip: (zipPath) => invoke<string>("extract_app_zip", { zipPath }),
   });
 }
