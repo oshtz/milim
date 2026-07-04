@@ -212,6 +212,26 @@ deepEqual(
   { status: "blocked", reason: "Goal decision was not valid JSON.", next: "" },
   "invalid goal decision JSON should block the goal",
 );
+deepEqual(
+  parseGoalDecision('{"status":"continue","reason":"More work remains.","next":"Do step two."}'),
+  { status: "continue", reason: "More work remains.", next: "Do step two." },
+  "strict goal decision JSON should parse",
+);
+deepEqual(
+  parseGoalDecision('```json\n{"status":"complete","reason":"Done.","next":""}\n```'),
+  { status: "complete", reason: "Done.", next: "" },
+  "fenced goal decision JSON should parse",
+);
+deepEqual(
+  parseGoalDecision('Decision:\n{"status":"blocked","reason":"Missing {external} input.","next":""}\nThanks.'),
+  { status: "blocked", reason: "Missing {external} input.", next: "" },
+  "prose-wrapped goal decision JSON should parse",
+);
+deepEqual(
+  parseGoalDecision('{"status":"continue","reason":"unfinished","next":"'),
+  { status: "blocked", reason: "Goal decision was not valid JSON.", next: "" },
+  "incomplete goal decision JSON should block the goal",
+);
 let loopGoal = normalizeGoalSettings({ ...DEFAULT_GOAL_SETTINGS, objective: "Loop test", status: "running" });
 loopGoal = applyGoalDecision(loopGoal, { status: "continue", reason: "More work remains.", next: "Do step two." });
 equal(loopGoal.status, "running", "continue decision should keep the goal running");

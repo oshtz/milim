@@ -150,10 +150,38 @@ export function goalContinuationPrompt(goal: GoalSettings, next: string): string
   return next.trim() || `Continue working toward the active goal: ${goal.objective.trim()}`;
 }
 
+function extractGoalDecisionJson(raw: string): string {
+  const trimmed = raw.trim();
+  const fence = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fence) return extractGoalDecisionJson(fence[1]);
+  const start = trimmed.indexOf("{");
+  if (start < 0) return trimmed;
+
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < trimmed.length; i += 1) {
+    const ch = trimmed[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === "\"") inString = false;
+      continue;
+    }
+    if (ch === "\"") inString = true;
+    else if (ch === "{") depth += 1;
+    else if (ch === "}") {
+      depth -= 1;
+      if (depth === 0) return trimmed.slice(start, i + 1);
+    }
+  }
+  return trimmed;
+}
+
 export function parseGoalDecision(raw: string): GoalDecision {
   let parsed: unknown;
   try {
-    parsed = JSON.parse(raw.trim());
+    parsed = JSON.parse(extractGoalDecisionJson(raw));
   } catch {
     return { status: "blocked", reason: "Goal decision was not valid JSON.", next: "" };
   }

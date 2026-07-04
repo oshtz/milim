@@ -2261,7 +2261,7 @@ export function ChatView({
             reasoning_effort: decisionReasoningEffort,
             tool_approval_policy: "review",
             tool_approval_grant: false,
-            plan_mode: true,
+            plan_mode: false,
           },
           (ev: CodexRunEvent) => {
             if (ev.type === "token" && ev.text) content += ev.text;
@@ -2283,7 +2283,7 @@ export function ChatView({
             reasoning_effort: decisionReasoningEffort,
             tool_approval_policy: "review",
             tool_approval_grant: false,
-            plan_mode: true,
+            plan_mode: false,
           },
           (ev: ClaudeRunEvent) => {
             if (ev.type === "token" && ev.text) content += ev.text;
