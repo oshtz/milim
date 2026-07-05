@@ -36,7 +36,7 @@ The first run can open as Simple or Workbench. Simple keeps the chat core visibl
 | Model | Pick any discovered chat, account-runtime, or media-capable model. |
 | Folder | Sets the host working folder. Host filesystem, shell, and Git actions refuse to run until a folder is selected. |
 | Sandbox | Enables Docker-backed command execution through the isolated `run_command` tool. |
-| Computer use | Enables screen capture plus mouse/keyboard tools when the desktop build includes the feature. |
+| Computer use | Enables OS-level screen capture plus mouse/keyboard tools when the desktop build includes the feature. |
 | Memory | Adds scoped thread/project memory search and lets tools register durable memories. |
 | Privacy | Sets `off`, `redact`, or `block` for remote-provider and account-runtime traffic. |
 | Approval | Sets `review`, `guarded`, or `open` tool execution policy. |
