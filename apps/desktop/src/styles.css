@@ -283,6 +283,40 @@ body.sidebar-pointer-dragging .session-section-title {
 .topbar .icon-btn.active { background: transparent; }
 .topbar .icon-btn:hover { color: var(--primary-text); }
 .topbar .icon-btn.active { color: var(--primary-text); }
+.topbar-update-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--warning) 58%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--warning) 24%, transparent);
+  color: var(--primary-text);
+  cursor: pointer;
+  box-shadow: 0 0 14px color-mix(in srgb, var(--warning) 18%, transparent);
+}
+.topbar-update-btn > svg { flex: none; filter: var(--icon-contrast-filter); }
+.topbar-update-btn:hover {
+  background: color-mix(in srgb, var(--warning) 32%, transparent);
+}
+.topbar-update-btn:disabled {
+  cursor: default;
+  opacity: 0.78;
+}
+.update-confirm-modal p {
+  margin: 0;
+  color: var(--secondary-text);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.update-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
 
 .menu-sep { height: 1px; background: var(--border-primary); margin: 5px 4px; }
 .agent-mono { flex: 1; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -2736,10 +2770,9 @@ button.git-row:hover svg {
   flex: 0 0 auto;
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 8px;
+  min-width: 0;
   border-bottom: 1px solid var(--border);
-  background: color-mix(in srgb, var(--bg-secondary) 92%, var(--accent));
+  background: var(--bg-secondary);
 }
 .preview-managed-runtime-head {
   display: flex;
@@ -2747,12 +2780,31 @@ button.git-row:hover svg {
   justify-content: space-between;
   gap: 8px;
   min-width: 0;
+  padding: 5px 8px 7px;
 }
 .preview-managed-runtime-copy {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
+  flex: 0 1 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   min-width: 0;
+}
+.preview-managed-runtime-dot {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--tertiary-text);
+}
+.preview-managed-runtime.running .preview-managed-runtime-dot {
+  background: var(--success);
+}
+.preview-managed-runtime.installing .preview-managed-runtime-dot,
+.preview-managed-runtime.starting .preview-managed-runtime-dot {
+  background: var(--warning);
+}
+.preview-managed-runtime.error .preview-managed-runtime-dot {
+  background: var(--error);
 }
 .preview-managed-runtime-copy strong {
   color: var(--primary-text);
@@ -2772,22 +2824,35 @@ button.git-row:hover svg {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 2px;
 }
 .preview-managed-runtime-meta {
+  flex: 1 1 auto;
   display: flex;
+  min-width: 0;
   gap: 8px;
+}
+.preview-managed-runtime-meta span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .preview-managed-runtime-logs {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  max-height: 112px;
+  max-height: 104px;
   overflow: auto;
+  margin: 0 8px 8px;
   padding: 5px 6px;
   border: 1px solid var(--border-primary);
-  border-radius: 7px;
+  border-radius: 6px;
   background: color-mix(in srgb, var(--bg-primary) 88%, black);
+}
+.preview-managed-runtime-log-toggle span {
+  font-size: 11px;
+  line-height: 1;
 }
 .preview-managed-runtime-log {
   display: grid;

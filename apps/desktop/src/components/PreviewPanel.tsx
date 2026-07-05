@@ -428,15 +428,6 @@ export function PreviewPanel({
           <div className="preview-runtime-shell">
             {isUrlPreview ? (
               <>
-                {runtimeStatus && (
-                  <PreviewRuntimeStatus
-                    status={runtimeStatus}
-                    busy={runtimeBusy}
-                    onStart={onRuntimeStart}
-                    onStop={onRuntimeStop}
-                    onRestart={onRuntimeRestart}
-                  />
-                )}
                 <div className="preview-browser-bar" data-testid="preview-browser-bar">
                   <button className="preview-browser-action" title="Back" aria-label="Back" disabled={!canGoBack} onClick={() => navigateBrowser(-1)}>
                     <ArrowLeft size={14} />
@@ -467,6 +458,15 @@ export function PreviewPanel({
                     <ArrowRight size={14} />
                   </button>
                 </div>
+                {runtimeStatus && (
+                  <PreviewRuntimeStatus
+                    status={runtimeStatus}
+                    busy={runtimeBusy}
+                    onStart={onRuntimeStart}
+                    onStop={onRuntimeStop}
+                    onRestart={onRuntimeRestart}
+                  />
+                )}
                 {browserError && <div className="preview-browser-error" role="alert">{browserError}</div>}
                 {browserUrl ? (
                   <NativeArtifactBrowser url={browserUrl} frameKey={frameKey} title={title} active={!closing} />
@@ -585,15 +585,31 @@ function PreviewRuntimeStatus({
   onRestart?: () => void;
 }) {
   const running = status.status === "installing" || status.status === "starting" || status.status === "running";
+  const [logsOpen, setLogsOpen] = useState(false);
   const logs = status.logs.slice(-8);
+  const canShowLogs = logs.length > 0 || status.status === "error";
+  const showLogs = logsOpen || status.status === "error";
+  const statusText = `${status.status}${status.message ? ` - ${status.message}` : ""}`;
   return (
     <div className={`preview-managed-runtime ${status.status}`} data-testid="preview-managed-runtime">
       <div className="preview-managed-runtime-head">
         <div className="preview-managed-runtime-copy">
-          <strong>Preview runtime</strong>
-          <span title={status.cwd}>{status.status}{status.message ? ` - ${status.message}` : ""}</span>
+          <span className="preview-managed-runtime-dot" aria-hidden="true" />
+          <strong>Runtime</strong>
+          <span title={status.cwd}>{statusText}</span>
         </div>
+        {(status.url || status.command) && (
+          <div className="preview-managed-runtime-meta" title={[status.url, status.command].filter(Boolean).join(" - ")}>
+            {status.url && <span>{status.url}</span>}
+            {status.command && <span>{status.command}</span>}
+          </div>
+        )}
         <div className="preview-managed-runtime-actions">
+          {canShowLogs && (
+            <button className="preview-browser-action preview-managed-runtime-log-toggle" data-testid="preview-runtime-log-toggle" title="Runtime logs" aria-label="Runtime logs" aria-expanded={showLogs} onClick={() => setLogsOpen((open) => !open)}>
+              <span>{logs.length}</span>
+            </button>
+          )}
           <button className="preview-browser-action" data-testid="preview-runtime-start" title="Start runtime" disabled={busy || running || !onStart} onClick={onStart}>
             <Globe size={14} />
           </button>
@@ -605,18 +621,14 @@ function PreviewRuntimeStatus({
           </button>
         </div>
       </div>
-      <div className="preview-managed-runtime-meta">
-        {status.url && <span>{status.url}</span>}
-        {status.command && <span>{status.command}</span>}
-      </div>
-      <div className="preview-managed-runtime-logs" data-testid="preview-runtime-logs">
+      {showLogs && <div className="preview-managed-runtime-logs" data-testid="preview-runtime-logs">
         {logs.length ? logs.map((log, index) => (
           <div className={`preview-managed-runtime-log ${log.stream}`} key={`${log.ts}-${index}`}>
             <span>{log.stream}</span>
             <code>{log.line}</code>
           </div>
-        )) : <div className="preview-managed-runtime-empty">No runtime logs</div>}
-      </div>
+        )) : <div className="preview-managed-runtime-empty">{status.message || "No runtime logs"}</div>}
+      </div>}
     </div>
   );
 }

@@ -17,6 +17,8 @@ import {
 const SHA_A = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 const SHA_B = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
 const updateStoreSource = readFileSync("src/update/store.ts", "utf8");
+const autoUpdaterSource = readFileSync("src/components/AutoUpdater.tsx", "utf8");
+const topBarSource = readFileSync("src/components/TopBar.tsx", "utf8");
 
 function asset(
   name: string,
@@ -83,6 +85,18 @@ equal(
   updateStoreSource.includes("compareVersions(currentVersion, updateInfo.version) >= 0"),
   true,
   "stale update packages should be detected by semantic version comparison",
+);
+equal(autoUpdaterSource.includes("window.confirm"), false, "automatic update checks should not prompt on startup");
+equal(autoUpdaterSource.includes("downloadNow"), false, "automatic update checks should not download before the user clicks update");
+equal(autoUpdaterSource.includes("installNow"), false, "automatic update checks should not install before the user clicks update");
+equal(autoUpdaterSource.includes("ignoreVersion"), false, "canceling the top-bar update prompt should not hide the update");
+equal(topBarSource.includes('data-testid="topbar-update"'), true, "available updates should render a top-bar update button");
+equal(topBarSource.includes("window.confirm"), false, "top-bar update flow should use the themed app dialog");
+equal(topBarSource.includes('role="dialog"'), true, "top-bar update flow should render an in-app confirmation dialog");
+equal(
+  topBarSource.indexOf("await installNow()") > topBarSource.indexOf("await downloadNow(updateInfo)"),
+  true,
+  "top-bar update flow should download before installing",
 );
 
 const windowsSelected = selectUpdateAssets(

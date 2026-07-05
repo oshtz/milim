@@ -131,7 +131,7 @@ Shipped UI:
 - Voice input, push-to-talk, active-app dictation, STT, VAD, TTS, Piper/Kokoro preset installs, and native ORT provider options behind feature flags where needed.
 - Image/video generation through configured remote providers with model schema controls, status polling, and result previews.
 - Mobile companion for paired phones, with restart-proof pairing, persisted phone URL base, startup Tailscale Serve repair when the bridge is enabled, in-app QR scanning, active desktop theme mirroring, Markdown-rendered live thread viewing/switching through a project-aware mobile sidebar, new-thread/stop/regenerate/rename/archive/delete controls, mobile file/photo attachments, model switching, phone sends through the desktop composer/model path, pairing, enable/disable, queued events, device revocation, and a Tailscale Serve setup helper that opens Tailscale download when missing and creates phone-reachable tailnet HTTPS URLs where available.
-- Themes, custom style settings, configurable app-window keyboard shortcuts (Previous thread defaults to `Ctrl+Tab` on Windows/macOS), frameless window controls, close-to-tray background mode, persisted window state, and GitHub Release update checks for Windows/macOS artifacts with checksum verification.
+- Themes, custom style settings, configurable app-window keyboard shortcuts (Previous thread defaults to `Ctrl+Tab` on Windows/macOS), frameless window controls, close-to-tray background mode, persisted window state, and GitHub Release update checks for Windows/macOS artifacts with checksum verification and a top-bar one-click install action.
 
 Whisper STT, native VAD, and native TTS are opt-in build features because they require native toolchains and model files:
 

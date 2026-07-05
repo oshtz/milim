@@ -6,7 +6,7 @@ title: Release and verification
 summary: Release artifacts, updater behavior, verification commands, and site build checks.
 group: Reference
 order: 110
-updated: 2026-07-04
+updated: 2026-07-05
 ---
 
 Release work should verify the Rust workspace, desktop app, site docs, and platform artifacts without reintroducing Linux packaging as a release target.
@@ -23,7 +23,7 @@ Updater assets are verified with SHA-256 sidecars and an aggregate `SHA256SUMS.t
 
 ## Updater behavior
 
-The desktop app checks GitHub Releases for the latest platform artifact, then downloads the selected package and checksum through a native Tauri command. The native command verifies SHA-256 before staging the package in the local update directory and handing it to the existing Windows portable EXE or macOS app replacement flow.
+The desktop app checks GitHub Releases for the latest platform artifact in the background. When an update is available, the top bar shows an Update button; confirming it downloads the selected package and checksum through a native Tauri command, verifies SHA-256, stages the package in the local update directory, and hands it to the existing Windows portable EXE or macOS app replacement flow.
 
 ## Checks
 
