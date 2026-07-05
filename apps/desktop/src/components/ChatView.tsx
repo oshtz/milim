@@ -132,6 +132,7 @@ import {
 } from "../lib/media";
 import { estimateResponseCostUsd, formatResponseMetrics, providerNameForModel, responseMetricsForTurn, summarizeMilimUsage, summarizeThreadMetricsBreakdown, type MilimUsageSummary } from "../lib/usageMetrics";
 import { markPerfRender } from "../lib/perf";
+import { previewControlActivityFromDebugUrl, previewControlActivityFromStreamParts } from "../lib/previewActivity";
 import { statusPart } from "../lib/turnEvents";
 import { accountRuntimeNotReadyForTurn, appendUserTurn, editResendConversation, prepareTurnOutbound, regenerateTurnConversation, resolveTurnSetup, type AccountRuntimeReady } from "../lib/turnContext";
 import { prepareTurnPromptContext, resolveTurnToolApproval } from "../lib/turnPrompt";
@@ -3975,6 +3976,16 @@ export function ChatView({
   const activeRun = busy
     ? messages.slice().reverse().find((message) => message.role === "assistant" && message.run?.status === "running")?.run ?? null
     : null;
+  const activeStreamParts = busy
+    ? messages.slice().reverse().find((message) => message.role === "assistant" && message.streamParts?.length)?.streamParts
+    : undefined;
+  const debugPreviewControlActivity = typeof window === "undefined" ? null : previewControlActivityFromDebugUrl(window.location.href);
+  const previewControlActivity =
+    debugPreviewControlActivity ??
+    previewControlActivityFromStreamParts(activeStreamParts, {
+      runtimeBusy: previewAppBusy != null,
+      runtimeStatus: previewAppStatus,
+    });
   const canOpenArtifactPanel = Boolean(latestPreviewSelection || (sidePanelMode === "artifact" && previewSelection));
   const sidePanelModeSwitcher = (
     <div className="side-panel-switcher" role="tablist" aria-label="Side panel mode">
@@ -4331,6 +4342,7 @@ export function ChatView({
                 onRuntimeStart={() => void startPreviewRuntime()}
                 onRuntimeStop={() => void stopPreviewRuntime()}
                 onRuntimeRestart={() => void restartPreviewRuntime()}
+                controlActivity={previewControlActivity}
                 modeSwitcher={sidePanelModeSwitcher}
                 style={previewPanelStyle}
               />

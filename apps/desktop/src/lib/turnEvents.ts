@@ -75,6 +75,7 @@ function toolEventIcon(name?: string): ChatStreamEventIcon {
     case "screenshot":
     case "mouse_move":
     case "mouse_click":
+    case "scroll":
     case "key_press":
     case "type_text":
       return "screen";
@@ -117,6 +118,7 @@ function toolLabel(name: string | undefined, done: boolean): string {
       return done ? "Captured screen" : "Capturing screen";
     case "mouse_move":
     case "mouse_click":
+    case "scroll":
     case "key_press":
     case "type_text":
       return done ? "Used computer" : "Using computer";
@@ -143,6 +145,13 @@ function toolFailedLabel(name: string | undefined): string {
       return "Command failed";
     case "run_command":
       return "Sandbox command failed";
+    case "scroll":
+    case "screenshot":
+    case "mouse_move":
+    case "mouse_click":
+    case "key_press":
+    case "type_text":
+      return "Computer use failed";
     case "http_fetch":
       return "Fetch failed";
     case "memory_register":

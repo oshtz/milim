@@ -2722,6 +2722,14 @@ button.git-row:hover svg {
   border: 0;
   background: #fff;
 }
+.preview-frame-host,
+.preview-browser-content {
+  position: relative;
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  overflow: hidden;
+}
 .preview-native-browser {
   position: relative;
   flex: 1;
@@ -2742,10 +2750,193 @@ button.git-row:hover svg {
   pointer-events: none;
 }
 .preview-runtime-shell {
+  position: relative;
+  isolation: isolate;
   flex: 1;
   display: flex;
   flex-direction: column;
   min-height: 0;
+}
+.preview-control-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  outline: 1px solid color-mix(in srgb, var(--primary-text) 20%, transparent);
+  outline-offset: -1px;
+  border-radius: 0;
+  pointer-events: none;
+  overflow: hidden;
+  opacity: 0;
+  animation: preview-control-fade 1.8s var(--preview-panel-motion-ease) both;
+}
+.preview-control-overlay.running {
+  opacity: 1;
+  animation: none;
+}
+.preview-control-overlay::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  border-radius: inherit;
+  box-shadow:
+    inset 0 0 22px 4px color-mix(in srgb, var(--accent) 28%, transparent),
+    inset 0 0 46px 8px color-mix(in srgb, var(--accent-light) 18%, transparent),
+    inset 0 0 74px 16px color-mix(in srgb, var(--focus-border) 14%, transparent);
+  opacity: 0.72;
+}
+.preview-control-overlay::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  border-radius: inherit;
+  background:
+    linear-gradient(90deg, transparent, color-mix(in srgb, var(--primary-text) 72%, var(--accent)), transparent) -160px 0 / 160px 1px no-repeat,
+    linear-gradient(180deg, transparent, color-mix(in srgb, var(--primary-text) 72%, var(--accent)), transparent) calc(100% - 1px) -160px / 1px 160px no-repeat,
+    linear-gradient(90deg, transparent, color-mix(in srgb, var(--primary-text) 72%, var(--accent)), transparent) calc(100% + 160px) calc(100% - 1px) / 160px 1px no-repeat,
+    linear-gradient(180deg, transparent, color-mix(in srgb, var(--primary-text) 72%, var(--accent)), transparent) 0 calc(100% + 160px) / 1px 160px no-repeat;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 8%, transparent);
+  opacity: 0.58;
+  animation: preview-control-edge-sweep 3.6s linear infinite;
+}
+.preview-control-scan {
+  position: absolute;
+  z-index: 2;
+  left: 10px;
+  right: 10px;
+  top: 14%;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.7), transparent);
+  opacity: 0;
+}
+.preview-control-overlay.inspect .preview-control-scan {
+  animation: preview-control-scan 1.7s ease-in-out infinite;
+}
+.preview-control-cursor {
+  position: absolute;
+  left: 16%;
+  top: 68%;
+  z-index: 3;
+  width: 24px;
+  height: 24px;
+  --preview-control-cursor-fill: #fff;
+  --preview-control-cursor-stroke: #111;
+  filter: drop-shadow(0 8px 12px rgba(0, 0, 0, 0.36));
+  transform: rotate(-8deg);
+}
+html[data-dark="true"] .preview-control-cursor {
+  --preview-control-cursor-fill: #050505;
+  --preview-control-cursor-stroke: #fff;
+}
+.preview-control-cursor-glow {
+  position: absolute;
+  left: 16%;
+  top: 68%;
+  z-index: 2;
+  width: 70px;
+  height: 70px;
+  border-radius: 999px;
+  background:
+    radial-gradient(circle, var(--accent-light) 0 12%, var(--accent-glow) 34%, transparent 70%),
+    radial-gradient(circle, var(--focus-border) 0 18%, transparent 62%);
+  filter: blur(16px) saturate(1.08);
+  opacity: 0.46;
+  transform: translate(-24px, -22px);
+}
+.preview-control-overlay.move .preview-control-cursor {
+  animation: preview-control-move 1.65s var(--preview-panel-motion-ease) both;
+}
+.preview-control-overlay.move .preview-control-cursor-glow {
+  animation: preview-control-move 1.65s var(--preview-panel-motion-ease) both;
+}
+.preview-control-overlay.click .preview-control-cursor {
+  left: 62%;
+  top: 46%;
+  animation: preview-control-click-cursor 1.25s var(--preview-panel-motion-ease) both;
+}
+.preview-control-overlay.click .preview-control-cursor-glow {
+  left: 62%;
+  top: 46%;
+  animation: preview-control-click-glow 1.25s var(--preview-panel-motion-ease) both;
+}
+.preview-control-overlay.scroll .preview-control-cursor {
+  left: 66%;
+  top: 38%;
+  animation: preview-control-scroll-cursor 1.45s var(--preview-panel-motion-ease) both;
+}
+.preview-control-overlay.scroll .preview-control-cursor-glow {
+  left: 66%;
+  top: 38%;
+  animation: preview-control-scroll-cursor 1.45s var(--preview-panel-motion-ease) both;
+}
+.preview-control-overlay.type .preview-control-cursor {
+  left: 36%;
+  top: 66%;
+  animation: preview-control-type-cursor 1.35s var(--preview-panel-motion-ease) both;
+}
+.preview-control-overlay.type .preview-control-cursor-glow {
+  left: 36%;
+  top: 66%;
+  animation: preview-control-type-cursor 1.35s var(--preview-panel-motion-ease) both;
+}
+.preview-control-click-ring {
+  position: absolute;
+  left: calc(62% + 6px);
+  top: calc(46% + 5px);
+  z-index: 2;
+  width: 36px;
+  height: 36px;
+  border: 1px solid rgba(255, 255, 255, 0.82);
+  border-radius: 999px;
+  transform: translate(-50%, -50%);
+  animation: preview-control-ring 1.25s ease-out both;
+}
+.preview-control-scroll-cue {
+  position: absolute;
+  left: 50%;
+  top: 22%;
+  z-index: 2;
+  width: 2px;
+  height: 74px;
+  border-radius: 999px;
+  background: linear-gradient(transparent, rgba(255, 255, 255, 0.74), transparent);
+  animation: preview-control-scroll-cue 1.45s ease-in-out both;
+}
+.preview-control-caret {
+  position: absolute;
+  left: 43%;
+  top: 66%;
+  z-index: 2;
+  width: 2px;
+  height: 28px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.86);
+  box-shadow: 14px 0 0 rgba(255, 255, 255, 0.22), 28px 0 0 rgba(255, 255, 255, 0.16);
+  animation: preview-control-caret 1.35s steps(2, end) both;
+}
+.preview-control-label {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  z-index: 3;
+  display: inline-flex;
+  max-width: min(280px, calc(100% - 24px));
+  min-height: 28px;
+  align-items: center;
+  padding: 0 10px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 8px;
+  background: rgba(10, 12, 18, 0.72);
+  color: rgba(255, 255, 255, 0.88);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.28);
+  font-size: 11.5px;
+  backdrop-filter: blur(12px);
+}
+.preview-control-label span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .preview-browser-bar {
   flex: 0 0 auto;
@@ -2780,20 +2971,21 @@ button.git-row:hover svg {
   opacity: 0.55;
 }
 .preview-managed-runtime {
-  flex: 0 0 auto;
+  flex: 0 1 auto;
   display: flex;
-  flex-direction: column;
+  align-items: center;
   min-width: 0;
-  border-bottom: 1px solid var(--border);
-  background: var(--bg-secondary);
+  height: 30px;
+  border: 1px solid var(--border-primary);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--input-bg) 78%, transparent);
 }
 .preview-managed-runtime-head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
+  gap: 6px;
   min-width: 0;
-  padding: 5px 8px 7px;
+  padding: 0 3px 0 8px;
 }
 .preview-managed-runtime-copy {
   flex: 0 1 auto;
@@ -2821,11 +3013,10 @@ button.git-row:hover svg {
 }
 .preview-managed-runtime-copy strong {
   color: var(--primary-text);
-  font-size: 12px;
+  font-size: 11.5px;
   font-weight: 650;
 }
-.preview-managed-runtime-copy span,
-.preview-managed-runtime-meta {
+.preview-managed-runtime-copy span {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2838,53 +3029,6 @@ button.git-row:hover svg {
   display: flex;
   align-items: center;
   gap: 2px;
-}
-.preview-managed-runtime-meta {
-  flex: 1 1 auto;
-  display: flex;
-  min-width: 0;
-  gap: 8px;
-}
-.preview-managed-runtime-meta span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.preview-managed-runtime-logs {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  max-height: 104px;
-  overflow: auto;
-  margin: 0 8px 8px;
-  padding: 5px 6px;
-  border: 1px solid var(--border-primary);
-  border-radius: 6px;
-  background: color-mix(in srgb, var(--bg-primary) 88%, black);
-}
-.preview-managed-runtime-log-toggle span {
-  font-size: 11px;
-  line-height: 1;
-}
-.preview-managed-runtime-log {
-  display: grid;
-  grid-template-columns: 48px minmax(0, 1fr);
-  gap: 6px;
-  min-width: 0;
-  font-size: 11px;
-}
-.preview-managed-runtime-log span,
-.preview-managed-runtime-empty {
-  color: var(--tertiary-text);
-}
-.preview-managed-runtime-log code {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--secondary-text);
-  font-family: var(--mono);
 }
 .preview-browser-form {
   flex: 1 1 auto;
@@ -3085,6 +3229,8 @@ button.git-row:hover svg {
   flex: 0 0 auto;
   border-top: 1px solid var(--border-primary);
   background: color-mix(in srgb, var(--panel-bg) 96%, transparent);
+  user-select: text;
+  -webkit-user-select: text;
 }
 .preview-log-head {
   display: flex;
@@ -3094,8 +3240,15 @@ button.git-row:hover svg {
   min-height: 34px;
   padding: 5px 8px;
 }
+.preview-log-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+}
 .preview-log-toggle,
-.preview-quick-fix {
+.preview-quick-fix,
+.preview-log-clear {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -3109,9 +3262,11 @@ button.git-row:hover svg {
   font: inherit;
   font-size: 11.5px;
   cursor: pointer;
+  user-select: none;
 }
 .preview-log-toggle:hover,
-.preview-quick-fix:hover {
+.preview-quick-fix:hover,
+.preview-log-clear:hover {
   background: var(--chip-hover);
   color: var(--primary-text);
 }
@@ -3121,12 +3276,37 @@ button.git-row:hover svg {
 .preview-quick-fix {
   color: var(--accent-light);
 }
+.preview-log-clear {
+  color: var(--tertiary-text);
+}
+.preview-log-resize-handle {
+  position: relative;
+  height: 7px;
+  cursor: ns-resize;
+  touch-action: none;
+}
+.preview-log-resize-handle::before {
+  content: "";
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  top: 3px;
+  height: 1px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--border-primary) 72%, transparent);
+}
+.preview-log-resize-handle:hover::before,
+.preview-log-resize-handle:focus-visible::before,
+.preview-log-resize-handle.dragging::before {
+  background: var(--border-secondary);
+}
 .preview-log-list {
-  max-height: 142px;
   overflow: auto;
   padding: 0 8px 8px;
   font-family: var(--mono);
   font-size: 11.5px;
+  user-select: text;
+  -webkit-user-select: text;
 }
 .preview-log-row {
   display: grid;
@@ -3144,10 +3324,152 @@ button.git-row:hover svg {
 .preview-log-empty {
   color: var(--tertiary-text);
 }
+.preview-log-level,
+.preview-log-location {
+  user-select: none;
+  -webkit-user-select: none;
+}
 .preview-log-message {
   min-width: 0;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
+  user-select: text;
+  -webkit-user-select: text;
+}
+@keyframes preview-control-fade {
+  0% {
+    opacity: 0;
+  }
+  12%,
+  72% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+@keyframes preview-control-edge-sweep {
+  from {
+    background-position: -160px 0, calc(100% - 1px) -160px, calc(100% + 160px) calc(100% - 1px), 0 calc(100% + 160px);
+  }
+  to {
+    background-position: calc(100% + 160px) 0, calc(100% - 1px) calc(100% + 160px), -160px calc(100% - 1px), 0 -160px;
+  }
+}
+@keyframes preview-control-scan {
+  0% {
+    top: 14%;
+    opacity: 0;
+  }
+  20%,
+  70% {
+    opacity: 0.9;
+  }
+  100% {
+    top: 82%;
+    opacity: 0;
+  }
+}
+@keyframes preview-control-move {
+  0% {
+    left: 16%;
+    top: 68%;
+  }
+  54% {
+    left: 45%;
+    top: 42%;
+  }
+  100% {
+    left: 72%;
+    top: 34%;
+  }
+}
+@keyframes preview-control-click-cursor {
+  0%,
+  58%,
+  100% {
+    transform: rotate(-8deg) scale(1);
+  }
+  72% {
+    transform: rotate(-8deg) scale(0.88);
+  }
+}
+@keyframes preview-control-ring {
+  0%,
+  48% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.45);
+  }
+  72% {
+    opacity: 0.95;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(1.75);
+  }
+}
+@keyframes preview-control-click-glow {
+  0%,
+  48% {
+    opacity: 0.34;
+    transform: translate(-24px, -22px) scale(0.88);
+  }
+  72% {
+    opacity: 0.58;
+    transform: translate(-24px, -22px) scale(1.08);
+  }
+  100% {
+    opacity: 0.42;
+    transform: translate(-24px, -22px) scale(1);
+  }
+}
+@keyframes preview-control-scroll-cursor {
+  0% {
+    top: 64%;
+    opacity: 0;
+  }
+  20% {
+    opacity: 1;
+  }
+  100% {
+    top: 34%;
+    opacity: 1;
+  }
+}
+@keyframes preview-control-scroll-cue {
+  0% {
+    transform: translateY(46px);
+    opacity: 0;
+  }
+  24%,
+  74% {
+    opacity: 0.9;
+  }
+  100% {
+    transform: translateY(-34px);
+    opacity: 0;
+  }
+}
+@keyframes preview-control-type-cursor {
+  0% {
+    left: 24%;
+    opacity: 0;
+  }
+  24%,
+  100% {
+    left: 36%;
+    opacity: 1;
+  }
+}
+@keyframes preview-control-caret {
+  0%,
+  22% {
+    opacity: 0;
+  }
+  23%,
+  100% {
+    opacity: 1;
+  }
 }
 @keyframes preview-resize-handle-in {
   from {
@@ -3576,6 +3898,24 @@ button.git-row:hover svg {
     animation: none;
     filter: none;
     transform: none;
+  }
+  .preview-control-overlay,
+  .preview-control-overlay::before,
+  .preview-control-overlay::after,
+  .preview-control-scan,
+  .preview-control-cursor,
+  .preview-control-cursor-glow,
+  .preview-control-click-ring,
+  .preview-control-scroll-cue,
+  .preview-control-caret {
+    animation: none;
+    filter: none;
+  }
+  .preview-control-overlay:not(.running) {
+    opacity: 0;
+  }
+  .preview-control-overlay.running {
+    opacity: 1;
   }
 }
 .message-attachments {

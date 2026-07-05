@@ -2,12 +2,14 @@ import { createElement, type ComponentType } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createServer } from "vite";
 import type { ChatArtifact } from "../src/api.js";
+import type { PreviewControlActivity } from "../src/lib/previewActivity.js";
 
 type PreviewPanelProps = {
   artifact: ChatArtifact;
   artifacts?: readonly ChatArtifact[];
   onClose: () => void;
   onOpenBrowser?: () => void;
+  controlActivity?: PreviewControlActivity | null;
 };
 
 function assert(condition: unknown, message: string): asserts condition {
@@ -45,6 +47,13 @@ const htmlArtifact: ChatArtifact = {
   size: 48,
 };
 
+const controlActivity: PreviewControlActivity = {
+  id: "activity-1",
+  gesture: "click",
+  label: "Used computer",
+  status: "done",
+};
+
 const server = await createServer({
   root: process.cwd(),
   appType: "custom",
@@ -70,6 +79,11 @@ try {
   assert(!htmlMarkup.includes('data-testid="preview-browser-bar"'), "HTML artifacts should not render browser chrome");
   assert(htmlMarkup.includes('data-testid="preview-open-browser"'), "HTML artifacts should let users switch to the browser");
   assert(htmlMarkup.includes("srcDoc="), "HTML artifacts should keep srcDoc preview rendering");
+  assert(!htmlMarkup.includes('data-testid="preview-control-overlay"'), "Preview overlay should not render without activity");
+
+  const activeMarkup = renderToStaticMarkup(createElement(PreviewPanel, { artifact: htmlArtifact, onClose: () => {}, controlActivity }));
+  assert(activeMarkup.includes('data-testid="preview-control-overlay"'), "Preview overlay should render when activity is supplied");
+  assert(activeMarkup.includes('aria-hidden="true"'), "Preview overlay should be hidden from assistive tech");
 } finally {
   await server.close();
 }

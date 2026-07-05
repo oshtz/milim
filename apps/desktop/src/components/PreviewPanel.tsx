@@ -3,6 +3,7 @@ import { openExternalUrl, type ChatArtifact, type PreviewAppStatus } from "../ap
 import type { ArtifactRevision, ArtifactRevisionGroup } from "../lib/artifactRevisions";
 import { buildArtifactPreviewDocument, previewKindForArtifact } from "../lib/artifactPreview";
 import { isFileArtifact, normalizeArtifactBrowserUrl } from "../lib/artifacts";
+import type { PreviewControlActivity } from "../lib/previewActivity";
 import { ArrowLeft, ArrowRight, Bolt, Code, Copy, Download, Eye, FileText, Globe, Plus, Refresh, X } from "./icons";
 import { Logo } from "./Logo";
 
@@ -12,6 +13,7 @@ type PreviewTab = "preview" | "code";
 type PreviewLogLevel = "log" | "info" | "warn" | "error";
 type NativeWebviewHandle = {
   close: () => Promise<void>;
+  hide: () => Promise<void>;
   once: <T>(event: string, handler: (event: { payload: T }) => void) => Promise<() => void>;
   setPosition: (position: unknown) => Promise<void>;
   setSize: (size: unknown) => Promise<void>;
@@ -20,6 +22,7 @@ type NativeWebviewHandle = {
 type PreviewLogEntry = {
   id: number;
   level: PreviewLogLevel;
+  label?: string;
   message: string;
   timestamp: number;
   stack?: string;
@@ -30,6 +33,10 @@ type PreviewLogEntry = {
 
 const PREVIEW_LOG_EVENT = "milim-artifact-log";
 const MAX_PREVIEW_LOGS = 200;
+const LOG_DRAWER_MIN_HEIGHT = 48;
+const LOG_DRAWER_DEFAULT_HEIGHT = 142;
+const LOG_DRAWER_MAX_HEIGHT = 360;
+const LOG_DRAWER_KEYBOARD_STEP = 24;
 const CODE_SPLIT_MIN_WIDTH = 132;
 const CODE_SPLIT_DEFAULT_WIDTH = 180;
 const CODE_SPLIT_MIN_CODE_WIDTH = 160;
@@ -55,6 +62,7 @@ export function PreviewPanel({
   onRuntimeStart,
   onRuntimeStop,
   onRuntimeRestart,
+  controlActivity,
   modeSwitcher,
   style,
 }: {
@@ -76,6 +84,7 @@ export function PreviewPanel({
   onRuntimeStart?: () => void;
   onRuntimeStop?: () => void;
   onRuntimeRestart?: () => void;
+  controlActivity?: PreviewControlActivity | null;
   modeSwitcher?: ReactNode;
   style?: CSSProperties;
 }) {
@@ -88,13 +97,17 @@ export function PreviewPanel({
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [logs, setLogs] = useState<PreviewLogEntry[]>([]);
   const [logsOpen, setLogsOpen] = useState(false);
+  const [runtimeLogsClearedAt, setRuntimeLogsClearedAt] = useState(0);
+  const [logDrawerHeight, setLogDrawerHeight] = useState(LOG_DRAWER_DEFAULT_HEIGHT);
   const [codeFileListWidth, setCodeFileListWidth] = useState(CODE_SPLIT_DEFAULT_WIDTH);
   const [codeSplitDragging, setCodeSplitDragging] = useState(false);
+  const [logResizing, setLogResizing] = useState(false);
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const logIdRef = useRef(0);
   const codePanelRef = useRef<HTMLDivElement | null>(null);
   const codeSourceRef = useRef<HTMLDivElement | null>(null);
   const codeSplitStartRef = useRef<{ clientX: number; width: number } | null>(null);
+  const logResizeStartRef = useRef<{ clientY: number; height: number } | null>(null);
   const previewWasDeferredRef = useRef(previewDeferred);
   const title = artifact.filename ?? artifact.title;
   const source = useMemo(() => artifact.content, [artifact.content]);
@@ -115,6 +128,17 @@ export function PreviewPanel({
   const selectedCodeArtifact = selectedCodeFile?.artifact ?? artifact;
   const selectedSource = selectedCodeArtifact.content;
   const codeLines = useMemo(() => selectedSource.split("\n"), [selectedSource]);
+  const runtimeLogs = useMemo(
+    () => (runtimeStatus?.logs ?? []).filter((log) => log.ts > runtimeLogsClearedAt).slice(-MAX_PREVIEW_LOGS).map((log, index): PreviewLogEntry => ({
+      id: -index - 1,
+      level: log.stream === "stderr" ? "error" : log.stream === "system" ? "info" : "log",
+      label: log.stream,
+      message: log.line,
+      timestamp: log.ts,
+    })),
+    [runtimeLogsClearedAt, runtimeStatus?.logs],
+  );
+  const visibleLogs = useMemo(() => [...logs, ...runtimeLogs].slice(-MAX_PREVIEW_LOGS), [logs, runtimeLogs]);
   const errorLogs = logs.filter((log) => log.level === "error");
   const canQuickFix = Boolean(!isUrlPreview && onSendArtifactFixPrompt && (previewError || errorLogs.length));
   const canSwitchRevisions = Boolean(revision && revisionGroup && revisionGroup.revisions.length > 1 && onSelectRevision);
@@ -203,6 +227,10 @@ export function PreviewPanel({
   }, [artifact.id, browserUrl, frameKey, source]);
 
   useEffect(() => {
+    if (runtimeStatus?.status === "error") setLogsOpen(true);
+  }, [runtimeStatus?.status]);
+
+  useEffect(() => {
     function onMessage(event: MessageEvent) {
       if (event.source !== iframeRef.current?.contentWindow) return;
       const entry = normalizePreviewLog(event.data, ++logIdRef.current);
@@ -281,6 +309,63 @@ export function PreviewPanel({
   function sendQuickFix() {
     if (!onSendArtifactFixPrompt) return;
     onSendArtifactFixPrompt(buildFixPrompt(artifact, codeFiles.map((file) => file.path), previewError, errorLogs));
+  }
+
+  function clearLogs() {
+    setLogs([]);
+    setRuntimeLogsClearedAt((runtimeStatus?.logs ?? []).reduce((latest, log) => Math.max(latest, log.ts), 0));
+  }
+
+  function maxLogDrawerHeight(): number {
+    if (typeof window === "undefined") return LOG_DRAWER_MAX_HEIGHT;
+    return Math.max(LOG_DRAWER_MIN_HEIGHT, Math.min(LOG_DRAWER_MAX_HEIGHT, Math.round(window.innerHeight * 0.45)));
+  }
+
+  function clampLogDrawerHeight(height: number): number {
+    return Math.round(Math.min(Math.max(height, LOG_DRAWER_MIN_HEIGHT), maxLogDrawerHeight()));
+  }
+
+  function resizeLogDrawer(height: number) {
+    setLogDrawerHeight(clampLogDrawerHeight(height));
+  }
+
+  function startLogResize(event: PointerEvent<HTMLDivElement>) {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    logResizeStartRef.current = { clientY: event.clientY, height: logDrawerHeight };
+    setLogResizing(true);
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
+
+  function moveLogResize(event: PointerEvent<HTMLDivElement>) {
+    const start = logResizeStartRef.current;
+    if (!start) return;
+    resizeLogDrawer(start.height + start.clientY - event.clientY);
+  }
+
+  function endLogResize(event: PointerEvent<HTMLDivElement>) {
+    if (!logResizeStartRef.current) return;
+    logResizeStartRef.current = null;
+    setLogResizing(false);
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  }
+
+  function resizeLogDrawerWithKeyboard(event: KeyboardEvent<HTMLDivElement>) {
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      resizeLogDrawer(logDrawerHeight + LOG_DRAWER_KEYBOARD_STEP);
+    } else if (event.key === "ArrowDown") {
+      event.preventDefault();
+      resizeLogDrawer(logDrawerHeight - LOG_DRAWER_KEYBOARD_STEP);
+    } else if (event.key === "Home") {
+      event.preventDefault();
+      resizeLogDrawer(LOG_DRAWER_MIN_HEIGHT);
+    } else if (event.key === "End") {
+      event.preventDefault();
+      resizeLogDrawer(maxLogDrawerHeight());
+    }
   }
 
   function clampCodeSplitWidth(width: number): number {
@@ -454,62 +539,94 @@ export function PreviewPanel({
                       aria-label="Preview URL"
                     />
                   </form>
+                  {runtimeStatus && (
+                    <PreviewRuntimeStatus
+                      status={runtimeStatus}
+                      busy={runtimeBusy}
+                      onStart={onRuntimeStart}
+                      onStop={onRuntimeStop}
+                      onRestart={onRuntimeRestart}
+                    />
+                  )}
                   <button className="preview-browser-action" title="Open in browser" aria-label="Open in browser" disabled={!browserUrl} onClick={openBrowserUrlExternal}>
                     <ArrowRight size={14} />
                   </button>
                 </div>
-                {runtimeStatus && (
-                  <PreviewRuntimeStatus
-                    status={runtimeStatus}
-                    busy={runtimeBusy}
-                    onStart={onRuntimeStart}
-                    onStop={onRuntimeStop}
-                    onRestart={onRuntimeRestart}
-                  />
-                )}
                 {browserError && <div className="preview-browser-error" role="alert">{browserError}</div>}
-                {browserUrl ? (
-                  <NativeArtifactBrowser url={browserUrl} frameKey={frameKey} title={title} active={!closing} />
-                ) : (
-                  <div className="preview-browser-empty" data-testid="preview-browser-empty">
-                    <Logo height={42} className="preview-browser-empty-logo" />
-                    <strong>Open a preview URL</strong>
-                    <span>
-                      Use the address bar for localhost
-                      <br />
-                      or HTTPS pages.
-                    </span>
-                  </div>
-                )}
+                <div className="preview-browser-content">
+                  {browserUrl ? (
+                    <NativeArtifactBrowser url={browserUrl} frameKey={frameKey} title={title} active={!closing} />
+                  ) : (
+                    <div className="preview-browser-empty" data-testid="preview-browser-empty">
+                      <Logo height={42} className="preview-browser-empty-logo" />
+                      <strong>Open a preview URL</strong>
+                      <span>
+                        Use the address bar for localhost
+                        <br />
+                        or HTTPS pages.
+                      </span>
+                    </div>
+                  )}
+                  {controlActivity && <PreviewControlOverlay key={controlActivity.id} activity={controlActivity} />}
+                </div>
               </>
             ) : (
-              <iframe
-                ref={iframeRef}
-                key={`${artifact.id}:${frameKey}`}
-                className="preview-frame"
-                title={title}
-                sandbox="allow-forms allow-modals allow-popups allow-scripts"
-                referrerPolicy="no-referrer"
-                src="about:blank"
-                srcDoc={previewSource}
-              />
+              <div className="preview-frame-host">
+                <iframe
+                  ref={iframeRef}
+                  key={`${artifact.id}:${frameKey}`}
+                  className="preview-frame"
+                  title={title}
+                  sandbox="allow-forms allow-modals allow-popups allow-scripts"
+                  referrerPolicy="no-referrer"
+                  src="about:blank"
+                  srcDoc={previewSource}
+                />
+                {controlActivity && <PreviewControlOverlay key={controlActivity.id} activity={controlActivity} />}
+              </div>
             )}
             <div className={`preview-log-drawer${logsOpen ? " open" : ""}`} data-testid="preview-log-drawer">
               <div className="preview-log-head">
                 <button className="preview-log-toggle" data-testid="preview-log-toggle" aria-expanded={logsOpen} onClick={() => setLogsOpen((open) => !open)}>
-                  Logs <span>{logs.length}</span>
+                  Logs <span>{visibleLogs.length}</span>
                 </button>
-                {canQuickFix && (
-                  <button className="preview-quick-fix" data-testid="preview-quick-fix" onClick={sendQuickFix}>
-                    <Bolt size={13} />
-                    <span>Quick Fix</span>
-                  </button>
-                )}
+                <div className="preview-log-actions">
+                  {visibleLogs.length > 0 && (
+                    <button className="preview-log-clear" data-testid="preview-log-clear" title="Clear logs" aria-label="Clear logs" onClick={clearLogs}>
+                      <X size={13} />
+                      <span>Clear</span>
+                    </button>
+                  )}
+                  {canQuickFix && (
+                    <button className="preview-quick-fix" data-testid="preview-quick-fix" onClick={sendQuickFix}>
+                      <Bolt size={13} />
+                      <span>Quick Fix</span>
+                    </button>
+                  )}
+                </div>
               </div>
               {logsOpen && (
-                <div className="preview-log-list" data-testid="preview-log-list">
-                  {logs.length ? logs.map((log) => <PreviewLogRow key={log.id} log={log} />) : <div className="preview-log-empty">No logs</div>}
-                </div>
+                <>
+                  <div
+                    className={`preview-log-resize-handle${logResizing ? " dragging" : ""}`}
+                    data-testid="preview-log-resize-handle"
+                    role="separator"
+                    aria-label="Resize logs"
+                    aria-orientation="horizontal"
+                    aria-valuemin={LOG_DRAWER_MIN_HEIGHT}
+                    aria-valuemax={maxLogDrawerHeight()}
+                    aria-valuenow={logDrawerHeight}
+                    tabIndex={0}
+                    onKeyDown={resizeLogDrawerWithKeyboard}
+                    onPointerDown={startLogResize}
+                    onPointerMove={moveLogResize}
+                    onPointerUp={endLogResize}
+                    onPointerCancel={endLogResize}
+                  />
+                  <div className="preview-log-list" data-testid="preview-log-list" style={{ height: logDrawerHeight }}>
+                    {visibleLogs.length ? visibleLogs.map((log) => <PreviewLogRow key={log.id} log={log} />) : <div className="preview-log-empty">No logs</div>}
+                  </div>
+                </>
               )}
             </div>
           </div>
@@ -571,6 +688,39 @@ export function PreviewPanel({
   );
 }
 
+function PreviewControlOverlay({ activity }: { activity: PreviewControlActivity }) {
+  const className = `preview-control-overlay ${activity.gesture} ${activity.status}`;
+  return (
+    <div className={className} data-testid="preview-control-overlay" aria-hidden="true">
+      <span className="preview-control-scan" />
+      {activity.gesture !== "inspect" && <span className="preview-control-cursor-glow" />}
+      {activity.gesture !== "inspect" && (
+        <svg className="preview-control-cursor" viewBox="0 0 24 24" fill="none" focusable="false">
+          <path
+            d="M20.5056 10.7754C21.1225 10.5355 21.431 10.4155 21.5176 10.2459C21.5926 10.099 21.5903 9.92446 21.5115 9.77954C21.4205 9.61226 21.109 9.50044 20.486 9.2768L4.59629 3.5728C4.0866 3.38983 3.83175 3.29835 3.66514 3.35605C3.52029 3.40621 3.40645 3.52004 3.35629 3.6649C3.29859 3.8315 3.39008 4.08635 3.57304 4.59605L9.277 20.4858C9.50064 21.1088 9.61246 21.4203 9.77973 21.5113C9.92465 21.5901 10.0991 21.5924 10.2461 21.5174C10.4157 21.4308 10.5356 21.1223 10.7756 20.5054L13.3724 13.8278C13.4194 13.707 13.4429 13.6466 13.4792 13.5957C13.5114 13.5506 13.5508 13.5112 13.5959 13.479C13.6468 13.4427 13.7072 13.4192 13.828 13.3722L20.5056 10.7754Z"
+            fill="var(--preview-control-cursor-fill)"
+            stroke="var(--preview-control-cursor-stroke)"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      )}
+      {activity.gesture === "click" && <span className="preview-control-click-ring" />}
+      {activity.gesture === "scroll" && <span className="preview-control-scroll-cue" />}
+      {activity.gesture === "type" && <span className="preview-control-caret" />}
+      <span className="preview-control-label">
+        <span>{previewControlLabel(activity)}</span>
+      </span>
+    </div>
+  );
+}
+
+function previewControlLabel(activity: PreviewControlActivity): string {
+  if (activity.gesture === "inspect") return activity.detail || activity.label;
+  return activity.label;
+}
+
 function PreviewRuntimeStatus({
   status,
   busy,
@@ -585,11 +735,7 @@ function PreviewRuntimeStatus({
   onRestart?: () => void;
 }) {
   const running = status.status === "installing" || status.status === "starting" || status.status === "running";
-  const [logsOpen, setLogsOpen] = useState(false);
-  const logs = status.logs.slice(-8);
-  const canShowLogs = logs.length > 0 || status.status === "error";
-  const showLogs = logsOpen || status.status === "error";
-  const statusText = `${status.status}${status.message ? ` - ${status.message}` : ""}`;
+  const statusText = String(status.status);
   return (
     <div className={`preview-managed-runtime ${status.status}`} data-testid="preview-managed-runtime">
       <div className="preview-managed-runtime-head">
@@ -598,18 +744,7 @@ function PreviewRuntimeStatus({
           <strong>Runtime</strong>
           <span title={status.cwd}>{statusText}</span>
         </div>
-        {(status.url || status.command) && (
-          <div className="preview-managed-runtime-meta" title={[status.url, status.command].filter(Boolean).join(" - ")}>
-            {status.url && <span>{status.url}</span>}
-            {status.command && <span>{status.command}</span>}
-          </div>
-        )}
         <div className="preview-managed-runtime-actions">
-          {canShowLogs && (
-            <button className="preview-browser-action preview-managed-runtime-log-toggle" data-testid="preview-runtime-log-toggle" title="Runtime logs" aria-label="Runtime logs" aria-expanded={showLogs} onClick={() => setLogsOpen((open) => !open)}>
-              <span>{logs.length}</span>
-            </button>
-          )}
           <button className="preview-browser-action" data-testid="preview-runtime-start" title="Start runtime" disabled={busy || running || !onStart} onClick={onStart}>
             <Globe size={14} />
           </button>
@@ -621,14 +756,6 @@ function PreviewRuntimeStatus({
           </button>
         </div>
       </div>
-      {showLogs && <div className="preview-managed-runtime-logs" data-testid="preview-runtime-logs">
-        {logs.length ? logs.map((log, index) => (
-          <div className={`preview-managed-runtime-log ${log.stream}`} key={`${log.ts}-${index}`}>
-            <span>{log.stream}</span>
-            <code>{log.line}</code>
-          </div>
-        )) : <div className="preview-managed-runtime-empty">{status.message || "No runtime logs"}</div>}
-      </div>}
     </div>
   );
 }
@@ -652,7 +779,10 @@ function NativeArtifactBrowser({ url, frameKey, title, active }: { url: string; 
     async function closeWebview() {
       const webview = webviewRef.current;
       webviewRef.current = null;
-      if (webview) await webview.close().catch(() => undefined);
+      if (webview) {
+        await webview.hide().catch(() => undefined);
+        await webview.close().catch(() => undefined);
+      }
     }
 
     void (async () => {
@@ -760,10 +890,10 @@ function NativeArtifactBrowser({ url, frameKey, title, active }: { url: string; 
 }
 
 function PreviewLogRow({ log }: { log: PreviewLogEntry }) {
-  const location = log.source ? `${basename(log.source)}${log.line ? `:${log.line}` : ""}` : "";
+  const location = !log.label && log.source ? `${basename(log.source)}${log.line ? `:${log.line}` : ""}` : "";
   return (
     <div className={`preview-log-row ${log.level}`} data-testid="preview-log-row">
-      <span className="preview-log-level">{log.level}</span>
+      <span className="preview-log-level">{log.label ?? log.level}</span>
       <span className="preview-log-message">{log.message}</span>
       {location && <span className="preview-log-location">{location}</span>}
     </div>

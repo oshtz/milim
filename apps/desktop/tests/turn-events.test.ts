@@ -43,6 +43,15 @@ const failed = toolCompletedPart({
 equal(failed.status, "error", "failed tool part should mark error status");
 equal(failed.label, "Command failed", "failed shell tool should use error label");
 
+const scroll = toolStartedPart({
+  type: "tool_call",
+  name: "scroll",
+  call_id: "call-3",
+  arguments: JSON.stringify({ delta_y: 400 }),
+} as never);
+equal(scroll.icon, "screen", "scroll should use the screen icon");
+equal(scroll.label, "Using computer", "scroll should be grouped with computer-use tools");
+
 const runtime = accountRuntimeToolPart({
   type: "tool",
   id: "tool-1",
