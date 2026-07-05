@@ -1594,7 +1594,7 @@ button.git-row:hover svg {
 }
 .git-panel-workspace .git-panel-actions {
   display: flex;
-  justify-content: flex-start;
+  justify-content: center;
   gap: 8px;
   padding-top: 2px;
   border-top: 0;
@@ -2003,13 +2003,6 @@ button.git-row:hover svg {
 .git-workspace-review.error {
   border-color: color-mix(in srgb, var(--error) 42%, var(--border-primary));
 }
-.git-workspace-review-body {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(150px, 220px);
-  gap: 8px;
-  min-width: 0;
-  min-height: 0;
-}
 .git-diff-toolbar {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(220px, 320px);
@@ -2086,33 +2079,6 @@ button.git-row:hover svg {
 .git-diff-file-rail {
   min-width: 0;
 }
-.git-workspace-review .git-diff-file-rail {
-  display: grid;
-  gap: 6px;
-  min-height: 0;
-}
-.git-diff-file-filter {
-  display: grid;
-  grid-template-columns: 14px minmax(0, 1fr);
-  align-items: center;
-  gap: 5px;
-  min-width: 0;
-  min-height: 28px;
-  padding: 3px 7px;
-  border: 1px solid color-mix(in srgb, var(--border-primary) 66%, transparent);
-  border-radius: 7px;
-  background: color-mix(in srgb, var(--panel-row-hover) 42%, transparent);
-  color: var(--tertiary-text);
-  font-size: 11px;
-}
-.git-diff-file-filter input {
-  min-width: 0;
-  border: 0;
-  background: transparent;
-  color: var(--primary-text);
-  font: inherit;
-  outline: none;
-}
 .git-diff-file-tabs {
   display: flex;
   gap: 5px;
@@ -2156,18 +2122,6 @@ button.git-row:hover svg {
   font-family: var(--mono);
   font-size: 10px;
   font-variant-numeric: tabular-nums;
-}
-.git-workspace-review .git-diff-file-tabs {
-  display: grid;
-  align-content: start;
-  max-height: min(56vh, 620px);
-  overflow: auto;
-  padding: 0;
-}
-.git-workspace-review .git-diff-file-tabs button {
-  justify-content: space-between;
-  width: 100%;
-  max-width: none;
 }
 .git-diff-view {
   min-width: 0;

@@ -439,7 +439,6 @@ export function GitPanel({
   const [stageAll, setStageAll] = useState(true);
   const [collapsedDiffSections, setCollapsedDiffSections] = useState<Set<string>>(() => new Set());
   const [diffSearch, setDiffSearch] = useState("");
-  const [diffFileFilter, setDiffFileFilter] = useState("");
   const [diffSearchIndex, setDiffSearchIndex] = useState(0);
   const diffViewRef = useRef<HTMLDivElement | null>(null);
   const selectedFolder = folder.trim();
@@ -457,7 +456,6 @@ export function GitPanel({
     setStageAll(true);
     setCollapsedDiffSections(new Set());
     setDiffSearch("");
-    setDiffFileFilter("");
     setDiffSearchIndex(0);
   }, [selectedFolder]);
 
@@ -527,7 +525,6 @@ export function GitPanel({
     const rows = output ? diffRows(output) : [];
     setCollapsedDiffSections(new Set(diffSections(rows).filter(shouldCollapseDiffSection).map((section) => section.id)));
     setDiffSearch("");
-    setDiffFileFilter("");
     setDiffSearchIndex(0);
   }, [diffResult]);
 
@@ -584,7 +581,7 @@ export function GitPanel({
   const readyStatus = currentStatus;
   const changedFiles = changedFilesCount(readyStatus);
   const changeSummary = changeLabel(readyStatus);
-  const filePreview = readyStatus.changed_files.slice(0, forceExpanded ? 12 : FILE_PREVIEW_LIMIT);
+  const filePreview = forceExpanded ? readyStatus.changed_files : readyStatus.changed_files.slice(0, FILE_PREVIEW_LIMIT);
   const moreFiles = Math.max(0, changedFiles - filePreview.length);
   const updated = updatedLabel(updatedAt, now);
   const remoteUrl = remoteWebUrl(readyStatus.remote);
@@ -609,10 +606,6 @@ export function GitPanel({
     : [];
   const activeDiffSearchIndex = diffSearchMatches.length ? Math.min(diffSearchIndex, diffSearchMatches.length - 1) : 0;
   const diffSearchMatchIndexByRow = new Map(diffSearchMatches.map((rowIndex, matchIndex) => [rowIndex, matchIndex]));
-  const normalizedDiffFileFilter = diffFileFilter.trim().toLowerCase();
-  const filteredDiffSections = normalizedDiffFileFilter
-    ? renderedDiffSections.filter((section) => section.path.toLowerCase().includes(normalizedDiffFileFilter))
-    : renderedDiffSections;
   const commitReady = stageAll || readyStatus.staged > 0;
   const canCommitPush = Boolean(readyStatus.remote && readyStatus.branch && readyStatus.behind === 0);
   const normalizedBranchFilter = branchFilter.trim().toLowerCase();
@@ -691,19 +684,12 @@ export function GitPanel({
     );
   }
 
-  function renderDiffFileTabs(filterable = false) {
+  function renderDiffFileTabs() {
     if (!renderedDiffSections.length) return null;
-    const sections = filterable ? filteredDiffSections : renderedDiffSections;
     return (
       <div className="git-diff-file-rail">
-        {filterable && (
-          <label className="git-diff-file-filter">
-            <Search size={12} />
-            <input value={diffFileFilter} placeholder="Filter files..." onChange={(event) => setDiffFileFilter(event.currentTarget.value)} />
-          </label>
-        )}
         <div className="git-diff-file-tabs" aria-label="Changed files">
-          {sections.map((section) => {
+          {renderedDiffSections.map((section) => {
             const sectionIndex = renderedDiffSections.indexOf(section);
             const collapsed = collapsedDiffSections.has(section.id);
             return (
@@ -763,10 +749,7 @@ export function GitPanel({
       return (
         <>
           {renderDiffToolbar()}
-          <div className="git-workspace-review-body">
-            {renderDiffView()}
-            {renderDiffFileTabs(true)}
-          </div>
+          {renderDiffView()}
         </>
       );
     }
