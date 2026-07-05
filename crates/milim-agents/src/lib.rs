@@ -501,10 +501,12 @@ mod tests {
         assert_eq!(usage.completion_tokens, 7);
         assert_eq!(usage.total_tokens, 12);
         assert_eq!(deltas.len(), 2);
-        let summed = deltas.into_iter().fold(Usage::default(), |mut total, usage| {
-            add_usage(&mut total, usage);
-            total
-        });
+        let summed = deltas
+            .into_iter()
+            .fold(Usage::default(), |mut total, usage| {
+                add_usage(&mut total, usage);
+                total
+            });
         assert_eq!(summed.prompt_tokens, usage.prompt_tokens);
         assert_eq!(summed.completion_tokens, usage.completion_tokens);
         assert_eq!(summed.total_tokens, usage.total_tokens);

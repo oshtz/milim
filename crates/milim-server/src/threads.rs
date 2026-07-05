@@ -262,7 +262,13 @@ async fn run_child_thread(
                 );
             }
             AgentEvent::UsageDelta { usage } => {
-                emit_thread_event(&store, &events, &thread, "usage_delta", json!({ "usage": usage }));
+                emit_thread_event(
+                    &store,
+                    &events,
+                    &thread,
+                    "usage_delta",
+                    json!({ "usage": usage }),
+                );
             }
             AgentEvent::ToolCall {
                 call_id,
