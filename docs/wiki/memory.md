@@ -3,13 +3,15 @@ id: memory
 path: memory
 label: Memory
 title: Memory and RAG
-summary: Classic RAG, scoped graph memory, automatic context injection, manual memory management, and tool-registered memories.
+summary: Classic RAG, scoped graph memory, cheap context injection, manual memory management, and explicit tool-registered memories.
 group: Local data
 order: 60
-updated: 2026-07-01
+updated: 2026-07-05
 ---
 
 Memory is scoped on purpose. Thread memory is narrow, project memory follows a workspace, and global memory is for durable preferences or facts that should apply everywhere.
+
+When Memory is enabled, normal chat turns search scoped memory and inject only the retrieved hits as model context. That recall path does not force the agent/tool loop by itself. Durable writes use `memory_register` only when the user explicitly asks to remember/save/store context, or when the turn is already running through a tool-capable agent path.
 
 ## Memory systems
 
@@ -18,7 +20,7 @@ Memory is scoped on purpose. Thread memory is narrow, project memory follows a w
 | Classic RAG | `/memory/ingest` and `/memory/search` | Embeds text through the configured embedding-capable provider and retrieves nearby memories. |
 | Scoped graph memory | `/memory/register` and `/memory/graph/search` | Stores nodes with kind, title, body, confidence, source, archive status, and scope. |
 | Memory manager | `/memory/scopes`, `/memory/nodes`, node update/delete/archive routes | Lists, searches, creates, edits, archives, restores, and deletes graph memory nodes. |
-| Agent memory tool | `memory_register` | Lets a run save concise facts, decisions, preferences, or project context. |
+| Agent memory tool | `memory_register` | Lets explicit memory-write or already tool-capable runs save concise facts, decisions, preferences, or project context. |
 
 ## Scopes
 

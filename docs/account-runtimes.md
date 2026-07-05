@@ -2,6 +2,8 @@
 
 Milim can use signed-in Codex and Claude Code CLIs as chat runtimes. These are separate from saved OpenAI-compatible, Anthropic, Gemini, Replicate, and fal provider records. The privacy gate scans, redacts, or blocks prompts before either account runtime receives them.
 
+After a Milim chat has a native Codex thread id or Claude session id, Milim lets that runtime own prior context. Later turns send the current per-turn context plus the latest user message instead of replaying the visible Milim transcript or auto-compacting it first. Manual `/compact` still creates a visible Milim checkpoint, but its summary call is ephemeral and the stored native runtime id is cleared afterward.
+
 Workspace Git panel buttons such as diff, fetch, commit, pull, push, publish, checkout branch, and create branch run through Milim's local workspace Git endpoint. The selected chat model is only called when a blank commit message needs a generated subject or when the user asks an agent to review Git state.
 
 CLI calls to an authenticated standalone server should pass `--token` or set `MILIM_API_TOKEN`; desktop account-runtime calls use the desktop app's per-launch bearer token internally.
