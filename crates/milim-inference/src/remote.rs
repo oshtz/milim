@@ -202,16 +202,11 @@ impl RemoteBackend {
         {
             return true;
         }
-        if is_gpt_oss_model(&req.model)
+        is_gpt_oss_model(&req.model)
             && matches!(
                 effort,
                 ReasoningEffort::Low | ReasoningEffort::Medium | ReasoningEffort::High
             )
-        {
-            true
-        } else {
-            false
-        }
     }
 }
 
