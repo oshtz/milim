@@ -13,8 +13,8 @@ use std::time::Duration;
 
 use milim_core::api::openai::{
     ChatCompletionChunk, ChatCompletionRequest, Content, ContentPart, DeltaFunction, DeltaToolCall,
-    Model, ModelReasoningMetadata, ModelsResponse, ReasoningEffort, StreamOptions, StringOrArray,
-    Tool, Usage,
+    Model, ModelCapabilities, ModelReasoningMetadata, ModelsResponse, ReasoningEffort,
+    StreamOptions, StringOrArray, Tool, Usage,
 };
 use milim_core::{Error, Result};
 use serde_json::{json, Map, Value};
@@ -224,6 +224,37 @@ fn default_client() -> reqwest::Client {
         .expect("valid reqwest client timeout configuration")
 }
 
+fn has_modality(modalities: &[String], modality: &str) -> bool {
+    modalities
+        .iter()
+        .any(|item| item.trim().eq_ignore_ascii_case(modality))
+}
+
+fn normalize_model_capabilities(model: &mut Model) {
+    let Some(architecture) = model.architecture.as_ref() else {
+        return;
+    };
+    let derived = ModelCapabilities {
+        image_input: Some(has_modality(&architecture.input_modalities, "image")),
+        image_output: Some(has_modality(&architecture.output_modalities, "image")),
+        video_output: Some(has_modality(&architecture.output_modalities, "video")),
+    };
+    match model.capabilities.as_mut() {
+        Some(capabilities) => {
+            if capabilities.image_input.is_none() {
+                capabilities.image_input = derived.image_input;
+            }
+            if capabilities.image_output.is_none() {
+                capabilities.image_output = derived.image_output;
+            }
+            if capabilities.video_output.is_none() {
+                capabilities.video_output = derived.video_output;
+            }
+        }
+        None => model.capabilities = Some(derived),
+    }
+}
+
 #[async_trait]
 impl ModelService for RemoteBackend {
     fn name(&self) -> &str {
@@ -252,6 +283,9 @@ impl ModelService for RemoteBackend {
                     }
                 }
             }
+        }
+        for model in &mut parsed.data {
+            normalize_model_capabilities(model);
         }
         Ok(parsed.data)
     }

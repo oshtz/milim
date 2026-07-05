@@ -14,7 +14,9 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
-use milim_core::api::openai::{Model, ModelPricing, ModelReasoningMetadata, ReasoningEffort};
+use milim_core::api::openai::{
+    Model, ModelCapabilities, ModelPricing, ModelReasoningMetadata, ReasoningEffort,
+};
 use milim_core::{Error, Result};
 use milim_inference::anthropic::AnthropicBackend;
 use milim_inference::gemini::GeminiBackend;
@@ -76,6 +78,9 @@ pub struct Provider {
     /// Provider-supplied or inferred reasoning controls keyed by model id.
     #[serde(default)]
     pub model_reasoning: BTreeMap<String, ModelReasoningMetadata>,
+    /// Provider-supplied model capabilities keyed by model id.
+    #[serde(default)]
+    pub model_capabilities: BTreeMap<String, ModelCapabilities>,
     /// Last connection error from the model fetch (so the UI can explain an
     /// empty model list — e.g. server down, bad key, wrong URL).
     #[serde(default)]
@@ -247,6 +252,7 @@ impl ProviderRegistry {
                     let trust_pricing = is_openrouter_provider(&cfg);
                     cfg.model_context = collect_model_context(&ms);
                     cfg.model_reasoning = collect_model_reasoning(&ms, &cfg);
+                    cfg.model_capabilities = collect_model_capabilities(&ms);
                     cfg.pricing = collect_pricing(&ms, trust_pricing);
                     cfg.models = ms.into_iter().map(|m| m.id).collect();
                     cfg.last_error = None;
@@ -256,6 +262,7 @@ impl ProviderRegistry {
                     cfg.pricing = BTreeMap::new();
                     cfg.model_context = BTreeMap::new();
                     cfg.model_reasoning = BTreeMap::new();
+                    cfg.model_capabilities = BTreeMap::new();
                     cfg.last_error = Some(e.to_string());
                 }
             }
@@ -264,6 +271,7 @@ impl ProviderRegistry {
             cfg.pricing = BTreeMap::new();
             cfg.model_context = BTreeMap::new();
             cfg.model_reasoning = BTreeMap::new();
+            cfg.model_capabilities = BTreeMap::new();
             cfg.last_error = None;
         }
 
@@ -296,22 +304,25 @@ impl ProviderRegistry {
         };
         for cfg in configs {
             let backend = backend_for(&cfg);
-            let (models, pricing, model_context, model_reasoning, err) =
+            let (models, pricing, model_context, model_reasoning, model_capabilities, err) =
                 match backend.list_models().await {
                     Ok(ms) => {
                         let model_context = collect_model_context(&ms);
                         let model_reasoning = collect_model_reasoning(&ms, &cfg);
+                        let model_capabilities = collect_model_capabilities(&ms);
                         let pricing = collect_pricing(&ms, is_openrouter_provider(&cfg));
                         (
                             ms.into_iter().map(|m| m.id).collect::<Vec<_>>(),
                             pricing,
                             model_context,
                             model_reasoning,
+                            model_capabilities,
                             None,
                         )
                     }
                     Err(e) => (
                         Vec::new(),
+                        BTreeMap::new(),
                         BTreeMap::new(),
                         BTreeMap::new(),
                         BTreeMap::new(),
@@ -324,6 +335,7 @@ impl ProviderRegistry {
                 rt.cfg.pricing = pricing;
                 rt.cfg.model_context = model_context;
                 rt.cfg.model_reasoning = model_reasoning;
+                rt.cfg.model_capabilities = model_capabilities;
                 rt.cfg.last_error = err;
             }
         }
@@ -393,6 +405,18 @@ fn collect_model_context(models: &[Model]) -> BTreeMap<String, ModelContextMetad
                     max_completion_tokens: model.max_completion_tokens,
                 },
             ))
+        })
+        .collect()
+}
+
+fn collect_model_capabilities(models: &[Model]) -> BTreeMap<String, ModelCapabilities> {
+    models
+        .iter()
+        .filter_map(|model| {
+            model
+                .capabilities
+                .clone()
+                .map(|capabilities| (model.id.clone(), capabilities))
         })
         .collect()
 }
@@ -686,6 +710,8 @@ impl ModelService for ProviderRouter {
                         .get(m)
                         .cloned()
                         .or_else(|| fallback_model_reasoning(&r.cfg, m)),
+                    capabilities: r.cfg.model_capabilities.get(m).cloned(),
+                    architecture: None,
                 });
             }
         }
@@ -839,6 +865,7 @@ mod tests {
             pricing: BTreeMap::new(),
             model_context: BTreeMap::new(),
             model_reasoning: BTreeMap::new(),
+            model_capabilities: BTreeMap::new(),
             last_error: None,
         }
     }

@@ -152,6 +152,8 @@ impl ModelService for AnthropicBackend {
                 max_completion_tokens: None,
                 pricing: None,
                 reasoning: None,
+                capabilities: None,
+                architecture: None,
             })
             .collect())
     }

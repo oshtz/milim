@@ -889,11 +889,13 @@ export interface ModelInfo {
   max_prompt_tokens?: number;
   max_completion_tokens?: number;
   reasoning?: ModelReasoningMetadata;
-  capabilities?: {
-    imageInput?: boolean;
-    imageOutput?: boolean;
-    videoOutput?: boolean;
-  };
+  capabilities?: ModelCapabilities;
+}
+
+export interface ModelCapabilities {
+  imageInput?: boolean;
+  imageOutput?: boolean;
+  videoOutput?: boolean;
 }
 
 export type ReasoningEffort = "auto" | "none" | "minimal" | "low" | "medium" | "high" | "on" | "xhigh" | "max";
@@ -948,13 +950,14 @@ export async function listModelsDetailed(): Promise<ModelInfo[]> {
     clearTimeout(timer);
     const j = await r.json();
     const localModels = (j.data ?? [])
-      .map((m: { id: string; owned_by?: string; context_length?: number; max_prompt_tokens?: number; max_completion_tokens?: number; reasoning?: unknown }) => ({
+      .map((m: { id: string; owned_by?: string; context_length?: number; max_prompt_tokens?: number; max_completion_tokens?: number; reasoning?: unknown; capabilities?: unknown }) => ({
         id: m.id,
         owned_by: m.owned_by ?? "local",
         context_length: numberOrUndefined(m.context_length),
         max_prompt_tokens: numberOrUndefined(m.max_prompt_tokens),
         max_completion_tokens: numberOrUndefined(m.max_completion_tokens),
         reasoning: normalizeModelReasoning(m.reasoning),
+        capabilities: normalizeModelCapabilities(m.capabilities),
       }))
       .filter((m: ModelInfo) => isUsableChatModel(m.id));
     const [codexModels, claudeModels] = await Promise.all([
@@ -969,6 +972,24 @@ export async function listModelsDetailed(): Promise<ModelInfo[]> {
 
 function numberOrUndefined(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
+function normalizeModelCapability(value: unknown): boolean | undefined {
+  return typeof value === "boolean" ? value : undefined;
+}
+
+function normalizeModelCapabilities(value: unknown): ModelCapabilities | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const raw = value as Record<string, unknown>;
+  const imageInput = normalizeModelCapability(raw.imageInput ?? raw.image_input);
+  const imageOutput = normalizeModelCapability(raw.imageOutput ?? raw.image_output);
+  const videoOutput = normalizeModelCapability(raw.videoOutput ?? raw.video_output);
+  if (typeof imageInput !== "boolean" && typeof imageOutput !== "boolean" && typeof videoOutput !== "boolean") return undefined;
+  return {
+    ...(typeof imageInput === "boolean" ? { imageInput } : {}),
+    ...(typeof imageOutput === "boolean" ? { imageOutput } : {}),
+    ...(typeof videoOutput === "boolean" ? { videoOutput } : {}),
+  };
 }
 
 const REASONING_EFFORTS: ReasoningEffort[] = ["auto", "none", "minimal", "low", "medium", "high", "on", "xhigh", "max"];

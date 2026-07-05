@@ -6134,6 +6134,7 @@ pub(crate) async fn provider_upsert(
         pricing: BTreeMap::new(),
         model_context: BTreeMap::new(),
         model_reasoning: BTreeMap::new(),
+        model_capabilities: BTreeMap::new(),
         last_error: None,
     };
     let saved = reg.upsert(cfg).await;

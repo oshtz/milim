@@ -406,6 +406,10 @@ pub struct Model {
     pub pricing: Option<ModelPricing>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<ModelReasoningMetadata>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<ModelCapabilities>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub architecture: Option<ModelArchitecture>,
 }
 
 /// Optional provider-supplied pricing, currently used by OpenRouter.
@@ -429,6 +433,24 @@ pub struct ModelReasoningMetadata {
     pub mandatory: Option<bool>,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ModelCapabilities {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_input: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_output: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video_output: Option<bool>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ModelArchitecture {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub input_modalities: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub output_modalities: Vec<String>,
+}
+
 impl Model {
     pub fn local(id: impl Into<String>, created: u64) -> Self {
         Self {
@@ -441,6 +463,8 @@ impl Model {
             max_completion_tokens: None,
             pricing: None,
             reasoning: None,
+            capabilities: None,
+            architecture: None,
         }
     }
 }

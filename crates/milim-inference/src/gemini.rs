@@ -139,6 +139,8 @@ impl ModelService for GeminiBackend {
                 max_completion_tokens: m.output_token_limit,
                 pricing: None,
                 reasoning: None,
+                capabilities: None,
+                architecture: None,
             })
             .collect())
     }
