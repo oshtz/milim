@@ -37,7 +37,7 @@ Root aliases are also mounted for OpenAI chat, completions, models, and embeddin
 | Audio | `POST /audio/transcriptions`, `POST /audio/vad`, `POST /audio/speech`, `POST /audio/setup/check`, Piper/Kokoro/VAD preset installs, and Piper executable install routes |
 | Media | `GET /media/models`, `GET /media/model-schema`, `GET /media/status`, `POST /media/generate` |
 | Workspace | `GET/POST /workspace`, `GET /workspace/git`, `POST /workspace/git/action` (`diff`, sync, commit, checkpoint, restore checkpoint) |
-| Managed preview apps | `GET /preview-apps/{thread_id}`, `POST /preview-apps/{thread_id}/stage`, `POST /preview-apps/{thread_id}/start`, `POST /preview-apps/{thread_id}/stop`, `POST /preview-apps/{thread_id}/restart`, `GET /preview-apps/{thread_id}/logs` |
+| Managed preview apps | `GET /preview-apps/{runtime_id}`, `POST /preview-apps/{runtime_id}/stage`, `POST /preview-apps/{runtime_id}/start`, `POST /preview-apps/{runtime_id}/stop`, `POST /preview-apps/{runtime_id}/restart`, `GET /preview-apps/{runtime_id}/logs` |
 | MCP | `GET /mcp/tools`, `POST /mcp/call`, `GET/POST /mcp/servers`, `DELETE /mcp/servers/{id}` |
 | Agents | `POST /agents/run`, `GET/POST /agents`, `GET/PUT/DELETE /agents/{id}`, `POST /agents/{id}/run` |
 | Threads | `GET /threads/{id}` (`include_events=true&event_limit=N` returns `event_count` and `events_truncated`), `DELETE /threads/{id}`, `GET /threads/{id}/children`, `GET /threads/{id}/events`, `POST /threads/{id}/stop` |
