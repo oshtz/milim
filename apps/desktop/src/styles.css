@@ -1080,27 +1080,6 @@ body.sidebar-pointer-dragging .session-section-title {
 .git-panel.git-panel-workspace:has(.git-panel-clean-state) {
   grid-template-rows: auto auto auto auto auto minmax(0, 1fr) auto auto;
 }
-.git-panel.git-panel-workspace:has(.git-file-list) {
-  grid-template-columns: minmax(0, 1.35fr) minmax(170px, 0.85fr);
-  align-content: start;
-}
-.git-panel-workspace:has(.git-file-list) .git-panel-head,
-.git-panel-workspace:has(.git-file-list) .git-panel-subhead,
-.git-panel-workspace:has(.git-file-list) .git-summary {
-  grid-column: 1 / -1;
-}
-.git-panel-workspace:has(.git-file-list) .git-file-list {
-  grid-column: 1;
-  grid-row: span 5;
-}
-.git-panel-workspace:has(.git-file-list) .git-panel-details,
-.git-panel-workspace:has(.git-file-list) .git-panel-actions,
-.git-panel-workspace:has(.git-file-list) .git-command-status,
-.git-panel-workspace:has(.git-file-list) .git-panel-clean-state,
-.git-panel-workspace:has(.git-file-list) .git-agent-action,
-.git-panel-workspace:has(.git-file-list) .git-panel-note {
-  grid-column: 2;
-}
 .git-panel-workspace .git-workspace-review {
   grid-column: 1 / -1;
 }
