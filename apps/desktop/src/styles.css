@@ -748,6 +748,19 @@ body.sidebar-pointer-dragging .session-section-title {
   box-shadow: none;
   border-color: color-mix(in srgb, var(--border-primary) 26%, transparent);
 }
+.session-item.runtime-preview::after {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 8px;
+  bottom: 8px;
+  width: 2px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 72%, transparent);
+}
+.session-item.runtime-error::after {
+  background: color-mix(in srgb, var(--error) 78%, transparent);
+}
 .session-copy {
   flex: 1;
   min-width: 0;

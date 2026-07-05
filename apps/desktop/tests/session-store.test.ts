@@ -128,6 +128,19 @@ assert(
   !localStorage.getItem("milim.sessions")?.includes("unreadSessionIds"),
   "runtime unread state should not persist in session storage",
 );
+const firstUpdatedBeforePreviewRuntime = useSessions.getState().sessions.find((session) => session.id === first)?.updatedAt;
+useSessions.getState().setPreviewRuntime(first, {
+  status: "running",
+  cwd: "C:\\Users\\USER\\.milim\\runtime\\preview-apps\\thread",
+  url: "http://127.0.0.1:5173/",
+  pid: 1234,
+  command: "pnpm dev",
+});
+const firstPreviewRuntimeSession = useSessions.getState().sessions.find((session) => session.id === first);
+equal(firstPreviewRuntimeSession?.previewRuntime?.url, "http://127.0.0.1:5173/", "preview runtime URL should persist on the thread");
+equal(firstPreviewRuntimeSession?.previewRuntime?.status, "running", "preview runtime status should persist on the thread");
+equal(firstPreviewRuntimeSession?.updatedAt, firstUpdatedBeforePreviewRuntime, "preview runtime polling should not change thread recency");
+assert(localStorage.getItem("milim.sessions")?.includes("http://127.0.0.1:5173/"), "preview runtime URL should persist in session storage");
 useSessions.getState().setAccountRuntime(first, { codexThreadId: "codex-thread-1" });
 equal(
   useSessions.getState().sessions.find((session) => session.id === first)?.accountRuntime?.codexThreadId,

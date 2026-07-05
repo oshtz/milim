@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
-import type { ChatArtifact, ChatAttachment, ChatMessage, ChatStreamPart, ChildThreadInfo, ChildThreadStatus, MemoryNotice, PrivacyMode, ReasoningEffort, ResponseMetrics, RunTrace, SavedArtifactFile, ThreadEvent, ToolApprovalMode } from "../api";
+import type { ChatArtifact, ChatAttachment, ChatMessage, ChatStreamPart, ChildThreadInfo, ChildThreadStatus, MemoryNotice, PreviewAppState, PrivacyMode, ReasoningEffort, ResponseMetrics, RunTrace, SavedArtifactFile, ThreadEvent, ToolApprovalMode } from "../api";
 import { extractArtifactsFromMessage, normalizeArtifactDisposition } from "../lib/artifacts.js";
 import { DEFAULT_GOAL_SETTINGS, normalizeGoalSettings, type GoalSettings } from "../lib/goals.js";
 import { recordPerfMeasure, startPerfMeasure } from "../lib/perf.js";
@@ -37,6 +37,7 @@ export interface Session {
   artifactPanelOpen?: boolean;
   sidePanelMode?: SessionSidePanelMode;
   artifactPanelTab?: SessionArtifactPanelTab;
+  previewRuntime?: SessionPreviewRuntime;
   settings?: ThreadSettings;
   accountRuntime?: {
     codexThreadId?: string;
@@ -57,6 +58,16 @@ export interface Session {
 
 export type SessionSidePanelMode = "artifact" | "browser" | "git";
 export type SessionArtifactPanelTab = "preview" | "code";
+
+export interface SessionPreviewRuntime {
+  status: PreviewAppState | string;
+  cwd?: string;
+  url?: string;
+  pid?: number;
+  command?: string;
+  message?: string;
+  updatedAt?: number;
+}
 
 export type ArchiveRetentionDays = 7 | 14 | 30;
 
@@ -138,6 +149,38 @@ function normalizeAccountRuntime(value: unknown): Session["accountRuntime"] | un
   const codexThreadId = typeof raw.codexThreadId === "string" && raw.codexThreadId.trim() ? raw.codexThreadId.trim() : undefined;
   const claudeSessionId = typeof raw.claudeSessionId === "string" && raw.claudeSessionId.trim() ? raw.claudeSessionId.trim() : undefined;
   return codexThreadId || claudeSessionId ? { codexThreadId, claudeSessionId } : undefined;
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function normalizePreviewRuntime(value: unknown): SessionPreviewRuntime | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const raw = value as Record<string, unknown>;
+  const status = stringValue(raw.status);
+  if (!status) return undefined;
+  const pid = typeof raw.pid === "number" && Number.isFinite(raw.pid) ? raw.pid : undefined;
+  return {
+    status,
+    cwd: stringValue(raw.cwd),
+    url: stringValue(raw.url),
+    pid,
+    command: stringValue(raw.command),
+    message: stringValue(raw.message),
+    updatedAt: timestamp(raw.updatedAt),
+  };
+}
+
+function samePreviewRuntime(a?: SessionPreviewRuntime, b?: SessionPreviewRuntime): boolean {
+  return (
+    (a?.status ?? "") === (b?.status ?? "") &&
+    (a?.cwd ?? "") === (b?.cwd ?? "") &&
+    (a?.url ?? "") === (b?.url ?? "") &&
+    (a?.pid ?? null) === (b?.pid ?? null) &&
+    (a?.command ?? "") === (b?.command ?? "") &&
+    (a?.message ?? "") === (b?.message ?? "")
+  );
 }
 
 function normalizeSidePanelMode(value: unknown, legacyOpen?: boolean): SessionSidePanelMode | undefined {
@@ -472,6 +515,7 @@ function normalizeSessionArtifacts(session: Session): Session {
     artifactPanelOpen: session.artifactPanelOpen === true ? true : undefined,
     sidePanelMode: normalizeSidePanelMode(session.sidePanelMode, session.artifactPanelOpen),
     artifactPanelTab: normalizeArtifactPanelTab(session.artifactPanelTab),
+    previewRuntime: normalizePreviewRuntime(session.previewRuntime),
     accountRuntime: normalizeAccountRuntime(session.accountRuntime),
     settings: normalizeSettings(session.settings, { pauseRunningGoal: true }),
     messages: messages.map(normalizeMessageArtifacts),
@@ -683,6 +727,7 @@ interface SessionState {
   setSidePanelOpen: (id: string, open: boolean) => void;
   setSidePanelMode: (id: string, mode: SessionSidePanelMode | null) => void;
   setArtifactPanelTab: (id: string, tab: SessionArtifactPanelTab) => void;
+  setPreviewRuntime: (id: string, runtime: SessionPreviewRuntime | undefined) => void;
   setAccountRuntime: (id: string, runtime: Partial<NonNullable<Session["accountRuntime"]>>) => void;
   clearAccountRuntime: (id: string) => void;
   ensureClaudeSessionId: (id: string) => string;
@@ -1472,6 +1517,16 @@ export const useSessions = create<SessionState>()(
             sessions: st.sessions.map((s) =>
               s.id === id ? { ...s, artifactPanelTab: tab === "code" ? "code" : undefined, updatedAt: Date.now() } : s,
             ),
+          })),
+
+        setPreviewRuntime: (id, runtime) =>
+          set((st) => ({
+            sessions: st.sessions.map((s) => {
+              if (s.id !== id) return s;
+              const previewRuntime = normalizePreviewRuntime(runtime);
+              if (samePreviewRuntime(s.previewRuntime, previewRuntime)) return s;
+              return { ...s, previewRuntime: previewRuntime ? { ...previewRuntime, updatedAt: Date.now() } : undefined };
+            }),
           })),
 
         setAccountRuntime: (id, runtime) =>

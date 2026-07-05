@@ -8,6 +8,7 @@ import {
   useSessions,
   type Project,
   type Session,
+  type SessionPreviewRuntime,
   type SessionSidebarState,
 } from "../sessions/store";
 import { markPerfRender } from "../lib/perf";
@@ -39,6 +40,7 @@ export type SidebarSessionLike = {
   id: string;
   title: string;
   settings?: SidebarSessionSettings;
+  previewRuntime?: SessionPreviewRuntime;
   parentId?: string;
   updatedAt: number;
   archivedAt?: number;
@@ -180,10 +182,17 @@ function WorkingSessionLoader() {
   return <span className="loader" aria-hidden="true" />;
 }
 
+function runtimePreviewSidebarState(session: SidebarSessionLike): "running" | "error" | null {
+  const status = session.previewRuntime?.status.toLowerCase();
+  if (status === "error") return "error";
+  return status === "installing" || status === "starting" || status === "running" ? "running" : null;
+}
+
 function sameSidebarSession(a: Session, b: SidebarSession): boolean {
   return a.id === b.id &&
     a.title === b.title &&
     a.settings === b.settings &&
+    a.previewRuntime === b.previewRuntime &&
     a.parentId === b.parentId &&
     a.worker === b.worker &&
     a.createdAt === b.createdAt &&
@@ -823,9 +832,10 @@ export function Sidebar({
                   const workerRunning = s.worker?.status === "queued" || s.worker?.status === "running";
                   const generating = generatingSessions.has(s.id) || workerRunning;
                   const unread = unreadSessions.has(s.id);
+                  const runtimeState = runtimePreviewSidebarState(s);
                   const pinned = !s.parentId && sidebarState.pinnedSessionIds.includes(s.id);
                   const showStatus = generating || unread;
-                  const statusLabel = s.worker ? `Worker ${s.worker.status}` : generating ? "Working" : "Ready";
+                  const statusLabel = s.worker ? `Worker ${s.worker.status}` : generating ? "Working" : unread ? "Unread update" : "Ready";
                   const sessionDragOver = dragOver?.type === "session" && dragOver.id === s.id;
                   const sessionDropClass = sessionDragOver ? ` drag-over drop-${dragOver.position}` : "";
                   const sessionDragging = dragging?.type === "session" && dragging.id === s.id;
@@ -839,6 +849,7 @@ export function Sidebar({
                         (s.parentId ? " child-session" : "") +
                         (s.id === activeId ? " active" : "") +
                         (generating ? " generating" : "") +
+                        (runtimeState ? " runtime-preview runtime-" + runtimeState : "") +
                         (pinned ? " pinned" : "") +
                         (confirmArchiveId === s.id ? " delete-pending" : "") +
                         (sessionDragging ? " dragging" : "") +
@@ -880,7 +891,9 @@ export function Sidebar({
                           <div className="session-side">
                             {showStatus ? (
                               <span
-                                className={"session-side-indicator session-loader " + (generating ? "working" : "unread")}
+                                className={
+                                  "session-side-indicator session-loader " + (generating ? "working" : "unread")
+                                }
                                 data-testid="session-loader"
                                 role="img"
                                 title={statusLabel}
