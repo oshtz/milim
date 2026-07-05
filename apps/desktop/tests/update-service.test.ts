@@ -74,6 +74,16 @@ equal(shouldRunAutoUpdateCheck(10, 10 + AUTO_UPDATE_INTERVAL_MS - 1), false);
 equal(shouldRunAutoUpdateCheck(10, 10 + AUTO_UPDATE_INTERVAL_MS), true);
 equal(updateStoreSource.includes("if (get().currentVersion) return;"), false, "current app version should refresh from Tauri on launch");
 equal(updateStoreSource.includes("currentVersion: state.currentVersion"), false, "current app version should not persist across installed binaries");
+equal(
+  updateStoreSource.includes("isInstalledUpdate(version, get().updateInfo)"),
+  true,
+  "installed update packages should be cleared after the new binary launches",
+);
+equal(
+  updateStoreSource.includes("compareVersions(currentVersion, updateInfo.version) >= 0"),
+  true,
+  "stale update packages should be detected by semantic version comparison",
+);
 
 const windowsSelected = selectUpdateAssets(
   [

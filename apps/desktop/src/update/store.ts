@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 import {
   checkForUpdate,
+  compareVersions,
   downloadUpdate,
   installUpdate,
   shouldRunAutoUpdateCheck,
@@ -59,6 +60,10 @@ function formatError(error: unknown): string {
   return "Update request failed.";
 }
 
+function isInstalledUpdate(currentVersion: string, updateInfo: UpdateInfo | null): boolean {
+  return Boolean(updateInfo && compareVersions(currentVersion, updateInfo.version) >= 0);
+}
+
 async function readCurrentVersion(): Promise<string | null> {
   if (!isTauriRuntime()) return null;
   const { getVersion } = await import("@tauri-apps/api/app");
@@ -102,7 +107,20 @@ export const useUpdateStore = create<UpdateState>()(
           }
         }
         const version = await readCurrentVersion();
-        if (version) set({ currentVersion: version });
+        if (!version) return;
+        if (isInstalledUpdate(version, get().updateInfo)) {
+          const state = get();
+          set({
+            currentVersion: version,
+            status: state.status === "error" ? state.status : "up-to-date",
+            updateInfo: null,
+            updatePath: null,
+            error: state.status === "error" ? state.error : null,
+            ignoredVersion: null,
+          });
+          return;
+        }
+        set({ currentVersion: version });
       },
 
       checkNow: async (options) => {
