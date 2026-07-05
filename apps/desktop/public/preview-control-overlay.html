@@ -1,0 +1,244 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Preview activity</title>
+    <style>
+      :root {
+        --accent: #66d9ef;
+        --accent-light: #7ee7ff;
+        --accent-glow: rgba(102, 217, 239, 0.35);
+        --focus-border: #7aa7ff;
+        --cursor-fill: #fff;
+        --cursor-stroke: #111;
+        --from-x: 16;
+        --from-y: 68;
+        --to-x: 62;
+        --to-y: 46;
+        --ease: cubic-bezier(0.16, 1, 0.3, 1);
+      }
+      html,
+      body {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+        overflow: hidden;
+        background: transparent;
+      }
+      body.dark {
+        --cursor-fill: #050505;
+        --cursor-stroke: #fff;
+      }
+      [hidden] {
+        display: none !important;
+      }
+      .overlay {
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        overflow: hidden;
+        opacity: 0;
+        transition: opacity 240ms var(--ease);
+      }
+      .overlay.visible {
+        opacity: 1;
+      }
+      .overlay::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        box-shadow:
+          inset 0 0 22px 4px color-mix(in srgb, var(--accent) 28%, transparent),
+          inset 0 0 46px 8px color-mix(in srgb, var(--accent-light) 18%, transparent),
+          inset 0 0 74px 16px color-mix(in srgb, var(--focus-border) 14%, transparent);
+        opacity: 0.68;
+      }
+      .overlay::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background:
+          linear-gradient(90deg, transparent, color-mix(in srgb, white 68%, var(--accent)), transparent) -160px 0 / 160px 1px no-repeat,
+          linear-gradient(180deg, transparent, color-mix(in srgb, white 68%, var(--accent)), transparent) calc(100% - 1px) -160px / 1px 160px no-repeat,
+          linear-gradient(90deg, transparent, color-mix(in srgb, white 68%, var(--accent)), transparent) calc(100% + 160px) calc(100% - 1px) / 160px 1px no-repeat,
+          linear-gradient(180deg, transparent, color-mix(in srgb, white 68%, var(--accent)), transparent) 0 calc(100% + 160px) / 1px 160px no-repeat;
+        box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 8%, transparent);
+        opacity: 0.54;
+        animation: edge 3.2s linear infinite;
+      }
+      .scan {
+        position: absolute;
+        z-index: 2;
+        left: 10px;
+        right: 10px;
+        top: 14%;
+        height: 1px;
+        background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.7), transparent);
+        opacity: 0;
+      }
+      .overlay.inspect .scan {
+        animation: scan 1.7s ease-in-out infinite;
+      }
+      .cursor,
+      .cursor-glow {
+        position: absolute;
+        left: calc(var(--to-x) * 1%);
+        top: calc(var(--to-y) * 1%);
+      }
+      .cursor {
+        z-index: 3;
+        width: 24px;
+        height: 24px;
+        filter: drop-shadow(0 8px 12px rgba(0, 0, 0, 0.36));
+        transform: rotate(-8deg);
+        transform-origin: 9px 8px;
+      }
+      .cursor-glow {
+        z-index: 2;
+        width: 70px;
+        height: 70px;
+        border-radius: 999px;
+        background:
+          radial-gradient(circle, var(--accent-light) 0 12%, var(--accent-glow) 34%, transparent 70%),
+          radial-gradient(circle, var(--focus-border) 0 18%, transparent 62%);
+        filter: blur(16px) saturate(1.08);
+        opacity: 0.38;
+        transform: translate(-24px, -22px);
+      }
+      .overlay.pulse .cursor,
+      .overlay.pulse .cursor-glow {
+        animation: cursor-travel 860ms var(--ease) both;
+      }
+      .overlay.click.pulse .cursor {
+        animation: cursor-travel 860ms var(--ease) both, cursor-tap 1.08s var(--ease) both;
+      }
+      .overlay.click.pulse .cursor-glow {
+        animation: cursor-travel 860ms var(--ease) both, click-glow 1.08s var(--ease) both;
+      }
+      .ring {
+        position: absolute;
+        left: calc(var(--to-x) * 1% + 6px);
+        top: calc(var(--to-y) * 1% + 5px);
+        z-index: 2;
+        width: 36px;
+        height: 36px;
+        border: 1px solid rgba(255, 255, 255, 0.82);
+        border-radius: 999px;
+        transform: translate(-50%, -50%);
+        animation: ring 1.18s ease-out both;
+      }
+      .scroll-cue {
+        position: absolute;
+        left: calc(var(--to-x) * 1% + 19px);
+        top: calc(var(--to-y) * 1% - 38px);
+        z-index: 2;
+        width: 2px;
+        height: 74px;
+        border-radius: 999px;
+        background: linear-gradient(transparent, rgba(255, 255, 255, 0.74), transparent);
+        animation: scroll-cue 1.45s ease-in-out both;
+      }
+      .caret {
+        position: absolute;
+        left: calc(var(--to-x) * 1% + 18px);
+        top: calc(var(--to-y) * 1% + 2px);
+        z-index: 2;
+        width: 2px;
+        height: 28px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.86);
+        box-shadow: 14px 0 0 rgba(255, 255, 255, 0.22), 28px 0 0 rgba(255, 255, 255, 0.16);
+        animation: caret 1.35s steps(2, end) both;
+      }
+      .label {
+        position: absolute;
+        left: 12px;
+        bottom: 12px;
+        z-index: 3;
+        display: inline-flex;
+        max-width: min(280px, calc(100% - 24px));
+        min-height: 28px;
+        align-items: center;
+        padding: 0 10px;
+        border: 1px solid rgba(255, 255, 255, 0.18);
+        border-radius: 8px;
+        background: rgba(10, 12, 18, 0.72);
+        color: rgba(255, 255, 255, 0.88);
+        box-shadow: 0 12px 30px rgba(0, 0, 0, 0.28);
+        font: 11.5px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        backdrop-filter: blur(12px);
+      }
+      .label span {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      @keyframes edge {
+        from { background-position: -160px 0, calc(100% - 1px) -160px, calc(100% + 160px) calc(100% - 1px), 0 calc(100% + 160px); }
+        to { background-position: calc(100% + 160px) 0, calc(100% - 1px) calc(100% + 160px), -160px calc(100% - 1px), 0 -160px; }
+      }
+      @keyframes scan {
+        0% { top: 14%; opacity: 0; }
+        20%, 70% { opacity: 0.9; }
+        100% { top: 82%; opacity: 0; }
+      }
+      @keyframes cursor-travel {
+        0% {
+          left: calc(var(--from-x) * 1%);
+          top: calc(var(--from-y) * 1%);
+          opacity: 0.48;
+        }
+        100% {
+          left: calc(var(--to-x) * 1%);
+          top: calc(var(--to-y) * 1%);
+          opacity: 1;
+        }
+      }
+      @keyframes cursor-tap {
+        0%, 58%, 100% { transform: rotate(-8deg) scale(1); }
+        72% { transform: rotate(-8deg) scale(0.88); }
+      }
+      @keyframes ring {
+        0%, 48% { opacity: 0; transform: translate(-50%, -50%) scale(0.45); }
+        72% { opacity: 0.95; }
+        100% { opacity: 0; transform: translate(-50%, -50%) scale(1.75); }
+      }
+      @keyframes click-glow {
+        0%, 48% { opacity: 0.28; transform: translate(-24px, -22px) scale(0.88); }
+        72% { opacity: 0.48; transform: translate(-24px, -22px) scale(1.08); }
+        100% { opacity: 0.36; transform: translate(-24px, -22px) scale(1); }
+      }
+      @keyframes scroll-cue {
+        0% { transform: translateY(46px); opacity: 0; }
+        24%, 74% { opacity: 0.9; }
+        100% { transform: translateY(-34px); opacity: 0; }
+      }
+      @keyframes caret {
+        0%, 22% { opacity: 0; }
+        23%, 100% { opacity: 1; }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="overlay" class="overlay" aria-hidden="true">
+      <span class="scan"></span>
+      <span id="glow" class="cursor-glow"></span>
+      <svg id="cursor" class="cursor" viewBox="0 0 24 24" fill="none" focusable="false">
+        <path
+          d="M20.5056 10.7754C21.1225 10.5355 21.431 10.4155 21.5176 10.2459C21.5926 10.099 21.5903 9.92446 21.5115 9.77954C21.4205 9.61226 21.109 9.50044 20.486 9.2768L4.59629 3.5728C4.0866 3.38983 3.83175 3.29835 3.66514 3.35605C3.52029 3.40621 3.40645 3.52004 3.35629 3.6649C3.29859 3.8315 3.39008 4.08635 3.57304 4.59605L9.277 20.4858C9.50064 21.1088 9.61246 21.4203 9.77973 21.5113C9.92465 21.5901 10.0991 21.5924 10.2461 21.5174C10.4157 21.4308 10.5356 21.1223 10.7756 20.5054L13.3724 13.8278C13.4194 13.707 13.4429 13.6466 13.4792 13.5957C13.5114 13.5506 13.5508 13.5112 13.5959 13.479C13.6468 13.4427 13.7072 13.4192 13.828 13.3722L20.5056 10.7754Z"
+          fill="var(--cursor-fill)"
+          stroke="var(--cursor-stroke)"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        />
+      </svg>
+      <span id="ring" class="ring"></span>
+      <span id="scroll" class="scroll-cue"></span>
+      <span id="caret" class="caret"></span>
+      <span class="label"><span id="label"></span></span>
+    </div>
+    <script src="/preview-control-overlay.js"></script>
+  </body>
+</html>

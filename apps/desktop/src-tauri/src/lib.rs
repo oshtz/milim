@@ -11,6 +11,7 @@
 #[cfg(feature = "computer-use")]
 mod computer_tools;
 mod host_tools;
+mod preview_tools;
 
 use std::collections::BTreeMap;
 use std::fs::{self, File};
@@ -2164,6 +2165,7 @@ fn open_user_data_store() -> Result<Arc<milim_storage::UserDataStore>> {
 /// spawns child processes).
 fn build_state(
     api_key: String,
+    preview_tools_state: preview_tools::SharedPreviewToolState,
 ) -> (
     AppState,
     SocketAddr,
@@ -2179,6 +2181,9 @@ fn build_state(
 
     let mut tools = ToolRegistry::with_builtins();
     tools.register(Arc::new(RunCommandTool::default()));
+    for tool in preview_tools::preview_tools(preview_tools_state) {
+        tools.register(tool);
+    }
 
     // Host filesystem + shell tools, rooted to the GUI's working folder. The
     // same cell is shared with AppState so `POST /workspace` (the Folder chip)
@@ -2459,7 +2464,9 @@ fn setup_tray<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<()>
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let api_key = milim_server::gen_id("desktop");
-    let (state, preferred_addr, mcp, providers) = build_state(api_key.clone());
+    let preview_tools_state = Arc::new(preview_tools::PreviewToolState::default());
+    let (state, preferred_addr, mcp, providers) =
+        build_state(api_key.clone(), preview_tools_state.clone());
     let (server_listener, addr) =
         bind_desktop_server_listener(preferred_addr).expect("bind embedded milim server");
     let (mobile_listener, mobile_addr) = bind_desktop_server_listener(
@@ -2480,12 +2487,14 @@ pub fn run() {
         .manage(DesktopApiBaseUrl(api_base))
         .manage(MobileRelayLocalTarget(mobile_local_target))
         .manage(UserDataState(user_data))
+        .manage(preview_tools_state.clone())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         // Persist + restore window size/position/maximized across restarts.
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .setup(move |app| {
             setup_tray(app.handle())?;
+            preview_tools_state.set_app(app.handle().clone());
             // Connect any persisted MCP servers in the background (best-effort).
             tauri::async_runtime::spawn(async move {
                 mcp.connect_all().await;
@@ -2584,7 +2593,8 @@ pub fn run() {
             take_update_recovery_error,
             download_update_file,
             extract_app_zip,
-            apply_update
+            apply_update,
+            preview_tools::set_active_preview_target
         ])
         .run(tauri::generate_context!())
         .expect("error while running milim desktop");

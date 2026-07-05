@@ -410,6 +410,15 @@ export async function openExternalUrl(url: string): Promise<void> {
   window.open(url, "_blank", "noopener,noreferrer");
 }
 
+export async function setActivePreviewTarget(target: { label: string; url?: string | null; native: boolean } | null): Promise<void> {
+  if (!inTauri) return;
+  await invoke("set_active_preview_target", {
+    label: target?.label ?? null,
+    url: target?.url ?? null,
+    native: target?.native ?? false,
+  });
+}
+
 export function inferAttachmentMime(name: string): string {
   const ext = name.split(".").pop()?.toLowerCase();
   switch (ext) {
@@ -1563,6 +1572,7 @@ export interface AgentToolContext {
   tool_approval_grant?: boolean;
   sandbox_enabled?: boolean;
   computer_use_enabled?: boolean;
+  preview_tools_enabled?: boolean;
   experimental_hashline_patch?: boolean;
   plan_mode?: boolean;
 }

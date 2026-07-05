@@ -67,6 +67,7 @@ export function buildTurnPromptContext({
   claudeModel,
   sandbox,
   computerUse,
+  previewTools,
   activeAgentId,
   toolApproval,
   toolApprovalGrant,
@@ -89,6 +90,7 @@ export function buildTurnPromptContext({
   claudeModel?: string | null;
   sandbox: boolean;
   computerUse: boolean;
+  previewTools?: boolean;
   activeAgentId?: string | null;
   toolApproval: ToolApprovalMode;
   toolApprovalGrant: boolean;
@@ -98,7 +100,7 @@ export function buildTurnPromptContext({
   const skillMessage = skillInstructionMessage(selectedSkills);
   const userText = lastUserText ?? latestUserContent(conversation);
   const useScheduleTools = !planMode && looksLikeScheduleRequest(userText);
-  const nonMemoryTools = planMode || sandbox || computerUse || activeAgentId != null || folder.trim() !== "" || useScheduleTools;
+  const nonMemoryTools = planMode || sandbox || computerUse || previewTools || activeAgentId != null || folder.trim() !== "" || useScheduleTools;
   const memoryWriteEnabled = memory && !planMode && !codexModel && !claudeModel && (nonMemoryTools || looksLikeMemoryWriteRequest(userText));
   const memorySystem = memory && !planMode
     ? [
@@ -147,6 +149,7 @@ export function buildTurnPromptContext({
       tool_approval_grant: toolApprovalGrant,
       sandbox_enabled: sandbox,
       computer_use_enabled: computerUse,
+      preview_tools_enabled: Boolean(previewTools),
       experimental_hashline_patch: experimentalHashlinePatch,
       plan_mode: planMode,
     },
@@ -170,6 +173,7 @@ export async function prepareTurnPromptContext({
   model,
   sandbox,
   computerUse,
+  previewTools,
   activeAgentId,
   toolApproval,
   toolApprovalGrant,
@@ -195,6 +199,7 @@ export async function prepareTurnPromptContext({
   model: string;
   sandbox: boolean;
   computerUse: boolean;
+  previewTools?: boolean;
   activeAgentId?: string | null;
   toolApproval: ToolApprovalMode;
   toolApprovalGrant: boolean;
@@ -230,6 +235,7 @@ export async function prepareTurnPromptContext({
     claudeModel,
     sandbox,
     computerUse,
+    previewTools,
     activeAgentId,
     toolApproval,
     toolApprovalGrant,

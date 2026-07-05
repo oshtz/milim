@@ -1,9 +1,10 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type KeyboardEvent, type PointerEvent, type ReactNode } from "react";
-import { openExternalUrl, type ChatArtifact, type PreviewAppStatus } from "../api";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type KeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent, type ReactNode } from "react";
+import { openExternalUrl, setActivePreviewTarget, type ChatArtifact, type PreviewAppStatus } from "../api";
 import type { ArtifactRevision, ArtifactRevisionGroup } from "../lib/artifactRevisions";
 import { buildArtifactPreviewDocument, previewKindForArtifact } from "../lib/artifactPreview";
 import { isFileArtifact, normalizeArtifactBrowserUrl } from "../lib/artifacts";
 import type { PreviewControlActivity } from "../lib/previewActivity";
+import { useContextMenu } from "./ContextMenu";
 import { ArrowLeft, ArrowRight, Bolt, Code, Copy, Download, Eye, FileText, Globe, Plus, Refresh, X } from "./icons";
 import { Logo } from "./Logo";
 
@@ -12,11 +13,25 @@ const Markdown = lazy(() => import("./Markdown").then((mod) => ({ default: mod.M
 type PreviewTab = "preview" | "code";
 type PreviewLogLevel = "log" | "info" | "warn" | "error";
 type NativeWebviewHandle = {
+  label: string;
   close: () => Promise<void>;
   hide: () => Promise<void>;
+  show: () => Promise<void>;
   once: <T>(event: string, handler: (event: { payload: T }) => void) => Promise<() => void>;
   setPosition: (position: unknown) => Promise<void>;
   setSize: (size: unknown) => Promise<void>;
+};
+
+type PreviewControlOverlayPayload = {
+  id: string;
+  gesture: PreviewControlActivity["gesture"];
+  label: string;
+  status: PreviewControlActivity["status"];
+  dark: boolean;
+  accent?: string;
+  accentLight?: string;
+  accentGlow?: string;
+  focusBorder?: string;
 };
 
 type PreviewLogEntry = {
@@ -41,7 +56,14 @@ const CODE_SPLIT_MIN_WIDTH = 132;
 const CODE_SPLIT_DEFAULT_WIDTH = 180;
 const CODE_SPLIT_MIN_CODE_WIDTH = 160;
 const CODE_SPLIT_KEYBOARD_STEP = 24;
+const PREVIEW_CONTROL_OVERLAY_CLOSE_MS = 3400;
+const PREVIEW_CONTROL_OVERLAY_STORAGE_PREFIX = "milim-preview-control-activity:";
 const IS_TAURI = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+const APP_FLOATING_UI_SELECTOR = '[role="dialog"][aria-modal="true"], [role="menu"]';
+
+export function nativePreviewBlockedByAppUi(root: Pick<ParentNode, "querySelector"> = document): boolean {
+  return Boolean(root.querySelector(APP_FLOATING_UI_SELECTOR));
+}
 
 export function PreviewPanel({
   artifact,
@@ -88,6 +110,7 @@ export function PreviewPanel({
   modeSwitcher?: ReactNode;
   style?: CSSProperties;
 }) {
+  const { openContextMenu } = useContextMenu();
   const [localActiveTab, setLocalActiveTab] = useState<PreviewTab>(previewDeferred ? "code" : "preview");
   const activeTab = controlledActiveTab ?? localActiveTab;
   const [frameKey, setFrameKey] = useState(0);
@@ -231,6 +254,14 @@ export function PreviewPanel({
   }, [runtimeStatus?.status]);
 
   useEffect(() => {
+    if (isUrlPreview || activeTab !== "preview" || previewDeferred || previewError) return;
+    void setActivePreviewTarget({ label: "main", url: title, native: false }).catch(() => undefined);
+    return () => {
+      void setActivePreviewTarget(null).catch(() => undefined);
+    };
+  }, [activeTab, frameKey, isUrlPreview, previewDeferred, previewError, title]);
+
+  useEffect(() => {
     function onMessage(event: MessageEvent) {
       if (event.source !== iframeRef.current?.contentWindow) return;
       const entry = normalizePreviewLog(event.data, ++logIdRef.current);
@@ -314,6 +345,74 @@ export function PreviewPanel({
   function clearLogs() {
     setLogs([]);
     setRuntimeLogsClearedAt((runtimeStatus?.logs ?? []).reduce((latest, log) => Math.max(latest, log.ts), 0));
+  }
+
+  function openPreviewContextMenu(event: ReactMouseEvent) {
+    openContextMenu(event, [
+      ...(!isUrlPreview ? [{
+        id: "preview-tab",
+        label: "Show preview",
+        icon: <Eye size={13} />,
+        checked: activeTab === "preview",
+        disabled: activeTab === "preview",
+        action: () => setActiveTab("preview"),
+      }, {
+        id: "code-tab",
+        label: "Show code",
+        icon: <Code size={13} />,
+        checked: activeTab === "code",
+        disabled: activeTab === "code",
+        action: () => setActiveTab("code"),
+      }] : []),
+      ...(activeTab === "preview" && previewKind === "html" && !isUrlPreview ? [{
+        id: "reload-preview",
+        label: "Reload preview",
+        icon: <Refresh size={13} />,
+        separatorBefore: true,
+        action: () => setFrameKey((key) => key + 1),
+      }] : []),
+      ...(!isUrlPreview && onOpenBrowser ? [{
+        id: "open-browser-panel",
+        label: "Open browser panel",
+        icon: <Globe size={13} />,
+        separatorBefore: activeTab !== "preview" || previewKind !== "html",
+        action: onOpenBrowser,
+      }] : []),
+      ...(isUrlPreview && browserUrl ? [{
+        id: "open-external",
+        label: "Open in browser",
+        icon: <ArrowRight size={13} />,
+        separatorBefore: true,
+        action: openBrowserUrlExternal,
+      }] : []),
+      {
+        id: "copy",
+        label: isUrlPreview ? "Copy URL" : "Copy source",
+        icon: <Copy size={13} />,
+        separatorBefore: true,
+        action: () => void copySource(),
+      },
+      ...(!isUrlPreview ? [{
+        id: "download",
+        label: "Download source",
+        icon: <Download size={13} />,
+        action: downloadSource,
+      }] : []),
+      ...(canQuickFix ? [{
+        id: "quick-fix",
+        label: "Quick Fix",
+        icon: <Bolt size={13} />,
+        separatorBefore: true,
+        action: sendQuickFix,
+      }] : []),
+      {
+        id: "close",
+        label: "Close preview",
+        icon: <X size={13} />,
+        separatorBefore: true,
+        action: onClose,
+      },
+    ], title);
   }
 
   function maxLogDrawerHeight(): number {
@@ -417,7 +516,7 @@ export function PreviewPanel({
   }
 
   return (
-    <aside className={`preview-panel${closing ? " closing" : ""}${noEnterMotion ? " no-enter" : ""}`} data-testid="chat-preview-split" style={style}>
+    <aside className={`preview-panel${closing ? " closing" : ""}${noEnterMotion ? " no-enter" : ""}`} data-testid="chat-preview-split" style={style} onContextMenu={openPreviewContextMenu}>
       <div className="preview-toolbar">
         {modeSwitcher}
         {!isUrlPreview && (
@@ -555,7 +654,7 @@ export function PreviewPanel({
                 {browserError && <div className="preview-browser-error" role="alert">{browserError}</div>}
                 <div className="preview-browser-content">
                   {browserUrl ? (
-                    <NativeArtifactBrowser url={browserUrl} frameKey={frameKey} title={title} active={!closing} />
+                    <NativeArtifactBrowser url={browserUrl} frameKey={frameKey} title={title} active={!closing} controlActivity={controlActivity} />
                   ) : (
                     <div className="preview-browser-empty" data-testid="preview-browser-empty">
                       <Logo height={42} className="preview-browser-empty-logo" />
@@ -567,7 +666,6 @@ export function PreviewPanel({
                       </span>
                     </div>
                   )}
-                  {controlActivity && <PreviewControlOverlay key={controlActivity.id} activity={controlActivity} />}
                 </div>
               </>
             ) : (
@@ -760,11 +858,30 @@ function PreviewRuntimeStatus({
   );
 }
 
-function NativeArtifactBrowser({ url, frameKey, title, active }: { url: string; frameKey: number; title: string; active: boolean }) {
+function NativeArtifactBrowser({ url, frameKey, title, active, controlActivity }: { url: string; frameKey: number; title: string; active: boolean; controlActivity?: PreviewControlActivity | null }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const webviewRef = useRef<NativeWebviewHandle | null>(null);
+  const overlayWebviewRef = useRef<NativeWebviewHandle | null>(null);
   const labelRef = useRef(`artifact-browser-${Math.random().toString(36).slice(2)}`);
+  const overlayLabelRef = useRef(`artifact-overlay-${Math.random().toString(36).slice(2)}`);
+  const overlayChannelRef = useRef(`preview-control-overlay-${Math.random().toString(36).slice(2)}`);
+  const overlayCleanupRef = useRef<(() => void) | null>(null);
+  const overlayCloseTimerRef = useRef<number | null>(null);
+  const overlayInstanceRef = useRef(0);
   const [nativeError, setNativeError] = useState<string | null>(null);
+
+  function clearOverlayCloseTimer() {
+    if (overlayCloseTimerRef.current === null) return;
+    window.clearTimeout(overlayCloseTimerRef.current);
+    overlayCloseTimerRef.current = null;
+  }
+
+  async function closeOverlayWebview() {
+    clearOverlayCloseTimer();
+    overlayCleanupRef.current?.();
+    overlayCleanupRef.current = null;
+    await closeNativeWebview(overlayWebviewRef);
+  }
 
   useEffect(() => {
     if (!active) return;
@@ -772,11 +889,14 @@ function NativeArtifactBrowser({ url, frameKey, title, active }: { url: string; 
 
     let cancelled = false;
     let resizeObserver: ResizeObserver | null = null;
+    let appUiObserver: MutationObserver | null = null;
     let unlistenError: (() => void) | null = null;
     let removeLayoutListeners: (() => void) | null = null;
     let raf = 0;
+    let nativeHidden = false;
 
     async function closeWebview() {
+      await closeOverlayWebview();
       const webview = webviewRef.current;
       webviewRef.current = null;
       if (webview) {
@@ -819,6 +939,17 @@ function NativeArtifactBrowser({ url, frameKey, title, active }: { url: string; 
         ]).catch(() => undefined);
       }
 
+      async function syncAppUiVisibility() {
+        const blocked = nativePreviewBlockedByAppUi();
+        if (blocked === nativeHidden) return;
+        nativeHidden = blocked;
+        await Promise.all([
+          setNativeWebviewHidden(webviewRef.current, blocked),
+          setNativeWebviewHidden(overlayWebviewRef.current, blocked),
+        ]);
+        if (!blocked) void syncBounds(webviewRef.current);
+      }
+
       const rect = bounds();
       const label = `${labelRef.current}-${frameKey}-${Math.random().toString(36).slice(2)}`;
       const webview = new Webview(getCurrentWindow(), label, {
@@ -832,6 +963,7 @@ function NativeArtifactBrowser({ url, frameKey, title, active }: { url: string; 
         zoomHotkeysEnabled: true,
       }) as NativeWebviewHandle;
       webviewRef.current = webview;
+      void setActivePreviewTarget({ label, url, native: true }).catch(() => undefined);
       unlistenError = await webview.once<string>("tauri://error", (event) => {
         if (!cancelled) setNativeError(event.payload || "Could not open this page.");
       });
@@ -841,8 +973,11 @@ function NativeArtifactBrowser({ url, frameKey, title, active }: { url: string; 
         return;
       }
       await syncBounds(webview);
+      await syncAppUiVisibility();
       resizeObserver = new ResizeObserver(() => void syncBounds(webview));
       resizeObserver.observe(hostElement);
+      appUiObserver = new MutationObserver(() => void syncAppUiVisibility());
+      appUiObserver.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["aria-modal", "role"] });
       const onWindowLayout = () => void syncBounds(webview);
       window.addEventListener("resize", onWindowLayout);
       window.addEventListener("scroll", onWindowLayout, true);
@@ -866,11 +1001,89 @@ function NativeArtifactBrowser({ url, frameKey, title, active }: { url: string; 
       cancelled = true;
       if (raf) window.cancelAnimationFrame(raf);
       resizeObserver?.disconnect();
+      appUiObserver?.disconnect();
       removeLayoutListeners?.();
       unlistenError?.();
+      void setActivePreviewTarget(null).catch(() => undefined);
       void closeWebview();
     };
   }, [active, frameKey, url]);
+
+  useEffect(() => {
+    if (!active || !controlActivity || !IS_TAURI) return;
+    let cancelled = false;
+    const channel = overlayChannelRef.current;
+    const payload = previewControlOverlayPayload(controlActivity);
+
+    publishPreviewControlOverlayActivity(channel, payload);
+    clearOverlayCloseTimer();
+    overlayCloseTimerRef.current = window.setTimeout(() => void closeOverlayWebview(), PREVIEW_CONTROL_OVERLAY_CLOSE_MS);
+
+    void (async () => {
+      const host = hostRef.current;
+      if (!host) return;
+      const hostElement = host;
+      const [{ Webview }, { getCurrentWindow }, { LogicalPosition, LogicalSize }] = await Promise.all([
+        import("@tauri-apps/api/webview"),
+        import("@tauri-apps/api/window"),
+        import("@tauri-apps/api/dpi"),
+      ]);
+      if (cancelled) return;
+
+      async function syncOverlayBounds() {
+        if (!overlayWebviewRef.current || !hostElement.isConnected) return;
+        const nextRect = nativeBrowserBounds(hostElement);
+        await Promise.all([
+          overlayWebviewRef.current.setPosition(new LogicalPosition(nextRect.x, nextRect.y)),
+          overlayWebviewRef.current.setSize(new LogicalSize(nextRect.width, nextRect.height)),
+        ]).catch(() => undefined);
+      }
+
+      if (!overlayWebviewRef.current) {
+        const rect = nativeBrowserBounds(hostElement);
+        const overlayLabel = `${overlayLabelRef.current}-${++overlayInstanceRef.current}`;
+        const overlay = new Webview(getCurrentWindow(), overlayLabel, {
+          url: previewControlOverlayUrl(channel),
+          x: rect.x,
+          y: rect.y,
+          width: rect.width,
+          height: rect.height,
+          transparent: true,
+          backgroundColor: [0, 0, 0, 0],
+          focus: false,
+          dragDropEnabled: false,
+        }) as NativeWebviewHandle;
+        overlayWebviewRef.current = overlay;
+        if (nativePreviewBlockedByAppUi()) await overlay.hide().catch(() => undefined);
+
+        const resizeObserver = new ResizeObserver(() => void syncOverlayBounds());
+        resizeObserver.observe(hostElement);
+        const onWindowLayout = () => void syncOverlayBounds();
+        window.addEventListener("resize", onWindowLayout);
+        window.addEventListener("scroll", onWindowLayout, true);
+        const publishSoon = [
+          window.setTimeout(() => publishPreviewControlOverlayActivity(channel, payload), 80),
+          window.setTimeout(() => publishPreviewControlOverlayActivity(channel, payload), 220),
+        ];
+        overlayCleanupRef.current = () => {
+          resizeObserver.disconnect();
+          window.removeEventListener("resize", onWindowLayout);
+          window.removeEventListener("scroll", onWindowLayout, true);
+          for (const timer of publishSoon) window.clearTimeout(timer);
+        };
+      } else {
+        await syncOverlayBounds();
+        publishPreviewControlOverlayActivity(channel, payload);
+      }
+    })()
+      .catch(() => {
+        if (!cancelled) void closeOverlayWebview();
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [active, controlActivity?.id]);
 
   return (
     <div ref={hostRef} className="preview-native-browser" data-testid="preview-native-browser" aria-label={title}>
@@ -887,6 +1100,71 @@ function NativeArtifactBrowser({ url, frameKey, title, active }: { url: string; 
       {nativeError && <div className="preview-native-browser-error" role="alert">{nativeError}</div>}
     </div>
   );
+}
+
+async function closeNativeWebview(ref: { current: NativeWebviewHandle | null }) {
+  const webview = ref.current;
+  ref.current = null;
+  if (!webview) return;
+  await webview.hide().catch(() => undefined);
+  await webview.close().catch(() => undefined);
+}
+
+async function setNativeWebviewHidden(webview: NativeWebviewHandle | null, hidden: boolean) {
+  if (!webview) return;
+  await (hidden ? webview.hide() : webview.show()).catch(() => undefined);
+}
+
+function nativeBrowserBounds(host: HTMLElement) {
+  const rect = host.getBoundingClientRect();
+  return {
+    x: Math.max(0, Math.round(rect.left)),
+    y: Math.max(0, Math.round(rect.top)),
+    width: Math.max(1, Math.round(rect.width)),
+    height: Math.max(1, Math.round(rect.height)),
+  };
+}
+
+function previewControlOverlayUrl(channel: string): string {
+  const params = new URLSearchParams({ channel });
+  return `/preview-control-overlay.html?${params.toString()}`;
+}
+
+function previewControlOverlayPayload(activity: PreviewControlActivity): PreviewControlOverlayPayload {
+  const payload: PreviewControlOverlayPayload = {
+    id: activity.id,
+    gesture: activity.gesture,
+    status: activity.status,
+    label: previewControlLabel(activity),
+    dark: typeof document !== "undefined" && document.documentElement.getAttribute("data-dark") === "true",
+  };
+  const styles = typeof document !== "undefined" ? getComputedStyle(document.documentElement) : null;
+  const accent = styles?.getPropertyValue("--accent").trim();
+  const accentLight = styles?.getPropertyValue("--accent-light").trim();
+  const accentGlow = styles?.getPropertyValue("--accent-glow").trim();
+  const focusBorder = styles?.getPropertyValue("--focus-border").trim();
+  if (accent) payload.accent = accent;
+  if (accentLight) payload.accentLight = accentLight;
+  if (accentGlow) payload.accentGlow = accentGlow;
+  if (focusBorder) payload.focusBorder = focusBorder;
+  return payload;
+}
+
+function publishPreviewControlOverlayActivity(channel: string, payload: PreviewControlOverlayPayload) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(`${PREVIEW_CONTROL_OVERLAY_STORAGE_PREFIX}${channel}`, JSON.stringify(payload));
+  } catch {
+    // Storage is best-effort; BroadcastChannel is enough when the overlay is already loaded.
+  }
+  if (!("BroadcastChannel" in window)) return;
+  try {
+    const broadcast = new BroadcastChannel(channel);
+    broadcast.postMessage(payload);
+    broadcast.close();
+  } catch {
+    // The overlay will still read the latest payload from localStorage on load.
+  }
 }
 
 function PreviewLogRow({ log }: { log: PreviewLogEntry }) {

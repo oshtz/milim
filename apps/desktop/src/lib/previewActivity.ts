@@ -17,6 +17,11 @@ const TOOL_GESTURES: Record<string, PreviewControlGesture> = {
   type_text: "type",
   key_press: "type",
   screenshot: "inspect",
+  preview_dom_snapshot: "inspect",
+  preview_click: "click",
+  preview_scroll: "scroll",
+  preview_type_text: "type",
+  preview_key_press: "type",
 };
 
 export function previewControlActivityFromDebugUrl(href: string): PreviewControlActivity | null {

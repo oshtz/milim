@@ -3491,6 +3491,7 @@ export function ChatView({
       model: turnModel,
       sandbox: turnSandbox,
       computerUse: turnComputerUse,
+      previewTools: Boolean(sidePanelOpen && sidePanelMode !== "git" && visiblePreviewSelection),
       activeAgentId: turnActiveAgentId,
       toolApproval: turnToolApproval,
       toolApprovalGrant: false,
@@ -4166,7 +4167,16 @@ export function ChatView({
     ? messages.slice().reverse().find((message) => message.role === "assistant" && message.streamParts?.length)?.streamParts
     : undefined;
   const debugPreviewControlActivity = typeof window === "undefined" ? null : previewControlActivityFromDebugUrl(window.location.href);
-  const previewControlActivity = debugPreviewControlActivity ?? previewControlActivityFromStreamParts(activeStreamParts);
+  const streamPreviewControlActivity = previewControlActivityFromStreamParts(activeStreamParts);
+  const streamPreviewControlActivityId = streamPreviewControlActivity?.id ?? null;
+  const [recentPreviewControlActivity, setRecentPreviewControlActivity] = useState<ReturnType<typeof previewControlActivityFromStreamParts>>(null);
+  useEffect(() => {
+    if (!streamPreviewControlActivity) return;
+    setRecentPreviewControlActivity(streamPreviewControlActivity);
+    const timer = window.setTimeout(() => setRecentPreviewControlActivity(null), 1900);
+    return () => window.clearTimeout(timer);
+  }, [streamPreviewControlActivityId]);
+  const previewControlActivity = debugPreviewControlActivity ?? streamPreviewControlActivity ?? recentPreviewControlActivity;
   const canOpenArtifactPanel = Boolean(latestPreviewSelection || (sidePanelMode === "artifact" && previewSelection));
   const sidePanelModeSwitcher = (
     <div className="side-panel-switcher" role="tablist" aria-label="Side panel mode">

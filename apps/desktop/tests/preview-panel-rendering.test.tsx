@@ -1,4 +1,4 @@
-import { createElement, type ComponentType } from "react";
+import { createElement, type ComponentType, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createServer } from "vite";
 import type { ChatArtifact } from "../src/api.js";
@@ -62,28 +62,41 @@ const server = await createServer({
 });
 
 try {
-  const { PreviewPanel } = await server.ssrLoadModule("/src/components/PreviewPanel.tsx") as {
+  const { PreviewPanel, nativePreviewBlockedByAppUi } = await server.ssrLoadModule("/src/components/PreviewPanel.tsx") as {
     PreviewPanel: ComponentType<PreviewPanelProps>;
+    nativePreviewBlockedByAppUi: (root: Pick<ParentNode, "querySelector">) => boolean;
   };
-  const urlMarkup = renderToStaticMarkup(createElement(PreviewPanel, { artifact: urlArtifact, onClose: () => {} }));
+  const { ContextMenuProvider } = await server.ssrLoadModule("/src/components/ContextMenu.tsx") as {
+    ContextMenuProvider: ComponentType<{ children: ReactNode }>;
+  };
+  const renderPreviewPanel = (props: PreviewPanelProps) => renderToStaticMarkup(
+    createElement(ContextMenuProvider, null, createElement(PreviewPanel, props)),
+  );
+  assert(nativePreviewBlockedByAppUi({ querySelector: () => ({}) as Element }), "Native preview should hide behind app modal/menu UI");
+  assert(!nativePreviewBlockedByAppUi({ querySelector: () => null }), "Native preview should stay visible without blocking app UI");
+
+  const urlMarkup = renderPreviewPanel({ artifact: urlArtifact, onClose: () => {} });
   assert(urlMarkup.includes('data-testid="preview-browser-bar"'), "URL artifacts should render browser chrome");
   assert(urlMarkup.includes('data-testid="preview-browser-url"'), "URL artifacts should render an address input");
   assert(urlMarkup.includes('data-testid="preview-native-browser"'), "URL artifacts should render the native browser host");
   assert(urlMarkup.includes('src="http://localhost:5173/"'), "URL artifacts should render a non-Tauri iframe fallback");
 
-  const blankUrlMarkup = renderToStaticMarkup(createElement(PreviewPanel, { artifact: blankUrlArtifact, onClose: () => {} }));
+  const blankUrlMarkup = renderPreviewPanel({ artifact: blankUrlArtifact, onClose: () => {} });
   assert(blankUrlMarkup.includes('data-testid="preview-browser-bar"'), "Blank URL artifacts should still render browser chrome");
   assert(blankUrlMarkup.includes('data-testid="preview-browser-empty"'), "Blank URL artifacts should render the empty browser state");
 
-  const htmlMarkup = renderToStaticMarkup(createElement(PreviewPanel, { artifact: htmlArtifact, onClose: () => {}, onOpenBrowser: () => {} }));
+  const htmlMarkup = renderPreviewPanel({ artifact: htmlArtifact, onClose: () => {}, onOpenBrowser: () => {} });
   assert(!htmlMarkup.includes('data-testid="preview-browser-bar"'), "HTML artifacts should not render browser chrome");
   assert(htmlMarkup.includes('data-testid="preview-open-browser"'), "HTML artifacts should let users switch to the browser");
   assert(htmlMarkup.includes("srcDoc="), "HTML artifacts should keep srcDoc preview rendering");
   assert(!htmlMarkup.includes('data-testid="preview-control-overlay"'), "Preview overlay should not render without activity");
 
-  const activeMarkup = renderToStaticMarkup(createElement(PreviewPanel, { artifact: htmlArtifact, onClose: () => {}, controlActivity }));
+  const activeMarkup = renderPreviewPanel({ artifact: htmlArtifact, onClose: () => {}, controlActivity });
   assert(activeMarkup.includes('data-testid="preview-control-overlay"'), "Preview overlay should render when activity is supplied");
   assert(activeMarkup.includes('aria-hidden="true"'), "Preview overlay should be hidden from assistive tech");
+
+  const activeUrlMarkup = renderPreviewPanel({ artifact: urlArtifact, onClose: () => {}, controlActivity });
+  assert(!activeUrlMarkup.includes('data-testid="preview-control-overlay"'), "URL previews should leave preview control cues to the native overlay webview");
 } finally {
   await server.close();
 }

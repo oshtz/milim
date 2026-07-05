@@ -8089,6 +8089,13 @@ const COMPUTER_TOOL_NAMES: &[&str] = &[
     "type_text",
     "scroll",
 ];
+const PREVIEW_TOOL_NAMES: &[&str] = &[
+    "preview_dom_snapshot",
+    "preview_click",
+    "preview_type_text",
+    "preview_key_press",
+    "preview_scroll",
+];
 const CHILD_THREAD_TOOL_NAMES: &[&str] = &[
     "child_thread_spawn",
     "child_thread_list",
@@ -8130,6 +8137,7 @@ struct ToolRunPolicy {
     approval_granted: bool,
     sandbox_enabled: bool,
     computer_use_enabled: bool,
+    preview_tools_enabled: bool,
     experimental_hashline_patch: bool,
     plan_mode: bool,
 }
@@ -8141,6 +8149,7 @@ impl Default for ToolRunPolicy {
             approval_granted: false,
             sandbox_enabled: false,
             computer_use_enabled: false,
+            preview_tools_enabled: false,
             experimental_hashline_patch: false,
             plan_mode: false,
         }
@@ -8171,6 +8180,7 @@ fn tool_run_policy_from_request(req: &ChatCompletionRequest) -> ToolRunPolicy {
         approval_granted: bool_extra(req, "tool_approval_grant"),
         sandbox_enabled: bool_extra(req, "sandbox_enabled"),
         computer_use_enabled: bool_extra(req, "computer_use_enabled"),
+        preview_tools_enabled: bool_extra(req, "preview_tools_enabled"),
         experimental_hashline_patch: bool_extra(req, "experimental_hashline_patch"),
         plan_mode: bool_extra(req, "plan_mode"),
     }
@@ -8277,6 +8287,9 @@ fn agent_base_registry_with_memory(
     }
     if !policy.computer_use_enabled {
         reg = reg.without(COMPUTER_TOOL_NAMES);
+    }
+    if !policy.preview_tools_enabled {
+        reg = reg.without(PREVIEW_TOOL_NAMES);
     }
     if !policy.experimental_hashline_patch {
         reg = reg.without(HASHLINE_TOOL_NAMES);

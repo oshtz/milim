@@ -48,6 +48,18 @@ const accountRuntimeLabel = previewControlActivityFromStreamParts([
 assert(accountRuntimeLabel, "account runtime labels should still be recognized");
 equal(accountRuntimeLabel.gesture, "type", "type_text labels should map to typing");
 
+const previewClick = previewControlActivityFromStreamParts([
+  {
+    kind: "event",
+    eventType: "tool",
+    label: "Using preview",
+    name: "preview_click",
+    status: "running",
+  },
+]);
+assert(previewClick, "preview_click should create preview activity");
+equal(previewClick.gesture, "click", "preview_click should map to click pulse");
+
 const runtimeOnly = previewControlActivityFromStreamParts(undefined);
 equal(runtimeOnly, null, "runtime busy without tool events should not show preview activity");
 

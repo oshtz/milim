@@ -5819,6 +5819,66 @@ async fn agent_run_hides_sandbox_tool_when_sandbox_is_off() {
 }
 
 #[tokio::test]
+async fn agent_run_hides_preview_tools_unless_preview_is_active() {
+    use milim_tools::ToolRegistry;
+    let mut tools = ToolRegistry::with_builtins();
+    for name in [
+        "preview_dom_snapshot",
+        "preview_click",
+        "preview_type_text",
+        "preview_key_press",
+        "preview_scroll",
+    ] {
+        tools.register(Arc::new(NamedTestTool { name }));
+    }
+    let state = AppState::new(Arc::new(ToolListingBackend), ServerConfiguration::default())
+        .with_tools(tools);
+    let base = spawn(state).await;
+    let client = reqwest::Client::new();
+
+    let without_preview: Value = client
+        .post(format!("{base}/agents/run"))
+        .json(&json!({
+            "model":"tool-listing",
+            "messages":[{"role":"user","content":"what tools are available?"}]
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let content = without_preview["message"]["content"].as_str().unwrap();
+    assert!(
+        !content.contains("preview_click"),
+        "inactive preview exposed preview tools: {content}"
+    );
+
+    let with_preview: Value = client
+        .post(format!("{base}/agents/run"))
+        .json(&json!({
+            "model":"tool-listing",
+            "preview_tools_enabled": true,
+            "messages":[{"role":"user","content":"what tools are available?"}]
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let content = with_preview["message"]["content"].as_str().unwrap();
+    assert!(
+        content.contains("preview_dom_snapshot"),
+        "active preview hid inspection tool: {content}"
+    );
+    assert!(
+        content.contains("preview_click"),
+        "active preview hid click tool: {content}"
+    );
+}
+
+#[tokio::test]
 async fn agent_run_review_mode_without_grant_hides_all_tools() {
     use milim_tools::ToolRegistry;
     let mut tools = ToolRegistry::with_builtins();

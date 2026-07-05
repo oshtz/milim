@@ -37,6 +37,29 @@ assert.equal(plain.accountRuntimeMayUseTools, false);
 assert.equal(contextMessagesForTurn(plain, "model")[0].content, "Be terse.");
 assert.equal(contextMessagesForTurn(plain, "agent").some((message) => message.content === "Be terse."), false);
 
+const previewTools = buildTurnPromptContext({
+  sessionId: "s-preview",
+  threadTitle: "Preview",
+  folder: "",
+  instructions: "",
+  planMode: false,
+  memory: false,
+  conversation: [user("inspect the visible preview")],
+  memoryHits: [],
+  selectedSkills: [],
+  turnId: "turn-preview",
+  sandbox: false,
+  computerUse: false,
+  previewTools: true,
+  activeAgentId: null,
+  toolApproval: "guarded",
+  toolApprovalGrant: false,
+  experimentalHashlinePatch: false,
+});
+assert.equal(previewTools.useTools, true, "visible preview should enable scoped preview tools without computer-use");
+assert.equal(previewTools.toolContext.computer_use_enabled, false);
+assert.equal(previewTools.toolContext.preview_tools_enabled, true);
+
 const virtualProject = buildTurnPromptContext({
   sessionId: "s1",
   threadTitle: "Thread",
