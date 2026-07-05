@@ -1,9 +1,11 @@
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState, type MouseEvent } from "react";
 import { useAgents } from "./agents/store";
 import { deleteThreadTree, listModelsDetailed } from "./api";
 import { AutoUpdater } from "./components/AutoUpdater";
 import { ChatView } from "./components/ChatView";
+import { ContextMenuProvider, useContextMenu } from "./components/ContextMenu";
+import { Gear, Pencil, Plus, Sidebar as SidebarIcon } from "./components/icons";
 import { ResizeHandles } from "./components/ResizeHandles";
 import { Sidebar } from "./components/Sidebar";
 import { TopBar } from "./components/TopBar";
@@ -63,9 +65,18 @@ function OnboardingGate() {
 }
 
 export function App() {
+  return (
+    <ContextMenuProvider>
+      <AppContent />
+    </ContextMenuProvider>
+  );
+}
+
+function AppContent() {
   // Subscribing here ensures the theme store initializes (and applies CSS vars)
   // before first paint.
   useTheme((s) => s.themeId);
+  const { openContextMenu } = useContextMenu();
   const refreshAgents = useAgents((s) => s.refresh);
   const sessionIds = useSessions((s) => s.sessions.map((session) => session.id).join("\0"));
   const lastSessionIdsRef = useRef<Set<string> | null>(null);
@@ -125,6 +136,44 @@ export function App() {
     `bg-treatment-${backgroundTreatment}`,
   ].join(" ");
 
+  function focusComposer() {
+    document.querySelector<HTMLTextAreaElement>('[data-testid="composer-input"]')?.focus();
+  }
+
+  function openAppContextMenu(event: MouseEvent<HTMLDivElement>) {
+    openContextMenu(event, [
+      {
+        id: "new-chat",
+        label: "New chat",
+        icon: <Plus size={13} />,
+        action: () => {
+          const { activeId, getSettings, newChat } = useSessions.getState();
+          newChat(getSettings(activeId));
+          focusComposer();
+        },
+      },
+      {
+        id: "focus-composer",
+        label: "Focus composer",
+        icon: <Pencil size={13} />,
+        action: focusComposer,
+      },
+      {
+        id: "toggle-sidebar",
+        label: sidebarOpen ? "Hide sidebar" : "Show sidebar",
+        icon: <SidebarIcon size={13} />,
+        action: toggleSidebar,
+      },
+      {
+        id: "settings",
+        label: "Settings",
+        icon: <Gear size={13} />,
+        separatorBefore: true,
+        action: () => setSettingsOpen(true),
+      },
+    ], "App");
+  }
+
   useEffect(() => {
     if (!showSchedules) setSchedulesOpen(false);
   }, [showSchedules]);
@@ -150,7 +199,7 @@ export function App() {
   }, [setUiSize]);
 
   return (
-    <div className={appClassName}>
+    <div className={appClassName} onContextMenu={openAppContextMenu}>
       <div className="bg-layer" />
       <div className="main">
         <Sidebar

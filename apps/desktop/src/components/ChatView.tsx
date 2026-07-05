@@ -160,6 +160,7 @@ import { InlineMediaControls } from "./InlineMediaControls";
 import { AssistantMessage } from "./AssistantMessage";
 import { ArtifactList } from "./ArtifactList";
 import { ChatSearchPopover } from "./ChatSearchPopover";
+import { useContextMenu } from "./ContextMenu";
 import { GitWorkspacePanel } from "./GitPanel";
 import { PreviewPanel } from "./PreviewPanel";
 import { RunTimeline } from "./RunTimeline";
@@ -1319,6 +1320,7 @@ export function ChatView({
   skillsRevision?: number;
 }) {
   markPerfRender("ChatView");
+  const { openContextMenu } = useContextMenu();
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [input, setInputState] = useState("");
   const [providersOpen, setProvidersOpen] = useState(false);
@@ -4245,6 +4247,73 @@ export function ChatView({
                   const canExecutePlan = m.role === "assistant" && m.plan?.status === "proposed" && !assistantStreaming && Boolean(m.content.trim());
                   const runtimeFiles = !folder.trim() && !assistantStreaming ? previewRuntimeFiles(m.artifacts) : [];
                   const canStartRuntime = runtimeFiles.length > 0 && hasPreviewPackageJson(runtimeFiles);
+                  const openMessageContextMenu = (event: MouseEvent<HTMLDivElement>) => {
+                    openContextMenu(event, [
+                      ...(canExecutePlan ? [{
+                        id: "execute-plan",
+                        label: "Execute plan",
+                        icon: <ArrowRight size={13} />,
+                        action: () => executePlan(i, m),
+                      }] : []),
+                      ...(m.role === "assistant" && !messageIsCompaction && m.content && ttsReady ? [{
+                        id: "speak",
+                        label: "Speak",
+                        icon: <Volume2 size={13} />,
+                        action: () => void speakMessage(i, m.content),
+                      }] : []),
+                      ...(m.workspaceCheckpoint ? [{
+                        id: "restore-checkpoint",
+                        label: "Restore workspace checkpoint",
+                        icon: <Refresh size={13} />,
+                        disabled: busy,
+                        action: () => void restoreWorkspaceCheckpoint(m.workspaceCheckpoint!),
+                      }] : []),
+                      ...(!messageIsCompaction ? [{
+                        id: "branch",
+                        label: "Branch from here",
+                        icon: <GitBranch size={13} />,
+                        disabled: busy,
+                        separatorBefore: true,
+                        action: () => forkThreadAt(i),
+                      }] : []),
+                      ...(!isApprovalMessage ? [{
+                        id: "copy",
+                        label: "Copy",
+                        icon: <Copy size={13} />,
+                        action: () => void navigator.clipboard?.writeText(wireMessageContent(m)),
+                      }] : []),
+                      ...(m.role === "user" ? [{
+                        id: "edit-resend",
+                        label: "Edit and resend",
+                        icon: <Pencil size={13} />,
+                        disabled: busy,
+                        action: () => setEditing(i),
+                      }] : []),
+                      ...(m.role === "assistant" && !messageIsCompaction && !isApprovalMessage ? [{
+                        id: "edit",
+                        label: "Edit message",
+                        icon: <Pencil size={13} />,
+                        disabled: busy,
+                        action: () => setEditing(i),
+                      }] : []),
+                      ...(!messageIsCompaction ? [{
+                        id: "delete",
+                        label: "Delete message",
+                        icon: <Trash size={13} />,
+                        disabled: busy,
+                        danger: true,
+                        separatorBefore: true,
+                        action: () => deleteMessageAt(i),
+                      }] : []),
+                      ...(isLastAssistant ? [{
+                        id: "regenerate",
+                        label: "Regenerate",
+                        icon: <Refresh size={13} />,
+                        disabled: busy,
+                        action: regenerate,
+                      }] : []),
+                    ], m.role === "assistant" ? "Assistant message" : "User message");
+                  };
                   if (editing === i) {
                     return (
                       <div key={i} className={"msg " + m.role}>
@@ -4258,7 +4327,7 @@ export function ChatView({
                     );
                   }
                   return (
-                    <div key={i} className={"msg " + m.role} data-testid={m.role === "assistant" ? "assistant-message" : "user-message"}>
+                    <div key={i} className={"msg " + m.role} data-testid={m.role === "assistant" ? "assistant-message" : "user-message"} onContextMenu={openMessageContextMenu}>
                       <div className="msg-content">
                         {m.role === "assistant" ? (
                           <>

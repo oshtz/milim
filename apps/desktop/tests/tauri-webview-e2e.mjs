@@ -130,6 +130,7 @@ async function runPersistenceAndChat(page) {
   await runAppShortcutCheck(page);
 
   await runSlashAndAttachmentCheck(page);
+  await runContextMenuChromeCheck(page);
 
   if (await hasChatModel(page)) {
     await selectAgent(page, "Prompt Enhancer");
@@ -137,6 +138,7 @@ async function runPersistenceAndChat(page) {
     await page.getByTestId("composer-send").click();
     await page.getByTestId("assistant-message").last().waitFor({ timeout: 60_000 });
     await page.getByTestId("assistant-message").last().locator(".msg-text").waitFor({ timeout: 60_000 });
+    await runMessageContextMenuCheck(page);
     if (process.env.MILIM_TAURI_E2E_ARTIFACTS === "1") {
       await runArtifactCheck(page);
     } else {
@@ -176,6 +178,7 @@ async function runArtifactCheck(page) {
     await card.waitFor();
     await card.getByText("src/e2e-artifact.ts").waitFor();
     await card.getByText("export const e2eArtifact = true;").waitFor();
+    await runArtifactContextMenuCheck(page, card);
     await card.getByTestId("artifact-copy").waitFor();
     await card.getByTestId("artifact-download").waitFor();
     await card.getByTestId("artifact-review-workspace").click();
@@ -571,6 +574,44 @@ async function runSlashAndAttachmentCheck(page) {
   } finally {
     rmSync(attachmentPath, { force: true });
   }
+}
+
+async function runContextMenuChromeCheck(page) {
+  await page.keyboard.press("Escape").catch(() => {});
+  await page.getByTestId("composer-input").click({ button: "right" });
+  await assertHidden(page.getByTestId("app-context-menu"), "app context menu on composer textarea");
+
+  const sessionRow = page.locator(".session-item").first();
+  await sessionRow.waitFor();
+  await sessionRow.click({ button: "right" });
+  const menu = page.getByTestId("app-context-menu");
+  await menu.waitFor();
+  await menu.getByText(/Open chat|Current chat/).waitFor();
+  await menu.getByText("Branch chat").waitFor();
+  await page.keyboard.press("Escape");
+  await menu.waitFor({ state: "hidden" });
+}
+
+async function runMessageContextMenuCheck(page) {
+  const message = page.getByTestId("user-message").last();
+  await message.waitFor();
+  await message.click({ button: "right" });
+  const menu = page.getByTestId("app-context-menu");
+  await menu.waitFor();
+  await menu.getByText("Copy").waitFor();
+  await menu.getByText("Edit and resend").waitFor();
+  await page.keyboard.press("Escape");
+  await menu.waitFor({ state: "hidden" });
+}
+
+async function runArtifactContextMenuCheck(page, card) {
+  await card.click({ button: "right" });
+  const menu = page.getByTestId("app-context-menu");
+  await menu.waitFor();
+  await menu.getByText("Copy artifact").waitFor();
+  await menu.getByText("Download artifact").waitFor();
+  await page.keyboard.press("Escape");
+  await menu.waitFor({ state: "hidden" });
 }
 
 async function pasteFileIntoComposer(page, name, type, content) {

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import {
   claudeRuntimeModel,
@@ -24,6 +24,7 @@ import { commitMessageModelCandidates } from "../lib/gitCommitMessageModels";
 import { diffRows, diffSections, diffStats, shouldCollapseDiffSection, type DiffRow, type DiffSection } from "../lib/gitDiffRows";
 import { shouldRefreshGitStatus } from "../lib/gitRefresh";
 import { useUiPreferences } from "../ui/store";
+import { useContextMenu } from "./ContextMenu";
 import {
   ArrowUp,
   ChevronDown,
@@ -416,6 +417,7 @@ export function GitPanel({
   onOpenPanel?: () => void;
   forceExpanded?: boolean;
 }) {
+  const { openContextMenu } = useContextMenu();
   const [status, setStatus] = useState<WorkspaceGitStatus | null>(null);
   const [statusFolder, setStatusFolder] = useState("");
   const [loading, setLoading] = useState(false);
@@ -551,13 +553,31 @@ export function GitPanel({
 
   if (!selectedFolder) return null;
 
+  function openGitStateContextMenu(event: ReactMouseEvent) {
+    openContextMenu(event, [
+      {
+        id: "refresh",
+        label: "Refresh Git status",
+        icon: <Refresh size={13} />,
+        action: forceRefreshGitStatus,
+      },
+      {
+        id: "open-folder",
+        label: "Open folder",
+        icon: <Folder size={13} />,
+        separatorBefore: true,
+        action: () => void openArtifactLocation(selectedFolder, "folder").catch(() => undefined),
+      },
+    ], "Git");
+  }
+
   if (!currentStatus || currentStatus.state !== "ready" || !currentStatus.is_repo) {
     const label = loading && !currentStatus ? "Checking Git..." : gitStateLabel(currentStatus);
     const stateClass = forceExpanded
       ? "git-panel git-panel-state git-panel-workspace git-panel-workspace-state"
       : `git-panel git-panel-collapsed git-panel-state${onOpenPanel ? " git-panel-launcher" : ""}`;
     return (
-      <section className={stateClass} data-testid="git-panel" aria-label="Git environment">
+      <section className={stateClass} data-testid="git-panel" aria-label="Git environment" onContextMenu={openGitStateContextMenu}>
         <div className="git-panel-state-row" title={currentStatus?.message || selectedFolder}>
           <span className="git-panel-mark" aria-hidden="true">
             <GitLogo size={16} />
@@ -632,6 +652,83 @@ export function GitPanel({
   async function openRemote() {
     if (!remoteUrl) return;
     await openExternalUrl(remoteUrl).catch(() => setNotice("Couldn't open remote"));
+  }
+
+  function openGitContextMenu(event: ReactMouseEvent) {
+    openContextMenu(event, [
+      {
+        id: "refresh",
+        label: "Refresh",
+        icon: <Refresh size={13} />,
+        action: forceRefreshGitStatus,
+      },
+      {
+        id: "copy-branch",
+        label: "Copy branch",
+        detail: branchLabel(readyStatus),
+        icon: <Copy size={13} />,
+        action: () => void copyBranch(),
+      },
+      {
+        id: "branch",
+        label: "Switch or create branch",
+        icon: <GitBranch size={13} />,
+        action: () => {
+          setNotice(null);
+          setBranchMenuOpen(true);
+        },
+      },
+      {
+        id: "open-folder",
+        label: "Open folder",
+        icon: <Folder size={13} />,
+        separatorBefore: true,
+        action: () => void openFolder(),
+      },
+      {
+        id: "open-remote",
+        label: "Open remote",
+        icon: <GitRemote size={13} />,
+        disabled: !remoteUrl,
+        action: () => void openRemote(),
+      },
+      {
+        id: "diff",
+        label: "Diff",
+        icon: <Code size={13} />,
+        disabled: !readyStatus.has_changes || Boolean(commandBusy),
+        separatorBefore: true,
+        action: () => void runGitCommand("diff"),
+      },
+      {
+        id: "fetch",
+        label: "Fetch",
+        icon: <GitRemote size={13} />,
+        disabled: !readyStatus.remote || Boolean(commandBusy),
+        action: () => void runGitCommand("fetch"),
+      },
+      {
+        id: "commit",
+        label: "Commit",
+        icon: <GitCommit size={13} />,
+        disabled: !readyStatus.has_changes || readyStatus.conflicts > 0 || Boolean(commandBusy),
+        action: () => openCommandMenu("commit"),
+      },
+      ...(sync ? [{
+        id: "sync",
+        label: sync.label,
+        icon: <SyncIcon size={13} />,
+        disabled: sync.disabled || Boolean(commandBusy),
+        action: () => openCommandMenu(sync.action),
+      }] : []),
+      {
+        id: "agent-review",
+        label: "Ask agent to review",
+        icon: <Lightbulb size={13} />,
+        separatorBefore: true,
+        action: () => onDraftAction(agentReviewPrompt(selectedFolder, readyStatus)),
+      },
+    ], "Git");
   }
 
   function scrollToDiffSection(sectionIndex: number) {
@@ -867,7 +964,7 @@ export function GitPanel({
 
   return (
     <>
-    <section className={`git-panel${forceExpanded ? " git-panel-workspace" : ""}`} data-testid="git-panel" aria-label="Git environment">
+    <section className={`git-panel${forceExpanded ? " git-panel-workspace" : ""}`} data-testid="git-panel" aria-label="Git environment" onContextMenu={openGitContextMenu}>
       <div className="git-panel-head">
         <button
           type="button"

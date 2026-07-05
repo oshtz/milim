@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from "react";
 import {
   SIDEBAR_CHATS_SECTION_ID,
   SIDEBAR_PINNED_SECTION_ID,
@@ -17,6 +17,7 @@ import { chatExportFilename, sessionExportPayload } from "../lib/threadExport";
 import { featureVisibleInMode } from "../ui/features";
 import { MAX_SIDEBAR_WIDTH, MIN_SIDEBAR_WIDTH, normalizeSidebarWidth, useUiPreferences } from "../ui/store";
 import { GitPanel } from "./GitPanel";
+import { useContextMenu } from "./ContextMenu";
 import { Archive, ArrowUp, Calendar, ChevronDown, Download, Folder, FolderOpen, Gear, GitBranch, Lightbulb, MoreHorizontal, Pin, Plus, Search, Sidebar as PanelIcon } from "./icons";
 
 const SIDEBAR_KEYBOARD_STEP = 32;
@@ -235,6 +236,7 @@ export function Sidebar({
   onOpenGitPanel: () => void;
 }) {
   markPerfRender("Sidebar");
+  const { openContextMenu } = useContextMenu();
   const sidebarSessionsSelector = useMemo(createSidebarSessionsSelector, []);
   const sessions = useSessions(sidebarSessionsSelector);
   const projects = useSessions((s) => s.projects);
@@ -407,6 +409,87 @@ export function Sidebar({
     }
     archiveProject(id);
     setConfirmArchiveProjectId(null);
+  }
+
+  function openSessionContextMenu(event: ReactMouseEvent, session: SidebarSessionLike, pinned: boolean) {
+    openContextMenu(event, [
+      {
+        id: "open",
+        label: session.id === activeId ? "Current chat" : "Open chat",
+        icon: <FolderOpen size={13} />,
+        disabled: session.id === activeId,
+        action: () => switchTo(session.id),
+      },
+      {
+        id: "rename",
+        label: "Rename",
+        icon: <Gear size={13} />,
+        action: () => beginRename(session.id),
+      },
+      ...(!session.parentId ? [{
+        id: "pin",
+        label: pinned ? "Unpin chat" : "Pin chat",
+        icon: <Pin size={13} />,
+        checked: pinned,
+        action: () => toggleSessionPinned(session.id),
+      }] : []),
+      {
+        id: "branch",
+        label: "Branch chat",
+        icon: <GitBranch size={13} />,
+        separatorBefore: true,
+        action: () => branchChat(session.id),
+      },
+      {
+        id: "export",
+        label: "Export chat",
+        icon: <Download size={13} />,
+        action: () => exportChat(session.id),
+      },
+      {
+        id: "archive",
+        label: confirmArchiveId === session.id ? "Confirm archive" : "Archive chat",
+        detail: confirmArchiveId === session.id ? "Again" : undefined,
+        icon: <Archive size={13} />,
+        danger: true,
+        separatorBefore: true,
+        action: () => archiveChat(session.id),
+      },
+    ], session.title);
+  }
+
+  function openSectionContextMenu(event: ReactMouseEvent, group: SessionGroup, collapsed: boolean, pinned: boolean) {
+    const projectSection = Boolean(group.projectId);
+    openContextMenu(event, [
+      {
+        id: "toggle",
+        label: collapsed ? "Expand section" : "Collapse section",
+        icon: <ChevronDown size={13} />,
+        action: () => toggleSidebarSectionCollapsed(group.id),
+      },
+      ...(group.id !== SIDEBAR_PINNED_SECTION_ID ? [{
+        id: "new-chat",
+        label: `New chat${projectSection ? " in project" : ""}`,
+        icon: <Plus size={13} />,
+        action: () => createChatInSection(group.id),
+      }] : []),
+      ...(projectSection ? [{
+        id: "pin",
+        label: pinned ? "Unpin section" : "Pin section",
+        icon: <Pin size={13} />,
+        checked: pinned,
+        action: () => toggleSidebarSectionPinned(group.id),
+      }] : []),
+      ...(group.projectId && group.id !== SIDEBAR_CHATS_SECTION_ID ? [{
+        id: "archive-project",
+        label: confirmArchiveProjectId === group.projectId ? "Confirm archive project" : "Archive project",
+        detail: confirmArchiveProjectId === group.projectId ? "Again" : undefined,
+        icon: <Archive size={13} />,
+        danger: true,
+        separatorBefore: true,
+        action: () => archiveProjectSection(group.projectId!),
+      }] : []),
+    ], group.label);
   }
 
   function endSidebarDrag() {
@@ -856,6 +939,7 @@ export function Sidebar({
                         sessionDropClass
                       }
                       onPointerDown={s.parentId ? undefined : (event) => startPointerDrag(event, { type: "session", id: s.id })}
+                      onContextMenu={(event) => openSessionContextMenu(event, s, pinned)}
                       onClick={(event) => {
                         if (isSidebarDragInteractiveTarget(event.target)) return;
                         if (consumeSuppressedClick()) return;

@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import type { ArtifactFileStatus, ArtifactOpenTarget, ArtifactWritePreview, ChatArtifact, SavedArtifactFile } from "../api";
 import type { ArtifactRevision, ArtifactRevisionChoice } from "../lib/artifactRevisions";
 import { artifactDisposition, defaultArtifactTargetPath, isFileArtifact, isPreviewableArtifact } from "../lib/artifacts";
+import { useContextMenu } from "./ContextMenu";
 import { Check, Code, Copy, Download, Eye, FileText, Folder, Search } from "./icons";
 
 type SaveArtifactOptions = {
@@ -51,6 +52,7 @@ export function ArtifactList({
   autoSaveArtifacts?: boolean;
   storageLabel?: string;
 }) {
+  const { openContextMenu } = useContextMenu();
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [savedById, setSavedById] = useState<Record<string, SavedArtifactFile>>({});
   const [statusById, setStatusById] = useState<Record<string, ArtifactFileStatus>>({});
@@ -521,8 +523,69 @@ export function ArtifactList({
         const fileArtifact = isFileArtifact(artifact);
         const disposition = artifactDisposition(artifact);
         const batchSelected = isArtifactSelected(item);
+        const savedForMenu = savedById[artifact.id] ?? artifact.saved;
+        const statusForMenu = savedForMenu ? statusById[artifact.id] : undefined;
+        const savedFileAvailableForMenu = Boolean(savedForMenu && (!onCheckSavedArtifact || (statusForMenu?.exists && statusForMenu.is_file)));
+        const missingTargetForMenu = fileArtifact && !targetPathFor(artifact);
+        const conflictForMenu = conflictById[artifact.id];
+        const openArtifactContextMenu = (event: ReactMouseEvent) => {
+          openContextMenu(event, [
+            ...(fileArtifact && onOpenPreview && isPreviewableArtifact(artifact) ? [{
+              id: "open-preview",
+              label: "Open preview",
+              icon: <Eye size={13} />,
+              action: () => onOpenPreview(artifact, revision),
+            }] : []),
+            ...(fileArtifact && onPreviewArtifact ? [{
+              id: "review",
+              label: "Review changes",
+              icon: <Search size={13} />,
+              disabled: missingTargetForMenu || previewingId === artifact.id,
+              action: () => void previewChanges(item),
+            }] : []),
+            ...(fileArtifact && onSaveToWorkspace ? [{
+              id: "save",
+              label: savedForMenu ? `Save again to ${storageLabel}` : `Save to ${storageLabel}`,
+              icon: <Folder size={13} />,
+              disabled: missingTargetForMenu || savingId === artifact.id,
+              action: () => void saveToWorkspace(item),
+            }] : []),
+            ...(conflictForMenu ? [{
+              id: "overwrite",
+              label: "Overwrite target",
+              icon: <Folder size={13} />,
+              danger: true,
+              action: () => void saveToWorkspace(item, true),
+            }] : []),
+            {
+              id: "copy",
+              label: "Copy artifact",
+              icon: <Copy size={13} />,
+              separatorBefore: true,
+              action: () => void copyArtifact(artifact),
+            },
+            {
+              id: "download",
+              label: "Download artifact",
+              icon: <Download size={13} />,
+              action: () => downloadArtifact(artifact),
+            },
+            ...(savedForMenu && savedFileAvailableForMenu && onOpenSavedArtifact ? [{
+              id: "open-file",
+              label: "Open saved file",
+              icon: <Eye size={13} />,
+              separatorBefore: true,
+              action: () => void openSaved(artifact.id, savedForMenu, "file"),
+            }, {
+              id: "open-folder",
+              label: `Show in ${storageLabel}`,
+              icon: <Folder size={13} />,
+              action: () => void openSaved(artifact.id, savedForMenu, "folder"),
+            }] : []),
+          ], artifact.filename ?? artifact.title);
+        };
         return (
-        <section className={`artifact-card${batchSelectable && fileArtifact && !batchSelected ? " deselected" : ""}`} data-testid="artifact-card" key={item.cardId}>
+        <section className={`artifact-card${batchSelectable && fileArtifact && !batchSelected ? " deselected" : ""}`} data-testid="artifact-card" key={item.cardId} onContextMenu={openArtifactContextMenu}>
           {(() => {
             const saved = savedById[artifact.id] ?? artifact.saved;
             const status = saved ? statusById[artifact.id] : undefined;
