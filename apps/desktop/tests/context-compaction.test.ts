@@ -2,11 +2,16 @@ import { strict as assert } from "node:assert";
 import {
   checkpointMessage,
   compactMessagesForModel,
+  compactionSummaryMessages,
+  compactionSummaryOutputCap,
+  compactionSummaryReasoningEffort,
   contextSendPlan,
   estimateMessagesTokens,
   latestCompactionIndex,
   messagesForModelContext,
   modelContextBudget,
+  splitCompactionTail,
+  validateCompactionCheckpointSummary,
 } from "../src/lib/contextCompaction.js";
 import type { ChatMessage, ModelInfo } from "../src/api.js";
 
@@ -120,3 +125,82 @@ const oversizedAfterCheckpoint = contextSendPlan(
 );
 assert.equal(oversizedAfterCheckpoint.shouldCompact, false, "messages before the latest checkpoint should not trigger another checkpoint");
 assert(oversizedAfterCheckpoint.error?.includes("too large"), "oversized latest context should still fail after a checkpoint");
+
+const initialSummaryCap = compactionSummaryOutputCap("hosted", [hostedModel]);
+const retrySummaryCap = compactionSummaryOutputCap("hosted", [hostedModel], true);
+assert.equal(initialSummaryCap, 900);
+assert(retrySummaryCap > initialSummaryCap, "retry should have more output room than the first summary attempt");
+const firstSummaryPrompt = compactionSummaryMessages(longMessages, "hosted", [hostedModel], { outputCapTokens: initialSummaryCap });
+assert.match(firstSummaryPrompt[0].content, /under 720 tokens/);
+const retrySummaryPrompt = compactionSummaryMessages(longMessages, "hosted", [hostedModel], { retry: true, outputCapTokens: retrySummaryCap });
+assert.match(retrySummaryPrompt[0].content, /previous summary was too long or incomplete/i);
+
+assert.equal(
+  validateCompactionCheckpointSummary("Keep API shape stable. Open task: add tests.", {
+    model: "hosted",
+    models: [hostedModel],
+    sourceMessages: longMessages,
+  }),
+  null,
+);
+assert.match(
+  validateCompactionCheckpointSummary("Partial summary", {
+    finishReason: "length",
+    model: "hosted",
+    models: [hostedModel],
+  }) ?? "",
+  /output limit/,
+);
+assert.match(
+  validateCompactionCheckpointSummary("Open task: update the", {
+    model: "hosted",
+    models: [hostedModel],
+  }) ?? "",
+  /mid-sentence/,
+);
+assert.match(
+  validateCompactionCheckpointSummary("word ".repeat(1000), {
+    model: "hosted",
+    models: [hostedModel],
+  }) ?? "",
+  /too large/,
+);
+assert.equal(compactionSummaryReasoningEffort({ name: "LM Studio (local)", base_url: "http://localhost:1234/v1" }), "none");
+assert.equal(compactionSummaryReasoningEffort({ name: "OpenRouter", base_url: "https://openrouter.ai/api/v1" }), undefined);
+
+const tailSplit = splitCompactionTail([
+  user("old one"),
+  assistant("answer one"),
+  user("old two"),
+  assistant("answer two"),
+  user("old three"),
+  assistant("answer three"),
+], "hosted", [hostedModel]);
+assert.deepEqual(tailSplit.head, [user("old one"), assistant("answer one")]);
+assert.deepEqual(tailSplit.tail, [user("old two"), assistant("answer two"), user("old three"), assistant("answer three")]);
+
+const hugeAttachment = "attachment-body ".repeat(400);
+const hugeToolResult = "tool-result ".repeat(400);
+const attachmentPrompt = compactionSummaryMessages([
+  {
+    role: "user",
+    content: "read this",
+    attachments: [{ id: "att", name: "huge.txt", mime: "text/plain", size: hugeAttachment.length, content: hugeAttachment }],
+  },
+], "hosted", [hostedModel])[1].content;
+const toolPrompt = compactionSummaryMessages([
+  {
+    role: "assistant",
+    content: "used a tool",
+    run: {
+      model: "hosted",
+      status: "done",
+      startedAt: 1,
+      steps: [{ name: "shell", startedAt: 1, endedAt: 2, result: hugeToolResult }],
+    },
+  },
+], "hosted", [hostedModel])[1].content;
+assert(!attachmentPrompt.includes(hugeAttachment), "compaction prompt should not carry full old attachment bodies");
+assert(!toolPrompt.includes(hugeToolResult), "compaction prompt should not carry full old tool results");
+assert.match(attachmentPrompt, /Attachment text truncated for compaction/);
+assert.match(toolPrompt, /Tool result truncated for compaction/);

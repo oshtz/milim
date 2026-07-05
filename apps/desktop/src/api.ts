@@ -589,6 +589,10 @@ export interface PreviewAppStatus {
   logs: PreviewAppLog[];
 }
 
+export interface PreviewAppStartOptions {
+  cwd?: string;
+}
+
 function previewAppUrl(threadId: string, suffix = ""): string {
   return `${BASE}/preview-apps/${encodeURIComponent(threadId)}${suffix}`;
 }
@@ -611,9 +615,18 @@ export async function stagePreviewApp(threadId: string, files: PreviewAppFile[])
   );
 }
 
-export async function startPreviewApp(threadId: string): Promise<PreviewAppStatus> {
+export async function startPreviewApp(threadId: string, options: PreviewAppStartOptions = {}): Promise<PreviewAppStatus> {
+  const cwd = options.cwd?.trim();
   return await parseJsonResponse<PreviewAppStatus>(
-    await authFetch(previewAppUrl(threadId, "/start"), { method: "POST" }),
+    await authFetch(previewAppUrl(threadId, "/start"), {
+      method: "POST",
+      ...(cwd
+        ? {
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ cwd }),
+          }
+        : {}),
+    }),
     "preview app start failed",
   );
 }
@@ -625,9 +638,18 @@ export async function stopPreviewApp(threadId: string): Promise<PreviewAppStatus
   );
 }
 
-export async function restartPreviewApp(threadId: string): Promise<PreviewAppStatus> {
+export async function restartPreviewApp(threadId: string, options: PreviewAppStartOptions = {}): Promise<PreviewAppStatus> {
+  const cwd = options.cwd?.trim();
   return await parseJsonResponse<PreviewAppStatus>(
-    await authFetch(previewAppUrl(threadId, "/restart"), { method: "POST" }),
+    await authFetch(previewAppUrl(threadId, "/restart"), {
+      method: "POST",
+      ...(cwd
+        ? {
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ cwd }),
+          }
+        : {}),
+    }),
     "preview app restart failed",
   );
 }
@@ -782,12 +804,13 @@ function reasoningEffortBody(reasoningEffort?: ReasoningEffort): { reasoning_eff
 export interface ChatCompletionResult {
   content: string;
   usage?: TokenUsage;
+  finishReason?: string;
 }
 
 export async function completeChatWithMetrics(
   model: string,
   messages: ChatMessage[],
-  options: { signal?: AbortSignal; maxTokens?: number; temperature?: number } = {},
+  options: { signal?: AbortSignal; maxTokens?: number; temperature?: number; reasoningEffort?: ReasoningEffort } = {},
 ): Promise<ChatCompletionResult> {
   const resp = await authFetch(`${BASE}/v1/chat/completions`, {
     method: "POST",
@@ -798,6 +821,7 @@ export async function completeChatWithMetrics(
       stream: false,
       temperature: options.temperature ?? 0,
       max_tokens: options.maxTokens ?? 500,
+      ...reasoningEffortBody(options.reasoningEffort),
     }),
     signal: options.signal,
   });
@@ -808,13 +832,18 @@ export async function completeChatWithMetrics(
   const content = json.choices?.[0]?.message?.content;
   if (typeof content !== "string") throw new Error("The model returned an empty response.");
   const usage = parseTokenUsage(json.usage);
-  return usage ? { content, usage } : { content };
+  const finishReason = json.choices?.[0]?.finish_reason;
+  return {
+    content,
+    ...(usage ? { usage } : {}),
+    ...(typeof finishReason === "string" ? { finishReason } : {}),
+  };
 }
 
 export async function completeChat(
   model: string,
   messages: ChatMessage[],
-  options: { signal?: AbortSignal; maxTokens?: number; temperature?: number } = {},
+  options: { signal?: AbortSignal; maxTokens?: number; temperature?: number; reasoningEffort?: ReasoningEffort } = {},
 ): Promise<string> {
   const { content } = await completeChatWithMetrics(model, messages, options);
   return content;

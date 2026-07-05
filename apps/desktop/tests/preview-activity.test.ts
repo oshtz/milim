@@ -1,5 +1,4 @@
 import { previewControlActivityFromDebugUrl, previewControlActivityFromStreamParts } from "../src/lib/previewActivity.js";
-import type { PreviewAppStatus } from "../src/api.js";
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -49,20 +48,8 @@ const accountRuntimeLabel = previewControlActivityFromStreamParts([
 assert(accountRuntimeLabel, "account runtime labels should still be recognized");
 equal(accountRuntimeLabel.gesture, "type", "type_text labels should map to typing");
 
-const runtimeStatus: PreviewAppStatus = {
-  thread_id: "thread-1",
-  status: "starting",
-  cwd: "",
-  url: null,
-  pid: null,
-  command: null,
-  message: "starting dev server",
-  logs: [],
-};
-const runtime = previewControlActivityFromStreamParts(undefined, { runtimeBusy: true, runtimeStatus });
-assert(runtime, "runtime busy should create preview activity");
-equal(runtime.gesture, "inspect", "runtime busy should map to inspection glow");
-equal(runtime.status, "running", "runtime busy should be running");
+const runtimeOnly = previewControlActivityFromStreamParts(undefined);
+equal(runtimeOnly, null, "runtime busy without tool events should not show preview activity");
 
 const ignored = previewControlActivityFromStreamParts([
   {

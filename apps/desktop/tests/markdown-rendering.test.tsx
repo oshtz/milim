@@ -36,6 +36,17 @@ const indexHtml: ChatArtifact = {
   size: 15,
 };
 
+const generatedPython: ChatArtifact = {
+  id: "artifact-python",
+  kind: "code",
+  title: "tools/report.py",
+  filename: "tools/report.py",
+  language: "python",
+  mime: "text/plain",
+  content: "def report():\n    return 'ready'",
+  size: 32,
+};
+
 const server = await createServer({
   root: process.cwd(),
   appType: "custom",
@@ -93,6 +104,15 @@ try {
   ].join("\n"), [indexHtml]);
   equal(count(matchingFence, "code-block-collapsed"), 1, "matching html block should collapse to an artifact card");
   assert(!matchingFence.includes("<pre>"), "collapsed artifact should not render a raw pre block");
+
+  const matchingFileFence = renderMarkdown([
+    "```python file=tools/report.py",
+    generatedPython.content,
+    "```",
+  ].join("\n"), [generatedPython]);
+  equal(count(matchingFileFence, "code-block-collapsed"), 1, "generated file code should collapse even when it is not previewable");
+  assert(!matchingFileFence.includes("<pre>"), "collapsed generated files should not render raw source inline");
+  assert(matchingFileFence.includes("Open code"), "non-previewable generated files should open the code panel");
 
   const streamingFence = renderMarkdown([
     "```html",

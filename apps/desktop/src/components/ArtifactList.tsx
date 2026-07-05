@@ -37,6 +37,7 @@ export function ArtifactList({
   revisionForArtifact,
   hiddenArtifactIds,
   autoSaveArtifacts = false,
+  storageLabel = "folder",
 }: {
   artifacts?: ChatArtifact[];
   currentSessionId?: string;
@@ -48,6 +49,7 @@ export function ArtifactList({
   revisionForArtifact?: (artifactIndex: number) => ArtifactRevisionChoice | undefined;
   hiddenArtifactIds?: ReadonlySet<string>;
   autoSaveArtifacts?: boolean;
+  storageLabel?: string;
 }) {
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [savedById, setSavedById] = useState<Record<string, SavedArtifactFile>>({});
@@ -497,8 +499,8 @@ export function ArtifactList({
                         <button
                           className="artifact-batch-result-action"
                           data-testid="artifact-batch-open-folder"
-                          title="Show in folder"
-                          aria-label="Show batch result in folder"
+                          title={`Show in ${storageLabel}`}
+                          aria-label={`Show batch result in ${storageLabel}`}
                           onClick={() => void openSaved(result.artifactId, saved, "folder")}
                         >
                           <Folder size={12} />
@@ -615,8 +617,8 @@ export function ArtifactList({
                   <button
                     className="artifact-action"
                     data-testid="artifact-save-workspace"
-                    title={missingTarget ? "Enter a target path" : savedFileUnavailable ? "Resave to folder" : saved ? "Saved to folder" : "Save to folder"}
-                    aria-label={missingTarget ? "Enter a target path" : savedFileUnavailable ? "Resave to folder" : saved ? "Saved to folder" : "Save to folder"}
+                    title={missingTarget ? "Enter a target path" : savedFileUnavailable ? `Resave to ${storageLabel}` : saved ? `Saved to ${storageLabel}` : `Save to ${storageLabel}`}
+                    aria-label={missingTarget ? "Enter a target path" : savedFileUnavailable ? `Resave to ${storageLabel}` : saved ? `Saved to ${storageLabel}` : `Save to ${storageLabel}`}
                     disabled={missingTarget || savingId === artifact.id}
                     onClick={() => void saveToWorkspace(item)}
                   >
@@ -683,8 +685,8 @@ export function ArtifactList({
                       <button
                         className="artifact-mini-action"
                         data-testid="artifact-open-folder"
-                        title="Show in folder"
-                        aria-label="Show in folder"
+                        title={`Show in ${storageLabel}`}
+                        aria-label={`Show in ${storageLabel}`}
                         onClick={() => void openSaved(artifact.id, saved, "folder")}
                       >
                         <Folder size={13} />

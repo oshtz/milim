@@ -208,6 +208,10 @@ assert.equal(idleRef.current, false);
 const longConversation = [
   user("old user ".repeat(900)),
   assistant("old assistant ".repeat(900)),
+  user("tail one"),
+  assistant("tail answer one"),
+  user("tail two"),
+  assistant("tail answer two"),
   user("new user ".repeat(50)),
 ];
 const notices: Array<string | null> = [];
@@ -243,10 +247,31 @@ assert.equal(clearedRuntime, "s2");
 assert.deepEqual(notices, ["Compacting thread context...", null]);
 assert.equal(checkpointSources.length, 1);
 assert.deepEqual(checkpointSources[0], longConversation.slice(0, 2));
-assert.equal(compacted.conversation.length, 4);
+assert.equal(compacted.conversation.length, 8);
 assert.match(compacted.conversation[2].content, /Keep prior decisions/);
-assert.equal(compacted.conversation[3], longConversation[2]);
+assert.deepEqual(compacted.conversation.slice(3), longConversation.slice(2));
 assert(compacted.outbound.some((message) => message.content.includes("Previous thread context checkpoint")));
+assert(compacted.outbound.some((message) => message.content === "tail one"));
+assert(compacted.outbound.some((message) => message.content === "tail answer two"));
+
+const nativeHistory = await prepareTurnOutbound({
+  sessionId: "s3",
+  contextMessages: [{ role: "system", content: "Runtime context." }],
+  conversation: longConversation,
+  model: "tiny",
+  models: [tinyModel],
+  folder: "C:\\work",
+  reasoningEffort: effort,
+  compactionInFlightRef: { current: false },
+  setChatNotice: () => assert.fail("native-history turns should not auto-compact visible transcript"),
+  createCompactionCheckpoint: async () => {
+    throw new Error("native-history turns should not create a checkpoint");
+  },
+  clearAccountRuntime: () => assert.fail("native-history turns should not clear runtime state"),
+  skipAutoCompaction: true,
+});
+assert.equal(nativeHistory.conversation, longConversation);
+assert.deepEqual(nativeHistory.outbound, [{ role: "system", content: "Runtime context." }, longConversation.at(-1)]);
 
 const order: string[] = [];
 const started = await prepareAndStartTurn({

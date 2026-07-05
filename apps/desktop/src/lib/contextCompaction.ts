@@ -1,4 +1,4 @@
-import type { ChatAttachment, ChatCompactionMetrics, ChatCompactionSummaryMetrics, ChatMessage, ModelInfo } from "../api";
+import type { ChatAttachment, ChatCompactionMetrics, ChatCompactionSummaryMetrics, ChatMessage, ModelInfo, ProviderInfo, ReasoningEffort } from "../api";
 import { Tiktoken } from "js-tiktoken/lite";
 import cl100kBase from "js-tiktoken/ranks/cl100k_base";
 
@@ -8,7 +8,11 @@ const COMPACT_AT = 0.85;
 const COMPACT_TO = 0.7;
 const SUMMARY_MAX_TOKENS = 900;
 const SUMMARY_MIN_TOKENS = 128;
+const SUMMARY_RETRY_EXTRA_TOKENS = 256;
 const CHECKPOINT_HEADING = "### Context checkpoint";
+const COMPACTION_TAIL_TURNS = 2;
+const COMPACTION_TAIL_MAX_TOKENS = 8_000;
+const COMPACTION_OLD_BODY_MAX_CHARS = 2_000;
 let defaultTokenizer: Tiktoken | null | undefined;
 
 export interface ModelContextBudget {
@@ -32,6 +36,23 @@ export interface ContextSendPlan {
   sentTokens: number;
   budget: ModelContextBudget | null;
   error?: string;
+}
+
+export interface CompactionTailSplit {
+  head: ChatMessage[];
+  tail: ChatMessage[];
+}
+
+export interface CompactionSummaryOptions {
+  retry?: boolean;
+  outputCapTokens?: number;
+}
+
+export interface CompactionSummaryValidationOptions {
+  finishReason?: string;
+  model: string;
+  models: readonly ModelInfo[];
+  sourceMessages?: readonly ChatMessage[];
 }
 
 export function estimateTextTokens(text: string): number {
@@ -114,7 +135,7 @@ export function compactMessagesForModel(
     };
   }
 
-  const summaryBudget = Math.min(SUMMARY_MAX_TOKENS, Math.max(SUMMARY_MIN_TOKENS, Math.floor(budget.promptBudget * 0.1)));
+  const summaryBudget = compactionSummaryTokenBudget(model, models);
   const suffix: ChatMessage[] = [];
   let suffixTokens = 0;
   const suffixTarget = Math.max(latestTokens, target - setupTokens - summaryBudget);
@@ -216,6 +237,61 @@ export function messagesForModelContext(contextMessages: readonly ChatMessage[],
   ];
 }
 
+export function compactionSummaryTokenBudget(model: string, models: readonly ModelInfo[]): number {
+  const promptBudget = modelContextBudget(model, models)?.promptBudget ?? HOSTED_CONTEXT_WINDOW;
+  return Math.min(SUMMARY_MAX_TOKENS, Math.max(SUMMARY_MIN_TOKENS, Math.floor(promptBudget * 0.1)));
+}
+
+export function compactionSummaryTargetTokens(model: string, models: readonly ModelInfo[], retry = false): number {
+  const budget = compactionSummaryTokenBudget(model, models);
+  const ratio = retry ? 0.55 : 0.8;
+  return Math.max(SUMMARY_MIN_TOKENS, Math.floor(budget * ratio));
+}
+
+export function compactionSummaryOutputCap(model: string, models: readonly ModelInfo[], retry = false): number {
+  const budget = compactionSummaryTokenBudget(model, models);
+  if (!retry) return budget;
+  return Math.max(budget + SUMMARY_RETRY_EXTRA_TOKENS, Math.ceil(budget * 1.75));
+}
+
+export function compactionSummaryReasoningEffort(provider?: Pick<ProviderInfo, "name" | "base_url">): ReasoningEffort | undefined {
+  const name = provider?.name.toLowerCase() ?? "";
+  const baseUrl = provider?.base_url.toLowerCase() ?? "";
+  return name.includes("lm studio") || name.includes("lmstudio") || baseUrl.includes(":1234/")
+    ? "none"
+    : undefined;
+}
+
+export function validateCompactionCheckpointSummary(
+  summary: string,
+  options: CompactionSummaryValidationOptions,
+): string | null {
+  const clean = summary.trim();
+  if (!clean) return "The model returned an empty compaction summary.";
+  if (options.finishReason === "length") return "The compaction summary hit the model output limit.";
+
+  const summaryTokens = estimateTextTokens(clean);
+  const summaryBudget = compactionSummaryTokenBudget(options.model, options.models);
+  if (summaryTokens > summaryBudget) {
+    return `The compaction summary is too large: ${summaryTokens} tokens, max ${summaryBudget}.`;
+  }
+
+  const incompleteReason = incompleteSummaryReason(clean);
+  if (incompleteReason) return incompleteReason;
+
+  if (options.sourceMessages) {
+    const checkpoint = checkpointMessage(clean, { auto: false, sourceTokens: 0 });
+    const compactedContext = messagesForModelContext([], [...options.sourceMessages, checkpoint]);
+    const budget = modelContextBudget(options.model, options.models);
+    const sentTokens = estimateMessagesTokens(compactedContext);
+    if (budget && sentTokens > budget.promptBudget) {
+      return `The compaction checkpoint is still too large for ${options.model}'s context window.`;
+    }
+  }
+
+  return null;
+}
+
 export function contextSendPlan(
   contextMessages: readonly ChatMessage[],
   conversation: readonly ChatMessage[],
@@ -243,6 +319,34 @@ export function contextSendPlan(
   };
 }
 
+export function splitCompactionTail(
+  messages: readonly ChatMessage[],
+  model: string,
+  models: readonly ModelInfo[],
+): CompactionTailSplit {
+  const start = latestCompactionIndex(messages) + 1;
+  const turnStarts: number[] = [];
+  for (let i = start; i < messages.length; i += 1) {
+    const message = messages[i];
+    if (message.role === "user" && !isCompactionCheckpoint(message) && !isTranscriptControlMessage(message)) {
+      turnStarts.push(i);
+    }
+  }
+  if (turnStarts.length <= COMPACTION_TAIL_TURNS) return { head: [...messages], tail: [] };
+
+  const maxTailTokens = Math.min(
+    COMPACTION_TAIL_MAX_TOKENS,
+    Math.max(1, Math.floor((modelContextBudget(model, models)?.promptBudget ?? HOSTED_CONTEXT_WINDOW) * 0.25)),
+  );
+  for (const tailStart of turnStarts.slice(-COMPACTION_TAIL_TURNS)) {
+    const tail = messages.slice(tailStart);
+    if (estimateMessagesTokens(tail) <= maxTailTokens) {
+      return { head: messages.slice(0, tailStart), tail };
+    }
+  }
+  return { head: [...messages], tail: [] };
+}
+
 function canCompactBeforeLatestUser(conversation: readonly ChatMessage[]): boolean {
   const checkpointIndex = latestCompactionIndex(conversation);
   for (let i = conversation.length - 1; i >= 0; i -= 1) {
@@ -258,13 +362,16 @@ export function compactionSummaryMessages(
   messages: readonly ChatMessage[],
   model: string,
   models: readonly ModelInfo[],
+  options: CompactionSummaryOptions = {},
 ): ChatMessage[] {
   const source = messagesForModelContext([], messages);
-  const sourceTokens = estimateMessagesTokens(source);
+  const sourceTokens = estimateCompactionMessagesTokens(source);
   const budget = modelContextBudget(model, models);
+  const outputCapTokens = options.outputCapTokens ?? compactionSummaryOutputCap(model, models, Boolean(options.retry));
+  const targetTokens = compactionSummaryTargetTokens(model, models, Boolean(options.retry));
   const maxPromptTokens = Math.max(
     SUMMARY_MIN_TOKENS,
-    Math.min(sourceTokens, (budget?.promptBudget ?? HOSTED_CONTEXT_WINDOW) - SUMMARY_MAX_TOKENS - 256),
+    Math.min(sourceTokens, (budget?.promptBudget ?? HOSTED_CONTEXT_WINDOW) - outputCapTokens - 256),
   );
   const transcript = boundedTranscript(source, Math.max(SUMMARY_MIN_TOKENS, maxPromptTokens));
   return [
@@ -273,7 +380,10 @@ export function compactionSummaryMessages(
       content: [
         "Summarize this Milim thread so a fresh model session can continue without replaying earlier messages.",
         "Keep durable decisions, requirements, constraints, user preferences, active plans, open tasks, important file paths, tool results, and unresolved errors.",
+        `Return a complete checkpoint under ${targetTokens} tokens.`,
         "Omit filler, greetings, and transient wording. Return only the summary.",
+        "Do not use trailing ellipses or stop mid-sentence.",
+        ...(options.retry ? ["The previous summary was too long or incomplete. Rewrite it shorter and keep only durable facts."] : []),
       ].join("\n"),
     },
     {
@@ -283,17 +393,36 @@ export function compactionSummaryMessages(
   ];
 }
 
+function estimateCompactionMessagesTokens(messages: readonly ChatMessage[]): number {
+  return messages.reduce((total, message) => total + estimateTextTokens(messageContentForCompaction(message)), 0);
+}
+
+function incompleteSummaryReason(summary: string): string | null {
+  const fenceCount = summary.match(/```/g)?.length ?? 0;
+  if (fenceCount % 2 === 1) return "The compaction summary has an unclosed code fence.";
+
+  const lines = summary.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const lastLine = lines[lines.length - 1] ?? "";
+  if (/^(?:[-*+]|\d+[.)])\s*$/.test(lastLine)) return "The compaction summary ends with an empty list item.";
+  if (/(?:\.\.\.|\u2026)$/.test(lastLine)) return "The compaction summary appears to end with a truncation marker.";
+  if (/[,:;([{]$/.test(lastLine)) return "The compaction summary appears to stop mid-thought.";
+  if (/\b(?:and|or|but|because|with|for|to|the|a|an|of|in|on|at|from|as)$/i.test(lastLine)) {
+    return "The compaction summary appears to stop mid-sentence.";
+  }
+  return null;
+}
+
 function compactedSummaryMessage(messages: readonly ChatMessage[], tokenBudget: number): ChatMessage {
   const maxChars = tokenBudget * 4;
   const lines = ["Context automatically compacted. Earlier conversation digest:"];
   let used = lines[0].length + 1;
   for (const message of messages) {
     const prefix = `${message.role}: `;
-    const text = messageContentForEstimate(message).replace(/\s+/g, " ").trim();
+    const text = messageContentForCompaction(message).replace(/\s+/g, " ").trim();
     if (!text) continue;
     const remaining = maxChars - used - prefix.length - 1;
     if (remaining <= 24) break;
-    const clipped = text.length > remaining ? `${text.slice(0, Math.max(0, remaining - 1)).trimEnd()}...` : text;
+    const clipped = clipCompactionLine(text, remaining);
     const line = `${prefix}${clipped}`;
     lines.push(line);
     used += line.length + 1;
@@ -307,13 +436,13 @@ function boundedTranscript(messages: readonly ChatMessage[], tokenBudget: number
   let used = 0;
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const message = messages[i];
-    const text = messageContentForEstimate(message).replace(/\s+/g, " ").trim();
+    const text = messageContentForCompaction(message).replace(/\s+/g, " ").trim();
     if (!text) continue;
     const role = message.role === "assistant" ? "Assistant" : message.role === "system" ? "System" : "User";
     const prefix = `${role}: `;
     const remaining = maxChars - used - prefix.length - 1;
     if (remaining <= 80) break;
-    const clipped = text.length > remaining ? `${text.slice(0, Math.max(0, remaining - 3)).trimEnd()}...` : text;
+    const clipped = clipCompactionLine(text, remaining);
     const line = `${prefix}${clipped}`;
     lines.unshift(line);
     used += line.length + 1;
@@ -347,6 +476,15 @@ function messageContentForEstimate(message: ChatMessage): string {
   return message.content ? `${message.content}\n\n${attachmentContext}` : attachmentContext;
 }
 
+function messageContentForCompaction(message: ChatMessage): string {
+  if (isTranscriptControlMessage(message)) return "";
+  return [
+    message.content,
+    attachmentCompactionContext(message.attachments),
+    runCompactionContext(message.run),
+  ].filter(Boolean).join("\n\n");
+}
+
 function attachmentEstimateContext(attachments?: ChatAttachment[]): string {
   if (!attachments?.length) return "";
   return attachments
@@ -358,4 +496,62 @@ function attachmentEstimateContext(attachments?: ChatAttachment[]): string {
       attachment.dataUrl ? "[image preview]" : "",
     ].filter(Boolean).join(" "))
     .join("\n");
+}
+
+function attachmentCompactionContext(attachments?: ChatAttachment[]): string {
+  if (!attachments?.length) return "";
+  return attachments
+    .map((attachment) => {
+      const meta = [
+        attachment.name,
+        attachment.mime,
+        String(attachment.size),
+        attachment.truncated ? "truncated" : "",
+        attachment.sourcePath ?? "",
+      ].filter(Boolean).join(" ");
+      const body = attachment.content
+        ? truncateCompactionBody(attachment.content.trimEnd(), "Attachment text")
+        : attachment.dataUrl ? "[Image preview omitted from compaction transcript]" : "[No text content]";
+      return `Attachment ${meta}: ${body}`;
+    })
+    .join("\n");
+}
+
+function runCompactionContext(run: ChatMessage["run"]): string {
+  if (!run?.steps.length) return "";
+  return run.steps
+    .map((step) => {
+      const result = step.error ?? stringifyCompactionValue(step.result);
+      return result
+        ? `Tool ${step.name}: ${truncateCompactionBody(result, "Tool result")}`
+        : `Tool ${step.name}: ${step.endedAt ? "done" : "started"}`;
+    })
+    .join("\n");
+}
+
+function stringifyCompactionValue(value: unknown): string {
+  if (value == null) return "";
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function truncateCompactionBody(text: string, label: string): string {
+  if (text.length <= COMPACTION_OLD_BODY_MAX_CHARS) return text;
+  const omitted = text.length - COMPACTION_OLD_BODY_MAX_CHARS;
+  const suffix = `\n[${label} truncated for compaction: omitted ${omitted} chars]`;
+  return `${text.slice(0, Math.max(0, COMPACTION_OLD_BODY_MAX_CHARS - suffix.length)).trimEnd()}${suffix}`;
+}
+
+function clipCompactionLine(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  const marker = text.match(/\[(?:Attachment text|Tool result) truncated for compaction: omitted \d+ chars\]$/)?.[0];
+  if (marker && maxChars > marker.length + 24) {
+    const head = text.slice(0, Math.max(0, maxChars - marker.length - 5)).trimEnd();
+    return `${head}... ${marker}`;
+  }
+  return `${text.slice(0, Math.max(0, maxChars - 3)).trimEnd()}...`;
 }

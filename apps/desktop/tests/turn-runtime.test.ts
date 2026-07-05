@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import type { AgentEvent, ChatMessage, ChatStreamPart, CodexRunEvent, MemoryNotice, ProviderLimitInfo, RunTrace, TokenUsage } from "../src/api.js";
-import { codexPromptFromMessages, createAccountRuntimeEventHandler, createAgentRunEventHandler, createTurnAssistantStarter, createTurnMetricsCapture, createTurnRunTraceState, finalizeTurnRuntime, handleTurnRuntimeError, runAccountRuntimeTurn, runModelChatTurn, runSelectedAccountRuntimeTurn, runToolAgentTurn } from "../src/lib/turnRuntime.js";
+import { claudeCompactionSummaryRequest, codexCompactionSummaryRequest, codexPromptFromMessages, createAccountRuntimeEventHandler, createAgentRunEventHandler, createTurnAssistantStarter, createTurnMetricsCapture, createTurnRunTraceState, finalizeTurnRuntime, handleTurnRuntimeError, runAccountRuntimeTurn, runModelChatTurn, runSelectedAccountRuntimeTurn, runToolAgentTurn } from "../src/lib/turnRuntime.js";
 
 const startedMessages: ChatMessage[][] = [];
 const initialConversation: ChatMessage[] = [{ role: "user", content: "hello" }];
@@ -253,15 +253,19 @@ const accountPromptContext = {
 let codexPrompt = "";
 let codexThreadId = "";
 let accountBeginLength = 0;
+let accountSkippedAutoCompaction: boolean | undefined;
 const accountMetrics: Array<{ usage?: TokenUsage; cost_usd?: number }> = [];
 const codexResult = await runAccountRuntimeTurn({
   kind: "codex",
   promptContext: accountPromptContext,
   conversation: [{ role: "user", content: "old user" }],
-  prepareOutbound: async (_contextMessages, conversation) => ({
-    conversation: [...conversation, { role: "assistant", content: "old assistant" }, { role: "user", content: "latest user" }],
-    outbound: [],
-  }),
+  prepareOutbound: async (_contextMessages, conversation, options) => {
+    accountSkippedAutoCompaction = options?.skipAutoCompaction;
+    return {
+      conversation: [...conversation, { role: "assistant", content: "old assistant" }, { role: "user", content: "latest user" }],
+      outbound: [],
+    };
+  },
   beginAssistant: (conversation) => {
     accountBeginLength = conversation.length;
   },
@@ -293,6 +297,7 @@ const codexResult = await runAccountRuntimeTurn({
 });
 assert.equal(codexResult.status, "done");
 assert.equal(accountBeginLength, 3);
+assert.equal(accountSkippedAutoCompaction, true);
 assert.equal(codexThreadId, "codex-thread-2");
 assert(codexPrompt.includes("System:\nSystem rule"));
 assert(codexPrompt.includes("User:\nlatest user"));
@@ -342,6 +347,24 @@ assert(claudePrompt.includes("Assistant:\nfull assistant"));
 assert.equal(accountLimits[0].kind, "tokens");
 assert.equal(accountWarnings[0].kind, "event");
 assert.equal(accountWarnings[0].kind === "event" ? accountWarnings[0].label : "", "Claude Code not on PATH");
+
+const codexSummaryRequest = codexCompactionSummaryRequest({
+  model: "gpt-5",
+  prompt: "summarize",
+  cwd: "C:\\work",
+  reasoningEffort: "low",
+});
+assert.equal(codexSummaryRequest.thread_id, undefined);
+assert.equal(codexSummaryRequest.persist_thread, false);
+assert.equal(codexSummaryRequest.plan_mode, true);
+const claudeSummaryRequest = claudeCompactionSummaryRequest({
+  model: "sonnet",
+  prompt: "summarize",
+  cwd: "C:\\work",
+  reasoningEffort: "medium",
+});
+assert.equal(claudeSummaryRequest.session_id, undefined);
+assert.equal(claudeSummaryRequest.plan_mode, true);
 
 let selectedCodexThread = "";
 let selectedClaudeSessions = 0;

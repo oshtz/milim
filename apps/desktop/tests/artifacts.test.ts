@@ -1,4 +1,4 @@
-import { artifactDisposition, artifactPreviewAutoOpenKey, defaultArtifactTargetPath, extractArtifactsFromContent, extractArtifactsFromRunTrace, extractLivePreviewArtifactFromContent, extractLocalhostUrlFromRunTrace, isArtifactBrowserUrl, isFileArtifact, isLocalhostPreviewUrl, isPreviewableArtifact, markdownTableToCsv, normalizeArtifactBrowserUrl } from "../src/lib/artifacts.js";
+import { artifactDisposition, artifactPreviewAutoOpenKey, defaultArtifactTargetPath, extractArtifactsFromContent, extractArtifactsFromRunTrace, extractLivePreviewArtifactFromContent, extractLocalhostUrlFromRunTrace, hasPreviewPackageJson, isArtifactBrowserUrl, isFileArtifact, isLocalhostPreviewUrl, isPreviewableArtifact, markdownTableToCsv, normalizeArtifactBrowserUrl, previewRuntimeBrowserUrl, previewRuntimeFiles } from "../src/lib/artifacts.js";
 import { artifactOccurrenceKey, artifactRevisionChoiceByOccurrence, artifactRevisionGroups } from "../src/lib/artifactRevisions.js";
 import { buildArtifactPreviewDocument } from "../src/lib/artifactPreview.js";
 import { planModeInstructionMessages, threadArtifactInstructionMessages } from "../src/lib/chatInstructions.js";
@@ -112,6 +112,54 @@ equal(proseLabeledFiles.length, 2, "filename lines before fences should create f
 equal(proseLabeledFiles[0].filename, "package.json", "prose-labeled package.json should be captured");
 equal(proseLabeledFiles[0].disposition, "file", "prose-labeled package.json should be a file artifact");
 equal(proseLabeledFiles[1].filename, "src/App.tsx", "prose-labeled TSX should keep the path");
+
+const inlineMetadataFile = extractArtifactsFromContent([
+  "```tsx",
+  "file=src/main.tsx",
+  "import App from './App';",
+  "console.log(App);",
+  "```",
+].join("\n"));
+equal(inlineMetadataFile.length, 1, "file= metadata inside a fence should create a file artifact");
+equal(inlineMetadataFile[0].filename, "src/main.tsx", "inline file= metadata should become the artifact path");
+assert(!inlineMetadataFile[0].content.includes("file=src/main.tsx"), "inline file= metadata should not be executed as source");
+
+const runtimeCssArtifacts = extractArtifactsFromContent([
+  "package.json",
+  "```json",
+  '{"scripts":{"dev":"vite"},"dependencies":{"@vitejs/plugin-react":"latest","vite":"latest","typescript":"latest","react":"latest","react-dom":"latest","tailwindcss":"latest","postcss":"latest","autoprefixer":"latest"}}',
+  "```",
+  "",
+  "src/main.tsx",
+  "```tsx",
+  "import './index.css';",
+  "import App from './App';",
+  "console.log(App);",
+  "```",
+  "",
+  "src/App.tsx",
+  "```tsx",
+  "export default function App() { return <main className=\"bg-slate-950 text-white\">Preview</main>; }",
+  "```",
+  "",
+  "```css",
+  ["@tailwind base;", "@tailwind components;", "@tailwind utilities;", ".glass { @apply bg-white/5; }", "/* filler */"].join("\n") + "x".repeat(420),
+  "```",
+].join("\n"));
+const runtimeCssFiles = previewRuntimeFiles(runtimeCssArtifacts);
+assert(hasPreviewPackageJson(runtimeCssFiles), "runtime files should keep package.json");
+assert(runtimeCssFiles.some((file) => file.path === "src/index.css" && file.content.includes("@tailwind")), "runtime staging should map the anonymous CSS block to the imported CSS path");
+const runtimeContextMessages = threadArtifactInstructionMessages("", [
+  { role: "assistant", content: "", artifacts: runtimeCssArtifacts },
+  { role: "user", content: "you can read src/index.css no?" },
+], "you can read src/index.css no?");
+equal(runtimeContextMessages.length, 2, "runtime troubleshooting turns should include staged preview files");
+equal(runtimeContextMessages[1].role, "system", "runtime preview context should be a system message");
+assert(runtimeContextMessages[1].content.includes("read-only context"), "runtime preview context should describe its scope");
+assert(runtimeContextMessages[1].content.includes("src/index.css"), "runtime preview context should include staged CSS path");
+assert(runtimeContextMessages[1].content.includes("@tailwind"), "runtime preview context should include staged CSS content");
+equal(previewRuntimeBrowserUrl({ status: "installing", url: "http://127.0.0.1:5173/" }), null, "runtime browser URL should wait for running status");
+equal(previewRuntimeBrowserUrl({ status: "running", url: " http://127.0.0.1:5173/ " }), "http://127.0.0.1:5173/", "runtime browser URL should open once running");
 
 const liveHtml = extractLivePreviewArtifactFromContent([
   "Here is the preview:",

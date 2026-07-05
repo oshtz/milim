@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
-import type { ChatArtifact, ChatAttachment, ChatMessage, ChatStreamPart, ChildThreadInfo, ChildThreadStatus, MemoryNotice, PreviewAppState, PrivacyMode, ReasoningEffort, ResponseMetrics, RunTrace, SavedArtifactFile, ThreadEvent, ToolApprovalMode } from "../api";
+import type { ChatArtifact, ChatAttachment, ChatMessage, ChatStreamPart, ChildThreadInfo, ChildThreadStatus, MemoryNotice, PreviewAppFile, PreviewAppState, PrivacyMode, ReasoningEffort, ResponseMetrics, RunTrace, SavedArtifactFile, ThreadEvent, ToolApprovalMode } from "../api";
 import { extractArtifactsFromMessage, normalizeArtifactDisposition } from "../lib/artifacts.js";
 import { DEFAULT_GOAL_SETTINGS, normalizeGoalSettings, type GoalSettings } from "../lib/goals.js";
 import { recordPerfMeasure, startPerfMeasure } from "../lib/perf.js";
@@ -34,6 +34,7 @@ export interface Session {
   id: string;
   title: string;
   messages: ChatMessage[];
+  virtualFiles?: Record<string, SessionVirtualFile>;
   artifactPanelOpen?: boolean;
   sidePanelMode?: SessionSidePanelMode;
   artifactPanelTab?: SessionArtifactPanelTab;
@@ -54,6 +55,16 @@ export interface Session {
   createdAt: number;
   updatedAt: number;
   archivedAt?: number;
+}
+
+export interface SessionVirtualFile {
+  path: string;
+  content: string;
+  bytes: number;
+  updatedAt: number;
+  version: number;
+  sourceMessageIndex?: number;
+  sourceRevisionNumber?: number;
 }
 
 export type SessionSidePanelMode = "artifact" | "browser" | "git";
@@ -170,6 +181,45 @@ function normalizePreviewRuntime(value: unknown): SessionPreviewRuntime | undefi
     message: stringValue(raw.message),
     updatedAt: timestamp(raw.updatedAt),
   };
+}
+
+export function normalizeVirtualFilePath(path: string): string {
+  const normalized = path.trim().replace(/\\/g, "/").replace(/^(\.\/)+/, "").replace(/\/+/g, "/");
+  if (!normalized || normalized.startsWith("/") || normalized.includes(":")) return "";
+  if (normalized.split("/").some((part) => !part || part === "." || part === "..")) return "";
+  return normalized;
+}
+
+export function sessionVirtualProjectFiles(session?: Pick<Session, "virtualFiles"> | null): PreviewAppFile[] {
+  return Object.values(session?.virtualFiles ?? {})
+    .sort((left, right) => left.path.localeCompare(right.path))
+    .map((file) => ({ path: file.path, content: file.content }));
+}
+
+function normalizeVirtualFiles(value: unknown): Record<string, SessionVirtualFile> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const out: Record<string, SessionVirtualFile> = {};
+  for (const raw of Object.values(value as Record<string, unknown>)) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
+    const file = raw as Partial<SessionVirtualFile>;
+    const path = typeof file.path === "string" ? normalizeVirtualFilePath(file.path) : "";
+    const content = typeof file.content === "string" ? file.content : "";
+    if (!path) continue;
+    out[path] = {
+      path,
+      content,
+      bytes: textBytes(content),
+      updatedAt: timestamp(file.updatedAt) ?? Date.now(),
+      version: typeof file.version === "number" && Number.isFinite(file.version) && file.version > 0 ? Math.floor(file.version) : 1,
+      sourceMessageIndex: typeof file.sourceMessageIndex === "number" && Number.isFinite(file.sourceMessageIndex) ? file.sourceMessageIndex : undefined,
+      sourceRevisionNumber: typeof file.sourceRevisionNumber === "number" && Number.isFinite(file.sourceRevisionNumber) ? file.sourceRevisionNumber : undefined,
+    };
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
+function textBytes(content: string): number {
+  return new TextEncoder().encode(content).byteLength;
 }
 
 function samePreviewRuntime(a?: SessionPreviewRuntime, b?: SessionPreviewRuntime): boolean {
@@ -511,6 +561,7 @@ function normalizeSessionArtifacts(session: Session): Session {
   const messages = Array.isArray(session.messages) ? session.messages : [];
   return {
     ...session,
+    virtualFiles: normalizeVirtualFiles(session.virtualFiles),
     archivedAt,
     artifactPanelOpen: session.artifactPanelOpen === true ? true : undefined,
     sidePanelMode: normalizeSidePanelMode(session.sidePanelMode, session.artifactPanelOpen),
@@ -723,6 +774,7 @@ interface SessionState {
   upsertChildThread: (parentId: string, thread: ChildThreadInfo, events?: ThreadEvent[]) => void;
   updateChildThread: (thread: ChildThreadInfo, events?: ThreadEvent[]) => void;
   markArtifactSaved: (id: string, messageIndex: number, artifactId: string, saved: SavedArtifactFile) => void;
+  upsertVirtualFiles: (id: string, files: PreviewAppFile[], source?: Pick<SessionVirtualFile, "sourceMessageIndex" | "sourceRevisionNumber">) => void;
   setArtifactPanelOpen: (id: string, open: boolean) => void;
   setSidePanelOpen: (id: string, open: boolean) => void;
   setSidePanelMode: (id: string, mode: SessionSidePanelMode | null) => void;
@@ -1481,6 +1533,30 @@ export const useSessions = create<SessionState>()(
                 ),
               };
               return { ...s, messages, updatedAt: Date.now() };
+            }),
+          })),
+
+        upsertVirtualFiles: (id, files, source) =>
+          set((st) => ({
+            sessions: st.sessions.map((s) => {
+              if (s.id !== id || !files.length) return s;
+              const now = Date.now();
+              const virtualFiles = { ...(s.virtualFiles ?? {}) };
+              for (const file of files) {
+                const path = normalizeVirtualFilePath(file.path);
+                if (!path) continue;
+                const previous = virtualFiles[path];
+                virtualFiles[path] = {
+                  path,
+                  content: file.content,
+                  bytes: textBytes(file.content),
+                  updatedAt: now,
+                  version: previous && previous.content !== file.content ? previous.version + 1 : previous?.version ?? 1,
+                  sourceMessageIndex: source?.sourceMessageIndex,
+                  sourceRevisionNumber: source?.sourceRevisionNumber,
+                };
+              }
+              return { ...s, virtualFiles, updatedAt: now };
             }),
           })),
 

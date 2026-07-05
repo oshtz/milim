@@ -1,5 +1,6 @@
 import { Children, isValidElement, useMemo, useRef, useState, type ReactNode } from "react";
 import type { ChatArtifact } from "../api";
+import { isPreviewableArtifact } from "../lib/artifacts";
 import { Code, Copy, Eye } from "./icons";
 
 function codeText(children: ReactNode): string {
@@ -49,6 +50,8 @@ export function CodeBlock({
 
   if (collapsedPreview && previewArtifact) {
     const title = previewArtifact.filename ?? previewArtifact.title;
+    const previewable = isPreviewableArtifact(previewArtifact);
+    const openLabel = previewable ? "Open preview" : "Open code";
     const meta = [previewArtifact.language?.toUpperCase(), previewArtifact.mime, previewStreaming ? "Streaming..." : formatBytes(previewArtifact.size)]
       .filter(Boolean)
       .join(" - ");
@@ -70,10 +73,10 @@ export function CodeBlock({
             className="code-action code-preview"
             data-testid="code-preview"
             onClick={() => onOpenPreview?.(previewArtifact)}
-            title="Open preview"
-            aria-label="Open preview"
+            title={openLabel}
+            aria-label={openLabel}
           >
-            <Eye size={13} />
+            {previewable ? <Eye size={13} /> : <Code size={13} />}
           </button>
           <button
             className="code-action code-copy"

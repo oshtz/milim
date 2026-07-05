@@ -734,7 +734,7 @@ function PreviewRuntimeStatus({
   onStop?: () => void;
   onRestart?: () => void;
 }) {
-  const running = status.status === "installing" || status.status === "starting" || status.status === "running";
+  const running = Boolean(status.pid) || status.status === "installing" || status.status === "starting" || status.status === "running";
   const statusText = String(status.status);
   return (
     <div className={`preview-managed-runtime ${status.status}`} data-testid="preview-managed-runtime">

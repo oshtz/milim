@@ -1,4 +1,4 @@
-import type { ChatArtifact, ChatArtifactDisposition, ChatArtifactKind, RunStep, RunTrace, SavedArtifactFile } from "../api";
+import type { ChatArtifact, ChatArtifactDisposition, ChatArtifactKind, PreviewAppFile, RunStep, RunTrace, SavedArtifactFile } from "../api";
 
 const MAX_INLINE_ARTIFACTS = 12;
 const MAX_NAMED_ARTIFACT_BYTES = 8 * 1024 * 1024;
@@ -269,11 +269,65 @@ export function defaultArtifactTargetPath(artifact: Pick<ChatArtifact, "disposit
   return isFileArtifact(artifact) ? artifact.filename ?? "" : "";
 }
 
+export function previewRuntimeFiles(artifacts?: readonly ChatArtifact[]): PreviewAppFile[] {
+  const seen = new Set<string>();
+  const files: PreviewAppFile[] = [];
+  for (const artifact of artifacts ?? []) {
+    if (!isFileArtifact(artifact) || !artifact.filename?.trim()) continue;
+    const path = normalizePreviewRuntimePath(artifact.filename);
+    if (!path || seen.has(path)) continue;
+    seen.add(path);
+    files.push({ path, content: artifact.content });
+  }
+
+  const anonymousCss = (artifacts ?? []).filter((artifact) => !isFileArtifact(artifact) && sourceForArtifact(artifact) === "css");
+  if (anonymousCss.length === 1) {
+    for (const path of importedCssPaths(files)) {
+      if (seen.has(path)) continue;
+      seen.add(path);
+      files.push({ path, content: anonymousCss[0].content });
+    }
+  }
+
+  return files;
+}
+
+export function hasPreviewPackageJson(files: readonly Pick<PreviewAppFile, "path">[]): boolean {
+  return files.some((file) => normalizePreviewRuntimePath(file.path).toLowerCase() === "package.json");
+}
+
+export function previewRuntimeBrowserUrl(status?: { status?: string | null; url?: string | null } | null): string | null {
+  return status?.status === "running" && status.url?.trim() ? status.url.trim() : null;
+}
+
+function importedCssPaths(files: readonly PreviewAppFile[]): string[] {
+  const paths: string[] = [];
+  for (const file of files) {
+    if (!PREVIEWABLE_SCRIPT_EXTENSIONS.has(extensionOf(file.path))) continue;
+    const dir = file.path.includes("/") ? file.path.slice(0, file.path.lastIndexOf("/") + 1) : "";
+    for (const match of file.content.matchAll(/\bimport\s+(?:[^'"]+\s+from\s+)?["'](\.\/[^"']+\.css)["']/g)) {
+      const path = normalizePreviewRuntimePath(dir + match[1].replace(/^\.\//, ""));
+      if (path) paths.push(path);
+    }
+  }
+  return paths;
+}
+
+function normalizePreviewRuntimePath(path: string): string {
+  return path.trim().replace(/\\/g, "/").replace(/^(\.\/)+/, "");
+}
+
+function sourceForArtifact(artifact: Pick<ChatArtifact, "filename" | "language" | "title">): string {
+  return (artifact.language || extensionOf(artifact.filename ?? artifact.title)).toLowerCase();
+}
+
 function collectFencedArtifacts(content: string, artifacts: ChatArtifact[]): void {
   let match: RegExpExecArray | null;
   while ((match = FENCE_RE.exec(content))) {
     const parsedInfo = parseFenceInfo(match[1]);
-    const inferredFilename = parsedInfo.filename ?? inferFenceFilename(content, match.index);
+    const cleanedBlock = cleanFenceContent(match[2]);
+    const leadingFile = leadingFileMetadata(cleanedBlock);
+    const inferredFilename = parsedInfo.filename ?? leadingFile?.filename ?? inferFenceFilename(content, match.index);
     const info = inferredFilename
       ? {
           ...parsedInfo,
@@ -281,7 +335,7 @@ function collectFencedArtifacts(content: string, artifacts: ChatArtifact[]): voi
           language: parsedInfo.language ?? extensionOf(inferredFilename),
         }
       : parsedInfo;
-    const block = cleanFenceContent(match[2]);
+    const block = leadingFile ? leadingFile.content : cleanedBlock;
     if (!block.trim()) continue;
     if (!info.filename && block.trim().length < MIN_ANON_CODE_CHARS) continue;
     artifacts.push(makeArtifact(artifacts.length, {
@@ -522,6 +576,18 @@ function parseFenceInfo(raw: string): FenceInfo {
 
 function cleanFenceContent(content: string): string {
   return content.replace(/\n$/g, "");
+}
+
+function leadingFileMetadata(content: string): { filename: string; content: string } | null {
+  const normalized = content.replace(/\r\n/g, "\n");
+  const newline = normalized.indexOf("\n");
+  const firstLine = (newline >= 0 ? normalized.slice(0, newline) : normalized).trim();
+  const match = firstLine.match(/^(?:file|filename|path)\s*=\s*["']?([^"']+)["']?$/i);
+  if (!match || !looksLikeFilename(match[1])) return null;
+  return {
+    filename: match[1],
+    content: newline >= 0 ? normalized.slice(newline + 1) : "",
+  };
 }
 
 function stripQuotes(value: string): string {

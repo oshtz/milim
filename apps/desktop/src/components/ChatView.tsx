@@ -76,6 +76,7 @@ import {
   type ModelInfo,
   type PreviewAppFile,
   type PreviewAppStatus,
+  type PreviewAppStartOptions,
   type PrivacyMode,
   type ProviderInfo,
   type ReasoningEffort,
@@ -91,17 +92,21 @@ import {
   type WorkspaceCheckpoint,
   type WorkspaceGitStatus,
 } from "../api";
-import { DEFAULT_THREAD_SETTINGS, useSessions, type Project, type QueuedMessage, type Session, type SessionPreviewRuntime, type SessionSidebarState, type SessionSidePanelMode } from "../sessions/store";
-import { artifactPreviewAutoOpenKey, extractLivePreviewArtifactFromContent, extractLocalhostUrlFromRunTrace, isFileArtifact, isPreviewableArtifact } from "../lib/artifacts";
+import { DEFAULT_THREAD_SETTINGS, normalizeVirtualFilePath, sessionVirtualProjectFiles, useSessions, type Project, type QueuedMessage, type Session, type SessionPreviewRuntime, type SessionSidebarState, type SessionSidePanelMode, type SessionVirtualFile } from "../sessions/store";
+import { artifactPreviewAutoOpenKey, extractLivePreviewArtifactFromContent, extractLocalhostUrlFromRunTrace, hasPreviewPackageJson, isPreviewableArtifact, previewRuntimeBrowserUrl, previewRuntimeFiles } from "../lib/artifacts";
 import { artifactOccurrenceKey, artifactRevisionChoiceByOccurrence, artifactRevisionGroups, type ArtifactRevision, type ArtifactRevisionGroup } from "../lib/artifactRevisions";
 import { hiddenArtifactIdsForMessage } from "../lib/artifactVisibility";
 import {
   checkpointMessage,
+  compactionSummaryOutputCap,
   compactionSummaryMessages,
+  compactionSummaryReasoningEffort,
   estimateMessagesTokens,
   isCompactionCheckpoint,
   messagesForModelContext,
   modelContextBudget,
+  splitCompactionTail,
+  validateCompactionCheckpointSummary,
 } from "../lib/contextCompaction";
 import { reasoningEffortForModel } from "../lib/reasoningEffort";
 import { AI_THREAD_TITLE_SYSTEM_PROMPT, isThreadNamingModel, sanitizeAiThreadTitle, shouldReplaceThreadTitle } from "../lib/threadTitles";
@@ -130,13 +135,13 @@ import {
   schemaDefaults,
   shouldPollMediaStatus,
 } from "../lib/media";
-import { estimateResponseCostUsd, formatResponseMetrics, providerNameForModel, responseMetricsForTurn, summarizeMilimUsage, summarizeThreadMetricsBreakdown, type MilimUsageSummary } from "../lib/usageMetrics";
+import { estimateResponseCostUsd, formatResponseMetrics, responseMetricsForTurn, summarizeMilimUsage, summarizeThreadMetricsBreakdown, type MilimUsageSummary } from "../lib/usageMetrics";
 import { markPerfRender } from "../lib/perf";
 import { previewControlActivityFromDebugUrl, previewControlActivityFromStreamParts } from "../lib/previewActivity";
 import { statusPart } from "../lib/turnEvents";
-import { accountRuntimeNotReadyForTurn, appendUserTurn, editResendConversation, prepareTurnOutbound, regenerateTurnConversation, resolveTurnSetup, type AccountRuntimeReady } from "../lib/turnContext";
+import { accountRuntimeNotReadyForTurn, appendUserTurn, editResendConversation, prepareTurnOutbound, regenerateTurnConversation, resolveTurnSetup, type AccountRuntimeReady, type PrepareTurnOutboundOptions } from "../lib/turnContext";
 import { prepareTurnPromptContext, resolveTurnToolApproval } from "../lib/turnPrompt";
-import { codexPromptFromMessages, createAgentRunEventHandler, createTurnAssistantStarter, createTurnMetricsCapture, createTurnRunTraceState, finalizeTurnRuntime, handleTurnRuntimeError, runModelChatTurn, runSelectedAccountRuntimeTurn, runToolAgentTurn } from "../lib/turnRuntime";
+import { claudeCompactionSummaryRequest, codexCompactionSummaryRequest, codexPromptFromMessages, createAgentRunEventHandler, createTurnAssistantStarter, createTurnMetricsCapture, createTurnRunTraceState, finalizeTurnRuntime, handleTurnRuntimeError, runModelChatTurn, runSelectedAccountRuntimeTurn, runToolAgentTurn } from "../lib/turnRuntime";
 import { drainQueuedMessages as drainQueuedMessagesFromQueue, hasQueuedMessages, queuedModelForSession } from "../lib/turnQueue";
 import { startTurnStream } from "../lib/turnStream";
 import { checkpointWorkspaceBeforeTurn } from "../lib/turnWorkspace";
@@ -176,7 +181,18 @@ type CompactionSummaryResult = {
   content: string;
   usage?: TokenUsage;
   costUsd?: number;
+  finishReason?: string;
 };
+
+function mergeTokenUsage(left?: TokenUsage, right?: TokenUsage): TokenUsage | undefined {
+  if (!left) return right;
+  if (!right) return left;
+  return {
+    prompt_tokens: left.prompt_tokens + right.prompt_tokens,
+    completion_tokens: left.completion_tokens + right.completion_tokens,
+    total_tokens: left.total_tokens + right.total_tokens,
+  };
+}
 
 function mobileThreadMessages(messages: ChatMessage[]): { role: string; content: string }[] {
   return messages
@@ -378,7 +394,7 @@ function openResponseUrl(event: MouseEvent<HTMLAnchorElement>, url: string): voi
 function previewArtifactsForMessage(message: ChatMessage): ChatArtifact[] | undefined {
   if (isCompactionCheckpoint(message)) return undefined;
   if (message.role !== "assistant") return undefined;
-  const completed = message.artifacts?.filter(isPreviewableArtifact) ?? [];
+  const completed = message.artifacts ?? [];
   if (completed.length) return completed;
   if (!message.content) return undefined;
   const live = extractLivePreviewArtifactFromContent(message.content);
@@ -440,25 +456,8 @@ function sidePanelModeForArtifact(artifact: ChatArtifact): SessionSidePanelMode 
   return artifact.mime === "text/uri-list" ? "browser" : "artifact";
 }
 
-function previewRuntimeFiles(artifacts?: readonly ChatArtifact[]): PreviewAppFile[] {
-  const seen = new Set<string>();
-  const files: PreviewAppFile[] = [];
-  for (const artifact of artifacts ?? []) {
-    if (!isFileArtifact(artifact) || !artifact.filename?.trim()) continue;
-    const path = normalizePreviewRuntimePath(artifact.filename);
-    if (!path || seen.has(path)) continue;
-    seen.add(path);
-    files.push({ path, content: artifact.content });
-  }
-  return files;
-}
-
-function hasPreviewPackageJson(files: readonly PreviewAppFile[]): boolean {
-  return files.some((file) => normalizePreviewRuntimePath(file.path).toLowerCase() === "package.json");
-}
-
 function isPreviewAppActive(status: PreviewAppStatus | null): boolean {
-  return status?.status === "installing" || status?.status === "starting" || status?.status === "running";
+  return Boolean(status?.pid) || status?.status === "installing" || status?.status === "starting" || status?.status === "running";
 }
 
 function previewRuntimeText(value?: string | null): string | undefined {
@@ -492,15 +491,101 @@ function previewStatusFromRuntime(threadId: string, runtime?: SessionPreviewRunt
   };
 }
 
+function normalizePreviewCwd(value?: string | null): string {
+  return (value ?? "").trim().replace(/\\/g, "/").toLowerCase();
+}
+
+function previewStatusMatchesFolder(status: PreviewAppStatus | null, folder: string): boolean {
+  const cwd = previewRuntimeText(folder);
+  return !cwd || normalizePreviewCwd(status?.cwd) === normalizePreviewCwd(cwd);
+}
+
+function folderPreviewIdleStatus(threadId: string, folder: string): PreviewAppStatus | null {
+  const cwd = previewRuntimeText(folder);
+  if (!cwd) return null;
+  return {
+    thread_id: threadId,
+    status: "idle",
+    cwd,
+    url: null,
+    pid: null,
+    command: null,
+    message: null,
+    logs: [],
+  };
+}
+
+function previewRuntimeStartOptions(folder: string): PreviewAppStartOptions {
+  const cwd = previewRuntimeText(folder);
+  return cwd ? { cwd } : {};
+}
+
+function mergePreviewAppFiles(base: readonly PreviewAppFile[], updates: readonly PreviewAppFile[]): PreviewAppFile[] {
+  const files = new Map<string, PreviewAppFile>();
+  for (const file of [...base, ...updates]) {
+    const path = normalizeVirtualFilePath(file.path);
+    if (path) files.set(path, { path, content: file.content });
+  }
+  return [...files.values()].sort((left, right) => left.path.localeCompare(right.path));
+}
+
+function virtualArtifactPreview(path: string, content: string, existing?: SessionVirtualFile): ArtifactWritePreview {
+  const oldContent = existing?.content ?? null;
+  const changed = oldContent !== content;
+  return {
+    path,
+    exists: Boolean(existing),
+    changed,
+    old_content: oldContent,
+    new_content: content,
+    old_bytes: existing?.bytes ?? null,
+    new_bytes: textBytes(content),
+    diff: changed ? simpleDiff(oldContent, content) : "",
+    truncated: false,
+  };
+}
+
+function simpleDiff(oldContent: string | null, newContent: string): string {
+  const oldLines = oldContent == null ? [] : oldContent.split(/\r?\n/).map((line) => `-${line}`);
+  const newLines = newContent.split(/\r?\n/).map((line) => `+${line}`);
+  return [...oldLines, ...newLines].join("\n");
+}
+
+function textBytes(content: string): number {
+  return new TextEncoder().encode(content).byteLength;
+}
+
+function virtualChatArtifact(file: SessionVirtualFile): ChatArtifact {
+  const language = extensionOf(file.path);
+  return {
+    id: `virtual-${file.path}-${file.version}`,
+    kind: language === "json" ? "json" : language === "csv" ? "csv" : "code",
+    title: file.path,
+    filename: file.path,
+    mime: mimeForVirtualFile(file.path),
+    content: file.content,
+    size: file.bytes,
+    language,
+    disposition: "file",
+  };
+}
+
+function mimeForVirtualFile(path: string): string {
+  const ext = extensionOf(path);
+  if (ext === "json") return "application/json";
+  if (ext === "csv") return "text/csv";
+  if (ext === "md" || ext === "markdown") return "text/markdown";
+  if (ext === "html" || ext === "htm") return "text/html";
+  if (ext === "css") return "text/css";
+  if (["js", "mjs", "jsx", "ts", "tsx"].includes(ext)) return "text/javascript";
+  return "text/plain";
+}
+
 function previewSelectionFromRuntime(runtime?: SessionPreviewRuntime): PreviewSelection | null {
-  const url = previewRuntimeText(runtime?.url);
+  const url = previewRuntimeBrowserUrl(runtime);
   if (!url) return null;
   const artifact = localhostPreviewArtifact(url);
   return { artifact, artifacts: [artifact], previewDeferred: false };
-}
-
-function normalizePreviewRuntimePath(path: string): string {
-  return path.trim().replace(/\\/g, "/").replace(/^(\.\/)+/, "");
 }
 
 function extensionOf(filename: string): string {
@@ -1290,6 +1375,7 @@ export function ChatView({
   const activePreviewRuntime = useSessions((s) => s.sessions.find((x) => x.id === s.activeId)?.previewRuntime);
   const setMessages = useSessions((s) => s.setMessages);
   const markArtifactSaved = useSessions((s) => s.markArtifactSaved);
+  const upsertVirtualFiles = useSessions((s) => s.upsertVirtualFiles);
   const commitResponseMetrics = useSessions((s) => s.commitResponseMetrics);
   const setSessionSidePanelOpen = useSessions((s) => s.setSidePanelOpen);
   const setSessionSidePanelMode = useSessions((s) => s.setSidePanelMode);
@@ -1344,28 +1430,39 @@ export function ChatView({
     setSessionPreviewRuntime(activeId, previewRuntimeFromStatus(status, previous));
   }
 
+  function currentVirtualProjectFiles(sessionId = activeId): PreviewAppFile[] {
+    return sessionVirtualProjectFiles(useSessions.getState().sessions.find((session) => session.id === sessionId));
+  }
+
+  function currentVirtualFile(path: string, sessionId = activeId): SessionVirtualFile | undefined {
+    const normalized = normalizeVirtualFilePath(path);
+    if (!normalized) return undefined;
+    return useSessions.getState().sessions.find((session) => session.id === sessionId)?.virtualFiles?.[normalized];
+  }
+
+  function virtualRuntimeFilesWith(updates: readonly PreviewAppFile[]): PreviewAppFile[] {
+    return mergePreviewAppFiles(currentVirtualProjectFiles(), updates);
+  }
+
   useEffect(() => {
-    if (folder.trim()) {
-      setPreviewAppStatus(null);
-      return;
-    }
     const runtime = useSessions.getState().sessions.find((session) => session.id === activeId)?.previewRuntime;
-    setPreviewAppStatus(previewStatusFromRuntime(activeId, runtime));
+    const status = previewStatusFromRuntime(activeId, runtime);
+    setPreviewAppStatus(previewStatusMatchesFolder(status, folder) ? status : null);
   }, [activeId, folder, sessionsHydrated]);
 
   useEffect(() => {
-    if (folder.trim()) {
-      setPreviewAppStatus(null);
-      setSessionPreviewRuntime(activeId, undefined);
-      return;
-    }
     let cancelled = false;
     async function pollPreviewApp() {
       try {
         const status = await getPreviewAppStatus(activeId);
         if (!cancelled) {
-          setPreviewAppStatus(status);
-          persistPreviewRuntimeStatus(status);
+          if (previewStatusMatchesFolder(status, folder)) {
+            setPreviewAppStatus(status);
+            persistPreviewRuntimeStatus(status);
+          } else {
+            setPreviewAppStatus(null);
+            setSessionPreviewRuntime(activeId, undefined);
+          }
         }
       } catch {
         if (!cancelled) setPreviewAppStatus(null);
@@ -1791,7 +1888,11 @@ export function ChatView({
     return null;
   }, [busy, folder, messages]);
 
-  const runtimePreviewSelection = useMemo(() => previewSelectionFromRuntime(activePreviewRuntime), [activePreviewRuntime]);
+  const matchingPreviewRuntime = useMemo(() => {
+    const status = previewStatusFromRuntime(activeId, activePreviewRuntime);
+    return previewStatusMatchesFolder(status, folder) ? activePreviewRuntime : undefined;
+  }, [activeId, activePreviewRuntime, folder]);
+  const runtimePreviewSelection = useMemo(() => previewSelectionFromRuntime(matchingPreviewRuntime), [matchingPreviewRuntime]);
 
   useEffect(() => {
     if (!sessionsHydrated || !latestRuntimePreview) return;
@@ -1936,21 +2037,20 @@ export function ChatView({
       setChatNotice({ tone: "error", message: "Preview runtime needs named artifact files." });
       return;
     }
-    if (!hasPreviewPackageJson(files)) {
+    const runtimeFiles = folder.trim() ? files : virtualRuntimeFilesWith(files);
+    if (!hasPreviewPackageJson(runtimeFiles)) {
       setChatNotice({ tone: "error", message: "Preview runtime needs a named package.json artifact." });
       return;
     }
     setPreviewAppBusy("start");
     try {
-      await stagePreviewApp(activeId, files);
+      if (!folder.trim()) upsertVirtualFiles(activeId, files);
+      await stagePreviewApp(activeId, runtimeFiles);
       const status = await startPreviewApp(activeId);
       setPreviewAppStatus(status);
       persistPreviewRuntimeStatus(status);
-      if (status.url) {
-        openPreviewArtifact(localhostPreviewArtifact(status.url));
-      } else {
-        openArtifactBrowser();
-      }
+      const url = previewRuntimeBrowserUrl(status);
+      openPreviewArtifact(url ? localhostPreviewArtifact(url) : blankBrowserArtifact());
       setSessionSidePanelMode(activeId, "browser");
       setSessionSidePanelOpen(activeId, true);
     } catch (error) {
@@ -1963,10 +2063,16 @@ export function ChatView({
   async function startPreviewRuntime() {
     setPreviewAppBusy("start");
     try {
-      const status = await startPreviewApp(activeId);
+      if (!folder.trim()) {
+        const files = currentVirtualProjectFiles();
+        if (files.length && hasPreviewPackageJson(files)) await stagePreviewApp(activeId, files);
+      }
+      const status = await startPreviewApp(activeId, previewRuntimeStartOptions(folder));
       setPreviewAppStatus(status);
       persistPreviewRuntimeStatus(status);
-      if (status.url) openPreviewArtifact(localhostPreviewArtifact(status.url));
+      const url = previewRuntimeBrowserUrl(status);
+      if (url) openPreviewArtifact(localhostPreviewArtifact(url));
+      else if (sidePanelMode === "browser") openPreviewArtifact(blankBrowserArtifact());
     } catch (error) {
       setChatNotice({ tone: "error", message: error instanceof Error ? error.message : String(error) });
     } finally {
@@ -1990,10 +2096,23 @@ export function ChatView({
   async function restartPreviewRuntime() {
     setPreviewAppBusy("restart");
     try {
-      const status = await restartPreviewApp(activeId);
+      let status: PreviewAppStatus;
+      const files = !folder.trim() ? currentVirtualProjectFiles() : latestRuntimePreview ? previewRuntimeFiles(latestRuntimePreview.artifacts) : [];
+      if (!folder.trim() && files.length && hasPreviewPackageJson(files)) {
+        await stopPreviewApp(activeId).catch(() => undefined);
+        await stagePreviewApp(activeId, files);
+        status = await startPreviewApp(activeId);
+      } else if (files.length && hasPreviewPackageJson(files)) {
+        await stopPreviewApp(activeId).catch(() => undefined);
+        await stagePreviewApp(activeId, files);
+        status = await startPreviewApp(activeId);
+      } else {
+        status = await restartPreviewApp(activeId, previewRuntimeStartOptions(folder));
+      }
       setPreviewAppStatus(status);
       persistPreviewRuntimeStatus(status);
-      if (status.url) openPreviewArtifact(localhostPreviewArtifact(status.url));
+      const url = previewRuntimeBrowserUrl(status);
+      openPreviewArtifact(url ? localhostPreviewArtifact(url) : blankBrowserArtifact());
     } catch (error) {
       setChatNotice({ tone: "error", message: error instanceof Error ? error.message : String(error) });
     } finally {
@@ -2159,7 +2278,7 @@ export function ChatView({
   }
 
   async function createCompactionCheckpoint(
-    sessionId: string,
+    _sessionId: string,
     sourceMessages: ChatMessage[],
     model: string,
     options: { auto: boolean; folder: string; reasoningEffort: ReasoningEffort },
@@ -2169,68 +2288,91 @@ export function ChatView({
       throw new Error("There is no thread context to compact.");
     }
     const baseline = summarizeThreadMetricsBreakdown(sourceMessages).lifetime;
-    const promptMessages = compactionSummaryMessages(sourceMessages, model, pickerModels);
     const codexModel = codexRuntimeModel(model);
     const claudeModel = claudeRuntimeModel(model);
     const summaryStartedAt = Date.now();
-    let summary: CompactionSummaryResult;
-    if (codexModel) {
-      const ready = await ensureCodexAccount();
-      if (!ready.ok) throw new Error(ready.message);
-      summary = await summarizeWithCodex(sessionId, codexModel, promptMessages, options.folder, options.reasoningEffort);
-    } else if (claudeModel) {
-      const ready = await ensureClaudeAccount();
-      if (!ready.ok) throw new Error(ready.message);
-      summary = await summarizeWithClaude(sessionId, claudeModel, promptMessages, options.folder, options.reasoningEffort);
-    } else {
-      const completion = await completeChatWithMetrics(model, promptMessages, { maxTokens: 900, temperature: 0 });
-      summary = {
-        content: completion.content,
-        usage: completion.usage,
-        costUsd: estimateResponseCostUsd(model, completion.usage, providers),
-      };
-    }
-    const clean = summary.content.trim();
-    if (!clean) throw new Error("The model returned an empty compaction summary.");
-    return checkpointMessage(clean, {
-      auto: options.auto,
-      sourceTokens: estimateMessagesTokens(sourceContext),
-      baseline,
-      summaryMetrics: {
+    const selectedProvider = providers.find((item) => item.enabled && item.models.includes(model));
+    const provider = codexModel ? "Codex" : claudeModel ? "Claude Code" : selectedProvider?.name;
+    const summaryReasoningEffort = compactionSummaryReasoningEffort(selectedProvider);
+    let usage: TokenUsage | undefined;
+    let costUsd: number | undefined;
+    let lastError = "Compaction failed.";
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const retry = attempt > 0;
+      const outputCapTokens = compactionSummaryOutputCap(model, pickerModels, retry);
+      const promptMessages = compactionSummaryMessages(sourceMessages, model, pickerModels, { retry, outputCapTokens });
+      let summary: CompactionSummaryResult;
+      if (codexModel) {
+        const ready = await ensureCodexAccount();
+        if (!ready.ok) throw new Error(ready.message);
+        summary = await summarizeWithCodex(codexModel, promptMessages, options.folder, options.reasoningEffort);
+      } else if (claudeModel) {
+        const ready = await ensureClaudeAccount();
+        if (!ready.ok) throw new Error(ready.message);
+        summary = await summarizeWithClaude(claudeModel, promptMessages, options.folder, options.reasoningEffort);
+      } else {
+        const completion = await completeChatWithMetrics(model, promptMessages, {
+          maxTokens: outputCapTokens,
+          temperature: 0,
+          reasoningEffort: summaryReasoningEffort,
+        });
+        summary = {
+          content: completion.content,
+          usage: completion.usage,
+          finishReason: completion.finishReason,
+          costUsd: estimateResponseCostUsd(model, completion.usage, providers),
+        };
+      }
+
+      usage = mergeTokenUsage(usage, summary.usage);
+      if (typeof summary.costUsd === "number") costUsd = (costUsd ?? 0) + summary.costUsd;
+
+      const clean = summary.content.trim();
+      const validationError = validateCompactionCheckpointSummary(clean, {
+        finishReason: summary.finishReason,
         model,
-        provider: codexModel ? "Codex" : claudeModel ? "Claude Code" : providerNameForModel(model, providers),
-        durationMs: Date.now() - summaryStartedAt,
-        usage: summary.usage,
-        costUsd: summary.costUsd,
-      },
-    });
+        models: pickerModels,
+        sourceMessages,
+      });
+      if (!validationError) {
+        return checkpointMessage(clean, {
+          auto: options.auto,
+          sourceTokens: estimateMessagesTokens(sourceContext),
+          baseline,
+          summaryMetrics: {
+            model,
+            provider,
+            durationMs: Date.now() - summaryStartedAt,
+            usage,
+            costUsd,
+          },
+        });
+      }
+      lastError = validationError;
+    }
+
+    throw new Error(lastError);
   }
 
   async function summarizeWithCodex(
-    sessionId: string,
     model: string,
     promptMessages: ChatMessage[],
     folder: string,
     reasoningEffort: ReasoningEffort,
   ): Promise<CompactionSummaryResult> {
-    const threadId = useSessions.getState().sessions.find((session) => session.id === sessionId)?.accountRuntime?.codexThreadId;
     let text = "";
     let error: string | null = null;
     let warning: string | null = null;
     let usage: TokenUsage | undefined;
     let costUsd: number | undefined;
     await streamCodexRun(
-      {
+      codexCompactionSummaryRequest({
         model,
         prompt: codexPromptFromMessages(promptMessages),
         cwd: folder.trim() || undefined,
-        reasoning_effort: reasoningEffort,
-        thread_id: threadId,
-        persist_thread: Boolean(threadId),
-        tool_approval_policy: "guarded",
-        tool_approval_grant: false,
-        plan_mode: true,
-      },
+        reasoningEffort,
+      }),
       (ev: CodexRunEvent) => {
         if (ev.type === "token" && ev.text) text += ev.text;
         else if (ev.type === "warning") warning = ev.message;
@@ -2247,29 +2389,23 @@ export function ChatView({
   }
 
   async function summarizeWithClaude(
-    sessionId: string,
     model: string,
     promptMessages: ChatMessage[],
     folder: string,
     reasoningEffort: ReasoningEffort,
   ): Promise<CompactionSummaryResult> {
-    const session = useSessions.getState().sessions.find((item) => item.id === sessionId)?.accountRuntime?.claudeSessionId;
     let text = "";
     let error: string | null = null;
     let warning: string | null = null;
     let usage: TokenUsage | undefined;
     let costUsd: number | undefined;
     await streamClaudeRun(
-      {
+      claudeCompactionSummaryRequest({
         model,
         prompt: codexPromptFromMessages(promptMessages),
         cwd: folder.trim() || undefined,
-        reasoning_effort: reasoningEffort,
-        session_id: session,
-        tool_approval_policy: "guarded",
-        tool_approval_grant: false,
-        plan_mode: true,
-      },
+        reasoningEffort,
+      }),
       (ev: ClaudeRunEvent) => {
         if (ev.type === "token" && ev.text) text += ev.text;
         else if (ev.type === "warning") warning = ev.message;
@@ -2305,13 +2441,14 @@ export function ChatView({
     setChatNotice({ tone: "info", message: "Compacting thread context..." });
     try {
       const reasoningEffort = reasoningEffortForModel(useSettings.getState().reasoningEffortByModel, selectedModel, pickerModels);
-      const checkpoint = await createCompactionCheckpoint(activeId, currentMessages, selectedModel, {
+      const split = splitCompactionTail(currentMessages, selectedModel, pickerModels);
+      const checkpoint = await createCompactionCheckpoint(activeId, split.head, selectedModel, {
         auto: false,
         folder,
         reasoningEffort,
       });
       const store = useSessions.getState();
-      store.setMessages(activeId, [...currentMessages, checkpoint], { autoTitle: false });
+      store.setMessages(activeId, [...split.head, checkpoint, ...split.tail], { autoTitle: false });
       store.clearAccountRuntime(activeId);
       setChatNotice({ tone: "info", message: "Context checkpoint created. Future replies start from the summary." });
       focusComposer();
@@ -2682,13 +2819,31 @@ export function ChatView({
   }
 
   async function handleSaveArtifact(messageIndex: number, artifact: ChatArtifact, options?: { overwrite?: boolean; path?: string; source?: SavedArtifactFile["source"] }, revision?: ArtifactRevision): Promise<SavedArtifactFile> {
-    if (!folder.trim()) {
-      setChatNotice({ tone: "error", message: "Pick a working folder before saving artifacts." });
-      throw new Error("no working folder selected");
-    }
     const target = options?.path?.trim() || (artifact.filename ?? artifact.title);
-    const saved = await saveArtifactFile(folder, target, artifact.content, options?.overwrite ?? false);
     const targetMessageIndex = revision?.messageIndex ?? messageIndex;
+    if (!folder.trim()) {
+      const path = normalizeVirtualFilePath(target);
+      if (!path) throw new Error("virtual project file path must be relative");
+      const existing = currentVirtualFile(path);
+      if (existing && !options?.overwrite) throw new Error("file already exists in virtual project");
+      const saved: SavedArtifactFile = {
+        path,
+        bytes: textBytes(artifact.content),
+        overwritten: Boolean(existing),
+        savedAt: Date.now(),
+        sourceSessionId: APP_SESSION_ID,
+        sourceMessageIndex: targetMessageIndex,
+        sourceRevisionNumber: revision?.revisionNumber,
+        source: options?.source ?? "artifact",
+      };
+      upsertVirtualFiles(activeId, [{ path, content: artifact.content }], {
+        sourceMessageIndex: targetMessageIndex,
+        sourceRevisionNumber: revision?.revisionNumber,
+      });
+      markArtifactSaved(activeId, targetMessageIndex, artifact.id, saved);
+      return saved;
+    }
+    const saved = await saveArtifactFile(folder, target, artifact.content, options?.overwrite ?? false);
     const tracedSaved: SavedArtifactFile = {
       ...saved,
       savedAt: Date.now(),
@@ -2716,19 +2871,31 @@ export function ChatView({
   }
 
   async function handlePreviewArtifact(artifact: ChatArtifact, path?: string, _revision?: ArtifactRevision): Promise<ArtifactWritePreview> {
-    if (!folder.trim()) {
-      setChatNotice({ tone: "error", message: "Pick a working folder before previewing artifact changes." });
-      throw new Error("no working folder selected");
-    }
     const target = path?.trim() || (artifact.filename ?? artifact.title);
+    if (!folder.trim()) {
+      const normalized = normalizeVirtualFilePath(target);
+      if (!normalized) throw new Error("virtual project file path must be relative");
+      return virtualArtifactPreview(normalized, artifact.content, currentVirtualFile(normalized));
+    }
     return await previewArtifactFile(folder, target, artifact.content);
   }
 
   async function handleOpenArtifact(saved: SavedArtifactFile, target: ArtifactOpenTarget) {
+    if (!folder.trim()) {
+      const file = currentVirtualFile(saved.path);
+      if (!file) throw new Error("virtual project file is unavailable");
+      openPreviewArtifact(virtualChatArtifact(file), [virtualChatArtifact(file)]);
+      if (target === "folder") setChatNotice({ tone: "info", message: "Opened the virtual project file." });
+      return;
+    }
     await openArtifactLocation(saved.path, target);
   }
 
   async function handleCheckArtifact(saved: SavedArtifactFile): Promise<ArtifactFileStatus> {
+    if (!folder.trim()) {
+      const file = currentVirtualFile(saved.path);
+      return { path: saved.path, exists: Boolean(file), is_file: Boolean(file), is_dir: false, bytes: file?.bytes ?? null };
+    }
     return await artifactFileStatus(saved.path);
   }
 
@@ -3329,6 +3496,7 @@ export function ChatView({
       messageContent: wireMessageContent,
       searchMemory: searchGraphMemory,
       selectSkills,
+      virtualProjectFiles: turnFolder.trim() ? [] : sessionVirtualProjectFiles(store.sessions.find((session) => session.id === id)),
     });
     const {
       useTools,
@@ -3397,7 +3565,7 @@ export function ChatView({
       captureUsageDelta: captureAgentUsageDelta,
       snapshot,
     });
-    const prepareOutbound = (contextMessages: ChatMessage[], conversation: ChatMessage[]) => prepareTurnOutbound({
+    const prepareOutbound = (contextMessages: ChatMessage[], conversation: ChatMessage[], options?: PrepareTurnOutboundOptions) => prepareTurnOutbound({
       sessionId: id,
       contextMessages,
       conversation,
@@ -3409,6 +3577,7 @@ export function ChatView({
       setChatNotice,
       createCompactionCheckpoint,
       clearAccountRuntime: (targetId) => store.clearAccountRuntime(targetId),
+      skipAutoCompaction: options?.skipAutoCompaction,
     });
 
     try {
@@ -3995,12 +4164,7 @@ export function ChatView({
     ? messages.slice().reverse().find((message) => message.role === "assistant" && message.streamParts?.length)?.streamParts
     : undefined;
   const debugPreviewControlActivity = typeof window === "undefined" ? null : previewControlActivityFromDebugUrl(window.location.href);
-  const previewControlActivity =
-    debugPreviewControlActivity ??
-    previewControlActivityFromStreamParts(activeStreamParts, {
-      runtimeBusy: previewAppBusy != null,
-      runtimeStatus: previewAppStatus,
-    });
+  const previewControlActivity = debugPreviewControlActivity ?? previewControlActivityFromStreamParts(activeStreamParts);
   const canOpenArtifactPanel = Boolean(latestPreviewSelection || (sidePanelMode === "artifact" && previewSelection));
   const sidePanelModeSwitcher = (
     <div className="side-panel-switcher" role="tablist" aria-label="Side panel mode">
@@ -4071,6 +4235,7 @@ export function ChatView({
                     }
                     const artifactIndex = m.artifacts?.findIndex((item) => item.id === artifact.id) ?? -1;
                     const choice = !revision && artifactIndex >= 0 ? artifactRevisionChoice(i, artifactIndex) : undefined;
+                    if (!isPreviewableArtifact(artifact)) setArtifactPanelTab(activeId, "code");
                     openPreviewArtifact(artifact, artifactContext ?? [artifact], assistantStreaming, revision ?? choice?.revision);
                   };
                   const previewArtifactsStreaming = assistantStreaming && Boolean(previewArtifacts?.length);
@@ -4131,6 +4296,7 @@ export function ChatView({
                               onOpenSavedArtifact={handleOpenArtifact}
                               revisionForArtifact={(artifactIndex) => artifactRevisionChoice(i, artifactIndex)}
                               autoSaveArtifacts={toolApproval === "open" && !assistantStreaming}
+                              storageLabel={folder.trim() ? "folder" : "virtual project"}
                             />
                             {canStartRuntime && (
                               <div className="artifact-runtime-actions">
@@ -4352,7 +4518,7 @@ export function ChatView({
                 onSendArtifactFixPrompt={sendArtifactFixPrompt}
                 activeTab={sidePanelMode === "artifact" && !visiblePreviewSelection.previewDeferred ? artifactPanelTab : undefined}
                 onActiveTabChange={sidePanelMode === "artifact" && !visiblePreviewSelection.previewDeferred ? (tab) => setArtifactPanelTab(activeId, tab) : undefined}
-                runtimeStatus={!folder.trim() ? previewAppStatus : null}
+                runtimeStatus={previewAppStatus ?? folderPreviewIdleStatus(activeId, folder)}
                 runtimeBusy={previewAppBusy != null}
                 onRuntimeStart={() => void startPreviewRuntime()}
                 onRuntimeStop={() => void stopPreviewRuntime()}

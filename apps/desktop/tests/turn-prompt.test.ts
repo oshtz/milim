@@ -37,6 +37,28 @@ assert.equal(plain.accountRuntimeMayUseTools, false);
 assert.equal(contextMessagesForTurn(plain, "model")[0].content, "Be terse.");
 assert.equal(contextMessagesForTurn(plain, "agent").some((message) => message.content === "Be terse."), false);
 
+const virtualProject = buildTurnPromptContext({
+  sessionId: "s1",
+  threadTitle: "Thread",
+  folder: "",
+  instructions: "",
+  planMode: false,
+  memory: false,
+  conversation: [user("why is the preview broken?")],
+  memoryHits: [],
+  selectedSkills: [],
+  turnId: "turn-virtual",
+  sandbox: false,
+  computerUse: false,
+  activeAgentId: null,
+  toolApproval: "guarded",
+  toolApprovalGrant: false,
+  experimentalHashlinePatch: false,
+  virtualProjectFiles: [{ path: "src/App.tsx", content: "export default function App() { return null; }" }],
+});
+assert.equal(virtualProject.artifactMessages.length, 2, "virtual project follow-ups should include file context");
+assert.match(virtualProject.artifactMessages[1].content, /src\/App\.tsx/);
+
 const scheduled = buildTurnPromptContext({
   sessionId: "s2",
   threadTitle: "Thread",
@@ -67,7 +89,7 @@ assert.equal(contextMessagesForTurn(scheduled, "tools").some((message) => messag
 const memory = buildTurnPromptContext({
   sessionId: "s3",
   threadTitle: "Memory Thread",
-  folder: "C:\\repo",
+  folder: "",
   instructions: "",
   planMode: false,
   memory: true,
@@ -82,11 +104,35 @@ const memory = buildTurnPromptContext({
   toolApprovalGrant: false,
   experimentalHashlinePatch: false,
 });
-assert.equal(memory.useTools, true, "memory-enabled turns need tools for memory registration");
+assert.equal(memory.useTools, false, "retrieved memory alone should stay on the cheap model-chat path");
+assert.equal(memory.runMemoryContext.memory_enabled, false);
 assert.match(memory.memoryMessages[0].content, /Relevant local memories/);
+assert.doesNotMatch(memory.memoryMessages[0].content, /memory_register/);
 assert.match(memory.skillMessages[0].content, /## 1\. Skill/);
-assert.equal(memory.runMemoryContext.project_label, "repo");
-assert.equal(contextMessagesForTurn(memory, "agent").some((message) => message.content.includes("Current thread memory scope")), true);
+assert.equal(memory.runMemoryContext.project_label, undefined);
+
+const explicitMemoryWrite = buildTurnPromptContext({
+  sessionId: "s3-write",
+  threadTitle: "Memory Thread",
+  folder: "",
+  instructions: "",
+  planMode: false,
+  memory: true,
+  conversation: [user("remember this preference")],
+  memoryHits: [],
+  selectedSkills: [],
+  turnId: "turn-3-write",
+  sandbox: false,
+  computerUse: false,
+  activeAgentId: null,
+  toolApproval: "guarded",
+  toolApprovalGrant: false,
+  experimentalHashlinePatch: false,
+});
+assert.equal(explicitMemoryWrite.useTools, true, "explicit memory writes should enable the agent tool path");
+assert.equal(explicitMemoryWrite.runMemoryContext.memory_enabled, true);
+assert.match(explicitMemoryWrite.memoryMessages[0].content, /memory_register/);
+assert.equal(contextMessagesForTurn(explicitMemoryWrite, "agent").some((message) => message.content.includes("Current thread memory scope")), true);
 
 const accountRuntime = buildTurnPromptContext({
   sessionId: "s4",

@@ -16,7 +16,7 @@ import type {
   ToolApprovalMode,
   TokenUsage,
 } from "../api.js";
-import { prepareAndStartTurn, type PreparedTurnOutbound } from "./turnContext.js";
+import { prepareAndStartTurn, type PreparedTurnOutbound, type PrepareTurnOutboundOptions } from "./turnContext.js";
 import { messagesForModelContext } from "./contextCompaction.js";
 import { accountRuntimeToolPart, statusPart, toolCompletedPart, toolErrorMessage, toolStartedPart } from "./turnEvents.js";
 import { contextMessagesForTurn, type TurnPromptContext } from "./turnPrompt.js";
@@ -75,6 +75,54 @@ type StreamAgentRunFn = (
   toolContext?: AgentToolContext,
   reasoningEffort?: ReasoningEffort,
 ) => Promise<void>;
+
+export type CodexRunRequest = Parameters<StreamCodexRunFn>[0];
+export type ClaudeRunRequest = Parameters<StreamClaudeRunFn>[0];
+
+export function codexCompactionSummaryRequest({
+  model,
+  prompt,
+  cwd,
+  reasoningEffort,
+}: {
+  model: string;
+  prompt: string;
+  cwd?: string;
+  reasoningEffort?: ReasoningEffort;
+}): CodexRunRequest {
+  return {
+    model,
+    prompt,
+    cwd,
+    reasoning_effort: reasoningEffort,
+    persist_thread: false,
+    tool_approval_policy: "guarded",
+    tool_approval_grant: false,
+    plan_mode: true,
+  };
+}
+
+export function claudeCompactionSummaryRequest({
+  model,
+  prompt,
+  cwd,
+  reasoningEffort,
+}: {
+  model: string;
+  prompt: string;
+  cwd?: string;
+  reasoningEffort?: ReasoningEffort;
+}): ClaudeRunRequest {
+  return {
+    model,
+    prompt,
+    cwd,
+    reasoning_effort: reasoningEffort,
+    tool_approval_policy: "guarded",
+    tool_approval_grant: false,
+    plan_mode: true,
+  };
+}
 
 export type AccountRuntimeEventState = {
   warning: string | null;
@@ -308,7 +356,7 @@ export async function runModelChatTurn({
 }: {
   promptContext: TurnPromptContext;
   conversation: ChatMessage[];
-  prepareOutbound: (contextMessages: ChatMessage[], conversation: ChatMessage[]) => Promise<PreparedTurnOutbound>;
+  prepareOutbound: (contextMessages: ChatMessage[], conversation: ChatMessage[], options?: PrepareTurnOutboundOptions) => Promise<PreparedTurnOutbound>;
   beginAssistant: (conversation: ChatMessage[]) => void;
   streamChat: StreamChatFn;
   model: string;
@@ -339,7 +387,7 @@ export async function runModelChatTurn({
 type RunAccountRuntimeTurnParams = {
   promptContext: TurnPromptContext;
   conversation: ChatMessage[];
-  prepareOutbound: (contextMessages: ChatMessage[], conversation: ChatMessage[]) => Promise<PreparedTurnOutbound>;
+  prepareOutbound: (contextMessages: ChatMessage[], conversation: ChatMessage[], options?: PrepareTurnOutboundOptions) => Promise<PreparedTurnOutbound>;
   beginAssistant: (conversation: ChatMessage[]) => void;
   checkpointWorkspace: () => Promise<void>;
   model: string;
@@ -395,14 +443,15 @@ export async function runAccountRuntimeTurn(params: RunAccountRuntimeTurnParams)
     signal,
   } = params;
   const contextMessages = contextMessagesForTurn(promptContext, "model");
+  const hasNativeHistory = params.kind === "codex" ? Boolean(params.threadId) : params.hadSession;
   const prepared = await prepareAndStartTurn({
     contextMessages,
     conversation,
-    prepareOutbound,
+    prepareOutbound: (contextMessages, conversation) =>
+      prepareOutbound(contextMessages, conversation, { skipAutoCompaction: hasNativeHistory }),
     beginAssistant,
     checkpointWorkspace,
   });
-  const hasNativeHistory = params.kind === "codex" ? Boolean(params.threadId) : params.hadSession;
   const outbound = hasNativeHistory
     ? accountRuntimePromptMessages(contextMessages, prepared.conversation)
     : messagesForModelContext(contextMessages, prepared.conversation);
@@ -526,7 +575,7 @@ export async function runToolAgentTurn({
 }: {
   promptContext: TurnPromptContext;
   conversation: ChatMessage[];
-  prepareOutbound: (contextMessages: ChatMessage[], conversation: ChatMessage[]) => Promise<PreparedTurnOutbound>;
+  prepareOutbound: (contextMessages: ChatMessage[], conversation: ChatMessage[], options?: PrepareTurnOutboundOptions) => Promise<PreparedTurnOutbound>;
   beginAssistant: (conversation: ChatMessage[]) => void;
   checkpointWorkspace: () => Promise<void>;
   streamAgentRun: StreamAgentRunFn;

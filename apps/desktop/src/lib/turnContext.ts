@@ -1,5 +1,5 @@
 import type { ChatMessage, ModelInfo, ReasoningEffort, ToolApprovalMode } from "../api.js";
-import { contextSendPlan, isCompactionCheckpoint } from "./contextCompaction.js";
+import { contextSendPlan, isCompactionCheckpoint, splitCompactionTail } from "./contextCompaction.js";
 import { runtimeWarningMessage } from "./turnEvents.js";
 
 export type TurnChatNotice = {
@@ -10,6 +10,10 @@ export type TurnChatNotice = {
 export type PreparedTurnOutbound = {
   conversation: ChatMessage[];
   outbound: ChatMessage[];
+};
+
+export type PrepareTurnOutboundOptions = {
+  skipAutoCompaction?: boolean;
 };
 
 export type TurnModelResolution =
@@ -223,7 +227,7 @@ export async function prepareAndStartTurn({
 }: {
   contextMessages: ChatMessage[];
   conversation: ChatMessage[];
-  prepareOutbound: (contextMessages: ChatMessage[], conversation: ChatMessage[]) => Promise<PreparedTurnOutbound>;
+  prepareOutbound: (contextMessages: ChatMessage[], conversation: ChatMessage[], options?: PrepareTurnOutboundOptions) => Promise<PreparedTurnOutbound>;
   beginAssistant: (conversation: ChatMessage[]) => void;
   checkpointWorkspace?: () => Promise<void>;
   afterStart?: () => void;
@@ -247,6 +251,7 @@ export async function prepareTurnOutbound({
   setChatNotice,
   createCompactionCheckpoint,
   clearAccountRuntime,
+  skipAutoCompaction,
 }: {
   sessionId: string;
   contextMessages: ChatMessage[];
@@ -264,7 +269,14 @@ export async function prepareTurnOutbound({
     options: { auto: boolean; folder: string; reasoningEffort: ReasoningEffort },
   ) => Promise<ChatMessage>;
   clearAccountRuntime: (sessionId: string) => void;
+  skipAutoCompaction?: boolean;
 }): Promise<PreparedTurnOutbound> {
+  if (skipAutoCompaction) {
+    const plan = contextSendPlan(contextMessages, latestUserOrLast(conversation), model, models);
+    if (plan.error) throw new Error(plan.error);
+    return { conversation, outbound: plan.messages };
+  }
+
   let plan = contextSendPlan(contextMessages, conversation, model, models);
   if (plan.error) throw new Error(plan.error);
   if (!plan.shouldCompact) return { conversation, outbound: plan.messages };
@@ -283,12 +295,13 @@ export async function prepareTurnOutbound({
   try {
     const beforeLatest = conversation.slice(0, latestUserIndex);
     const latestAndAfter = conversation.slice(latestUserIndex);
-    const checkpoint = await createCompactionCheckpoint(sessionId, beforeLatest, model, {
+    const split = splitCompactionTail(beforeLatest, model, models);
+    const checkpoint = await createCompactionCheckpoint(sessionId, split.head, model, {
       auto: true,
       folder,
       reasoningEffort,
     });
-    const compactedConversation = [...beforeLatest, checkpoint, ...latestAndAfter];
+    const compactedConversation = [...split.head, checkpoint, ...split.tail, ...latestAndAfter];
     plan = contextSendPlan(contextMessages, compactedConversation, model, models);
     if (plan.error) throw new Error(plan.error);
     clearAccountRuntime(sessionId);
@@ -297,4 +310,11 @@ export async function prepareTurnOutbound({
   } finally {
     compactionInFlightRef.current = false;
   }
+}
+
+function latestUserOrLast(messages: ChatMessage[]): ChatMessage[] {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    if (messages[i].role === "user") return [messages[i]];
+  }
+  return messages.slice(-1);
 }

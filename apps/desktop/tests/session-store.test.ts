@@ -38,6 +38,8 @@ const {
   SIDEBAR_PINNED_SECTION_ID,
   useSessions,
   projectSectionId,
+  normalizeVirtualFilePath,
+  sessionVirtualProjectFiles,
 } = await import("../src/sessions/store.js");
 const {
   DEFAULT_GOAL_SETTINGS,
@@ -862,6 +864,23 @@ equal(revisionSavedAfterNormalize.path, "C:\\workspace\\src\\persisted-artifact-
 equal(revisionSavedAfterNormalize.savedAt, revisionSavedAt, "normalization should keep selected revision saved timestamp");
 equal(revisionSavedAfterNormalize.sourceMessageIndex, 2, "normalization should keep selected revision source message index");
 equal(revisionSavedAfterNormalize.sourceRevisionNumber, 2, "normalization should keep selected revision source revision");
+
+equal(normalizeVirtualFilePath(".\\src\\virtual.ts"), "src/virtual.ts", "virtual project paths should normalize to relative slash paths");
+equal(normalizeVirtualFilePath("../secret.ts"), "", "virtual project paths should reject parent traversal");
+useSessions.getState().upsertVirtualFiles(artifactSession, [{ path: ".\\src\\virtual.ts", content: "export const virtual = 1;" }], {
+  sourceMessageIndex: 1,
+  sourceRevisionNumber: 1,
+});
+useSessions.getState().upsertVirtualFiles(artifactSession, [{ path: "src/virtual.ts", content: "export const virtual = 2;" }], {
+  sourceMessageIndex: 2,
+  sourceRevisionNumber: 2,
+});
+const virtualFile = useSessions.getState().sessions.find((s) => s.id === artifactSession)?.virtualFiles?.["src/virtual.ts"];
+assert(virtualFile, "virtual project file should be persisted on the session");
+equal(virtualFile.version, 2, "virtual project file version should increment when content changes");
+equal(virtualFile.sourceMessageIndex, 2, "virtual project file should track source message");
+equal(sessionVirtualProjectFiles({ virtualFiles: { "src/virtual.ts": virtualFile } })[0].path, "src/virtual.ts", "virtual project files should convert to preview files");
+assert(localStorage.getItem("milim.sessions")?.includes('"virtualFiles"'), "virtual project files should persist in session storage");
 
 useSessions.getState().newChat({ model: "model-manual-title" });
 const manualTitleSession = useSessions.getState().activeId;

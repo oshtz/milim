@@ -1,4 +1,4 @@
-import type { AgentMemoryContext, AgentToolContext, ChatMessage, MemoryScopeRef, SkillInfo, ToolApprovalMode } from "../api.js";
+import type { AgentMemoryContext, AgentToolContext, ChatMessage, MemoryScopeRef, PreviewAppFile, SkillInfo, ToolApprovalMode } from "../api.js";
 import { planModeInstructionMessages, threadArtifactInstructionMessages } from "./chatInstructions.js";
 import { goalInstructionMessage, type GoalSettings } from "./goals.js";
 import { skillInstructionMessage } from "./skills.js";
@@ -71,6 +71,7 @@ export function buildTurnPromptContext({
   toolApproval,
   toolApprovalGrant,
   experimentalHashlinePatch,
+  virtualProjectFiles = [],
 }: {
   sessionId: string;
   threadTitle: string;
@@ -92,11 +93,16 @@ export function buildTurnPromptContext({
   toolApproval: ToolApprovalMode;
   toolApprovalGrant: boolean;
   experimentalHashlinePatch: boolean;
+  virtualProjectFiles?: PreviewAppFile[];
 }): TurnPromptContext {
   const skillMessage = skillInstructionMessage(selectedSkills);
+  const userText = lastUserText ?? latestUserContent(conversation);
+  const useScheduleTools = !planMode && looksLikeScheduleRequest(userText);
+  const nonMemoryTools = planMode || sandbox || computerUse || activeAgentId != null || folder.trim() !== "" || useScheduleTools;
+  const memoryWriteEnabled = memory && !planMode && !codexModel && !claudeModel && (nonMemoryTools || looksLikeMemoryWriteRequest(userText));
   const memorySystem = memory && !planMode
     ? [
-        memoryInstructions(sessionId, threadTitle, folder),
+        memoryWriteEnabled ? memoryInstructions(sessionId, threadTitle, folder) : "",
         memoryContextBlock(memoryHits),
       ].filter(Boolean).join("\n\n")
     : "";
@@ -106,24 +112,23 @@ export function buildTurnPromptContext({
   const goalMessage = goal ? goalInstructionMessage(goal) : null;
   const goalMessages: ChatMessage[] = goalMessage ? [goalMessage] : [];
   const planMessages = planModeInstructionMessages(planMode);
-  const artifactMessages = threadArtifactInstructionMessages(folder);
+  const artifactMessages = threadArtifactInstructionMessages(folder, conversation, userText, virtualProjectFiles);
   const skillMessages: ChatMessage[] = skillMessage ? [skillMessage] : [];
   const memoryMessages: ChatMessage[] = memorySystem
     ? [{ role: "system", content: memorySystem }]
     : [];
-  const useScheduleTools = !planMode && looksLikeScheduleRequest(lastUserText ?? latestUserContent(conversation));
   const scheduleMessages: ChatMessage[] = useScheduleTools
     ? [{ role: "system", content: scheduleToolInstructions() }]
     : [];
   const runMemoryContext: AgentMemoryContext = {
-    memory_enabled: memory && !planMode,
+    memory_enabled: memoryWriteEnabled,
     thread_id: sessionId,
     thread_label: threadTitle,
     project_locator: folder.trim() || undefined,
     project_label: folder.trim() ? folderLabel(folder) : undefined,
     message_id: turnId,
   };
-  const useTools = !codexModel && !claudeModel && (planMode || sandbox || computerUse || activeAgentId != null || folder.trim() !== "" || memory || useScheduleTools);
+  const useTools = !codexModel && !claudeModel && (nonMemoryTools || memoryWriteEnabled);
   const accountRuntimeMayUseTools = Boolean(codexModel || claudeModel) && !planMode;
   return {
     instructionMessages,
@@ -172,6 +177,7 @@ export async function prepareTurnPromptContext({
   messageContent,
   searchMemory,
   selectSkills,
+  virtualProjectFiles,
 }: {
   sessionId: string;
   threadTitle: string;
@@ -196,6 +202,7 @@ export async function prepareTurnPromptContext({
   messageContent: (message: ChatMessage) => string;
   searchMemory: (query: string, scopes: MemoryScopeRef[], limit: number, model?: string) => Promise<MemoryHit[]>;
   selectSkills: (query: string, limit: number) => Promise<SkillInfo[]>;
+  virtualProjectFiles?: PreviewAppFile[];
 }): Promise<TurnPromptContext> {
   const lastUser = conversation
     .slice()
@@ -227,6 +234,7 @@ export async function prepareTurnPromptContext({
     toolApproval,
     toolApprovalGrant,
     experimentalHashlinePatch,
+    virtualProjectFiles,
   });
 }
 
@@ -311,6 +319,15 @@ function latestUserContent(messages: ChatMessage[]): string {
     .slice()
     .reverse()
     .find((message) => message.role === "user")?.content ?? "";
+}
+
+function looksLikeMemoryWriteRequest(input: string): boolean {
+  const text = input.toLowerCase();
+  if (!text.trim()) return false;
+  if (/\b(?:do not|don't|dont|never)\s+(?:remember|memorize|save|store)\b/.test(text)) return false;
+  return /\b(?:remember|memorize)\b/.test(text) ||
+    /\b(?:save|store|keep)\b.{0,80}\b(?:memory|for later|as context|preference|decision)\b/.test(text) ||
+    /\b(?:add|put)\b.{0,80}\b(?:to|in)\s+(?:memory|memories)\b/.test(text);
 }
 
 function looksLikeScheduleRequest(input: string): boolean {

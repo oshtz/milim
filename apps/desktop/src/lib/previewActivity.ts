@@ -1,4 +1,4 @@
-import type { ChatStreamPart, ChatStreamEventStatus, PreviewAppStatus } from "../api.js";
+import type { ChatStreamPart, ChatStreamEventStatus } from "../api.js";
 
 export type PreviewControlGesture = "move" | "click" | "scroll" | "type" | "inspect";
 
@@ -40,20 +40,7 @@ export function previewControlActivityFromDebugUrl(href: string): PreviewControl
   };
 }
 
-export function previewControlActivityFromStreamParts(
-  parts: readonly ChatStreamPart[] | undefined,
-  options: { runtimeBusy?: boolean; runtimeStatus?: PreviewAppStatus | null } = {},
-): PreviewControlActivity | null {
-  if (options.runtimeBusy) {
-    const status = options.runtimeStatus?.status || "runtime";
-    return {
-      id: `runtime:${status}:${options.runtimeStatus?.message ?? ""}`,
-      gesture: "inspect",
-      label: "Preview activity",
-      detail: options.runtimeStatus?.message ?? undefined,
-      status: "running",
-    };
-  }
+export function previewControlActivityFromStreamParts(parts: readonly ChatStreamPart[] | undefined): PreviewControlActivity | null {
   if (!parts?.length) return null;
   for (let i = parts.length - 1; i >= 0; i -= 1) {
     const part = parts[i];
