@@ -12,6 +12,7 @@ import {
   type SessionSidebarState,
 } from "../sessions/store";
 import { markPerfRender } from "../lib/perf";
+import { previewRuntimeKeyForThread } from "../lib/previewRuntimeKeys";
 import { sessionRecencyLabel } from "../lib/sessionRecency.js";
 import { chatExportFilename, sessionExportPayload } from "../lib/threadExport";
 import { featureVisibleInMode } from "../ui/features";
@@ -183,17 +184,26 @@ function WorkingSessionLoader() {
   return <span className="loader" aria-hidden="true" />;
 }
 
-function runtimePreviewSidebarState(session: SidebarSessionLike): "running" | "error" | null {
-  const status = session.previewRuntime?.status.toLowerCase();
+function runtimePreviewState(runtime?: SessionPreviewRuntime): "running" | "error" | null {
+  const status = runtime?.status.toLowerCase();
   if (status === "error") return "error";
   return status === "installing" || status === "starting" || status === "running" ? "running" : null;
 }
 
-function sameSidebarSession(a: Session, b: SidebarSession): boolean {
+function runtimePreviewSidebarState(session: SidebarSessionLike): "running" | "error" | null {
+  return runtimePreviewState(session.previewRuntime);
+}
+
+function sessionPreviewRuntimeForSidebar(state: ReturnType<typeof useSessions.getState>, session: Session): SessionPreviewRuntime | undefined {
+  const folder = session.settings?.folder?.trim() ?? "";
+  return folder ? state.previewRuntimesByKey[previewRuntimeKeyForThread(session.id, folder)] : session.previewRuntime;
+}
+
+function sameSidebarSession(a: Session, b: SidebarSession, previewRuntime?: SessionPreviewRuntime): boolean {
   return a.id === b.id &&
     a.title === b.title &&
     a.settings === b.settings &&
-    a.previewRuntime === b.previewRuntime &&
+    previewRuntime === b.previewRuntime &&
     a.parentId === b.parentId &&
     a.worker === b.worker &&
     a.createdAt === b.createdAt &&
@@ -207,10 +217,11 @@ function createSidebarSessionsSelector() {
     let changed = previous.length !== state.sessions.length;
     const next = state.sessions.map((session, index) => {
       const cached = previous[index];
-      if (cached && sameSidebarSession(session, cached)) return cached;
+      const previewRuntime = sessionPreviewRuntimeForSidebar(state, session);
+      if (cached && sameSidebarSession(session, cached, previewRuntime)) return cached;
       changed = true;
       const { messages: _messages, ...summary } = session;
-      return summary;
+      return { ...summary, previewRuntime };
     });
     if (!changed) return previous;
     previous = next;
@@ -240,6 +251,7 @@ export function Sidebar({
   const sidebarSessionsSelector = useMemo(createSidebarSessionsSelector, []);
   const sessions = useSessions(sidebarSessionsSelector);
   const projects = useSessions((s) => s.projects);
+  const previewRuntimesByKey = useSessions((s) => s.previewRuntimesByKey);
   const activeId = useSessions((s) => s.activeId);
   const generatingSessionIds = useSessions((s) => s.generatingSessionIds);
   const unreadSessionIds = useSessions((s) => s.unreadSessionIds);
@@ -789,6 +801,9 @@ export function Sidebar({
               const sectionDragOver = dragOver?.type === "section" && dragOver.id === group.id;
               const sectionDropClass = sectionDragOver ? ` drag-over drop-${dragOver.position}` : "";
               const sectionDragging = dragging?.type === "section" && dragging.id === group.id;
+              const sectionRuntimeState = projectSection
+                ? runtimePreviewState(previewRuntimesByKey[previewRuntimeKeyForThread("", group.subtitle ?? folderFromSectionId(group.id))])
+                : null;
               const searchActive = Boolean(query.trim());
               const totalSessions = group.sessions.length;
               const sectionManuallyExpanded = manuallyExpandedSections.has(group.id);
@@ -852,8 +867,9 @@ export function Sidebar({
                   }
                 >
                   <div
-                    className={"session-section-title" + (!projectSection ? " fixed" : "")}
+                    className={"session-section-title" + (!projectSection ? " fixed" : "") + (sectionRuntimeState ? " runtime-preview runtime-" + sectionRuntimeState : "")}
                     onPointerDown={projectSection ? (event) => startPointerDrag(event, { type: "section", id: group.id }) : undefined}
+                    onContextMenu={(event) => openSectionContextMenu(event, group, collapsed, sectionPinned)}
                   >
                     <button
                       className="section-toggle"
@@ -915,7 +931,7 @@ export function Sidebar({
                   const workerRunning = s.worker?.status === "queued" || s.worker?.status === "running";
                   const generating = generatingSessions.has(s.id) || workerRunning;
                   const unread = unreadSessions.has(s.id);
-                  const runtimeState = runtimePreviewSidebarState(s);
+                  const runtimeState = projectSection ? null : runtimePreviewSidebarState(s);
                   const pinned = !s.parentId && sidebarState.pinnedSessionIds.includes(s.id);
                   const showStatus = generating || unread;
                   const statusLabel = s.worker ? `Worker ${s.worker.status}` : generating ? "Working" : unread ? "Unread update" : "Ready";

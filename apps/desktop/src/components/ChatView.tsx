@@ -138,6 +138,7 @@ import {
 import { estimateResponseCostUsd, formatResponseMetrics, responseMetricsForTurn, summarizeMilimUsage, summarizeThreadMetricsBreakdown, type MilimUsageSummary } from "../lib/usageMetrics";
 import { markPerfRender } from "../lib/perf";
 import { previewControlActivityFromDebugUrl, previewControlActivityFromStreamParts } from "../lib/previewActivity";
+import { previewRuntimeFoldersEqual, previewRuntimeKeyForThread } from "../lib/previewRuntimeKeys";
 import { statusPart } from "../lib/turnEvents";
 import { accountRuntimeNotReadyForTurn, appendUserTurn, editResendConversation, prepareTurnOutbound, regenerateTurnConversation, resolveTurnSetup, type AccountRuntimeReady, type PrepareTurnOutboundOptions } from "../lib/turnContext";
 import { prepareTurnPromptContext, resolveTurnToolApproval } from "../lib/turnPrompt";
@@ -492,13 +493,9 @@ function previewStatusFromRuntime(threadId: string, runtime?: SessionPreviewRunt
   };
 }
 
-function normalizePreviewCwd(value?: string | null): string {
-  return (value ?? "").trim().replace(/\\/g, "/").toLowerCase();
-}
-
 function previewStatusMatchesFolder(status: PreviewAppStatus | null, folder: string): boolean {
   const cwd = previewRuntimeText(folder);
-  return !cwd || normalizePreviewCwd(status?.cwd) === normalizePreviewCwd(cwd);
+  return !cwd || previewRuntimeFoldersEqual(status?.cwd, cwd);
 }
 
 function folderPreviewIdleStatus(threadId: string, folder: string): PreviewAppStatus | null {
@@ -1374,7 +1371,13 @@ export function ChatView({
   const sidePanelMode = useSessions((s) => s.sessions.find((x) => x.id === s.activeId)?.sidePanelMode ?? null);
   const sidePanelOpen = useSessions((s) => s.sessions.find((x) => x.id === s.activeId)?.artifactPanelOpen === true);
   const artifactPanelTab = useSessions((s) => s.sessions.find((x) => x.id === s.activeId)?.artifactPanelTab ?? "preview");
-  const activePreviewRuntime = useSessions((s) => s.sessions.find((x) => x.id === s.activeId)?.previewRuntime);
+  const activePreviewRuntime = useSessions((s) => {
+    const session = s.sessions.find((x) => x.id === s.activeId);
+    const activeFolder = session?.settings?.folder ?? "";
+    return activeFolder.trim()
+      ? s.previewRuntimesByKey[previewRuntimeKeyForThread(s.activeId, activeFolder)]
+      : session?.previewRuntime;
+  });
   const setMessages = useSessions((s) => s.setMessages);
   const markArtifactSaved = useSessions((s) => s.markArtifactSaved);
   const upsertVirtualFiles = useSessions((s) => s.upsertVirtualFiles);
@@ -1383,6 +1386,7 @@ export function ChatView({
   const setSessionSidePanelMode = useSessions((s) => s.setSidePanelMode);
   const setArtifactPanelTab = useSessions((s) => s.setArtifactPanelTab);
   const setSessionPreviewRuntime = useSessions((s) => s.setPreviewRuntime);
+  const setPreviewRuntimeByKey = useSessions((s) => s.setPreviewRuntimeByKey);
   const updateThreadSettings = useSessions((s) => s.updateSettings);
   const switchToSession = useSessions((s) => s.switchTo);
   const enqueueQueuedMessage = useSessions((s) => s.enqueueQueuedMessage);
@@ -1411,6 +1415,7 @@ export function ChatView({
   const showMemoryManager = featureVisibleInMode("memoryManager", interfaceMode);
   const showMedia = featureVisibleInMode("media", interfaceMode);
   const { model, instructions, folder, sandbox, computerUse, memory, activeAgentId, privacy, toolApproval, planMode, goal } = threadSettings;
+  const activePreviewRuntimeKey = previewRuntimeKeyForThread(activeId, folder);
   const canOpenGitPanel = gitStatus?.state === "ready" && gitStatus.is_repo;
   const gitPanelChecking = Boolean(folder.trim()) && gitStatus === null;
   const canShowGitPanel = canOpenGitPanel || (sidePanelMode === "git" && gitPanelChecking);
@@ -1428,8 +1433,13 @@ export function ChatView({
   );
 
   function persistPreviewRuntimeStatus(status: PreviewAppStatus) {
-    const previous = useSessions.getState().sessions.find((session) => session.id === activeId)?.previewRuntime;
-    setSessionPreviewRuntime(activeId, previewRuntimeFromStatus(status, previous));
+    const state = useSessions.getState();
+    const previous = folder.trim()
+      ? state.previewRuntimesByKey[activePreviewRuntimeKey]
+      : state.sessions.find((session) => session.id === activeId)?.previewRuntime;
+    const runtime = previewRuntimeFromStatus(status, previous);
+    if (folder.trim()) setPreviewRuntimeByKey(activePreviewRuntimeKey, runtime);
+    else setSessionPreviewRuntime(activeId, runtime);
   }
 
   function currentVirtualProjectFiles(sessionId = activeId): PreviewAppFile[] {
@@ -1447,23 +1457,27 @@ export function ChatView({
   }
 
   useEffect(() => {
-    const runtime = useSessions.getState().sessions.find((session) => session.id === activeId)?.previewRuntime;
-    const status = previewStatusFromRuntime(activeId, runtime);
+    const state = useSessions.getState();
+    const runtime = folder.trim()
+      ? state.previewRuntimesByKey[activePreviewRuntimeKey]
+      : state.sessions.find((session) => session.id === activeId)?.previewRuntime;
+    const status = previewStatusFromRuntime(activePreviewRuntimeKey, runtime);
     setPreviewAppStatus(previewStatusMatchesFolder(status, folder) ? status : null);
-  }, [activeId, folder, sessionsHydrated]);
+  }, [activeId, activePreviewRuntimeKey, folder, sessionsHydrated]);
 
   useEffect(() => {
     let cancelled = false;
     async function pollPreviewApp() {
       try {
-        const status = await getPreviewAppStatus(activeId);
+        const status = await getPreviewAppStatus(activePreviewRuntimeKey);
         if (!cancelled) {
           if (previewStatusMatchesFolder(status, folder)) {
             setPreviewAppStatus(status);
             persistPreviewRuntimeStatus(status);
           } else {
             setPreviewAppStatus(null);
-            setSessionPreviewRuntime(activeId, undefined);
+            if (folder.trim()) setPreviewRuntimeByKey(activePreviewRuntimeKey, undefined);
+            else setSessionPreviewRuntime(activeId, undefined);
           }
         }
       } catch {
@@ -1476,7 +1490,7 @@ export function ChatView({
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [activeId, folder, setSessionPreviewRuntime]);
+  }, [activeId, activePreviewRuntimeKey, folder, setPreviewRuntimeByKey, setSessionPreviewRuntime]);
   const pickerModels = useMemo(() => mergeModelLists(models, mediaModelEntries), [models, mediaModelEntries]);
   const activeMediaTarget = useMemo(
     () => showMedia ? resolveActiveMediaTarget(effectiveModel, enabledMediaProviders, mediaSettings, mediaCatalog) : null,
@@ -1891,9 +1905,9 @@ export function ChatView({
   }, [busy, folder, messages]);
 
   const matchingPreviewRuntime = useMemo(() => {
-    const status = previewStatusFromRuntime(activeId, activePreviewRuntime);
+    const status = previewStatusFromRuntime(activePreviewRuntimeKey, activePreviewRuntime);
     return previewStatusMatchesFolder(status, folder) ? activePreviewRuntime : undefined;
-  }, [activeId, activePreviewRuntime, folder]);
+  }, [activePreviewRuntime, activePreviewRuntimeKey, folder]);
   const runtimePreviewSelection = useMemo(() => previewSelectionFromRuntime(matchingPreviewRuntime), [matchingPreviewRuntime]);
 
   useEffect(() => {
@@ -2047,8 +2061,8 @@ export function ChatView({
     setPreviewAppBusy("start");
     try {
       if (!folder.trim()) upsertVirtualFiles(activeId, files);
-      await stagePreviewApp(activeId, runtimeFiles);
-      const status = await startPreviewApp(activeId);
+      await stagePreviewApp(activePreviewRuntimeKey, runtimeFiles);
+      const status = await startPreviewApp(activePreviewRuntimeKey);
       setPreviewAppStatus(status);
       persistPreviewRuntimeStatus(status);
       const url = previewRuntimeBrowserUrl(status);
@@ -2067,9 +2081,9 @@ export function ChatView({
     try {
       if (!folder.trim()) {
         const files = currentVirtualProjectFiles();
-        if (files.length && hasPreviewPackageJson(files)) await stagePreviewApp(activeId, files);
+        if (files.length && hasPreviewPackageJson(files)) await stagePreviewApp(activePreviewRuntimeKey, files);
       }
-      const status = await startPreviewApp(activeId, previewRuntimeStartOptions(folder));
+      const status = await startPreviewApp(activePreviewRuntimeKey, previewRuntimeStartOptions(folder));
       setPreviewAppStatus(status);
       persistPreviewRuntimeStatus(status);
       const url = previewRuntimeBrowserUrl(status);
@@ -2085,7 +2099,7 @@ export function ChatView({
   async function stopPreviewRuntime() {
     setPreviewAppBusy("stop");
     try {
-      const status = await stopPreviewApp(activeId);
+      const status = await stopPreviewApp(activePreviewRuntimeKey);
       setPreviewAppStatus(status);
       persistPreviewRuntimeStatus(status);
     } catch (error) {
@@ -2101,15 +2115,15 @@ export function ChatView({
       let status: PreviewAppStatus;
       const files = !folder.trim() ? currentVirtualProjectFiles() : latestRuntimePreview ? previewRuntimeFiles(latestRuntimePreview.artifacts) : [];
       if (!folder.trim() && files.length && hasPreviewPackageJson(files)) {
-        await stopPreviewApp(activeId).catch(() => undefined);
-        await stagePreviewApp(activeId, files);
-        status = await startPreviewApp(activeId);
+        await stopPreviewApp(activePreviewRuntimeKey).catch(() => undefined);
+        await stagePreviewApp(activePreviewRuntimeKey, files);
+        status = await startPreviewApp(activePreviewRuntimeKey);
       } else if (files.length && hasPreviewPackageJson(files)) {
-        await stopPreviewApp(activeId).catch(() => undefined);
-        await stagePreviewApp(activeId, files);
-        status = await startPreviewApp(activeId);
+        await stopPreviewApp(activePreviewRuntimeKey).catch(() => undefined);
+        await stagePreviewApp(activePreviewRuntimeKey, files);
+        status = await startPreviewApp(activePreviewRuntimeKey);
       } else {
-        status = await restartPreviewApp(activeId, previewRuntimeStartOptions(folder));
+        status = await restartPreviewApp(activePreviewRuntimeKey, previewRuntimeStartOptions(folder));
       }
       setPreviewAppStatus(status);
       persistPreviewRuntimeStatus(status);
@@ -4597,7 +4611,7 @@ export function ChatView({
                 onSendArtifactFixPrompt={sendArtifactFixPrompt}
                 activeTab={sidePanelMode === "artifact" && !visiblePreviewSelection.previewDeferred ? artifactPanelTab : undefined}
                 onActiveTabChange={sidePanelMode === "artifact" && !visiblePreviewSelection.previewDeferred ? (tab) => setArtifactPanelTab(activeId, tab) : undefined}
-                runtimeStatus={previewAppStatus ?? folderPreviewIdleStatus(activeId, folder)}
+                runtimeStatus={previewAppStatus ?? folderPreviewIdleStatus(activePreviewRuntimeKey, folder)}
                 runtimeBusy={previewAppBusy != null}
                 onRuntimeStart={() => void startPreviewRuntime()}
                 onRuntimeStop={() => void stopPreviewRuntime()}

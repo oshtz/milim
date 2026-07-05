@@ -49,6 +49,7 @@ const {
   parseGoalDecision,
 } = await import("../src/lib/goals.js");
 const { codexLimitsFromRateLimitPayload, estimateResponseCostUsd, formatProviderLimits, formatResponseMetrics, formatThreadMetrics, formatThreadMetricsBreakdown, latestProviderLimits, responseMetricsForTurn, summarizeMilimUsage, summarizeResponseMetrics } = await import("../src/lib/usageMetrics.js");
+const { previewRuntimeKeyForThread } = await import("../src/lib/previewRuntimeKeys.js");
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -143,6 +144,14 @@ equal(firstPreviewRuntimeSession?.previewRuntime?.url, "http://127.0.0.1:5173/",
 equal(firstPreviewRuntimeSession?.previewRuntime?.status, "running", "preview runtime status should persist on the thread");
 equal(firstPreviewRuntimeSession?.updatedAt, firstUpdatedBeforePreviewRuntime, "preview runtime polling should not change thread recency");
 assert(localStorage.getItem("milim.sessions")?.includes("http://127.0.0.1:5173/"), "preview runtime URL should persist in session storage");
+const projectRuntimeKey = previewRuntimeKeyForThread("other-thread", "C:\\workspace-a");
+useSessions.getState().setPreviewRuntimeByKey(projectRuntimeKey, {
+  status: "running",
+  cwd: "C:\\workspace-a",
+  url: "http://127.0.0.1:5999/",
+});
+equal(useSessions.getState().previewRuntimesByKey[projectRuntimeKey]?.url, "http://127.0.0.1:5999/", "project preview runtime should persist by runtime key");
+assert(localStorage.getItem("milim.sessions")?.includes(projectRuntimeKey), "project runtime key should persist in session storage");
 useSessions.getState().setAccountRuntime(first, { codexThreadId: "codex-thread-1" });
 equal(
   useSessions.getState().sessions.find((session) => session.id === first)?.accountRuntime?.codexThreadId,

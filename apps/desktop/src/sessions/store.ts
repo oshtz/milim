@@ -4,6 +4,7 @@ import type { ChatArtifact, ChatAttachment, ChatMessage, ChatStreamPart, ChildTh
 import { extractArtifactsFromMessage, normalizeArtifactDisposition } from "../lib/artifacts.js";
 import { DEFAULT_GOAL_SETTINGS, normalizeGoalSettings, type GoalSettings } from "../lib/goals.js";
 import { recordPerfMeasure, startPerfMeasure } from "../lib/perf.js";
+import { previewRuntimeKeyForThread } from "../lib/previewRuntimeKeys.js";
 import { deriveThreadTitle, NEW_CHAT_TITLE } from "../lib/threadTitles.js";
 import { userStateStorage } from "../persistence/userStateStorage.js";
 
@@ -181,6 +182,17 @@ function normalizePreviewRuntime(value: unknown): SessionPreviewRuntime | undefi
     message: stringValue(raw.message),
     updatedAt: timestamp(raw.updatedAt),
   };
+}
+
+function normalizePreviewRuntimesByKey(value: unknown): Record<string, SessionPreviewRuntime> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const runtimes: Record<string, SessionPreviewRuntime> = {};
+  for (const [key, rawRuntime] of Object.entries(value as Record<string, unknown>)) {
+    if (!/^[A-Za-z0-9_.-]+$/.test(key)) continue;
+    const runtime = normalizePreviewRuntime(rawRuntime);
+    if (runtime) runtimes[key] = runtime;
+  }
+  return runtimes;
 }
 
 export function normalizeVirtualFilePath(path: string): string {
@@ -729,6 +741,7 @@ function sessionFromThread(parent: Session | undefined, existing: Session | unde
 interface SessionState {
   sessions: Session[];
   projects: Project[];
+  previewRuntimesByKey: Record<string, SessionPreviewRuntime>;
   activeId: string;
   archiveRetentionDays: ArchiveRetentionDays;
   generatingSessionIds: string[];
@@ -780,6 +793,7 @@ interface SessionState {
   setSidePanelMode: (id: string, mode: SessionSidePanelMode | null) => void;
   setArtifactPanelTab: (id: string, tab: SessionArtifactPanelTab) => void;
   setPreviewRuntime: (id: string, runtime: SessionPreviewRuntime | undefined) => void;
+  setPreviewRuntimeByKey: (key: string, runtime: SessionPreviewRuntime | undefined) => void;
   setAccountRuntime: (id: string, runtime: Partial<NonNullable<Session["accountRuntime"]>>) => void;
   clearAccountRuntime: (id: string) => void;
   ensureClaudeSessionId: (id: string) => string;
@@ -794,6 +808,7 @@ export const useSessions = create<SessionState>()(
       return {
         sessions: [first],
         projects: [],
+        previewRuntimesByKey: {},
         activeId: first.id,
         archiveRetentionDays: DEFAULT_ARCHIVE_RETENTION_DAYS,
         generatingSessionIds: [],
@@ -1605,6 +1620,17 @@ export const useSessions = create<SessionState>()(
             }),
           })),
 
+        setPreviewRuntimeByKey: (key, runtime) =>
+          set((st) => {
+            if (!/^[A-Za-z0-9_.-]+$/.test(key)) return {};
+            const previewRuntime = normalizePreviewRuntime(runtime);
+            if (samePreviewRuntime(st.previewRuntimesByKey[key], previewRuntime)) return {};
+            const previewRuntimesByKey = { ...st.previewRuntimesByKey };
+            if (previewRuntime) previewRuntimesByKey[key] = { ...previewRuntime, updatedAt: Date.now() };
+            else delete previewRuntimesByKey[key];
+            return { previewRuntimesByKey };
+          }),
+
         setAccountRuntime: (id, runtime) =>
           set((st) => ({
             sessions: st.sessions.map((s) => {
@@ -1675,6 +1701,13 @@ export const useSessions = create<SessionState>()(
       merge: (persisted, current) => {
         const state = persisted as Partial<SessionState>;
         const sessions = state.sessions?.map((session) => normalizeSessionArtifacts(session)) ?? current.sessions;
+        const previewRuntimesByKey = normalizePreviewRuntimesByKey(state.previewRuntimesByKey);
+        for (const session of sessions) {
+          const folder = normalizeProjectFolder(session.settings?.folder);
+          if (folder && session.previewRuntime) {
+            previewRuntimesByKey[previewRuntimeKeyForThread(session.id, folder)] ??= session.previewRuntime;
+          }
+        }
         const archiveRetentionDays = normalizeArchiveRetentionDays(state.archiveRetentionDays);
         const projects = normalizeProjects(state.projects, sessions, uniqueStrings(state.sidebar?.projectFolders));
         const cutoff = Date.now() - archiveRetentionDays * DAY_MS;
@@ -1690,6 +1723,7 @@ export const useSessions = create<SessionState>()(
           ...state,
           sessions: active.sessions,
           projects: liveProjects,
+          previewRuntimesByKey,
           activeId: active.activeId,
           archiveRetentionDays,
           generatingSessionIds: [],
@@ -1701,6 +1735,7 @@ export const useSessions = create<SessionState>()(
       partialize: (state) => ({
         sessions: sessionsForPersistence(state.sessions),
         projects: state.projects,
+        previewRuntimesByKey: state.previewRuntimesByKey,
         activeId: state.activeId,
         archiveRetentionDays: state.archiveRetentionDays,
         queuedMessagesBySession: state.queuedMessagesBySession,
