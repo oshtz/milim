@@ -1596,6 +1596,7 @@ export interface AgentEvent {
     | "start"
     | "token"
     | "reasoning"
+    | "usage_delta"
     | "tool_call"
     | "tool_result"
     | "memory_registered"

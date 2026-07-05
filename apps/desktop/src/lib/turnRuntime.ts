@@ -95,6 +95,7 @@ export type TurnMetricsCapture = {
     limits: ProviderLimitInfo[];
   };
   captureUsage: (usage?: TokenUsage) => void;
+  captureUsageDelta: (usage?: TokenUsage) => TokenUsage | undefined;
   captureRuntimeMetrics: (event: { usage?: TokenUsage; cost_usd?: number }) => void;
   captureProviderLimit: (limit?: ProviderLimitInfo) => void;
 };
@@ -105,6 +106,11 @@ export function createTurnMetricsCapture(): TurnMetricsCapture {
     state,
     captureUsage(usage) {
       if (usage) state.usage = usage;
+    },
+    captureUsageDelta(usage) {
+      if (!usage) return state.usage;
+      state.usage = addTokenUsage(state.usage, usage);
+      return state.usage;
     },
     captureRuntimeMetrics(event) {
       if (event.usage) state.usage = event.usage;
@@ -117,6 +123,14 @@ export function createTurnMetricsCapture(): TurnMetricsCapture {
         limit,
       ];
     },
+  };
+}
+
+function addTokenUsage(total: TokenUsage | undefined, usage: TokenUsage): TokenUsage {
+  return {
+    prompt_tokens: (total?.prompt_tokens ?? 0) + usage.prompt_tokens,
+    completion_tokens: (total?.completion_tokens ?? 0) + usage.completion_tokens,
+    total_tokens: (total?.total_tokens ?? 0) + usage.total_tokens,
   };
 }
 
@@ -658,6 +672,7 @@ export function createAgentRunEventHandler({
   upsertChildThread,
   updateChildThread,
   captureUsage,
+  captureUsageDelta,
   snapshot,
   now = () => Date.now(),
 }: {
@@ -671,6 +686,7 @@ export function createAgentRunEventHandler({
   upsertChildThread: (thread: ChildThreadInfo) => void;
   updateChildThread: (thread: ChildThreadInfo) => void;
   captureUsage: (usage?: TokenUsage) => void;
+  captureUsageDelta: (usage?: TokenUsage) => void;
   snapshot: () => void;
   now?: () => number;
 }): (event: AgentEvent) => void {
@@ -687,6 +703,9 @@ export function createAgentRunEventHandler({
       case "reasoning":
         if (event.text) appendThinking(event.text);
         return;
+      case "usage_delta":
+        captureUsageDelta(event.usage);
+        break;
       case "tool_call":
         flush();
         run.steps.push({ callId: event.call_id, name: event.name ?? "tool", arguments: event.arguments, startedAt: now() });

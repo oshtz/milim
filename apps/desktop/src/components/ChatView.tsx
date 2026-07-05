@@ -3369,6 +3369,20 @@ export function ChatView({
     });
 
     const { runRef, snapshot } = createTurnRunTraceState((run) => store.commitRun(id, run));
+    const captureAgentUsageDelta = (usage?: TokenUsage) => {
+      const totalUsage = metricsCapture.captureUsageDelta(usage);
+      if (!totalUsage || !assistantStart.state.started) return;
+      commitResponseMetrics(id, responseMetricsForTurn({
+        startedAt,
+        endedAt: Date.now(),
+        model: turnModel,
+        providers,
+        codexModel,
+        claudeModel,
+        usage: totalUsage,
+        limits: metricsCapture.state.limits,
+      }));
+    };
     const onEvent = createAgentRunEventHandler({
       runRef,
       append,
@@ -3380,6 +3394,7 @@ export function ChatView({
       upsertChildThread: (thread) => store.upsertChildThread(id, thread),
       updateChildThread: (thread) => store.updateChildThread(thread),
       captureUsage: metricsCapture.captureUsage,
+      captureUsageDelta: captureAgentUsageDelta,
       snapshot,
     });
     const prepareOutbound = (contextMessages: ChatMessage[], conversation: ChatMessage[]) => prepareTurnOutbound({

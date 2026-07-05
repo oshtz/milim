@@ -136,6 +136,8 @@ pub enum AgentEvent {
     Token { text: String },
     /// A chunk of non-answer reasoning/thinking text.
     Reasoning { text: String },
+    /// Usage for one completed model request inside the agent loop.
+    UsageDelta { usage: Usage },
     /// The agent decided to call a tool.
     ToolCall {
         call_id: Option<String>,
@@ -234,7 +236,10 @@ pub fn run_agent_stream(
                             tool_acc.push(tc);
                         }
                     }
-                    Ok(StreamEvent::Done { usage, .. }) => add_usage(&mut total_usage, usage),
+                    Ok(StreamEvent::Done { usage, .. }) => {
+                        add_usage(&mut total_usage, usage);
+                        yield AgentEvent::UsageDelta { usage };
+                    }
                     Err(e) => {
                         yield AgentEvent::Error { message: e.to_string() };
                         return;
@@ -449,6 +454,7 @@ mod tests {
                 AgentEvent::Start { .. } => "start",
                 AgentEvent::Token { .. } => "token",
                 AgentEvent::Reasoning { .. } => "reasoning",
+                AgentEvent::UsageDelta { .. } => "usage_delta",
                 AgentEvent::ToolCall { .. } => "tool_call",
                 AgentEvent::ToolResult { .. } => "tool_result",
                 AgentEvent::MemoryRegistered { .. } => "memory_registered",
@@ -481,9 +487,12 @@ mod tests {
         ));
 
         let mut usage = None;
+        let mut deltas = Vec::new();
         while let Some(ev) = stream.next().await {
-            if let AgentEvent::Done { usage: u, .. } = ev {
-                usage = Some(u);
+            match ev {
+                AgentEvent::UsageDelta { usage: u } => deltas.push(u),
+                AgentEvent::Done { usage: u, .. } => usage = Some(u),
+                _ => {}
             }
         }
 
@@ -491,6 +500,14 @@ mod tests {
         assert_eq!(usage.prompt_tokens, 5);
         assert_eq!(usage.completion_tokens, 7);
         assert_eq!(usage.total_tokens, 12);
+        assert_eq!(deltas.len(), 2);
+        let summed = deltas.into_iter().fold(Usage::default(), |mut total, usage| {
+            add_usage(&mut total, usage);
+            total
+        });
+        assert_eq!(summed.prompt_tokens, usage.prompt_tokens);
+        assert_eq!(summed.completion_tokens, usage.completion_tokens);
+        assert_eq!(summed.total_tokens, usage.total_tokens);
     }
 
     #[test]

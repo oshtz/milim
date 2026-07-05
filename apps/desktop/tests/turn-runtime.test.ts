@@ -33,6 +33,8 @@ assert.match(codexAttachmentPrompt, /# Notes/);
 
 const turnMetrics = createTurnMetricsCapture();
 turnMetrics.captureUsage({ prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 });
+turnMetrics.captureUsageDelta({ prompt_tokens: 2, completion_tokens: 1, total_tokens: 3 });
+assert.equal(turnMetrics.state.usage?.total_tokens, 6);
 turnMetrics.captureRuntimeMetrics({ usage: { prompt_tokens: 4, completion_tokens: 5, total_tokens: 9 }, cost_usd: 0 });
 turnMetrics.captureRuntimeMetrics({ cost_usd: 0.02 });
 turnMetrics.captureProviderLimit({ provider: "Claude", kind: "requests", remaining: 2 });
@@ -124,6 +126,7 @@ const memoryNotices: MemoryNotice[] = [];
 const childUpserts: string[] = [];
 const childUpdates: string[] = [];
 let agentUsage: TokenUsage | undefined;
+let agentUsageDelta: TokenUsage | undefined;
 const agentHandler = createAgentRunEventHandler({
   runRef: { current: run },
   append: (value) => agentText.push(value),
@@ -138,6 +141,9 @@ const agentHandler = createAgentRunEventHandler({
   updateChildThread: (thread) => childUpdates.push(thread.id),
   captureUsage: (usage) => {
     agentUsage = usage;
+  },
+  captureUsageDelta: (usage) => {
+    agentUsageDelta = usage;
   },
   snapshot: () => {
     snapshots += 1;
@@ -161,6 +167,7 @@ agentHandler({
 } as AgentEvent);
 agentHandler({ type: "child_thread_started", thread: { id: "child-1", parent_id: "s1", root_id: "s1", title: "Worker", status: "running", model: "m", prompt: "p", created_at: "", updated_at: "" } });
 agentHandler({ type: "child_thread_done", thread: { id: "child-1", parent_id: "s1", root_id: "s1", title: "Worker", status: "done", model: "m", prompt: "p", summary: "Done", created_at: "", updated_at: "" } });
+agentHandler({ type: "usage_delta", usage: { prompt_tokens: 3, completion_tokens: 4, total_tokens: 7 } });
 agentHandler({ type: "done", iterations: 2, stopped_at_limit: true, usage: { prompt_tokens: 7, completion_tokens: 8, total_tokens: 15 } });
 
 assert.equal(run.model, "agent-model");
@@ -177,6 +184,7 @@ assert.deepEqual(childUpserts, ["child-1"]);
 assert.deepEqual(childUpdates, ["child-1"]);
 assert.equal(run.status, "stopped");
 assert.equal(run.iterations, 2);
+assert.equal(agentUsageDelta?.total_tokens, 7);
 assert.equal(agentUsage?.total_tokens, 15);
 assert(agentFlushes >= 5, "agent handler should flush before event parts");
 assert(snapshots >= 6, "agent handler should snapshot state-changing events");
@@ -435,6 +443,7 @@ await runToolAgentTurn({
     upsertChildThread: () => {},
     updateChildThread: () => {},
     captureUsage: () => {},
+    captureUsageDelta: () => {},
     snapshot: () => {
       toolSnapshots += 1;
     },
@@ -509,6 +518,7 @@ const failing = await runToolAgentTurn({
     upsertChildThread: () => {},
     updateChildThread: () => {},
     captureUsage: () => {},
+    captureUsageDelta: () => {},
     snapshot: () => {},
   }),
   runMemoryContext: {},

@@ -26,7 +26,7 @@ The first run can open as Simple or Workbench. Simple keeps the chat core visibl
 | Sidebar | Projects, threads, pinned groups, archives, unread state, child threads, per-section ellipsis toggles, and quick switching. |
 | Thread header | Current model, workspace folder, agent, approval, privacy, memory, sandbox, and computer-use state. |
 | Composer | Prompt text, per-thread unsent drafts, thread-local sent-history recall, slash commands, file attachments, voice input, queued sends, and send controls. |
-| Run timeline | Reasoning, tool calls, tool results, workspace checkpoint notices, memory notices, child-thread activity, and usage metrics. |
+| Run timeline | Reasoning, tool calls, tool results, workspace checkpoint notices, memory notices, child-thread activity, and usage metrics. Built-in tool-agent usage updates after each model request completes; account runtimes remain terminal-only unless their CLIs report more. |
 | Side panel | Switches between detected artifacts, a browser/URL preview, and Git status/actions; artifact revisions and the selected mode persist per thread. |
 
 ## Session controls
