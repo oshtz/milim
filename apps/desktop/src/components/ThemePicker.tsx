@@ -33,7 +33,6 @@ import {
 } from "../settings/store";
 import { useTheme } from "../theme/store";
 import type { Theme } from "../theme/types";
-import { readUserStateKey, writeUserStateKey } from "../persistence/userStateStorage";
 import { useOnboarding } from "../onboarding/store";
 import { DAY_MS, useSessions, type ArchiveRetentionDays, type Project, type Session } from "../sessions/store";
 import { useUpdateStore, type UpdateStatus } from "../update/store";
@@ -71,7 +70,6 @@ import { SheetDialog } from "./SheetDialog";
 import { ThemeEditor } from "./ThemeEditor";
 import { Select, Slider, Toggle } from "./ui";
 
-type LegacySettingsSectionId = "general" | "archive" | "voice" | "speech";
 type SettingsSectionId = "app" | "chat" | "audio" | "appearance" | "history" | "mobile" | "system" | "about" | "developer";
 
 type SettingsSection = {
@@ -84,7 +82,7 @@ type SettingsSection = {
 type SettingsStatusTone = "ready" | "warn" | "muted";
 type SettingsSectionActivation = { focusTab?: boolean; remember?: boolean };
 
-const LAST_SETTINGS_SECTION_KEY = "milim.settings.lastSection";
+let lastSettingsSection: SettingsSectionId = "app";
 
 const SETTINGS_SECTIONS: SettingsSection[] = [
   {
@@ -151,21 +149,6 @@ const SETTINGS_SECTIONS: SettingsSection[] = [
     search: ["developer", "debug", "test", "onboarding", "first run", "reset", "flow", "experimental", "hashline", "patch"],
   },
 ];
-const SETTINGS_SECTION_IDS = new Set<SettingsSectionId>(SETTINGS_SECTIONS.map((section) => section.id));
-
-function isSettingsSectionId(value: string | null): value is SettingsSectionId {
-  return value !== null && SETTINGS_SECTION_IDS.has(value as SettingsSectionId);
-}
-
-function normalizeSettingsSectionId(value: string | null): SettingsSectionId | null {
-  if (isSettingsSectionId(value)) return value;
-  const legacy = value as LegacySettingsSectionId | null;
-  if (legacy === "general") return "app";
-  if (legacy === "voice" || legacy === "speech") return "audio";
-  if (legacy === "archive") return "history";
-  return null;
-}
-
 function settingsIssueLabel(issue: string | null): string {
   if (!issue) return "Needs setup";
   const message = issue.toLowerCase();
@@ -352,7 +335,7 @@ export function ThemePicker({ onClose }: { onClose: () => void }) {
   const purgeExpiredArchives = useSessions((s) => s.purgeExpiredArchives);
 
   const [editing, setEditing] = useState<{ base: Theme; isNew: boolean } | null>(null);
-  const [activeSection, setActiveSection] = useState<SettingsSectionId>("audio");
+  const [activeSection, setActiveSection] = useState<SettingsSectionId>(lastSettingsSection);
   const [audioTab, setAudioTab] = useState<"input" | "output">("input");
   const [settingsQuery, setSettingsQuery] = useState("");
   const [confirmArchiveDelete, setConfirmArchiveDelete] = useState<string | null>(null);
@@ -483,21 +466,6 @@ export function ThemePicker({ onClose }: { onClose: () => void }) {
     voice.ttsVoice,
     voice.ttsSpeed,
   ].join("\n");
-  useEffect(() => {
-    let cancelled = false;
-    void Promise.resolve(readUserStateKey(LAST_SETTINGS_SECTION_KEY))
-      .then((sectionId) => {
-        const normalized = normalizeSettingsSectionId(sectionId);
-        if (!cancelled && normalized) {
-          setActiveSection(normalized);
-        }
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
   useEffect(() => {
     if (filteredSettingsSections.length === 0) return;
     if (!filteredSettingsSections.some((section) => section.id === activeSection)) {
@@ -923,7 +891,7 @@ export function ThemePicker({ onClose }: { onClose: () => void }) {
     const { focusTab = false, remember = true } = options;
     setActiveSection(sectionId);
     if (remember) {
-      void Promise.resolve(writeUserStateKey(LAST_SETTINGS_SECTION_KEY, sectionId)).catch(() => {});
+      lastSettingsSection = sectionId;
     }
     if (focusTab) {
       window.requestAnimationFrame(() => {
