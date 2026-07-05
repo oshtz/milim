@@ -1,6 +1,7 @@
 import type { ChatArtifact, ChatArtifactDisposition, ChatArtifactKind, RunStep, RunTrace, SavedArtifactFile } from "../api";
 
-const MAX_ARTIFACTS = 12;
+const MAX_INLINE_ARTIFACTS = 12;
+const MAX_NAMED_ARTIFACT_BYTES = 8 * 1024 * 1024;
 const MIN_ANON_CODE_CHARS = 400;
 const FENCE_RE = /```([^\n`]*)\n([\s\S]*?)```/g;
 const ANY_FENCE_RE = /```([\s\S]*?)```/g;
@@ -58,24 +59,22 @@ export function extractArtifactsFromContent(content: string): ChatArtifact[] {
   if (artifacts.length === 0) {
     collectCsvArtifact(trimmed, artifacts);
   }
-  return artifacts.slice(0, MAX_ARTIFACTS);
+  return applyArtifactLimits(artifacts);
 }
 
 export function extractArtifactsFromMessage(content: string, run?: RunTrace): ChatArtifact[] {
   const artifacts = extractArtifactsFromContent(content);
   for (const artifact of extractArtifactsFromRunTrace(run, artifacts.length)) {
-    if (artifacts.length >= MAX_ARTIFACTS) break;
     if (artifacts.some((item) => artifactIdentity(item) === artifactIdentity(artifact))) continue;
     artifacts.push(artifact);
   }
-  return artifacts;
+  return applyArtifactLimits(artifacts);
 }
 
 export function extractArtifactsFromRunTrace(run: RunTrace | undefined, startIndex = 0): ChatArtifact[] {
   if (!run?.steps.length) return [];
   const artifacts: ChatArtifact[] = [];
   for (const step of run.steps) {
-    if (artifacts.length >= MAX_ARTIFACTS) break;
     if (step.name !== WRITE_FILE_TOOL || step.error || step.result === undefined || toolResultError(step.result)) continue;
     const written = parseWriteFileArguments(step.arguments);
     if (!written) continue;
@@ -92,7 +91,7 @@ export function extractArtifactsFromRunTrace(run: RunTrace | undefined, startInd
     const saved = savedFileForToolWrite(run, step, written.path, artifact.size);
     artifacts.push(saved ? { ...artifact, saved } : artifact);
   }
-  return artifacts;
+  return applyArtifactLimits(artifacts);
 }
 
 export function extractLocalhostUrlFromRunTrace(run: RunTrace | undefined): string | null {
@@ -272,8 +271,16 @@ export function defaultArtifactTargetPath(artifact: Pick<ChatArtifact, "disposit
 
 function collectFencedArtifacts(content: string, artifacts: ChatArtifact[]): void {
   let match: RegExpExecArray | null;
-  while ((match = FENCE_RE.exec(content)) && artifacts.length < MAX_ARTIFACTS) {
-    const info = parseFenceInfo(match[1]);
+  while ((match = FENCE_RE.exec(content))) {
+    const parsedInfo = parseFenceInfo(match[1]);
+    const inferredFilename = parsedInfo.filename ?? inferFenceFilename(content, match.index);
+    const info = inferredFilename
+      ? {
+          ...parsedInfo,
+          filename: inferredFilename,
+          language: parsedInfo.language ?? extensionOf(inferredFilename),
+        }
+      : parsedInfo;
     const block = cleanFenceContent(match[2]);
     if (!block.trim()) continue;
     if (!info.filename && block.trim().length < MIN_ANON_CODE_CHARS) continue;
@@ -290,7 +297,7 @@ function collectFencedArtifacts(content: string, artifacts: ChatArtifact[]): voi
 
 function collectCollapsedNamedFencedArtifacts(content: string, artifacts: ChatArtifact[]): void {
   let match: RegExpExecArray | null;
-  while ((match = ANY_FENCE_RE.exec(content)) && artifacts.length < MAX_ARTIFACTS) {
+  while ((match = ANY_FENCE_RE.exec(content))) {
     const parsed = parseCollapsedNamedFence(match[1]);
     if (!parsed) continue;
     artifacts.push(makeArtifact(artifacts.length, {
@@ -332,6 +339,27 @@ function parseCollapsedNamedFence(raw: string): { info: FenceInfo; content: stri
   return body ? { info, content: body } : null;
 }
 
+function inferFenceFilename(content: string, fenceStart: number): string | undefined {
+  const lines = content.slice(0, fenceStart).replace(/\r\n/g, "\n").split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const filename = filenameFromLabelLine(lines[i]);
+    if (filename) return filename;
+    if (lines[i].trim()) return undefined;
+  }
+  return undefined;
+}
+
+function filenameFromLabelLine(line: string): string | undefined {
+  const cleaned = line
+    .trim()
+    .replace(/^[#>*\-\d.)\s]+/, "")
+    .replace(/[:：]\s*$/, "")
+    .replace(/^["'`*]+|["'`*]+$/g, "");
+  if (looksLikeFilename(cleaned)) return cleaned;
+  const matches = [...line.matchAll(/`([^`]+)`/g)].map((match) => match[1]).filter(looksLikeFilename);
+  return matches[matches.length - 1];
+}
+
 function collectStandaloneJson(trimmed: string, artifacts: ChatArtifact[]): void {
   if (!/^[{[]/.test(trimmed) || trimmed.length < 20) return;
   try {
@@ -360,6 +388,65 @@ function collectCsvArtifact(trimmed: string, artifacts: ChatArtifact[]): void {
     kind: "csv",
     disposition: "inline",
   }));
+}
+
+function applyArtifactLimits(artifacts: ChatArtifact[]): ChatArtifact[] {
+  let inlineCount = 0;
+  let namedBytes = 0;
+  let keptNamed = 0;
+  let omittedInline = 0;
+  let omittedNamed = 0;
+  let omittedNamedBytes = 0;
+  const kept: ChatArtifact[] = [];
+
+  for (const artifact of artifacts) {
+    if (isFileArtifact(artifact)) {
+      if (namedBytes + artifact.size <= MAX_NAMED_ARTIFACT_BYTES) {
+        kept.push(artifact);
+        namedBytes += artifact.size;
+        keptNamed++;
+      } else {
+        omittedNamed++;
+        omittedNamedBytes += artifact.size;
+      }
+      continue;
+    }
+    if (inlineCount < MAX_INLINE_ARTIFACTS) {
+      kept.push(artifact);
+      inlineCount++;
+    } else {
+      omittedInline++;
+    }
+  }
+
+  if (omittedNamed > 0) {
+    const hiddenNamed = keptNamed + omittedNamed;
+    const hiddenNamedBytes = namedBytes + omittedNamedBytes;
+    return [
+      limitWarningArtifact(0, `Milim hid all ${hiddenNamed} named file artifact(s) (${formatBytes(hiddenNamedBytes)}) because the generated file set exceeded the ${formatBytes(MAX_NAMED_ARTIFACT_BYTES)} preview budget. Runtime preview was disabled instead of staging a partial app.`),
+      ...kept.filter((artifact) => !isFileArtifact(artifact)),
+    ];
+  }
+  if (omittedInline > 0) {
+    kept.push(limitWarningArtifact(kept.length, `Milim hid ${omittedInline} extra inline artifact(s). Named file artifacts were kept for preview/runtime staging.`));
+  }
+  return kept;
+}
+
+function limitWarningArtifact(index: number, content: string): ChatArtifact {
+  return makeArtifact(index, {
+    content,
+    language: "txt",
+    title: "Artifact extraction notice",
+    kind: "text",
+    disposition: "inline",
+  });
+}
+
+function formatBytes(size: number): string {
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${Math.round(size / 1024)} KB`;
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function makeArtifact(index: number, input: {

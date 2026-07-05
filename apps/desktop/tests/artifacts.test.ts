@@ -15,6 +15,20 @@ function equal<T>(actual: T, expected: T, message: string): void {
   }
 }
 
+function extensionForTestFile(file: string): string {
+  const ext = file.slice(file.lastIndexOf(".") + 1);
+  return ext === "json" ? "json" : ext === "css" ? "css" : ext === "html" ? "html" : ext;
+}
+
+function sourceForTestFile(file: string): string {
+  if (file === "package.json") return '{"scripts":{"dev":"vite"}}';
+  if (file.endsWith(".json")) return "{}";
+  if (file.endsWith(".html")) return '<div id="root"></div>';
+  if (file.endsWith(".css")) return "body { color: white; }";
+  if (file.endsWith(".js")) return "export default {};";
+  return "export const generated = true;";
+}
+
 const code = [
   "Here is the file:",
   "",
@@ -65,6 +79,13 @@ equal(partialStreamingTable.length, 0, "partial streamed table rows should stay 
 
 const shortSnippet = extractArtifactsFromContent("```ts\nconst x = 1;\n```");
 equal(shortSnippet.length, 0, "short anonymous code snippets should stay inline only");
+const manyAnonymousBlocks = extractArtifactsFromContent(Array.from({ length: 15 }, (_, index) => [
+  "```ts",
+  `export const anonymous${index} = "${"anonymous preview ".repeat(30)}";`,
+  "```",
+].join("\n")).join("\n"));
+equal(manyAnonymousBlocks.length, 13, "anonymous inline artifacts should stay capped with a notice");
+assert(manyAnonymousBlocks[12].content.includes("hid 3 extra inline artifact"), "inline cap should explain omitted anonymous artifacts");
 equal(defaultArtifactTargetPath({ filename: "src/generated.ts", kind: "code" }), "src/generated.ts", "named artifacts should default to their filename when saving");
 equal(defaultArtifactTargetPath({ kind: "code" }), "", "anonymous artifact display titles should not become workspace file paths");
 equal(defaultArtifactTargetPath({ filename: "response.json", kind: "json", disposition: "inline" }), "", "inline data exports should not become workspace file paths");
@@ -75,6 +96,22 @@ const collapsedNamedFence = extractArtifactsFromContent("Echo: ```ts file=src/e2
 equal(collapsedNamedFence.length, 1, "single-line named fences should create an artifact");
 equal(collapsedNamedFence[0].filename, "src/e2e-artifact.ts", "single-line named fence should keep the filename");
 assert(collapsedNamedFence[0].content.includes("e2eArtifact"), "single-line named fence should keep body content");
+
+const proseLabeledFiles = extractArtifactsFromContent([
+  "package.json",
+  "```json",
+  '{"scripts":{"dev":"vite"}}',
+  "```",
+  "",
+  "src/App.tsx",
+  "```tsx",
+  "export default function App() { return <main>Preview</main>; }",
+  "```",
+].join("\n"));
+equal(proseLabeledFiles.length, 2, "filename lines before fences should create file artifacts");
+equal(proseLabeledFiles[0].filename, "package.json", "prose-labeled package.json should be captured");
+equal(proseLabeledFiles[0].disposition, "file", "prose-labeled package.json should be a file artifact");
+equal(proseLabeledFiles[1].filename, "src/App.tsx", "prose-labeled TSX should keep the path");
 
 const liveHtml = extractLivePreviewArtifactFromContent([
   "Here is the preview:",
@@ -292,6 +329,57 @@ equal(generatedMultiFile.length, 3, "write_file runs should keep sibling source 
 assert(generatedMultiFile.some((artifact) => artifact.filename === "styles.css"), "write_file CSS should stay available as preview context");
 assert(generatedMultiFile.some((artifact) => artifact.filename === "src/main.js"), "write_file JS should stay available as preview context");
 assert(generatedMultiFile.some((artifact) => artifact.filename === "index.html"), "write_file HTML should stay available as preview entry");
+
+const generatedViteDashboardFiles = [
+  "package.json",
+  "index.html",
+  "vite.config.ts",
+  "tsconfig.json",
+  "postcss.config.js",
+  "tailwind.config.js",
+  "src/main.tsx",
+  "src/index.css",
+  "src/App.tsx",
+  "src/components/ParticleField.tsx",
+  "src/components/Sidebar.tsx",
+  "src/components/StatCard.tsx",
+  "src/components/Charts.tsx",
+  "src/components/DonutWidget.tsx",
+  "src/components/ActivityFeed.tsx",
+];
+const generatedViteDashboard = extractArtifactsFromContent(generatedViteDashboardFiles.flatMap((file) => [
+  "```" + extensionForTestFile(file) + " file=" + file,
+  sourceForTestFile(file),
+  "```",
+]).join("\n"));
+equal(generatedViteDashboard.length, generatedViteDashboardFiles.length, "generated Vite apps should keep all named files");
+assert(generatedViteDashboard.some((artifact) => artifact.filename === "src/components/Charts.tsx"), "component files after the old artifact cap should be captured");
+assert(generatedViteDashboard.some((artifact) => artifact.filename === "src/components/DonutWidget.tsx"), "later imported component files should be captured");
+assert(generatedViteDashboard.some((artifact) => artifact.filename === "src/components/ActivityFeed.tsx"), "last imported component file should be captured");
+
+const manyNamedFiles = extractArtifactsFromContent(Array.from({ length: 40 }, (_, index) => [
+  "```ts file=src/generated/file-" + index + ".ts",
+  "export const generated" + index + " = true;",
+  "```",
+]).flat().join("\n"));
+equal(manyNamedFiles.length, 40, "named file artifacts should not be capped by count");
+assert(manyNamedFiles.every(isFileArtifact), "many named artifacts should remain file artifacts");
+
+const overBudgetNamedFiles = extractArtifactsFromContent([
+  "```ts file=src/small.ts",
+  "export const small = true;",
+  "```",
+  "```txt file=src/huge.txt",
+  "x".repeat(8 * 1024 * 1024),
+  "```",
+  "```ts",
+  `export const inline = "${"inline artifact ".repeat(40)}";`,
+  "```",
+].join("\n"));
+equal(overBudgetNamedFiles.length, 2, "over-budget named sets should keep the notice and inline artifacts only");
+assert(overBudgetNamedFiles.every((artifact) => !isFileArtifact(artifact)), "over-budget named artifacts should all be hidden");
+assert(overBudgetNamedFiles[0].content.includes("hid all 2 named file artifact"), "over-budget notice should describe the full hidden named set");
+assert(overBudgetNamedFiles[1].content.includes("inline artifact"), "inline artifacts should survive named file budget overflow");
 
 const revisionOne = extractArtifactsFromContent([
   "```ts file=src/revised.ts",
