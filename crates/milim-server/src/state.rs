@@ -118,7 +118,7 @@ pub struct AppState {
     /// Relay-only mobile companion bridge. Disabled by default and only grants
     /// paired phones permission to submit text to the active desktop composer.
     pub mobile_companion: Option<Arc<MobileCompanionBridge>>,
-    /// Managed no-folder preview app runtime rooted under `~/.milim/runtime`.
+    /// Managed preview app runtime; no-folder staged apps live under `~/.milim/runtime`.
     pub preview_runtime: Arc<PreviewRuntimeManager>,
 }
 
