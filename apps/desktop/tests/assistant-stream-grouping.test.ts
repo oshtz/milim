@@ -34,8 +34,18 @@ const parts: ChatStreamPart[] = [
 ];
 
 const streaming = groupCompletedStreamActivity(parts, true);
-equal(streaming.length, parts.length, "streaming mode should keep flat rows");
-equal(streaming[1], parts[1], "streaming mode should preserve existing event objects");
+equal(streaming.length, 5, "streaming mode should compact live tool activity");
+equal(streaming[0].kind, "text", "text before live tools should keep its order");
+equal(streaming[1].kind, "workGroup", "live tools and reasoning should become one work group");
+if (streaming[1].kind === "workGroup") {
+  equal(streaming[1].parts.length, 4, "live work group should include successful tools and reasoning");
+  assert(streaming[1].parts[0].kind === "event" && streaming[1].parts[0].name === "read_file", "live work group should preserve first tool");
+  assert(streaming[1].parts[2].kind === "thinking", "live work group should preserve reasoning");
+  assert(streaming[1].parts[3].kind === "event" && streaming[1].parts[3].name === "shell", "live work group should preserve later tools");
+}
+assert(streaming[2].kind === "event" && streaming[2].status === "error", "failed tools should stay flat while streaming");
+assert(streaming[3].kind === "event" && streaming[3].status === "running", "single running tools should stay flat while streaming");
+equal(streaming[4].kind, "text", "text after live tools should keep its order");
 
 const grouped = groupCompletedStreamActivity(parts, false);
 equal(grouped.length, 5, "completed mode should collapse mixed internal activity");
@@ -54,3 +64,7 @@ equal(grouped[4].kind, "text", "text after tools should keep its order");
 const toolOnly = groupCompletedStreamActivity([tool("read_file"), tool("list_dir")], false);
 equal(toolOnly.length, 1, "completed tool-only rows should still collapse to a tool group");
 assert(toolOnly[0].kind === "toolGroup", "tool-only group should keep the compact tool label");
+
+const liveToolOnly = groupCompletedStreamActivity([tool("read_file"), tool("list_dir")], true);
+equal(liveToolOnly.length, 1, "streaming tool-only rows should collapse to one live work group");
+assert(liveToolOnly[0].kind === "workGroup", "streaming tool-only group should use the live work summary");

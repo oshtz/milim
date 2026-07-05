@@ -22,22 +22,26 @@ function isCompletedInternalPart(part: ChatStreamPart): boolean {
   return part.kind === "thinking" || isCompletedToolEvent(part);
 }
 
+function isLiveInternalPart(part: ChatStreamPart): boolean {
+  return part.kind === "thinking" || (part.kind === "event" && part.eventType === "tool" && (part.status ?? "done") !== "error");
+}
+
 export function groupCompletedStreamActivity(parts: ChatStreamPart[], streaming: boolean): ChatStreamDisplayPart[] {
-  if (streaming) return parts;
   const next: ChatStreamDisplayPart[] = [];
   let group: ChatStreamPart[] = [];
+  const isInternalPart = streaming ? isLiveInternalPart : isCompletedInternalPart;
 
   const flush = () => {
     if (group.length === 1) next.push(group[0]);
     else if (group.length > 1) {
       const toolParts = group.filter(isCompletedToolEvent);
-      next.push(toolParts.length === group.length ? { kind: "toolGroup", parts: toolParts } : { kind: "workGroup", parts: group });
+      next.push(streaming || toolParts.length !== group.length ? { kind: "workGroup", parts: group } : { kind: "toolGroup", parts: toolParts });
     }
     group = [];
   };
 
   for (const part of parts) {
-    if (isCompletedInternalPart(part)) {
+    if (isInternalPart(part)) {
       group.push(part);
     } else {
       flush();

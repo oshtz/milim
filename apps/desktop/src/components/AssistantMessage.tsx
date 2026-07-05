@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
-import type { ChatArtifact, ChatStreamEventIcon, ChatStreamPart } from "../api";
+import type { ChatArtifact, ChatStreamEventIcon, ChatStreamEventStatus, ChatStreamPart } from "../api";
 import { markPerfRender } from "../lib/perf";
 import { groupCompletedStreamActivity, type ChatStreamToolGroup, type ChatStreamWorkGroup } from "../lib/streamParts";
 import { formatDuration } from "../lib/usageMetrics";
@@ -123,17 +123,49 @@ function workGroupDetail(group: ChatStreamWorkGroup): string {
   ].filter(Boolean).join(", ") || plural(group.parts.length, "step");
 }
 
-function StreamWorkGroup({ group, durationMs }: { group: ChatStreamWorkGroup; durationMs?: number }) {
+type WorkGroupSummary = {
+  eventType: "tool" | "thinking";
+  label: string;
+  detail?: string;
+  icon?: ChatStreamEventIcon;
+  status: ChatStreamEventStatus;
+};
+
+function liveWorkGroupSummary(group: ChatStreamWorkGroup): WorkGroupSummary | null {
+  for (let i = group.parts.length - 1; i >= 0; i -= 1) {
+    const part = group.parts[i];
+    if (part.kind === "event") {
+      return {
+        eventType: "tool",
+        label: part.label,
+        detail: part.detail,
+        icon: part.icon,
+        status: part.status === "error" ? "error" : "running",
+      };
+    }
+    if (part.kind === "thinking" && part.content.trim()) {
+      return { eventType: "thinking", label: "reasoning...", icon: "thinking", status: "running" };
+    }
+  }
+  return null;
+}
+
+function StreamWorkGroup({ group, durationMs, streaming = false }: { group: ChatStreamWorkGroup; durationMs?: number; streaming?: boolean }) {
+  const liveSummary = streaming ? liveWorkGroupSummary(group) : null;
   return (
     <details className="stream-tool-group stream-work-group" data-testid="assistant-stream-work-group">
-      <summary className="stream-event stream-event-tool stream-event-done">
+      <summary className={`stream-event stream-event-${liveSummary?.eventType ?? "tool"} stream-event-${liveSummary?.status ?? "done"}`}>
         <span className="stream-event-icon" aria-hidden="true">
-          <StreamIcon icon="thinking" />
+          <StreamIcon icon={liveSummary?.icon ?? "thinking"} status={liveSummary?.status} />
         </span>
-        <span className="stream-event-label">
-          {durationMs != null && durationMs > 0 ? `Worked for ${formatDuration(durationMs)}` : `Worked through ${group.parts.length} steps`}
+        <span className={"stream-event-label" + (liveSummary?.status === "running" ? " shiny-text" : "")}>
+          {liveSummary?.label ?? (durationMs != null && durationMs > 0 ? `Worked for ${formatDuration(durationMs)}` : `Worked through ${group.parts.length} steps`)}
         </span>
-        <code className="stream-event-detail">{workGroupDetail(group)}</code>
+        {liveSummary?.detail ? (
+          <StreamEventDetail detail={liveSummary.detail} running={liveSummary.status === "running"} />
+        ) : (
+          <code className="stream-event-detail">{workGroupDetail(group)}</code>
+        )}
       </summary>
       <div className="stream-tool-group-body">
         {group.parts.map((part, index) => {
@@ -276,14 +308,15 @@ export function AssistantMessage({
   const displayParts = groupCompletedStreamActivity(parts, streaming);
   const workGroupCount = displayParts.filter((part) => part.kind === "workGroup").length;
   const fallbackThinking = !streamParts?.length && fallback.thinking;
-  const activityCue = streaming ? activityCueForParts(parts) : null;
+  const lastDisplayPart = displayParts[displayParts.length - 1];
+  const activityCue = streaming && lastDisplayPart?.kind !== "workGroup" ? activityCueForParts(parts) : null;
 
   return (
     <div className="assistant-stream">
       {displayParts.map((part, index) => {
         if (part.kind === "toolGroup") return <StreamToolGroup key={`${part.kind}-${index}`} group={part} />;
-        if (part.kind === "workGroup") return <StreamWorkGroup key={`${part.kind}-${index}`} group={part} durationMs={workGroupCount === 1 ? workDurationMs : undefined} />;
-        const isLatest = index === parts.length - 1;
+        if (part.kind === "workGroup") return <StreamWorkGroup key={`${part.kind}-${index}`} group={part} durationMs={workGroupCount === 1 ? workDurationMs : undefined} streaming={streaming} />;
+        const isLatest = index === displayParts.length - 1;
         if (part.kind === "thinking") {
           const thinking = fallbackThinking || (streaming && isLatest);
           return (
