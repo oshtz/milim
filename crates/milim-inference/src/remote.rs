@@ -183,20 +183,34 @@ impl RemoteBackend {
         format!("{root}/api/v1/{}", path.trim_start_matches('/'))
     }
 
-    fn lm_studio_responses_effort(&self, req: &CompletionRequest) -> Option<ReasoningEffort> {
+    fn should_use_lm_studio_responses(&self, req: &CompletionRequest) -> bool {
         if !self.is_lm_studio() {
-            return None;
+            return false;
         }
-        let effort = req.reasoning_effort.filter(|e| !e.is_auto())?;
+        let Some(effort) = req.reasoning_effort.filter(|e| !e.is_auto()) else {
+            return false;
+        };
+        if (!req.tools.is_empty() || req.tool_choice.is_some())
+            && matches!(
+                effort,
+                ReasoningEffort::None
+                    | ReasoningEffort::Low
+                    | ReasoningEffort::Medium
+                    | ReasoningEffort::High
+                    | ReasoningEffort::On
+            )
+        {
+            return true;
+        }
         if is_gpt_oss_model(&req.model)
             && matches!(
                 effort,
                 ReasoningEffort::Low | ReasoningEffort::Medium | ReasoningEffort::High
             )
         {
-            Some(effort)
+            true
         } else {
-            None
+            false
         }
     }
 }
@@ -279,8 +293,8 @@ impl ModelService for RemoteBackend {
         if req.prompt.is_some() {
             return self.stream_legacy_completion(req).await;
         }
-        if let Some(effort) = self.lm_studio_responses_effort(&req) {
-            return self.stream_lm_studio_responses(req, effort).await;
+        if self.should_use_lm_studio_responses(&req) {
+            return self.stream_lm_studio_responses(req).await;
         }
         if self.is_lm_studio() && req.reasoning_effort.is_some_and(|e| !e.is_auto()) {
             return self.stream_lm_studio_native_chat(req).await;
@@ -461,12 +475,8 @@ impl RemoteBackend {
         Ok(Box::pin(stream))
     }
 
-    async fn stream_lm_studio_responses(
-        &self,
-        req: CompletionRequest,
-        effort: ReasoningEffort,
-    ) -> Result<EventStream> {
-        let body = build_lm_studio_responses_body(&req, effort, true)?;
+    async fn stream_lm_studio_responses(&self, req: CompletionRequest) -> Result<EventStream> {
+        let body = build_lm_studio_responses_body(&req, true)?;
         let resp = self
             .auth(self.client.post(self.endpoint("responses")))
             .json(&body)
@@ -1038,7 +1048,8 @@ struct ResponsesRequest {
     tools: Vec<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     tool_choice: Option<Value>,
-    reasoning: ResponsesReasoning,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reasoning: Option<ResponsesReasoning>,
 }
 
 #[derive(Serialize)]
@@ -1048,7 +1059,6 @@ struct ResponsesReasoning {
 
 fn build_lm_studio_responses_body(
     req: &CompletionRequest,
-    effort: ReasoningEffort,
     stream: bool,
 ) -> Result<ResponsesRequest> {
     Ok(ResponsesRequest {
@@ -1060,10 +1070,25 @@ fn build_lm_studio_responses_body(
         max_output_tokens: req.sampling.max_tokens,
         tools: responses_tools(&req.tools),
         tool_choice: req.tool_choice.clone(),
-        reasoning: ResponsesReasoning {
-            effort: effort.as_str(),
-        },
+        reasoning: lm_studio_responses_reasoning(req.reasoning_effort),
     })
+}
+
+fn lm_studio_responses_reasoning(effort: Option<ReasoningEffort>) -> Option<ResponsesReasoning> {
+    let effort = effort?;
+    match effort {
+        ReasoningEffort::None
+        | ReasoningEffort::Low
+        | ReasoningEffort::Medium
+        | ReasoningEffort::High => Some(ResponsesReasoning {
+            effort: effort.as_str(),
+        }),
+        ReasoningEffort::Auto
+        | ReasoningEffort::On
+        | ReasoningEffort::Minimal
+        | ReasoningEffort::Xhigh
+        | ReasoningEffort::Max => None,
+    }
 }
 
 fn responses_input(messages: &[milim_core::api::openai::ChatMessage]) -> Result<Vec<Value>> {
@@ -1592,10 +1617,29 @@ mod tests {
         let body = backend.build_body(&req, true);
         assert!(body.reasoning_effort.is_none());
         assert!(body.extra.is_empty());
-        assert_eq!(
-            backend.lm_studio_responses_effort(&req),
-            Some(ReasoningEffort::High)
-        );
+        assert!(backend.should_use_lm_studio_responses(&req));
+    }
+
+    #[test]
+    fn lm_studio_tool_native_reasoning_uses_responses() {
+        let backend = RemoteBackend::new("LM Studio", "http://localhost:1234/v1", None);
+        let mut req = empty_req();
+        req.model = "google/gemma-4-26b-a4b-qat".into();
+        req.reasoning_effort = Some(ReasoningEffort::On);
+        req.tools = vec![Tool {
+            kind: "function".into(),
+            function: milim_core::api::openai::ToolFunction {
+                name: "lookup".into(),
+                description: None,
+                parameters: None,
+            },
+        }];
+
+        assert!(backend.should_use_lm_studio_responses(&req));
+        let body = build_lm_studio_responses_body(&req, true).unwrap();
+        let value = serde_json::to_value(body).unwrap();
+        assert!(value.get("reasoning").is_none());
+        assert_eq!(value["tools"][0]["name"], "lookup");
     }
 
     #[test]
@@ -1676,8 +1720,9 @@ mod tests {
             },
         }];
         req.sampling.max_tokens = Some(64);
+        req.reasoning_effort = Some(ReasoningEffort::Low);
 
-        let body = build_lm_studio_responses_body(&req, ReasoningEffort::Low, true).unwrap();
+        let body = build_lm_studio_responses_body(&req, true).unwrap();
         let value = serde_json::to_value(body).unwrap();
         assert_eq!(value["model"], "openai/gpt-oss-20b");
         assert_eq!(value["stream"], true);
