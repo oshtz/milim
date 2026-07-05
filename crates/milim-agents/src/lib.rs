@@ -33,6 +33,9 @@ use milim_inference::{
 };
 use milim_tools::ToolRegistry;
 
+const TOOL_REPLAY_MAX_LINES: usize = 2_000;
+const TOOL_REPLAY_MAX_BYTES: usize = 50 * 1024;
+
 /// One executed tool call within a run.
 #[derive(Debug, Clone, Serialize)]
 pub struct ToolStep {
@@ -108,7 +111,7 @@ pub async fn run_agent(
             });
             messages.push(ChatMessage {
                 role: "tool".to_string(),
-                content: Some(Content::Text(visible.to_string())),
+                content: Some(Content::Text(tool_replay_content(&visible))),
                 name: None,
                 tool_calls: None,
                 tool_call_id: call.id.clone(),
@@ -292,7 +295,7 @@ pub fn run_agent_stream(
                 }
                 messages.push(ChatMessage {
                     role: "tool".to_string(),
-                    content: Some(Content::Text(visible.to_string())),
+                    content: Some(Content::Text(tool_replay_content(&visible))),
                     name: None,
                     tool_calls: None,
                     tool_call_id: call.id.clone(),
@@ -344,6 +347,64 @@ fn child_thread_event(result: &Value) -> Option<AgentEvent> {
         }
         _ => None,
     }
+}
+
+fn tool_replay_content(result: &Value) -> String {
+    truncate_tool_replay_text(&result.to_string())
+}
+
+fn truncate_tool_replay_text(text: &str) -> String {
+    let total_lines = text.split('\n').count();
+    if total_lines <= TOOL_REPLAY_MAX_LINES && text.len() <= TOOL_REPLAY_MAX_BYTES {
+        return text.to_string();
+    }
+
+    let mut preview = String::new();
+    let mut kept_lines = 0;
+    let mut hit_bytes = false;
+    for (index, line) in text.split('\n').enumerate() {
+        if kept_lines >= TOOL_REPLAY_MAX_LINES {
+            break;
+        }
+        let prefix = if index == 0 { "" } else { "\n" };
+        let needed = prefix.len() + line.len();
+        if preview.len() + needed > TOOL_REPLAY_MAX_BYTES {
+            hit_bytes = true;
+            let remaining = TOOL_REPLAY_MAX_BYTES.saturating_sub(preview.len() + prefix.len());
+            if remaining > 0 {
+                preview.push_str(prefix);
+                preview.push_str(prefix_by_bytes(line, remaining));
+            }
+            break;
+        }
+        preview.push_str(prefix);
+        preview.push_str(line);
+        kept_lines += 1;
+    }
+
+    let (removed, unit) = if hit_bytes {
+        (text.len().saturating_sub(preview.len()), "bytes")
+    } else {
+        (total_lines.saturating_sub(kept_lines), "lines")
+    };
+    format!(
+        "{preview}\n\n...tool result truncated for replay: omitted {removed} {unit}. Full result remains in Milim's tool timeline."
+    )
+}
+
+fn prefix_by_bytes(text: &str, max_bytes: usize) -> &str {
+    if text.len() <= max_bytes {
+        return text;
+    }
+    let mut end = 0;
+    for (index, ch) in text.char_indices() {
+        let next = index + ch.len_utf8();
+        if next > max_bytes {
+            break;
+        }
+        end = next;
+    }
+    &text[..end]
 }
 
 /// Split a tool result into (visible_json, optional image data-URI).
@@ -529,6 +590,41 @@ mod tests {
         let (visible, uri) = split_tool_image(json!({"ok": true}));
         assert!(uri.is_none());
         assert_eq!(visible["ok"], true);
+    }
+
+    #[test]
+    fn tool_replay_keeps_small_results() {
+        let text = r#"{"ok":true}"#;
+        assert_eq!(truncate_tool_replay_text(text), text);
+    }
+
+    #[test]
+    fn tool_replay_truncates_large_results_by_bytes() {
+        let text = "a".repeat(TOOL_REPLAY_MAX_BYTES + 10);
+        let replay = truncate_tool_replay_text(&text);
+        assert!(replay.starts_with(&"a".repeat(TOOL_REPLAY_MAX_BYTES)));
+        assert!(replay.contains("tool result truncated for replay"));
+        assert!(replay.contains("omitted 10 bytes"));
+    }
+
+    #[test]
+    fn tool_replay_truncates_large_results_by_lines() {
+        let text = (0..=TOOL_REPLAY_MAX_LINES)
+            .map(|index| index.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let replay = truncate_tool_replay_text(&text);
+        assert!(replay.contains("tool result truncated for replay"));
+        assert!(replay.contains("omitted 1 lines"));
+        assert!(!replay.ends_with(&TOOL_REPLAY_MAX_LINES.to_string()));
+    }
+
+    #[test]
+    fn tool_replay_truncates_on_utf8_boundary() {
+        let text = "é".repeat((TOOL_REPLAY_MAX_BYTES / "é".len()) + 10);
+        let replay = truncate_tool_replay_text(&text);
+        assert!(replay.contains("tool result truncated for replay"));
+        assert!(replay.is_char_boundary(TOOL_REPLAY_MAX_BYTES));
     }
 
     #[test]
