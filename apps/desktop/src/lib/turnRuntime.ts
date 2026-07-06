@@ -134,6 +134,14 @@ export type TurnRuntimeErrorResult = {
   error?: string;
 };
 
+export const TURN_ABORT_SENTINEL = Symbol("turn-abort");
+
+type TurnAbortSentinel = { [TURN_ABORT_SENTINEL]: true };
+
+export function turnAbortSentinel(): TurnAbortSentinel {
+  return { [TURN_ABORT_SENTINEL]: true };
+}
+
 export type FinalizeTurnRuntimeStatus = "done" | "skipped" | "aborted" | "error";
 
 export type TurnMetricsCapture = {
@@ -372,7 +380,9 @@ export async function runModelChatTurn({
     conversation,
     prepareOutbound,
     beginAssistant,
+    prepareOptions: { signal },
   });
+  throwIfTurnAborted(signal);
   await streamChat(
     model,
     prepared.outbound,
@@ -447,11 +457,13 @@ export async function runAccountRuntimeTurn(params: RunAccountRuntimeTurnParams)
   const prepared = await prepareAndStartTurn({
     contextMessages,
     conversation,
-    prepareOutbound: (contextMessages, conversation) =>
-      prepareOutbound(contextMessages, conversation, { skipAutoCompaction: hasNativeHistory }),
+    prepareOutbound: (contextMessages, conversation, options) =>
+      prepareOutbound(contextMessages, conversation, { ...options, skipAutoCompaction: hasNativeHistory }),
     beginAssistant,
     checkpointWorkspace,
+    prepareOptions: { signal },
   });
+  throwIfTurnAborted(signal);
   const outbound = hasNativeHistory
     ? accountRuntimePromptMessages(contextMessages, prepared.conversation)
     : messagesForModelContext(contextMessages, prepared.conversation);
@@ -505,7 +517,10 @@ export async function runAccountRuntimeTurn(params: RunAccountRuntimeTurnParams)
     appendStreamEvent(statusPart(params.kind === "codex" ? "Codex not on PATH" : "Claude Code not on PATH", events.state.warning, "warning"));
     return { status: "skipped", error: events.state.warning };
   }
-  if (events.state.error) throw new Error(events.state.error);
+  if (events.state.error) {
+    if (signal?.aborted) throw turnAbortSentinel();
+    throw new Error(events.state.error);
+  }
   return { status: "done" };
 }
 
@@ -609,7 +624,9 @@ export async function runToolAgentTurn({
     beginAssistant,
     checkpointWorkspace,
     afterStart: snapshot,
+    prepareOptions: { signal },
   });
+  throwIfTurnAborted(signal);
   await streamAgentRun(
     agentId,
     model,
@@ -641,6 +658,7 @@ export function handleTurnRuntimeError({
   appendStreamEvent,
   runRef,
   snapshot,
+  signal,
   now = () => Date.now(),
 }: {
   error: unknown;
@@ -651,10 +669,11 @@ export function handleTurnRuntimeError({
   appendStreamEvent: (part: ChatStreamEventPart) => void;
   runRef: { current: RunTrace | null };
   snapshot: () => void;
+  signal?: AbortSignal;
   now?: () => number;
 }): TurnRuntimeErrorResult {
   flush();
-  const aborted = isAbortError(error);
+  const aborted = isAbortError(error) || Boolean(signal?.aborted);
   const message = String(error);
   if (!aborted) {
     setChatNotice({ tone: "error", message });
@@ -687,6 +706,7 @@ export function finalizeTurnRuntime({
   activeSessionId,
   stopChildThreadEventsIfIdle,
   maybeGenerateAiThreadTitle,
+  signal,
 }: {
   sessionId: string;
   model: string;
@@ -700,14 +720,16 @@ export function finalizeTurnRuntime({
   activeSessionId: string;
   stopChildThreadEventsIfIdle: (sessionId: string) => void;
   maybeGenerateAiThreadTitle: (sessionId: string, model: string) => Promise<void>;
+  signal?: AbortSignal;
 }): void {
+  const finalStatus: FinalizeTurnRuntimeStatus = status === "error" && signal?.aborted ? "aborted" : status;
   flush();
   if (metrics) commitResponseMetrics(sessionId, metrics);
   clearController(sessionId);
   setSessionGenerating(sessionId, false);
   setSessionUnread(sessionId, activeSessionId !== sessionId);
   stopChildThreadEventsIfIdle(sessionId);
-  if (status === "done") void maybeGenerateAiThreadTitle(sessionId, model).catch(() => {});
+  if (finalStatus === "done") void maybeGenerateAiThreadTitle(sessionId, model).catch(() => {});
 }
 
 export function createAgentRunEventHandler({
@@ -813,8 +835,16 @@ export function createAgentRunEventHandler({
   };
 }
 
+function throwIfTurnAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw turnAbortSentinel();
+}
+
 function isAbortError(error: unknown): boolean {
-  return typeof DOMException !== "undefined" && error instanceof DOMException && error.name === "AbortError";
+  return isTurnAbortSentinel(error) || (typeof DOMException !== "undefined" && error instanceof DOMException && error.name === "AbortError");
+}
+
+function isTurnAbortSentinel(error: unknown): error is TurnAbortSentinel {
+  return Boolean(error && typeof error === "object" && TURN_ABORT_SENTINEL in error);
 }
 
 function normalizeMemoryNotice(event: AgentEvent): MemoryNotice | null {

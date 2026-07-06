@@ -2297,7 +2297,7 @@ export function ChatView({
     _sessionId: string,
     sourceMessages: ChatMessage[],
     model: string,
-    options: { auto: boolean; folder: string; reasoningEffort: ReasoningEffort },
+    options: { auto: boolean; folder: string; reasoningEffort: ReasoningEffort; signal?: AbortSignal },
   ): Promise<ChatMessage> {
     const sourceContext = messagesForModelContext([], sourceMessages);
     if (!sourceContext.some((message) => wireMessageContent(message).trim())) {
@@ -2322,16 +2322,17 @@ export function ChatView({
       if (codexModel) {
         const ready = await ensureCodexAccount();
         if (!ready.ok) throw new Error(ready.message);
-        summary = await summarizeWithCodex(codexModel, promptMessages, options.folder, options.reasoningEffort);
+        summary = await summarizeWithCodex(codexModel, promptMessages, options.folder, options.reasoningEffort, options.signal);
       } else if (claudeModel) {
         const ready = await ensureClaudeAccount();
         if (!ready.ok) throw new Error(ready.message);
-        summary = await summarizeWithClaude(claudeModel, promptMessages, options.folder, options.reasoningEffort);
+        summary = await summarizeWithClaude(claudeModel, promptMessages, options.folder, options.reasoningEffort, options.signal);
       } else {
         const completion = await completeChatWithMetrics(model, promptMessages, {
           maxTokens: outputCapTokens,
           temperature: 0,
           reasoningEffort: summaryReasoningEffort,
+          signal: options.signal,
         });
         summary = {
           content: completion.content,
@@ -2376,6 +2377,7 @@ export function ChatView({
     promptMessages: ChatMessage[],
     folder: string,
     reasoningEffort: ReasoningEffort,
+    signal?: AbortSignal,
   ): Promise<CompactionSummaryResult> {
     let text = "";
     let error: string | null = null;
@@ -2398,6 +2400,7 @@ export function ChatView({
           costUsd = typeof ev.cost_usd === "number" && ev.cost_usd > 0 ? ev.cost_usd : undefined;
         }
       },
+      signal,
     );
     if (error) throw new Error(error);
     if (warning) throw new Error(warning);
@@ -2409,6 +2412,7 @@ export function ChatView({
     promptMessages: ChatMessage[],
     folder: string,
     reasoningEffort: ReasoningEffort,
+    signal?: AbortSignal,
   ): Promise<CompactionSummaryResult> {
     let text = "";
     let error: string | null = null;
@@ -2431,6 +2435,7 @@ export function ChatView({
           costUsd = typeof ev.cost_usd === "number" && ev.cost_usd > 0 ? ev.cost_usd : undefined;
         }
       },
+      signal,
     );
     if (error) throw new Error(error);
     if (warning) throw new Error(warning);
@@ -3628,6 +3633,7 @@ export function ChatView({
       createCompactionCheckpoint,
       clearAccountRuntime: (targetId) => store.clearAccountRuntime(targetId),
       skipAutoCompaction: options?.skipAutoCompaction,
+      signal: options?.signal,
     });
 
     try {
@@ -3719,6 +3725,7 @@ export function ChatView({
         appendStreamEvent: (part) => store.appendStreamEvent(id, part),
         runRef,
         snapshot,
+        signal: controller.signal,
       });
       resultStatus = errorResult.status;
       resultError = errorResult.error;
@@ -3749,6 +3756,7 @@ export function ChatView({
         activeSessionId: useSessions.getState().activeId,
         stopChildThreadEventsIfIdle,
         maybeGenerateAiThreadTitle,
+        signal: controller.signal,
       });
     }
     return { status: resultStatus, messages: sessionMessages(id, assistantStart.state.activeConversation), error: resultError };

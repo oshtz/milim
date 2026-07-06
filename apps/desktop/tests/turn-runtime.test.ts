@@ -190,9 +190,12 @@ assert(agentFlushes >= 5, "agent handler should flush before event parts");
 assert(snapshots >= 6, "agent handler should snapshot state-changing events");
 
 const modelOrder: string[] = [];
+const modelSignal = new AbortController().signal;
 let streamedMessages: ChatMessage[] = [];
 let streamedModel = "";
 let streamedUsage: TokenUsage | undefined;
+let preparedModelSignal: AbortSignal | undefined;
+let streamedModelSignal: AbortSignal | undefined;
 await runModelChatTurn({
   promptContext: {
     instructionMessages: [{ role: "system", content: "Be terse." }],
@@ -209,14 +212,16 @@ await runModelChatTurn({
     toolContext: {},
   },
   conversation: [{ role: "user", content: "hello" }],
-  prepareOutbound: async (contextMessages, conversation) => {
+  prepareOutbound: async (contextMessages, conversation, options) => {
+    preparedModelSignal = options?.signal;
     modelOrder.push(`prepare:${contextMessages.length}:${conversation.length}`);
     return { conversation, outbound: contextMessages };
   },
   beginAssistant: (conversation) => {
     modelOrder.push(`begin:${conversation.length}`);
   },
-  streamChat: async (model, messages, onToken, _signal, onThinking, onUsage, reasoningEffort) => {
+  streamChat: async (model, messages, onToken, signal, onThinking, onUsage, reasoningEffort) => {
+    streamedModelSignal = signal;
     streamedModel = `${model}:${reasoningEffort ?? ""}`;
     streamedMessages = messages;
     onToken("token");
@@ -229,12 +234,69 @@ await runModelChatTurn({
   captureUsage: (usage) => {
     streamedUsage = usage;
   },
+  signal: modelSignal,
   reasoningEffort: "low",
 });
 assert.deepEqual(modelOrder, ["prepare:1:1", "begin:1", "token:token", "thinking:think"]);
 assert.equal(streamedModel, "model-a:low");
+assert.equal(preparedModelSignal, modelSignal);
+assert.equal(streamedModelSignal, modelSignal);
 assert.deepEqual(streamedMessages, [{ role: "system", content: "Be terse." }]);
 assert.equal(streamedUsage?.total_tokens, 5);
+
+const compactionAbortController = new AbortController();
+let compactionAbortStreamed = false;
+let compactionAbortBegan = false;
+try {
+  await runModelChatTurn({
+    promptContext: {
+      instructionMessages: [],
+      planMessages: [],
+      goalMessages: [],
+      skillMessages: [],
+      artifactMessages: [],
+      memoryMessages: [],
+      scheduleMessages: [],
+      useScheduleTools: false,
+      useTools: false,
+      accountRuntimeMayUseTools: false,
+      runMemoryContext: {},
+      toolContext: {},
+    },
+    conversation: [{ role: "user", content: "abort during compaction" }],
+    prepareOutbound: async (_contextMessages, conversation) => {
+      compactionAbortController.abort();
+      return { conversation, outbound: conversation };
+    },
+    beginAssistant: () => {
+      compactionAbortBegan = true;
+    },
+    streamChat: async () => {
+      compactionAbortStreamed = true;
+    },
+    model: "model-a",
+    append: () => {},
+    appendThinking: () => {},
+    captureUsage: () => {},
+    signal: compactionAbortController.signal,
+  });
+  assert.fail("aborted prep should stop before provider stream");
+} catch (error) {
+  const handled = handleTurnRuntimeError({
+    error,
+    assistantStarted: compactionAbortBegan,
+    append: () => assert.fail("aborted compaction should not append an error bubble"),
+    flush: () => {},
+    setChatNotice: () => assert.fail("aborted compaction should not show an error notice"),
+    appendStreamEvent: () => assert.fail("aborted compaction should not add an error event"),
+    runRef: { current: null },
+    snapshot: () => {},
+    signal: compactionAbortController.signal,
+  });
+  assert.equal(handled.status, "aborted");
+}
+assert.equal(compactionAbortBegan, true);
+assert.equal(compactionAbortStreamed, false);
 
 const accountPromptContext = {
   instructionMessages: [{ role: "system", content: "System rule" }],
@@ -252,8 +314,11 @@ const accountPromptContext = {
 } satisfies Parameters<typeof runAccountRuntimeTurn>[0]["promptContext"];
 let codexPrompt = "";
 let codexThreadId = "";
+const accountSignal = new AbortController().signal;
 let accountBeginLength = 0;
 let accountSkippedAutoCompaction: boolean | undefined;
+let accountPreparedSignal: AbortSignal | undefined;
+let accountStreamSignal: AbortSignal | undefined;
 const accountMetrics: Array<{ usage?: TokenUsage; cost_usd?: number }> = [];
 const codexResult = await runAccountRuntimeTurn({
   kind: "codex",
@@ -261,6 +326,7 @@ const codexResult = await runAccountRuntimeTurn({
   conversation: [{ role: "user", content: "old user" }],
   prepareOutbound: async (_contextMessages, conversation, options) => {
     accountSkippedAutoCompaction = options?.skipAutoCompaction;
+    accountPreparedSignal = options?.signal;
     return {
       conversation: [...conversation, { role: "assistant", content: "old assistant" }, { role: "user", content: "latest user" }],
       outbound: [],
@@ -286,7 +352,8 @@ const codexResult = await runAccountRuntimeTurn({
   setThreadId: (threadId) => {
     codexThreadId = threadId;
   },
-  stream: async (request, onEvent) => {
+  stream: async (request, onEvent, signal) => {
+    accountStreamSignal = signal;
     assert.equal(request.thread_id, "codex-thread-1");
     assert.equal(request.persist_thread, true);
     assert.equal(request.tool_approval_grant, true);
@@ -294,10 +361,13 @@ const codexResult = await runAccountRuntimeTurn({
     onEvent({ type: "thread", thread_id: "codex-thread-2", model: "gpt-5" });
     onEvent({ type: "done", thread_id: "codex-thread-2", status: "done", usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } });
   },
+  signal: accountSignal,
 });
 assert.equal(codexResult.status, "done");
 assert.equal(accountBeginLength, 3);
 assert.equal(accountSkippedAutoCompaction, true);
+assert.equal(accountPreparedSignal, accountSignal);
+assert.equal(accountStreamSignal, accountSignal);
 assert.equal(codexThreadId, "codex-thread-2");
 assert(codexPrompt.includes("System:\nSystem rule"));
 assert(codexPrompt.includes("User:\nlatest user"));
@@ -413,10 +483,13 @@ assert.equal(selectedImageUrl, "https://example.com/selected.png");
 assert.equal(selectedClaudeSessions, 0);
 
 let toolRun: RunTrace | null = null;
+const toolSignal = new AbortController().signal;
 let toolSnapshots = 0;
 let toolStartedConversationLength = 0;
 let toolStreamAgentId: string | null = "unset";
 let toolStreamMessages: ChatMessage[] = [];
+let toolPreparedSignal: AbortSignal | undefined;
+let toolStreamSignal: AbortSignal | undefined;
 await runToolAgentTurn({
   promptContext: {
     instructionMessages: [{ role: "system", content: "Root instruction" }],
@@ -433,15 +506,19 @@ await runToolAgentTurn({
     toolContext: { sandbox_enabled: true },
   },
   conversation: [{ role: "user", content: "use tools" }],
-  prepareOutbound: async (contextMessages, conversation) => ({
-    conversation: [...conversation, { role: "assistant", content: "prepared" }],
-    outbound: contextMessages,
-  }),
+  prepareOutbound: async (contextMessages, conversation, options) => {
+    toolPreparedSignal = options?.signal;
+    return {
+      conversation: [...conversation, { role: "assistant", content: "prepared" }],
+      outbound: contextMessages,
+    };
+  },
   beginAssistant: (conversation) => {
     toolStartedConversationLength = conversation.length;
   },
   checkpointWorkspace: async () => {},
-  streamAgentRun: async (agentId, _model, messages, onEvent) => {
+  streamAgentRun: async (agentId, _model, messages, onEvent, signal) => {
+    toolStreamSignal = signal;
     toolStreamAgentId = agentId;
     toolStreamMessages = messages;
     onEvent({ type: "done", iterations: 1 });
@@ -486,6 +563,7 @@ await runToolAgentTurn({
     toolSnapshots += 1;
   },
   workspace: "C:\\work",
+  signal: toolSignal,
   sourceSessionId: "app-1",
   now: () => 11,
 });
@@ -493,6 +571,8 @@ assert.equal(toolRun?.model, "tool-model");
 assert.equal(toolRun?.status, "done");
 assert.equal(toolRun?.workspace, "C:\\work");
 assert.equal(toolStartedConversationLength, 2);
+assert.equal(toolPreparedSignal, toolSignal);
+assert.equal(toolStreamSignal, toolSignal);
 assert.equal(toolStreamAgentId, "agent-1");
 assert.equal(toolStreamMessages.some((message) => message.content === "Root instruction"), false);
 assert.equal(toolStreamMessages.some((message) => message.content === "Schedule"), true);
@@ -607,6 +687,23 @@ assert.deepEqual(abortResult, { status: "aborted", error: undefined });
 assert.equal(abortedRun.status, "aborted");
 assert.equal(abortedRun.error, undefined);
 assert.equal(abortedRun.endedAt, 100);
+
+const stringAbortRun: RunTrace = { model: "m", startedAt: 1, steps: [], status: "running" };
+const stringAbortController = new AbortController();
+stringAbortController.abort();
+const stringAbortResult = handleTurnRuntimeError({
+  error: new Error("account runtime stopped"),
+  assistantStarted: true,
+  append: () => assert.fail("signal-aborted runtime errors should not append an error bubble"),
+  flush: () => {},
+  setChatNotice: () => assert.fail("signal-aborted runtime errors should not show an error notice"),
+  appendStreamEvent: () => assert.fail("signal-aborted runtime errors should not add an error event"),
+  runRef: { current: stringAbortRun },
+  snapshot: () => {},
+  signal: stringAbortController.signal,
+});
+assert.deepEqual(stringAbortResult, { status: "aborted", error: undefined });
+assert.equal(stringAbortRun.status, "aborted");
 
 const finalizeOrder: string[] = [];
 finalizeTurnRuntime({

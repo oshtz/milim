@@ -14,6 +14,7 @@ export type PreparedTurnOutbound = {
 
 export type PrepareTurnOutboundOptions = {
   skipAutoCompaction?: boolean;
+  signal?: AbortSignal;
 };
 
 export type TurnModelResolution =
@@ -224,6 +225,7 @@ export async function prepareAndStartTurn({
   beginAssistant,
   checkpointWorkspace,
   afterStart,
+  prepareOptions,
 }: {
   contextMessages: ChatMessage[];
   conversation: ChatMessage[];
@@ -231,8 +233,9 @@ export async function prepareAndStartTurn({
   beginAssistant: (conversation: ChatMessage[]) => void;
   checkpointWorkspace?: () => Promise<void>;
   afterStart?: () => void;
+  prepareOptions?: PrepareTurnOutboundOptions;
 }): Promise<PreparedTurnOutbound> {
-  const prepared = await prepareOutbound(contextMessages, conversation);
+  const prepared = await prepareOutbound(contextMessages, conversation, prepareOptions);
   beginAssistant(prepared.conversation);
   if (checkpointWorkspace) await checkpointWorkspace();
   afterStart?.();
@@ -252,6 +255,7 @@ export async function prepareTurnOutbound({
   createCompactionCheckpoint,
   clearAccountRuntime,
   skipAutoCompaction,
+  signal,
 }: {
   sessionId: string;
   contextMessages: ChatMessage[];
@@ -266,10 +270,11 @@ export async function prepareTurnOutbound({
     sessionId: string,
     sourceMessages: ChatMessage[],
     model: string,
-    options: { auto: boolean; folder: string; reasoningEffort: ReasoningEffort },
+    options: { auto: boolean; folder: string; reasoningEffort: ReasoningEffort; signal?: AbortSignal },
   ) => Promise<ChatMessage>;
   clearAccountRuntime: (sessionId: string) => void;
   skipAutoCompaction?: boolean;
+  signal?: AbortSignal;
 }): Promise<PreparedTurnOutbound> {
   if (skipAutoCompaction) {
     const plan = contextSendPlan(contextMessages, latestUserOrLast(conversation), model, models);
@@ -300,6 +305,7 @@ export async function prepareTurnOutbound({
       auto: true,
       folder,
       reasoningEffort,
+      signal,
     });
     const compactedConversation = [...split.head, checkpoint, ...split.tail, ...latestAndAfter];
     plan = contextSendPlan(contextMessages, compactedConversation, model, models);

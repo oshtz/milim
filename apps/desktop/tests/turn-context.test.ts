@@ -217,6 +217,7 @@ const longConversation = [
 const notices: Array<string | null> = [];
 const busyRef = { current: false };
 const checkpointSources: ChatMessage[][] = [];
+const compactionSignal = new AbortController().signal;
 let clearedRuntime: string | null = null;
 const compacted = await prepareTurnOutbound({
   sessionId: "s2",
@@ -228,12 +229,14 @@ const compacted = await prepareTurnOutbound({
   reasoningEffort: effort,
   compactionInFlightRef: busyRef,
   setChatNotice: (notice) => notices.push(notice?.message ?? null),
+  signal: compactionSignal,
   createCompactionCheckpoint: async (sessionId, sourceMessages, model, options) => {
     assert.equal(sessionId, "s2");
     assert.equal(model, "tiny");
     assert.equal(options.folder, "C:\\work");
     assert.equal(options.reasoningEffort, effort);
     assert.equal(options.auto, true);
+    assert.equal(options.signal, compactionSignal);
     checkpointSources.push(sourceMessages);
     return checkpointMessage("Keep prior decisions.", { auto: true, sourceTokens: 100 });
   },
@@ -274,11 +277,12 @@ assert.equal(nativeHistory.conversation, longConversation);
 assert.deepEqual(nativeHistory.outbound, [{ role: "system", content: "Runtime context." }, longConversation.at(-1)]);
 
 const order: string[] = [];
+const prepareSignal = new AbortController().signal;
 const started = await prepareAndStartTurn({
   contextMessages: [{ role: "system", content: "Use tests." }],
   conversation: shortConversation,
-  prepareOutbound: async (contextMessages, conversation) => {
-    order.push(`prepare:${contextMessages.length}:${conversation.length}`);
+  prepareOutbound: async (contextMessages, conversation, options) => {
+    order.push(`prepare:${contextMessages.length}:${conversation.length}:${options?.signal === prepareSignal}`);
     return { conversation: [...conversation, assistant("prepared")], outbound: contextMessages };
   },
   beginAssistant: (conversation) => {
@@ -290,6 +294,7 @@ const started = await prepareAndStartTurn({
   afterStart: () => {
     order.push("after");
   },
+  prepareOptions: { signal: prepareSignal },
 });
-assert.deepEqual(order, ["prepare:1:2", "begin:3", "checkpoint", "after"]);
+assert.deepEqual(order, ["prepare:1:2:true", "begin:3", "checkpoint", "after"]);
 assert.deepEqual(started.outbound, [{ role: "system", content: "Use tests." }]);
