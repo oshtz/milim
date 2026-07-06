@@ -97,6 +97,17 @@ function diffLabel(status: WorkspaceGitStatus): string | null {
     : null;
 }
 
+function renderDiffStat(status: WorkspaceGitStatus): ReactNode {
+  if (!status.insertions && !status.deletions) return null;
+  return (
+    <span className="git-diff-stat" aria-label={`${status.insertions.toLocaleString()} insertions, ${status.deletions.toLocaleString()} deletions`}>
+      <span className="git-diff-stat-add">+{status.insertions.toLocaleString()}</span>
+      <span className="git-diff-stat-separator">/</span>
+      <span className="git-diff-stat-delete">-{status.deletions.toLocaleString()}</span>
+    </span>
+  );
+}
+
 function compactChangeLabel(status: WorkspaceGitStatus): string {
   return [changeLabel(status), diffLabel(status)].filter(Boolean).join(" / ");
 }
@@ -1023,7 +1034,7 @@ export function GitPanel({
           <GitCommit size={14} />
           <strong title={changeSummary}>{changeSummary}</strong>
         </span>
-        {diffLabel(readyStatus) && <span className="git-summary-diff">{diffLabel(readyStatus)}</span>}
+        {diffLabel(readyStatus) && <span className="git-summary-diff">{renderDiffStat(readyStatus)}</span>}
       </div>
 
       {filePreview.length > 0 && (
@@ -1246,7 +1257,7 @@ export function GitPanel({
           </div>
           <div className="git-command-modal-meta">
             <span>{branchLabel(readyStatus)}</span>
-            <strong>{diffLabel(readyStatus) || changeSummary}</strong>
+            <strong>{renderDiffStat(readyStatus) || changeSummary}</strong>
           </div>
 
           {commandMenu === "commit" ? (
