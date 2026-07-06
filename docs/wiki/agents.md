@@ -44,7 +44,7 @@ Parent runs can expose child-thread tools when the run has a parent thread id an
 | `child_thread_wait` | Wait for a child thread to finish or time out. |
 | `child_thread_stop` | Stop a running child thread. |
 
-Child threads cannot spawn more children. In `open` approval mode they inherit the parent run's effective tools after folder, sandbox, computer-use, MCP, memory, and named-agent filters are applied. In `guarded` and ungranted `review` runs they stay read-only: they can inspect and fetch context, but cannot write files or run shell commands.
+Child threads cannot spawn more children. In `open` approval mode they inherit the parent run's effective tools after folder, sandbox, computer-use, MCP, memory, and named-agent filters are applied. In `guarded` and ungranted `review` runs they stay read-only: they can inspect and fetch context, but cannot write files or run shell commands. If the server restarts, unfinished child threads are marked `error` with `interrupted by restart`; graceful server shutdown marks running children `stopped`.
 
 ## Plan mode versus agent mode
 

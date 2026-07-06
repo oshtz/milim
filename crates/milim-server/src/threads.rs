@@ -68,6 +68,11 @@ impl SupervisorEvent {
 
 impl ThreadSupervisor {
     pub fn new(store: ThreadStore) -> Self {
+        if let Err(err) =
+            store.update_non_terminal_status(THREAD_STATUS_ERROR, Some("interrupted by restart"))
+        {
+            tracing::warn!("failed to sweep interrupted child threads: {err}");
+        }
         let (events, _) = broadcast::channel(512);
         Self {
             store: Arc::new(store),
@@ -189,6 +194,16 @@ impl ThreadSupervisor {
             });
         }
         Ok(thread)
+    }
+
+    pub fn stop_running_children(&self, message: &str) -> Result<usize> {
+        let mut handles = self.handles.lock().expect("thread handles poisoned");
+        for (_, handle) in handles.drain() {
+            handle.abort();
+        }
+        drop(handles);
+        self.store
+            .update_running_status(THREAD_STATUS_STOPPED, Some(message))
     }
 
     pub fn delete_tree(&self, id: &str) -> Result<Vec<String>> {

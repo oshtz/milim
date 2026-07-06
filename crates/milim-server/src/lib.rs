@@ -19,6 +19,7 @@ mod state;
 pub mod threads;
 mod translate;
 
+use std::future::Future;
 use std::net::SocketAddr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -310,12 +311,45 @@ pub async fn serve_listener(
     state: AppState,
     listener: tokio::net::TcpListener,
 ) -> std::io::Result<()> {
-    let app = build_router(state);
+    serve_listener_with_graceful_shutdown(state, listener, shutdown_signal()).await
+}
+
+/// Serve on an already-bound listener with a caller-provided shutdown signal.
+pub async fn serve_listener_with_graceful_shutdown<S>(
+    state: AppState,
+    listener: tokio::net::TcpListener,
+    shutdown: S,
+) -> std::io::Result<()>
+where
+    S: Future<Output = ()> + Send + 'static,
+{
+    let app = build_router(state.clone());
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
+    .with_graceful_shutdown(with_graceful_shutdown(state, shutdown))
     .await
+}
+
+/// Await a shutdown signal and stop active child threads before the server exits.
+pub async fn with_graceful_shutdown<S>(state: AppState, shutdown: S)
+where
+    S: Future<Output = ()>,
+{
+    shutdown.await;
+    if let Some(threads) = state.threads.as_ref() {
+        if let Err(err) = threads.stop_running_children("stopped by server shutdown") {
+            tracing::warn!("failed to stop child threads during shutdown: {err}");
+        }
+    }
+}
+
+async fn shutdown_signal() {
+    if let Err(err) = tokio::signal::ctrl_c().await {
+        tracing::warn!("failed to install Ctrl-C shutdown handler: {err}");
+        std::future::pending::<()>().await;
+    }
 }
 
 /// Serve only the phone-facing companion surface on an already-bound listener.

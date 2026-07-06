@@ -260,6 +260,42 @@ impl ThreadStore {
         self.get(id)
     }
 
+    pub fn update_non_terminal_status(&self, status: &str, error: Option<&str>) -> Result<usize> {
+        let db = self.db.lock().expect("threads db poisoned");
+        db.conn()
+            .execute(
+                "UPDATE threads
+                 SET status = ?1,
+                     error = COALESCE(?2, error),
+                     updated_at = datetime('now'),
+                     finished_at = CASE
+                       WHEN ?1 IN ('done', 'stopped', 'error') THEN datetime('now')
+                       ELSE finished_at
+                     END
+                 WHERE status NOT IN ('done', 'stopped', 'error')",
+                params![status, error],
+            )
+            .map_err(sqlite)
+    }
+
+    pub fn update_running_status(&self, status: &str, error: Option<&str>) -> Result<usize> {
+        let db = self.db.lock().expect("threads db poisoned");
+        db.conn()
+            .execute(
+                "UPDATE threads
+                 SET status = ?1,
+                     error = COALESCE(?2, error),
+                     updated_at = datetime('now'),
+                     finished_at = CASE
+                       WHEN ?1 IN ('done', 'stopped', 'error') THEN datetime('now')
+                       ELSE finished_at
+                     END
+                 WHERE status = 'running'",
+                params![status, error],
+            )
+            .map_err(sqlite)
+    }
+
     pub fn append_event(&self, thread_id: &str, kind: &str, payload: Value) -> Result<ThreadEvent> {
         let id = uuid::Uuid::new_v4().to_string();
         let payload_json = serde_json::to_string(&payload)?;

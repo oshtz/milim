@@ -5306,6 +5306,70 @@ async fn agent_run_executes_tool_loop() {
 }
 
 #[tokio::test]
+async fn thread_supervisor_sweeps_interrupted_threads_on_restart() {
+    use milim_agents::{THREAD_STATUS_DONE, THREAD_STATUS_ERROR, THREAD_STATUS_RUNNING};
+    use milim_server::threads::ThreadSupervisor;
+    use milim_storage::Database;
+
+    let store = milim_agents::ThreadStore::new(Database::open_in_memory().unwrap()).unwrap();
+    let queued = store
+        .create("parent-1", "Queued", "test-echo", None, "queued")
+        .unwrap();
+    let running = store
+        .create("parent-1", "Running", "test-echo", None, "running")
+        .unwrap();
+    store
+        .update_status(&running.id, THREAD_STATUS_RUNNING, None, None)
+        .unwrap();
+    let done = store
+        .create("parent-1", "Done", "test-echo", None, "done")
+        .unwrap();
+    store
+        .update_status(&done.id, THREAD_STATUS_DONE, Some("finished"), None)
+        .unwrap();
+
+    let supervisor = ThreadSupervisor::new(store);
+    let store = supervisor.store();
+
+    for id in [&queued.id, &running.id] {
+        let thread = store.get(id).unwrap().unwrap();
+        assert_eq!(thread.status, THREAD_STATUS_ERROR);
+        assert_eq!(thread.error.as_deref(), Some("interrupted by restart"));
+        assert!(thread.finished_at.is_some());
+    }
+    assert_eq!(
+        store.get(&done.id).unwrap().unwrap().status,
+        THREAD_STATUS_DONE
+    );
+}
+
+#[tokio::test]
+async fn graceful_shutdown_marks_running_threads_stopped() {
+    use milim_agents::{THREAD_STATUS_RUNNING, THREAD_STATUS_STOPPED};
+    use milim_server::threads::ThreadSupervisor;
+    use milim_storage::Database;
+
+    let supervisor = ThreadSupervisor::new(
+        milim_agents::ThreadStore::new(Database::open_in_memory().unwrap()).unwrap(),
+    );
+    let store = supervisor.store();
+    let thread = store
+        .create("parent-1", "Running", "test-echo", None, "running")
+        .unwrap();
+    store
+        .update_status(&thread.id, THREAD_STATUS_RUNNING, None, None)
+        .unwrap();
+    let state = test_state().with_threads(supervisor.clone());
+
+    milim_server::with_graceful_shutdown(state, async {}).await;
+
+    let stopped = store.get(&thread.id).unwrap().unwrap();
+    assert_eq!(stopped.status, THREAD_STATUS_STOPPED);
+    assert_eq!(stopped.error.as_deref(), Some("stopped by server shutdown"));
+    assert!(stopped.finished_at.is_some());
+}
+
+#[tokio::test]
 async fn thread_supervisor_runs_child_with_test_backend() {
     use milim_server::threads::{ChildRunSpec, ThreadSupervisor};
     use milim_storage::Database;
