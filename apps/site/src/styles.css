@@ -2421,6 +2421,11 @@ main {
   position: relative;
   isolation: isolate;
   overflow: hidden;
+}
+
+.docs-hero-inner {
+  position: relative;
+  z-index: 3;
   display: grid;
   grid-template-columns: minmax(0, 0.96fr) minmax(360px, 0.54fr);
   gap: clamp(34px, 5vw, 72px);
@@ -4160,7 +4165,7 @@ h4:hover > .doc-anchor,
     padding-top: 78px;
   }
 
-  .docs-hero,
+  .docs-hero-inner,
   .docs-page-head,
   .docs-layout {
     grid-template-columns: 1fr;
@@ -4168,7 +4173,7 @@ h4:hover > .doc-anchor,
     padding-left: 22px;
   }
 
-  .docs-hero {
+  .docs-hero-inner {
     min-height: auto;
     padding-top: 44px;
     padding-bottom: 72px;

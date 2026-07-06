@@ -540,21 +540,22 @@ export function DocsPage() {
           <section className="docs-hero" id="top">
             <ShaderField />
             <HeroAsciiField />
-            <div className="docs-hero-copy">
-              <span className="docs-updated">Last updated {formatUpdated(currentPage.updated)} - v{DOCS_VERSION}</span>
-              <h1>
-                milim{" "}
-                <br />
-                docs wiki
-              </h1>
-              <p>{currentPage.summary}</p>
-              <div className="docs-actions">
-                <a className="button button-primary" href={WINDOWS_URL}>Download Windows</a>
-                <a className="button button-secondary" href={MACOS_URL}>Download macOS</a>
-                <a className="source-link" href={GITHUB_URL}>Source</a>
+            <div className="docs-hero-inner">
+              <div className="docs-hero-copy">
+                <span className="docs-updated">Last updated {formatUpdated(currentPage.updated)} - v{DOCS_VERSION}</span>
+                <h1>
+                  milim{" "}
+                  <br />
+                  docs wiki
+                </h1>
+                <p>{currentPage.summary}</p>
+                <div className="docs-actions">
+                  <a className="button button-primary" href={WINDOWS_URL}>Download Windows</a>
+                  <a className="button button-secondary" href={MACOS_URL}>Download macOS</a>
+                  <a className="source-link" href={GITHUB_URL}>Source</a>
+                </div>
               </div>
-            </div>
-            <nav className="docs-snapshot" aria-label="Docs map">
+              <nav className="docs-snapshot" aria-label="Docs map">
               <a className="docs-snapshot-feature" href={docsHref("quickstart")}>
                 <span>start with</span>
                 <strong>quickstart</strong>
@@ -578,7 +579,8 @@ export function DocsPage() {
                   <strong>api</strong>
                 </a>
               </div>
-            </nav>
+              </nav>
+            </div>
           </section>
         ) : (
           <section className="docs-page-head">
