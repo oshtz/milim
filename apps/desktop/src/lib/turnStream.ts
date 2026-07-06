@@ -3,7 +3,15 @@ import { recordPerfMeasure } from "./perf.js";
 
 const STREAM_UPDATE_BATCH_MS = 50;
 
-export function createStreamUpdateBatcher(sessionId: string, store: ReturnType<typeof useSessions.getState>) {
+export function createStreamUpdateBatcher(
+  sessionId: string,
+  messageIdOrStore: string | ReturnType<typeof useSessions.getState>,
+  storeArg?: ReturnType<typeof useSessions.getState>,
+) {
+  const messageId =
+    typeof messageIdOrStore === "string" ? messageIdOrStore : undefined;
+  const store =
+    typeof messageIdOrStore === "string" ? storeArg : messageIdOrStore;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let pending: BufferedStreamChunk[] = [];
 
@@ -16,15 +24,21 @@ export function createStreamUpdateBatcher(sessionId: string, store: ReturnType<t
     const chunks = pending;
     pending = [];
     recordPerfMeasure("stream.batchChunks", chunks.length);
-    recordPerfMeasure("stream.batchChars", chunks.reduce((sum, chunk) => sum + chunk.content.length, 0));
-    store.appendStreamChunks(sessionId, chunks);
+    recordPerfMeasure(
+      "stream.batchChars",
+      chunks.reduce((sum, chunk) => sum + chunk.content.length, 0),
+    );
+    store?.appendStreamChunks(sessionId, messageId ?? chunks, chunks);
   };
 
   const append = (chunk: BufferedStreamChunk) => {
     if (!chunk.content) return;
     const last = pending[pending.length - 1];
     if (last?.kind === chunk.kind) {
-      pending[pending.length - 1] = { ...last, content: last.content + chunk.content };
+      pending[pending.length - 1] = {
+        ...last,
+        content: last.content + chunk.content,
+      };
     } else {
       pending.push(chunk);
     }
@@ -33,12 +47,16 @@ export function createStreamUpdateBatcher(sessionId: string, store: ReturnType<t
 
   return {
     appendToken: (text: string) => append({ kind: "text", content: text }),
-    appendThinking: (text: string) => append({ kind: "thinking", content: text }),
+    appendThinking: (text: string) =>
+      append({ kind: "thinking", content: text }),
     flush,
   };
 }
 
-type TurnGenerationStore = Pick<ReturnType<typeof useSessions.getState>, "setSessionGenerating">;
+type TurnGenerationStore = Pick<
+  ReturnType<typeof useSessions.getState>,
+  "setSessionGenerating"
+>;
 
 export function claimTurnGeneration({
   sessionId,
@@ -71,14 +89,18 @@ export function releaseTurnGeneration({
 
 export function startTurnStream({
   sessionId,
+  messageId,
   store,
   controller,
 }: {
   sessionId: string;
+  messageId?: string;
   store: ReturnType<typeof useSessions.getState>;
   controller: AbortController;
 }) {
-  const streamBatcher = createStreamUpdateBatcher(sessionId, store);
+  const streamBatcher = messageId
+    ? createStreamUpdateBatcher(sessionId, messageId, store)
+    : createStreamUpdateBatcher(sessionId, store);
   return {
     controller,
     streamBatcher,

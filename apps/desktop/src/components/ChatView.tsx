@@ -242,6 +242,7 @@ import {
   startTurnStream,
 } from "../lib/turnStream";
 import { checkpointWorkspaceBeforeTurn } from "../lib/turnWorkspace";
+import { createChatMessageId } from "../lib/messageIds.js";
 import { flushDeferredUserStateWrites } from "../persistence/userStateStorage";
 import { useSettings, type MediaSettings } from "../settings/store";
 import { themeCssVariables } from "../theme/applyTheme";
@@ -3907,6 +3908,10 @@ export function ChatView({
     const target =
       options?.path?.trim() || (artifact.filename ?? artifact.title);
     const targetMessageIndex = revision?.messageIndex ?? messageIndex;
+    const targetMessage = useSessions
+      .getState()
+      .sessions.find((s) => s.id === activeId)?.messages[targetMessageIndex];
+    const targetMessageId = targetMessage?.id ?? targetMessageIndex;
     if (!folder.trim()) {
       const path = normalizeVirtualFilePath(target);
       if (!path) throw new Error("virtual project file path must be relative");
@@ -3927,7 +3932,7 @@ export function ChatView({
         sourceMessageIndex: targetMessageIndex,
         sourceRevisionNumber: revision?.revisionNumber,
       });
-      markArtifactSaved(activeId, targetMessageIndex, artifact.id, saved);
+      markArtifactSaved(activeId, targetMessageId, artifact.id, saved);
       return saved;
     }
     const saved = await saveArtifactFile(
@@ -3944,13 +3949,13 @@ export function ChatView({
       sourceRevisionNumber: revision?.revisionNumber,
       source: options?.source ?? "artifact",
     };
-    markArtifactSaved(activeId, targetMessageIndex, artifact.id, tracedSaved);
+    markArtifactSaved(activeId, targetMessageId, artifact.id, tracedSaved);
     if (options?.source === "auto_artifact") {
       const message = useSessions
         .getState()
         .sessions.find((s) => s.id === activeId)?.messages[targetMessageIndex];
-      if (message?.streamParts?.length) {
-        useSessions.getState().appendStreamEvent(activeId, {
+      if (message?.streamParts?.length && message.id) {
+        useSessions.getState().appendStreamEvent(activeId, message.id, {
           kind: "event",
           eventType: "tool",
           label: "Created file",
@@ -4767,10 +4772,12 @@ export function ChatView({
     let resultStatus: RunTurnResult["status"] = "done";
     let resultError: string | undefined;
     const turnId = attachmentId();
+    const assistantMessageId = createChatMessageId();
     setChatNotice(null);
 
     const { streamBatcher, append, appendThinking } = startTurnStream({
       sessionId: id,
+      messageId: assistantMessageId,
       store,
       controller,
     });
@@ -4779,6 +4786,7 @@ export function ChatView({
       planMode: turnPlanMode,
       setMessages: (nextMessages) =>
         setMessages(id, nextMessages, { autoTitle: autoTitleChats }),
+      assistantMessageId,
     });
     const beginAssistant = assistantStart.beginAssistant;
     const metricsCapture = createTurnMetricsCapture();
@@ -4873,17 +4881,18 @@ export function ChatView({
         runWorkspaceGitAction,
         attachCheckpoint: attachAssistantWorkspaceCheckpoint,
         appendStreamEvent: (targetId, part) =>
-          store.appendStreamEvent(targetId, part),
+          store.appendStreamEvent(targetId, assistantMessageId, part),
       });
 
     const { runRef, snapshot } = createTurnRunTraceState((run) =>
-      store.commitRun(id, run),
+      store.commitRun(id, assistantMessageId, run),
     );
     const captureAgentUsageDelta = (usage?: TokenUsage) => {
       const totalUsage = metricsCapture.captureUsageDelta(usage);
       if (!totalUsage || !assistantStart.state.started) return;
       commitResponseMetrics(
         id,
+        assistantMessageId,
         responseMetricsForTurn({
           startedAt,
           endedAt: Date.now(),
@@ -4901,10 +4910,12 @@ export function ChatView({
       append,
       appendThinking,
       flush: () => streamBatcher.flush(),
-      appendStreamEvent: (part) => store.appendStreamEvent(id, part),
+      appendStreamEvent: (part) =>
+        store.appendStreamEvent(id, assistantMessageId, part),
       completeStreamEvent: (name, part, callId) =>
-        store.completeStreamEvent(id, name, part, callId),
-      appendMemoryNotice: (notice) => store.appendMemoryNotice(id, notice),
+        store.completeStreamEvent(id, assistantMessageId, name, part, callId),
+      appendMemoryNotice: (notice) =>
+        store.appendMemoryNotice(id, assistantMessageId, notice),
       upsertChildThread: (thread) => store.upsertChildThread(id, thread),
       updateChildThread: (thread) => store.updateChildThread(thread),
       captureUsage: metricsCapture.captureUsage,
@@ -4954,9 +4965,10 @@ export function ChatView({
           append,
           appendThinking,
           flush: () => streamBatcher.flush(),
-          appendStreamEvent: (part) => store.appendStreamEvent(id, part),
+          appendStreamEvent: (part) =>
+            store.appendStreamEvent(id, assistantMessageId, part),
           completeStreamEvent: (name, part) =>
-            store.completeStreamEvent(id, name, part),
+            store.completeStreamEvent(id, assistantMessageId, name, part),
           captureRuntimeMetrics: metricsCapture.captureRuntimeMetrics,
           captureProviderLimit: metricsCapture.captureProviderLimit,
           setCodexThreadId: (threadId) =>
@@ -4968,6 +4980,7 @@ export function ChatView({
             );
             store.appendStreamEvent(
               id,
+              assistantMessageId,
               statusPart(
                 "Generated image",
                 ev.revised_prompt ? compactText(ev.revised_prompt) : undefined,
@@ -5032,7 +5045,8 @@ export function ChatView({
         append,
         flush: () => streamBatcher.flush(),
         setChatNotice,
-        appendStreamEvent: (part) => store.appendStreamEvent(id, part),
+        appendStreamEvent: (part) =>
+          store.appendStreamEvent(id, assistantMessageId, part),
         runRef,
         snapshot,
         signal: controller.signal,
@@ -5059,7 +5073,8 @@ export function ChatView({
               limits: metricsCapture.state.limits,
             })
           : undefined,
-        commitResponseMetrics,
+        commitResponseMetrics: (targetId, metrics) =>
+          commitResponseMetrics(targetId, assistantMessageId, metrics),
         clearController: (targetId) =>
           generationControllersRef.current.delete(targetId),
         setSessionGenerating: store.setSessionGenerating,

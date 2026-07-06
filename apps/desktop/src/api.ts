@@ -126,6 +126,7 @@ export interface ChatApprovalRequest {
 }
 
 export interface ChatMessage {
+  id?: string;
   role: string;
   content: string;
   attachments?: ChatAttachment[];

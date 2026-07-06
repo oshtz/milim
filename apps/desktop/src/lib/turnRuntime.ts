@@ -1,3 +1,4 @@
+import { createChatMessageId } from "./messageIds.js";
 import type {
   AgentEvent,
   AgentMemoryContext,
@@ -246,6 +247,7 @@ export type TurnAssistantStarter = {
   state: {
     activeConversation: ChatMessage[];
     started: boolean;
+    assistantMessageId: string;
   };
   beginAssistant: (conversation: ChatMessage[]) => void;
 };
@@ -254,12 +256,20 @@ export function createTurnAssistantStarter({
   conversation,
   planMode,
   setMessages,
+  assistantMessageId,
 }: {
   conversation: ChatMessage[];
   planMode: boolean;
   setMessages: (messages: ChatMessage[]) => void;
+  assistantMessageId?: string;
 }): TurnAssistantStarter {
-  const state = { activeConversation: conversation, started: false };
+  const resolvedAssistantMessageId =
+    assistantMessageId ?? createChatMessageId();
+  const state = {
+    activeConversation: conversation,
+    started: false,
+    assistantMessageId: resolvedAssistantMessageId,
+  };
   return {
     state,
     beginAssistant(nextConversation) {
@@ -269,6 +279,7 @@ export function createTurnAssistantStarter({
       setMessages([
         ...nextConversation,
         {
+          id: resolvedAssistantMessageId,
           role: "assistant",
           content: "",
           streamParts: [],

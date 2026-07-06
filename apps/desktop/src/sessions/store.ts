@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
+import { createChatMessageId } from "../lib/messageIds.js";
 import type {
   ChatArtifact,
   ChatAttachment,
@@ -679,13 +680,20 @@ function importedMessages(value: unknown): ChatMessage[] {
   return out;
 }
 
+function ensureChatMessageId(message: ChatMessage): ChatMessage {
+  return typeof message.id === "string" && message.id.trim()
+    ? message
+    : { ...message, id: createChatMessageId() };
+}
+
 function normalizeMessageArtifacts(message: ChatMessage): ChatMessage {
-  if (message.role !== "assistant") return message;
+  const withId = ensureChatMessageId(message);
+  if (withId.role !== "assistant") return withId;
   const artifacts = mergeArtifactState(
-    extractArtifactsFromMessage(message.content, message.run),
-    message.artifacts,
+    extractArtifactsFromMessage(withId.content, withId.run),
+    withId.artifacts,
   );
-  return { ...message, artifacts: artifacts.length ? artifacts : undefined };
+  return { ...withId, artifacts: artifacts.length ? artifacts : undefined };
 }
 
 function mergeArtifactState(
@@ -786,16 +794,20 @@ function completeEventStreamPart(
 
 function appendStreamChunksToMessages(
   messages: ChatMessage[],
+  messageId: string | undefined,
   chunks: BufferedStreamChunk[],
 ): ChatMessage[] {
   const cleanChunks = chunks.filter((chunk) => chunk.content.length > 0);
   if (cleanChunks.length === 0) return messages;
+  const targetIndex = messageId
+    ? messages.findIndex((message) => message.id === messageId)
+    : messages.length - 1;
+  if (targetIndex < 0) return messages;
   const next = messages.slice();
-  const last = next[next.length - 1];
-  if (!last) return messages;
+  const target = next[targetIndex];
 
-  let content = last.content;
-  let streamParts = last.streamParts;
+  let content = target.content;
+  let streamParts = target.streamParts;
   for (const chunk of cleanChunks) {
     if (chunk.kind === "text") {
       content += chunk.content;
@@ -805,8 +817,8 @@ function appendStreamChunksToMessages(
     }
   }
 
-  next[next.length - 1] = normalizeMessageArtifacts({
-    ...last,
+  next[targetIndex] = normalizeMessageArtifacts({
+    ...target,
     content,
     streamParts,
   });
@@ -1049,6 +1061,7 @@ function messagesFromThread(
   events?: ThreadEvent[],
 ): ChatMessage[] {
   const user = existing?.find((message) => message.role === "user") ?? {
+    id: createChatMessageId(),
     role: "user",
     content: "",
   };
@@ -1068,7 +1081,11 @@ function messagesFromThread(
     ...(content || streamParts
       ? [
           {
-            ...(assistant ?? { role: "assistant", content: "" }),
+            ...(assistant ?? {
+              id: createChatMessageId(),
+              role: "assistant",
+              content: "",
+            }),
             content,
             streamParts,
           },
@@ -1161,17 +1178,38 @@ interface SessionState {
     messages: ChatMessage[],
     options?: { autoTitle?: boolean },
   ) => void;
-  appendStreamChunks: (id: string, chunks: BufferedStreamChunk[]) => void;
-  appendStreamEvent: (id: string, part: ChatStreamEventPart) => void;
+  appendStreamChunks: (
+    id: string,
+    messageIdOrChunks: string | BufferedStreamChunk[],
+    chunks?: BufferedStreamChunk[],
+  ) => void;
+  appendStreamEvent: (
+    id: string,
+    messageIdOrPart: string | ChatStreamEventPart,
+    part?: ChatStreamEventPart,
+  ) => void;
   completeStreamEvent: (
     id: string,
-    name: string,
-    part: ChatStreamEventPart,
+    messageIdOrName: string,
+    nameOrPart: string | ChatStreamEventPart,
+    partOrCallId?: ChatStreamEventPart | string,
     callId?: string,
   ) => void;
-  commitRun: (id: string, run: RunTrace) => void;
-  commitResponseMetrics: (id: string, metrics: ResponseMetrics) => void;
-  appendMemoryNotice: (id: string, notice: MemoryNotice) => void;
+  commitRun: (
+    id: string,
+    messageIdOrRun: string | RunTrace,
+    run?: RunTrace,
+  ) => void;
+  commitResponseMetrics: (
+    id: string,
+    messageIdOrMetrics: string | ResponseMetrics,
+    metrics?: ResponseMetrics,
+  ) => void;
+  appendMemoryNotice: (
+    id: string,
+    messageIdOrNotice: string | MemoryNotice,
+    notice?: MemoryNotice,
+  ) => void;
   upsertChildThread: (
     parentId: string,
     thread: ChildThreadInfo,
@@ -1180,7 +1218,7 @@ interface SessionState {
   updateChildThread: (thread: ChildThreadInfo, events?: ThreadEvent[]) => void;
   markArtifactSaved: (
     id: string,
-    messageIndex: number,
+    messageIdOrIndex: string | number,
     artifactId: string,
     saved: SavedArtifactFile,
   ) => void;
@@ -2018,7 +2056,13 @@ export const useSessions = create<SessionState>()(
             ),
           })),
 
-        appendStreamChunks: (id, chunks) => {
+        appendStreamChunks: (id, messageIdOrChunks, chunksArg) => {
+          const messageId = Array.isArray(messageIdOrChunks)
+            ? undefined
+            : messageIdOrChunks;
+          const chunks = Array.isArray(messageIdOrChunks)
+            ? messageIdOrChunks
+            : (chunksArg ?? []);
           const stop = startPerfMeasure("store.appendStreamChunks");
           recordPerfMeasure(
             "store.appendStreamChunks.batchChunks",
@@ -2036,6 +2080,7 @@ export const useSessions = create<SessionState>()(
                       ...s,
                       messages: appendStreamChunksToMessages(
                         s.messages,
+                        messageId,
                         chunks,
                       ),
                     }
@@ -2047,80 +2092,141 @@ export const useSessions = create<SessionState>()(
           }
         },
 
-        appendStreamEvent: (id, part) =>
+        appendStreamEvent: (id, messageIdOrPart, partArg) =>
           set((st) => ({
             sessions: st.sessions.map((s) => {
               if (s.id !== id) return s;
+              const messageId =
+                typeof messageIdOrPart === "string"
+                  ? messageIdOrPart
+                  : undefined;
+              const part =
+                typeof messageIdOrPart === "string" ? partArg : messageIdOrPart;
+              if (!part) return s;
+              const targetIndex = messageId
+                ? s.messages.findIndex((message) => message.id === messageId)
+                : s.messages.length - 1;
+              if (targetIndex < 0) return s;
               const messages = s.messages.slice();
-              const last = messages[messages.length - 1];
-              if (last) {
-                messages[messages.length - 1] = {
-                  ...last,
-                  streamParts: appendEventStreamPart(last.streamParts, part),
-                };
-              }
+              const target = messages[targetIndex];
+              messages[targetIndex] = {
+                ...target,
+                streamParts: appendEventStreamPart(target.streamParts, part),
+              };
               return { ...s, messages, updatedAt: Date.now() };
             }),
           })),
 
-        completeStreamEvent: (id, name, part, callId) =>
+        completeStreamEvent: (
+          id,
+          messageIdOrName,
+          nameOrPart,
+          partOrCallId,
+          callIdArg,
+        ) =>
           set((st) => ({
             sessions: st.sessions.map((s) => {
               if (s.id !== id) return s;
+              const hasMessageId = typeof nameOrPart === "string";
+              const messageId = hasMessageId ? messageIdOrName : undefined;
+              const name = hasMessageId ? nameOrPart : messageIdOrName;
+              const part = hasMessageId ? partOrCallId : nameOrPart;
+              const callId = hasMessageId ? callIdArg : partOrCallId;
+              if (!part || typeof part === "string") return s;
+              const targetIndex = messageId
+                ? s.messages.findIndex((message) => message.id === messageId)
+                : s.messages.length - 1;
+              if (targetIndex < 0) return s;
               const messages = s.messages.slice();
-              const last = messages[messages.length - 1];
-              if (last) {
-                messages[messages.length - 1] = {
-                  ...last,
-                  streamParts: completeEventStreamPart(
-                    last.streamParts,
-                    name,
-                    part,
-                    callId,
-                  ),
-                };
-              }
+              const target = messages[targetIndex];
+              messages[targetIndex] = {
+                ...target,
+                streamParts: completeEventStreamPart(
+                  target.streamParts,
+                  name,
+                  part,
+                  typeof callId === "string" ? callId : undefined,
+                ),
+              };
               return { ...s, messages, updatedAt: Date.now() };
             }),
           })),
 
-        commitRun: (id, run) =>
+        commitRun: (id, messageIdOrRun, runArg) =>
           set((st) => ({
             sessions: st.sessions.map((s) => {
               if (s.id !== id) return s;
+              const messageId =
+                typeof messageIdOrRun === "string" ? messageIdOrRun : undefined;
+              const run =
+                typeof messageIdOrRun === "string" ? runArg : messageIdOrRun;
+              if (!run) return s;
+              const targetIndex = messageId
+                ? s.messages.findIndex((message) => message.id === messageId)
+                : s.messages.length - 1;
+              if (targetIndex < 0) return s;
               const messages = s.messages.slice();
-              const last = messages[messages.length - 1];
-              if (last)
-                messages[messages.length - 1] = normalizeMessageArtifacts({
-                  ...last,
-                  run,
-                });
+              messages[targetIndex] = normalizeMessageArtifacts({
+                ...messages[targetIndex],
+                run,
+              });
               return { ...s, messages, updatedAt: Date.now() };
             }),
           })),
 
-        commitResponseMetrics: (id, metrics) =>
+        commitResponseMetrics: (id, messageIdOrMetrics, metricsArg) =>
           set((st) => ({
             sessions: st.sessions.map((s) => {
               if (s.id !== id) return s;
+              const messageId =
+                typeof messageIdOrMetrics === "string"
+                  ? messageIdOrMetrics
+                  : undefined;
+              const metrics =
+                typeof messageIdOrMetrics === "string"
+                  ? metricsArg
+                  : messageIdOrMetrics;
+              if (!metrics) return s;
+              const targetIndex = messageId
+                ? s.messages.findIndex((message) => message.id === messageId)
+                : (() => {
+                    for (
+                      let index = s.messages.length - 1;
+                      index >= 0;
+                      index -= 1
+                    ) {
+                      if (s.messages[index].role === "assistant") return index;
+                    }
+                    return -1;
+                  })();
+              if (targetIndex < 0) return s;
               const messages = s.messages.slice();
-              for (let index = messages.length - 1; index >= 0; index -= 1) {
-                if (messages[index].role !== "assistant") continue;
-                messages[index] = { ...messages[index], metrics };
-                return { ...s, messages, updatedAt: Date.now() };
-              }
-              return s;
+              messages[targetIndex] = { ...messages[targetIndex], metrics };
+              return { ...s, messages, updatedAt: Date.now() };
             }),
           })),
 
-        appendMemoryNotice: (id, notice) =>
+        appendMemoryNotice: (id, messageIdOrNotice, noticeArg) =>
           set((st) => ({
             sessions: st.sessions.map((s) => {
               if (s.id !== id) return s;
+              const messageId =
+                typeof messageIdOrNotice === "string"
+                  ? messageIdOrNotice
+                  : undefined;
+              const notice =
+                typeof messageIdOrNotice === "string"
+                  ? noticeArg
+                  : messageIdOrNotice;
+              if (!notice) return s;
+              const targetIndex = messageId
+                ? s.messages.findIndex((message) => message.id === messageId)
+                : s.messages.length - 1;
+              if (targetIndex < 0) return s;
               const messages = s.messages.slice();
-              const last = messages[messages.length - 1];
-              if (!last || last.role !== "assistant") return s;
-              const existing = last.memories ?? [];
+              const target = messages[targetIndex];
+              if (target.role !== "assistant") return s;
+              const existing = target.memories ?? [];
               if (
                 existing.some(
                   (memory) =>
@@ -2129,8 +2235,8 @@ export const useSessions = create<SessionState>()(
                 )
               )
                 return s;
-              messages[messages.length - 1] = {
-                ...last,
+              messages[targetIndex] = {
+                ...target,
                 memories: [...existing, notice],
               };
               return { ...s, messages, updatedAt: Date.now() };
@@ -2200,13 +2306,20 @@ export const useSessions = create<SessionState>()(
             };
           }),
 
-        markArtifactSaved: (id, messageIndex, artifactId, saved) =>
+        markArtifactSaved: (id, messageIdOrIndex, artifactId, saved) =>
           set((st) => ({
             sessions: st.sessions.map((s) => {
               if (s.id !== id) return s;
+              const messageIndex =
+                typeof messageIdOrIndex === "number"
+                  ? messageIdOrIndex
+                  : s.messages.findIndex(
+                      (message) => message.id === messageIdOrIndex,
+                    );
+              if (messageIndex < 0) return s;
               const messages = s.messages.slice();
               const message = messages[messageIndex];
-              if (!message?.artifacts?.length) return s;
+              if (!message.artifacts?.length) return s;
               messages[messageIndex] = {
                 ...message,
                 artifacts: message.artifacts.map((artifact) =>
