@@ -1,4 +1,4 @@
-import type { ChatStreamPart } from "../api";
+import type { ChatStreamEventIcon, ChatStreamEventStatus, ChatStreamPart } from "../api";
 
 type ChatStreamEventPart = Extract<ChatStreamPart, { kind: "event" }>;
 
@@ -13,6 +13,33 @@ export type ChatStreamWorkGroup = {
 };
 
 export type ChatStreamDisplayPart = ChatStreamPart | ChatStreamToolGroup | ChatStreamWorkGroup;
+
+export type WorkGroupSummary = {
+  eventType: "tool" | "thinking";
+  label: string;
+  detail?: string;
+  icon?: ChatStreamEventIcon;
+  status: ChatStreamEventStatus;
+};
+
+export function liveWorkGroupSummary(group: ChatStreamWorkGroup): WorkGroupSummary | null {
+  for (let i = group.parts.length - 1; i >= 0; i -= 1) {
+    const part = group.parts[i];
+    if (part.kind === "event") {
+      return {
+        eventType: "tool",
+        label: part.label,
+        detail: part.detail,
+        icon: part.icon,
+        status: part.status ?? "done",
+      };
+    }
+    if (part.kind === "thinking" && part.content.trim()) {
+      return { eventType: "thinking", label: "reasoning...", icon: "thinking", status: "running" };
+    }
+  }
+  return null;
+}
 
 function isCompletedToolEvent(part: ChatStreamPart): part is ChatStreamEventPart {
   return part.kind === "event" && part.eventType === "tool" && (part.status ?? "done") === "done";

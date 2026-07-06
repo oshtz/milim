@@ -1,7 +1,7 @@
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
-import type { ChatArtifact, ChatStreamEventIcon, ChatStreamEventStatus, ChatStreamPart } from "../api";
+import type { ChatArtifact, ChatStreamEventIcon, ChatStreamPart } from "../api";
 import { markPerfRender } from "../lib/perf";
-import { groupCompletedStreamActivity, type ChatStreamToolGroup, type ChatStreamWorkGroup } from "../lib/streamParts";
+import { groupCompletedStreamActivity, liveWorkGroupSummary, type ChatStreamToolGroup, type ChatStreamWorkGroup } from "../lib/streamParts";
 import { formatDuration } from "../lib/usageMetrics";
 import { Calendar, Code, Eye, FileText, Lightbulb, Pencil, X } from "./icons";
 
@@ -121,33 +121,6 @@ function workGroupDetail(group: ChatStreamWorkGroup): string {
     tools ? plural(tools, "tool") : null,
     reasoning ? `${plural(reasoning, "reasoning note")}` : null,
   ].filter(Boolean).join(", ") || plural(group.parts.length, "step");
-}
-
-type WorkGroupSummary = {
-  eventType: "tool" | "thinking";
-  label: string;
-  detail?: string;
-  icon?: ChatStreamEventIcon;
-  status: ChatStreamEventStatus;
-};
-
-function liveWorkGroupSummary(group: ChatStreamWorkGroup): WorkGroupSummary | null {
-  for (let i = group.parts.length - 1; i >= 0; i -= 1) {
-    const part = group.parts[i];
-    if (part.kind === "event") {
-      return {
-        eventType: "tool",
-        label: part.label,
-        detail: part.detail,
-        icon: part.icon,
-        status: part.status === "error" ? "error" : "running",
-      };
-    }
-    if (part.kind === "thinking" && part.content.trim()) {
-      return { eventType: "thinking", label: "reasoning...", icon: "thinking", status: "running" };
-    }
-  }
-  return null;
 }
 
 function StreamWorkGroup({ group, durationMs, streaming = false }: { group: ChatStreamWorkGroup; durationMs?: number; streaming?: boolean }) {
