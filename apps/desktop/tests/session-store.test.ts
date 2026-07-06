@@ -451,15 +451,13 @@ equal(
   false,
   "read complete goals should hide the composer chip",
 );
-useSessions
-  .getState()
-  .updateSettings(first, {
-    goal: {
-      ...DEFAULT_GOAL_SETTINGS,
-      objective: "Edited goal",
-      successCriteria: "New criteria",
-    },
-  });
+useSessions.getState().updateSettings(first, {
+  goal: {
+    ...DEFAULT_GOAL_SETTINGS,
+    objective: "Edited goal",
+    successCriteria: "New criteria",
+  },
+});
 equal(
   useSessions.getState().getSettings(first).goal.objective,
   "Edited goal",
@@ -569,7 +567,7 @@ useSessions.getState().commitResponseMetrics(first, {
   costUsd: 0.004,
   limits: [
     {
-      provider: "Claude Code",
+      provider: "Local Claude CLI",
       status: "rejected",
       kind: "five_hour",
       reset_at: 1_782_660_000,
@@ -1248,6 +1246,7 @@ useSessions.getState().updateChildThread(
     {
       id: "event-1",
       thread_id: "child-thread-1",
+      seq: 1,
       kind: "reasoning",
       payload: { text: "Checking " },
       created_at: "2026-06-22 10:00:01",
@@ -1255,6 +1254,7 @@ useSessions.getState().updateChildThread(
     {
       id: "event-2",
       thread_id: "child-thread-1",
+      seq: 2,
       kind: "tool_call",
       payload: { name: "read_file", arguments: '{"path":"README.md"}' },
       created_at: "2026-06-22 10:00:02",
@@ -1262,6 +1262,7 @@ useSessions.getState().updateChildThread(
     {
       id: "event-3",
       thread_id: "child-thread-1",
+      seq: 3,
       kind: "tool_result",
       payload: { name: "read_file", result: { ok: true } },
       created_at: "2026-06-22 10:00:03",
@@ -1269,6 +1270,7 @@ useSessions.getState().updateChildThread(
     {
       id: "event-4",
       thread_id: "child-thread-1",
+      seq: 4,
       kind: "token",
       payload: { text: "Live report" },
       created_at: "2026-06-22 10:00:04",
@@ -1755,12 +1757,10 @@ equal(
   "removing a session should remove its queued messages",
 );
 
-useSessions
-  .getState()
-  .newChat({
-    ...useSessions.getState().getSettings(useSessions.getState().activeId),
-    folder: "C:\\composer-project",
-  });
+useSessions.getState().newChat({
+  ...useSessions.getState().getSettings(useSessions.getState().activeId),
+  folder: "C:\\composer-project",
+});
 equal(
   useSessions.getState().getSettings(useSessions.getState().activeId).folder,
   "C:\\composer-project",
@@ -1778,12 +1778,10 @@ useSessions
   .setMessages(useSessions.getState().activeId, [
     { role: "user", content: "project chat" },
   ]);
-useSessions
-  .getState()
-  .newChat({
-    ...useSessions.getState().getSettings(useSessions.getState().activeId),
-    folder: "",
-  });
+useSessions.getState().newChat({
+  ...useSessions.getState().getSettings(useSessions.getState().activeId),
+  folder: "",
+});
 equal(
   useSessions.getState().getSettings(useSessions.getState().activeId).folder,
   "",

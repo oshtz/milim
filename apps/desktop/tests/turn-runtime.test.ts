@@ -1,6 +1,30 @@
 import { strict as assert } from "node:assert";
-import type { AgentEvent, ChatMessage, ChatStreamPart, CodexRunEvent, MemoryNotice, ProviderLimitInfo, RunTrace, TokenUsage } from "../src/api.js";
-import { claudeCompactionSummaryRequest, codexCompactionSummaryRequest, codexPromptFromMessages, createAccountRuntimeEventHandler, createAgentRunEventHandler, createTurnAssistantStarter, createTurnMetricsCapture, createTurnRunTraceState, finalizeTurnRuntime, handleTurnRuntimeError, runAccountRuntimeTurn, runModelChatTurn, runSelectedAccountRuntimeTurn, runToolAgentTurn } from "../src/lib/turnRuntime.js";
+import type {
+  AgentEvent,
+  ChatMessage,
+  ChatStreamPart,
+  CodexRunEvent,
+  MemoryNotice,
+  ProviderLimitInfo,
+  RunTrace,
+  TokenUsage,
+} from "../src/api.js";
+import {
+  claudeCompactionSummaryRequest,
+  codexCompactionSummaryRequest,
+  codexPromptFromMessages,
+  createAccountRuntimeEventHandler,
+  createAgentRunEventHandler,
+  createTurnAssistantStarter,
+  createTurnMetricsCapture,
+  createTurnRunTraceState,
+  finalizeTurnRuntime,
+  handleTurnRuntimeError,
+  runAccountRuntimeTurn,
+  runModelChatTurn,
+  runSelectedAccountRuntimeTurn,
+  runToolAgentTurn,
+} from "../src/lib/turnRuntime.js";
 
 const startedMessages: ChatMessage[][] = [];
 const initialConversation: ChatMessage[] = [{ role: "user", content: "hello" }];
@@ -24,30 +48,76 @@ const codexAttachmentPrompt = codexPromptFromMessages([
   {
     role: "user",
     content: "Use this context.",
-    attachments: [{ id: "att-1", name: "notes.md", mime: "text/markdown", size: 7, content: "# Notes" }],
+    attachments: [
+      {
+        id: "att-1",
+        name: "notes.md",
+        mime: "text/markdown",
+        size: 7,
+        content: "# Notes",
+      },
+    ],
   },
 ]);
 assert.match(codexAttachmentPrompt, /Use this context\./);
-assert.match(codexAttachmentPrompt, /--- attachment name=notes\.md mime=text\/markdown size=7 ---/);
+assert.match(
+  codexAttachmentPrompt,
+  /--- attachment name=notes\.md mime=text\/markdown size=7 ---/,
+);
 assert.match(codexAttachmentPrompt, /# Notes/);
 
 const turnMetrics = createTurnMetricsCapture();
-turnMetrics.captureUsage({ prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 });
-turnMetrics.captureUsageDelta({ prompt_tokens: 2, completion_tokens: 1, total_tokens: 3 });
+turnMetrics.captureUsage({
+  prompt_tokens: 1,
+  completion_tokens: 2,
+  total_tokens: 3,
+});
+turnMetrics.captureUsageDelta({
+  prompt_tokens: 2,
+  completion_tokens: 1,
+  total_tokens: 3,
+});
 assert.equal(turnMetrics.state.usage?.total_tokens, 6);
-turnMetrics.captureRuntimeMetrics({ usage: { prompt_tokens: 4, completion_tokens: 5, total_tokens: 9 }, cost_usd: 0 });
+turnMetrics.captureRuntimeMetrics({
+  usage: { prompt_tokens: 4, completion_tokens: 5, total_tokens: 9 },
+  cost_usd: 0,
+});
 turnMetrics.captureRuntimeMetrics({ cost_usd: 0.02 });
-turnMetrics.captureProviderLimit({ provider: "Claude", kind: "requests", remaining: 2 });
-turnMetrics.captureProviderLimit({ provider: "Claude", kind: "requests", remaining: 1 });
-turnMetrics.captureProviderLimit({ provider: "Claude", kind: "tokens", remaining: 99 });
+turnMetrics.captureProviderLimit({
+  provider: "Claude",
+  kind: "requests",
+  remaining: 2,
+});
+turnMetrics.captureProviderLimit({
+  provider: "Claude",
+  kind: "requests",
+  remaining: 1,
+});
+turnMetrics.captureProviderLimit({
+  provider: "Claude",
+  kind: "tokens",
+  remaining: 99,
+});
 assert.equal(turnMetrics.state.usage?.total_tokens, 9);
 assert.equal(turnMetrics.state.costUsd, 0.02);
-assert.deepEqual(turnMetrics.state.limits.map((limit) => `${limit.kind}:${limit.remaining}`).sort(), ["requests:1", "tokens:99"]);
+assert.deepEqual(
+  turnMetrics.state.limits
+    .map((limit) => `${limit.kind}:${limit.remaining}`)
+    .sort(),
+  ["requests:1", "tokens:99"],
+);
 
 const committedRuns: RunTrace[] = [];
-const traceState = createTurnRunTraceState((committed) => committedRuns.push(committed));
+const traceState = createTurnRunTraceState((committed) =>
+  committedRuns.push(committed),
+);
 traceState.snapshot();
-const trace: RunTrace = { model: "m", startedAt: 1, steps: [{ name: "shell", startedAt: 2 }], status: "running" };
+const trace: RunTrace = {
+  model: "m",
+  startedAt: 1,
+  steps: [{ name: "shell", startedAt: 2 }],
+  status: "running",
+};
 traceState.runRef.current = trace;
 traceState.snapshot();
 assert.equal(traceState.runRef.current, trace);
@@ -83,14 +153,42 @@ const handler = createAccountRuntimeEventHandler({
 
 handler.handle({ type: "token", text: "hello" });
 handler.handle({ type: "reasoning", text: "thinking" });
-handler.handle({ type: "tool", id: "call-1", name: "shell", status: "running" });
-handler.handle({ type: "tool", id: "call-1", name: "shell", status: "done", label: "Ran shell" });
+handler.handle({
+  type: "tool",
+  id: "call-1",
+  name: "shell",
+  status: "running",
+});
+handler.handle({
+  type: "tool",
+  id: "call-1",
+  name: "shell",
+  status: "done",
+  label: "Ran shell",
+});
 handler.handle({ type: "thread", thread_id: "codex-thread", model: "gpt-5" });
-handler.handle({ type: "image", id: "img", status: "completed", url: "https://example.com/image.png" });
-handler.handle({ type: "rate_limit", limit: { provider: "Claude", kind: "requests", remaining: 1 } });
-handler.handle({ type: "done", status: "done", usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 }, cost_usd: 0.01 });
+handler.handle({
+  type: "image",
+  id: "img",
+  status: "completed",
+  url: "https://example.com/image.png",
+});
+handler.handle({
+  type: "rate_limit",
+  limit: { provider: "Claude", kind: "requests", remaining: 1 },
+});
+handler.handle({
+  type: "done",
+  status: "done",
+  usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 },
+  cost_usd: 0.01,
+});
 handler.handle({ type: "warning", message: "CLI missing" });
-handler.handle({ type: "error", message: "boom", usage: { prompt_tokens: 4, completion_tokens: 5, total_tokens: 9 } });
+handler.handle({
+  type: "error",
+  message: "boom",
+  usage: { prompt_tokens: 4, completion_tokens: 5, total_tokens: 9 },
+});
 
 assert.deepEqual(text, ["hello"]);
 assert.deepEqual(thinking, ["thinking"]);
@@ -100,7 +198,10 @@ assert.equal(appended[0].kind, "event");
 assert.equal(completed.length, 1);
 assert.equal(completed[0].name, "call-1");
 assert.equal(completed[0].part.kind, "event");
-assert.equal(completed[0].part.kind === "event" ? completed[0].part.label : "", "Ran shell");
+assert.equal(
+  completed[0].part.kind === "event" ? completed[0].part.label : "",
+  "Ran shell",
+);
 assert.deepEqual(threads, ["codex-thread"]);
 assert.equal(images[0].url, "https://example.com/image.png");
 assert.equal(limits[0].provider, "Claude");
@@ -121,7 +222,11 @@ const agentThinking: string[] = [];
 let agentFlushes = 0;
 let snapshots = 0;
 const agentEvents: ChatStreamPart[] = [];
-const agentCompleted: Array<{ name: string; callId?: string; part: ChatStreamPart }> = [];
+const agentCompleted: Array<{
+  name: string;
+  callId?: string;
+  part: ChatStreamPart;
+}> = [];
 const memoryNotices: MemoryNotice[] = [];
 const childUpserts: string[] = [];
 const childUpdates: string[] = [];
@@ -135,7 +240,8 @@ const agentHandler = createAgentRunEventHandler({
     agentFlushes += 1;
   },
   appendStreamEvent: (part) => agentEvents.push(part),
-  completeStreamEvent: (name, part, callId) => agentCompleted.push({ name, part, callId }),
+  completeStreamEvent: (name, part, callId) =>
+    agentCompleted.push({ name, part, callId }),
   appendMemoryNotice: (notice) => memoryNotices.push(notice),
   upsertChildThread: (thread) => childUpserts.push(thread.id),
   updateChildThread: (thread) => childUpdates.push(thread.id),
@@ -154,8 +260,18 @@ const agentHandler = createAgentRunEventHandler({
 agentHandler({ type: "start", model: "agent-model" });
 agentHandler({ type: "token", text: "A" });
 agentHandler({ type: "reasoning", text: "B" });
-agentHandler({ type: "tool_call", call_id: "tool-1", name: "shell", arguments: JSON.stringify({ command: "npm test" }) });
-agentHandler({ type: "tool_result", call_id: "tool-1", name: "shell", result: { ok: true } });
+agentHandler({
+  type: "tool_call",
+  call_id: "tool-1",
+  name: "shell",
+  arguments: JSON.stringify({ command: "npm test" }),
+});
+agentHandler({
+  type: "tool_result",
+  call_id: "tool-1",
+  name: "shell",
+  result: { ok: true },
+});
 agentHandler({
   type: "memory_registered",
   id: "memory-1",
@@ -165,10 +281,45 @@ agentHandler({
   summary: "Remember this",
   created_at: "2026-07-03T00:00:00Z",
 } as AgentEvent);
-agentHandler({ type: "child_thread_started", thread: { id: "child-1", parent_id: "s1", root_id: "s1", title: "Worker", status: "running", model: "m", prompt: "p", created_at: "", updated_at: "" } });
-agentHandler({ type: "child_thread_done", thread: { id: "child-1", parent_id: "s1", root_id: "s1", title: "Worker", status: "done", model: "m", prompt: "p", summary: "Done", created_at: "", updated_at: "" } });
-agentHandler({ type: "usage_delta", usage: { prompt_tokens: 3, completion_tokens: 4, total_tokens: 7 } });
-agentHandler({ type: "done", iterations: 2, stopped_at_limit: true, usage: { prompt_tokens: 7, completion_tokens: 8, total_tokens: 15 } });
+agentHandler({
+  type: "child_thread_started",
+  thread: {
+    id: "child-1",
+    parent_id: "s1",
+    root_id: "s1",
+    title: "Worker",
+    status: "running",
+    model: "m",
+    prompt: "p",
+    created_at: "",
+    updated_at: "",
+  },
+});
+agentHandler({
+  type: "child_thread_done",
+  thread: {
+    id: "child-1",
+    parent_id: "s1",
+    root_id: "s1",
+    title: "Worker",
+    status: "done",
+    model: "m",
+    prompt: "p",
+    summary: "Done",
+    created_at: "",
+    updated_at: "",
+  },
+});
+agentHandler({
+  type: "usage_delta",
+  usage: { prompt_tokens: 3, completion_tokens: 4, total_tokens: 7 },
+});
+agentHandler({
+  type: "done",
+  iterations: 2,
+  stopped_at_limit: true,
+  usage: { prompt_tokens: 7, completion_tokens: 8, total_tokens: 15 },
+});
 
 assert.equal(run.model, "agent-model");
 assert.deepEqual(agentText, ["A"]);
@@ -220,7 +371,15 @@ await runModelChatTurn({
   beginAssistant: (conversation) => {
     modelOrder.push(`begin:${conversation.length}`);
   },
-  streamChat: async (model, messages, onToken, signal, onThinking, onUsage, reasoningEffort) => {
+  streamChat: async (
+    model,
+    messages,
+    onToken,
+    signal,
+    onThinking,
+    onUsage,
+    reasoningEffort,
+  ) => {
     streamedModelSignal = signal;
     streamedModel = `${model}:${reasoningEffort ?? ""}`;
     streamedMessages = messages;
@@ -237,7 +396,12 @@ await runModelChatTurn({
   signal: modelSignal,
   reasoningEffort: "low",
 });
-assert.deepEqual(modelOrder, ["prepare:1:1", "begin:1", "token:token", "thinking:think"]);
+assert.deepEqual(modelOrder, [
+  "prepare:1:1",
+  "begin:1",
+  "token:token",
+  "thinking:think",
+]);
 assert.equal(streamedModel, "model-a:low");
 assert.equal(preparedModelSignal, modelSignal);
 assert.equal(streamedModelSignal, modelSignal);
@@ -285,10 +449,13 @@ try {
   const handled = handleTurnRuntimeError({
     error,
     assistantStarted: compactionAbortBegan,
-    append: () => assert.fail("aborted compaction should not append an error bubble"),
+    append: () =>
+      assert.fail("aborted compaction should not append an error bubble"),
     flush: () => {},
-    setChatNotice: () => assert.fail("aborted compaction should not show an error notice"),
-    appendStreamEvent: () => assert.fail("aborted compaction should not add an error event"),
+    setChatNotice: () =>
+      assert.fail("aborted compaction should not show an error notice"),
+    appendStreamEvent: () =>
+      assert.fail("aborted compaction should not add an error event"),
     runRef: { current: null },
     snapshot: () => {},
     signal: compactionAbortController.signal,
@@ -328,7 +495,11 @@ const codexResult = await runAccountRuntimeTurn({
     accountSkippedAutoCompaction = options?.skipAutoCompaction;
     accountPreparedSignal = options?.signal;
     return {
-      conversation: [...conversation, { role: "assistant", content: "old assistant" }, { role: "user", content: "latest user" }],
+      conversation: [
+        ...conversation,
+        { role: "assistant", content: "old assistant" },
+        { role: "user", content: "latest user" },
+      ],
       outbound: [],
     };
   },
@@ -359,7 +530,12 @@ const codexResult = await runAccountRuntimeTurn({
     assert.equal(request.tool_approval_grant, true);
     codexPrompt = request.prompt;
     onEvent({ type: "thread", thread_id: "codex-thread-2", model: "gpt-5" });
-    onEvent({ type: "done", thread_id: "codex-thread-2", status: "done", usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } });
+    onEvent({
+      type: "done",
+      thread_id: "codex-thread-2",
+      status: "done",
+      usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+    });
   },
   signal: accountSignal,
 });
@@ -382,7 +558,10 @@ const claudeResult = await runAccountRuntimeTurn({
   promptContext: accountPromptContext,
   conversation: [{ role: "user", content: "full user" }],
   prepareOutbound: async (contextMessages, conversation) => ({
-    conversation: [...conversation, { role: "assistant", content: "full assistant" }],
+    conversation: [
+      ...conversation,
+      { role: "assistant", content: "full assistant" },
+    ],
     outbound: contextMessages,
   }),
   beginAssistant: () => {},
@@ -406,7 +585,10 @@ const claudeResult = await runAccountRuntimeTurn({
     assert.equal(request.session_id, "claude-session-1");
     assert.equal(request.plan_mode, true);
     claudePrompt = request.prompt;
-    onEvent({ type: "rate_limit", limit: { provider: "Claude", kind: "tokens", remaining: 10 } });
+    onEvent({
+      type: "rate_limit",
+      limit: { provider: "Claude", kind: "tokens", remaining: 10 },
+    });
     onEvent({ type: "warning", message: "CLI was not found on PATH" });
   },
 });
@@ -416,7 +598,10 @@ assert(claudePrompt.includes("User:\nfull user"));
 assert(claudePrompt.includes("Assistant:\nfull assistant"));
 assert.equal(accountLimits[0].kind, "tokens");
 assert.equal(accountWarnings[0].kind, "event");
-assert.equal(accountWarnings[0].kind === "event" ? accountWarnings[0].label : "", "Claude Code not on PATH");
+assert.equal(
+  accountWarnings[0].kind === "event" ? accountWarnings[0].label : "",
+  "Claude CLI not on PATH",
+);
 
 const codexSummaryRequest = codexCompactionSummaryRequest({
   model: "gpt-5",
@@ -442,10 +627,16 @@ let selectedImageUrl = "";
 const selectedAccountResult = await runSelectedAccountRuntimeTurn({
   codexModel: "gpt-5",
   claudeModel: "sonnet",
-  accountRuntime: { codexThreadId: "stored-codex", claudeSessionId: "stored-claude" },
+  accountRuntime: {
+    codexThreadId: "stored-codex",
+    claudeSessionId: "stored-claude",
+  },
   promptContext: accountPromptContext,
   conversation: [{ role: "user", content: "selected" }],
-  prepareOutbound: async (_contextMessages, conversation) => ({ conversation, outbound: [] }),
+  prepareOutbound: async (_contextMessages, conversation) => ({
+    conversation,
+    outbound: [],
+  }),
   beginAssistant: () => {},
   checkpointWorkspace: async () => {},
   workspace: "C:\\work",
@@ -473,9 +664,15 @@ const selectedAccountResult = await runSelectedAccountRuntimeTurn({
   streamCodexRun: async (request, onEvent) => {
     assert.equal(request.thread_id, "stored-codex");
     onEvent({ type: "thread", thread_id: "new-codex", model: "gpt-5" });
-    onEvent({ type: "image", id: "img-selected", status: "completed", url: "https://example.com/selected.png" });
+    onEvent({
+      type: "image",
+      id: "img-selected",
+      status: "completed",
+      url: "https://example.com/selected.png",
+    });
   },
-  streamClaudeRun: async () => assert.fail("codex should win when both account models are present"),
+  streamClaudeRun: async () =>
+    assert.fail("codex should win when both account models are present"),
 });
 assert.equal(selectedAccountResult?.status, "done");
 assert.equal(selectedCodexThread, "new-codex");
@@ -509,7 +706,10 @@ await runToolAgentTurn({
   prepareOutbound: async (contextMessages, conversation, options) => {
     toolPreparedSignal = options?.signal;
     return {
-      conversation: [...conversation, { role: "assistant", content: "prepared" }],
+      conversation: [
+        ...conversation,
+        { role: "assistant", content: "prepared" },
+      ],
       outbound: contextMessages,
     };
   },
@@ -574,8 +774,14 @@ assert.equal(toolStartedConversationLength, 2);
 assert.equal(toolPreparedSignal, toolSignal);
 assert.equal(toolStreamSignal, toolSignal);
 assert.equal(toolStreamAgentId, "agent-1");
-assert.equal(toolStreamMessages.some((message) => message.content === "Root instruction"), false);
-assert.equal(toolStreamMessages.some((message) => message.content === "Schedule"), true);
+assert.equal(
+  toolStreamMessages.some((message) => message.content === "Root instruction"),
+  false,
+);
+assert.equal(
+  toolStreamMessages.some((message) => message.content === "Schedule"),
+  true,
+);
 assert(toolSnapshots >= 3);
 
 let failingRun: RunTrace | null = null;
@@ -595,7 +801,10 @@ const failing = await runToolAgentTurn({
     toolContext: {},
   },
   conversation: [{ role: "user", content: "fail" }],
-  prepareOutbound: async (_contextMessages, conversation) => ({ conversation, outbound: conversation }),
+  prepareOutbound: async (_contextMessages, conversation) => ({
+    conversation,
+    outbound: conversation,
+  }),
   beginAssistant: () => {},
   checkpointWorkspace: async () => {},
   streamAgentRun: async (_agentId, _model, _messages, onEvent) => {
@@ -640,7 +849,12 @@ const failing = await runToolAgentTurn({
 assert.equal(failing.status, "error");
 assert.equal(failing.error, "tool failed");
 
-const erroredRun: RunTrace = { model: "m", startedAt: 1, steps: [], status: "running" };
+const erroredRun: RunTrace = {
+  model: "m",
+  startedAt: 1,
+  steps: [],
+  status: "running",
+};
 const runtimeErrorText: string[] = [];
 const runtimeNotices: string[] = [];
 const runtimeEvents: ChatStreamPart[] = [];
@@ -671,7 +885,12 @@ assert.equal(erroredRun.endedAt, 99);
 assert.equal(runtimeFlushes, 2);
 assert.equal(runtimeSnapshots, 1);
 
-const abortedRun: RunTrace = { model: "m", startedAt: 1, steps: [], status: "running" };
+const abortedRun: RunTrace = {
+  model: "m",
+  startedAt: 1,
+  steps: [],
+  status: "running",
+};
 const abortResult = handleTurnRuntimeError({
   error: new DOMException("stop", "AbortError"),
   assistantStarted: true,
@@ -688,16 +907,28 @@ assert.equal(abortedRun.status, "aborted");
 assert.equal(abortedRun.error, undefined);
 assert.equal(abortedRun.endedAt, 100);
 
-const stringAbortRun: RunTrace = { model: "m", startedAt: 1, steps: [], status: "running" };
+const stringAbortRun: RunTrace = {
+  model: "m",
+  startedAt: 1,
+  steps: [],
+  status: "running",
+};
 const stringAbortController = new AbortController();
 stringAbortController.abort();
 const stringAbortResult = handleTurnRuntimeError({
   error: new Error("account runtime stopped"),
   assistantStarted: true,
-  append: () => assert.fail("signal-aborted runtime errors should not append an error bubble"),
+  append: () =>
+    assert.fail(
+      "signal-aborted runtime errors should not append an error bubble",
+    ),
   flush: () => {},
-  setChatNotice: () => assert.fail("signal-aborted runtime errors should not show an error notice"),
-  appendStreamEvent: () => assert.fail("signal-aborted runtime errors should not add an error event"),
+  setChatNotice: () =>
+    assert.fail(
+      "signal-aborted runtime errors should not show an error notice",
+    ),
+  appendStreamEvent: () =>
+    assert.fail("signal-aborted runtime errors should not add an error event"),
   runRef: { current: stringAbortRun },
   snapshot: () => {},
   signal: stringAbortController.signal,
@@ -712,12 +943,16 @@ finalizeTurnRuntime({
   status: "done",
   flush: () => finalizeOrder.push("flush"),
   metrics: { startedAt: 1, endedAt: 2, durationMs: 1, model: "model-a" },
-  commitResponseMetrics: (sessionId, metrics) => finalizeOrder.push(`metrics:${sessionId}:${metrics.durationMs}`),
+  commitResponseMetrics: (sessionId, metrics) =>
+    finalizeOrder.push(`metrics:${sessionId}:${metrics.durationMs}`),
   clearController: (sessionId) => finalizeOrder.push(`clear:${sessionId}`),
-  setSessionGenerating: (sessionId, generating) => finalizeOrder.push(`generating:${sessionId}:${generating}`),
-  setSessionUnread: (sessionId, unread) => finalizeOrder.push(`unread:${sessionId}:${unread}`),
+  setSessionGenerating: (sessionId, generating) =>
+    finalizeOrder.push(`generating:${sessionId}:${generating}`),
+  setSessionUnread: (sessionId, unread) =>
+    finalizeOrder.push(`unread:${sessionId}:${unread}`),
   activeSessionId: "other",
-  stopChildThreadEventsIfIdle: (sessionId) => finalizeOrder.push(`stop:${sessionId}`),
+  stopChildThreadEventsIfIdle: (sessionId) =>
+    finalizeOrder.push(`stop:${sessionId}`),
   maybeGenerateAiThreadTitle: async (sessionId, model) => {
     finalizeOrder.push(`title:${sessionId}:${model}`);
   },
@@ -738,12 +973,21 @@ finalizeTurnRuntime({
   model: "model-b",
   status: "skipped",
   flush: () => skippedFinalizeOrder.push("flush"),
-  commitResponseMetrics: () => assert.fail("metrics should not commit when no metrics are provided"),
-  clearController: (sessionId) => skippedFinalizeOrder.push(`clear:${sessionId}`),
+  commitResponseMetrics: () =>
+    assert.fail("metrics should not commit when no metrics are provided"),
+  clearController: (sessionId) =>
+    skippedFinalizeOrder.push(`clear:${sessionId}`),
   setSessionGenerating: () => {},
-  setSessionUnread: (_sessionId, unread) => skippedFinalizeOrder.push(`unread:${unread}`),
+  setSessionUnread: (_sessionId, unread) =>
+    skippedFinalizeOrder.push(`unread:${unread}`),
   activeSessionId: "s2",
   stopChildThreadEventsIfIdle: () => skippedFinalizeOrder.push("stop"),
-  maybeGenerateAiThreadTitle: async () => assert.fail("skipped turns should not generate titles"),
+  maybeGenerateAiThreadTitle: async () =>
+    assert.fail("skipped turns should not generate titles"),
 });
-assert.deepEqual(skippedFinalizeOrder, ["flush", "clear:s2", "unread:false", "stop"]);
+assert.deepEqual(skippedFinalizeOrder, [
+  "flush",
+  "clear:s2",
+  "unread:false",
+  "stop",
+]);

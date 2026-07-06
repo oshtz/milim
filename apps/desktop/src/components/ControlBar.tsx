@@ -1,5 +1,10 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { type ModelInfo, type PrivacyMode, type RunTrace, type ToolApprovalMode } from "../api";
+import {
+  type ModelInfo,
+  type PrivacyMode,
+  type RunTrace,
+  type ToolApprovalMode,
+} from "../api";
 import { goalChipVisible, type GoalSettings } from "../lib/goals";
 import { featureVisibleInMode } from "../ui/features";
 import { useUiPreferences } from "../ui/store";
@@ -9,7 +14,16 @@ import { RunTimeline } from "./RunTimeline";
 
 function Shield({ size = 13 }: { size?: number }) {
   return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round">
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.7}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
       <path d="M12 3l7 3v5c0 4.4-3 7.6-7 9-4-1.4-7-4.6-7-9V6l7-3z" />
     </svg>
   );
@@ -24,12 +38,21 @@ const PRIVACY_LABEL: Record<PrivacyMode, string> = {
 const TOOL_APPROVAL_LABEL: Record<ToolApprovalMode, string> = {
   review: "Review gate",
   guarded: "Guarded run",
-  open: "Open run",
+  open: "Open / bypass permissions",
 };
 
 function Monitor({ size = 13 }: { size?: number }) {
   return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round">
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.7}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
       <rect x="3" y="4" width="18" height="12" rx="1.5" />
       <path d="M8 20h8M12 16v4" />
     </svg>
@@ -90,8 +113,14 @@ export function ControlBar({
     if (!menu) return;
     const onDoc = (e: MouseEvent) => {
       const target = e.target;
-      if (target instanceof Element && target.closest(".mp-effort-menu")) return;
-      if (ref.current && target instanceof Node && !ref.current.contains(target)) setMenu(null);
+      if (target instanceof Element && target.closest(".mp-effort-menu"))
+        return;
+      if (
+        ref.current &&
+        target instanceof Node &&
+        !ref.current.contains(target)
+      )
+        setMenu(null);
     };
     document.addEventListener("mousedown", onDoc);
     return () => document.removeEventListener("mousedown", onDoc);
@@ -99,8 +128,12 @@ export function ControlBar({
 
   const interfaceMode = useUiPreferences((s) => s.interfaceMode);
   const showSandbox = featureVisibleInMode("sandbox", interfaceMode) || sandbox;
-  const showComputerUse = featureVisibleInMode("computerUse", interfaceMode) || computerUse;
-  const showMemoryManager = featureVisibleInMode("memoryManager", interfaceMode);
+  const showComputerUse =
+    featureVisibleInMode("computerUse", interfaceMode) || computerUse;
+  const showMemoryManager = featureVisibleInMode(
+    "memoryManager",
+    interfaceMode,
+  );
   const activeContextCount = [
     showSandbox && sandbox,
     showComputerUse && computerUse,
@@ -110,9 +143,7 @@ export function ControlBar({
     toolApproval !== "guarded",
   ].filter(Boolean).length;
   const contextSummary =
-    activeContextCount === 0
-      ? "None active"
-      : `${activeContextCount} active`;
+    activeContextCount === 0 ? "None active" : `${activeContextCount} active`;
   const showGoalChip = goalChipVisible(goal);
   const goalDetail = goal.status[0].toUpperCase() + goal.status.slice(1);
 
@@ -149,9 +180,7 @@ export function ControlBar({
         </div>
 
         {inlineControls && (
-          <div className="control-inline-slot">
-            {inlineControls}
-          </div>
+          <div className="control-inline-slot">{inlineControls}</div>
         )}
 
         {showGoalChip && (
@@ -195,9 +224,13 @@ export function ControlBar({
           <div className="chip-wrap context-chip-wrap">
             <button
               type="button"
-              className={"chip context-chip" + (activeContextCount ? " chip-on" : "")}
+              className={
+                "chip context-chip" + (activeContextCount ? " chip-on" : "")
+              }
               data-testid="context-menu-trigger"
-              onClick={() => setMenu((m) => (m === "context" ? null : "context"))}
+              onClick={() =>
+                setMenu((m) => (m === "context" ? null : "context"))
+              }
               title="Session controls"
               aria-label={`Session controls, ${contextSummary}`}
               aria-haspopup="menu"
@@ -205,106 +238,147 @@ export function ControlBar({
             >
               <Folder size={13} />
               <span className="chip-label">Session</span>
-              <span className="chip-detail">{activeContextCount ? contextSummary : ""}</span>
+              <span className="chip-detail">
+                {activeContextCount ? contextSummary : ""}
+              </span>
               <ChevronDown size={12} className="chip-chev" />
             </button>
             {menu === "context" && (
-              <div className="context-menu" role="menu" aria-label="Session controls">
-              {showSandbox && (
-                <button
-                  className={"context-row" + (sandbox ? " context-on" : "")}
-                  type="button"
-                  onClick={onToggleSandbox}
-                  aria-pressed={sandbox}
-                  title="Run tools in an isolated Docker sandbox"
-                >
-                  <span className="context-icon"><Cube size={14} /></span>
-                  <span className="context-copy">
-                    <span className="context-title">Sandbox</span>
-                    <span className="context-value">{sandbox ? "On" : "Off"}</span>
-                  </span>
-                  <span className="context-switch" aria-hidden="true" />
-                </button>
-              )}
-
-              {showComputerUse && (
-                <button
-                  className={"context-row" + (computerUse ? " context-on" : "")}
-                  type="button"
-                  onClick={onToggleComputer}
-                  aria-pressed={computerUse}
-                  title="Let the agent see the screen and control the mouse/keyboard"
-                >
-                  <span className="context-icon"><Monitor size={14} /></span>
-                  <span className="context-copy">
-                    <span className="context-title">Computer use</span>
-                    <span className="context-value">{computerUse ? "On" : "Off"}</span>
-                  </span>
-                  <span className="context-switch" aria-hidden="true" />
-                </button>
-              )}
-
-              <button
-                className={"context-row" + (toolApproval !== "guarded" ? " context-on" : "")}
-                type="button"
-                onClick={onCycleToolApproval}
-                title="Cycle tool approval mode"
+              <div
+                className="context-menu"
+                role="menu"
+                aria-label="Session controls"
               >
-                <span className="context-icon"><Shield size={14} /></span>
-                <span className="context-copy">
-                  <span className="context-title">Tool approval</span>
-                  <span className="context-value">{TOOL_APPROVAL_LABEL[toolApproval]}</span>
-                </span>
-                <ChevronDown size={12} className="context-chev" />
-              </button>
+                {showSandbox && (
+                  <button
+                    className={"context-row" + (sandbox ? " context-on" : "")}
+                    type="button"
+                    onClick={onToggleSandbox}
+                    aria-pressed={sandbox}
+                    title="Run tools in an isolated Docker sandbox"
+                  >
+                    <span className="context-icon">
+                      <Cube size={14} />
+                    </span>
+                    <span className="context-copy">
+                      <span className="context-title">Sandbox</span>
+                      <span className="context-value">
+                        {sandbox ? "On" : "Off"}
+                      </span>
+                    </span>
+                    <span className="context-switch" aria-hidden="true" />
+                  </button>
+                )}
 
-              <button
-                className={"context-row" + (memory ? " context-on" : "")}
-                type="button"
-                onClick={onToggleMemory}
-                aria-pressed={memory}
-                title="Let the agent use scoped thread and project memories"
-              >
-                <span className="context-icon"><Lightbulb size={14} /></span>
-                <span className="context-copy">
-                  <span className="context-title">Memory</span>
-                  <span className="context-value">{memory ? "On" : "Off"}</span>
-                </span>
-                <span className="context-switch" aria-hidden="true" />
-              </button>
+                {showComputerUse && (
+                  <button
+                    className={
+                      "context-row" + (computerUse ? " context-on" : "")
+                    }
+                    type="button"
+                    onClick={onToggleComputer}
+                    aria-pressed={computerUse}
+                    title="Let the agent see the screen and control the mouse/keyboard"
+                  >
+                    <span className="context-icon">
+                      <Monitor size={14} />
+                    </span>
+                    <span className="context-copy">
+                      <span className="context-title">Computer use</span>
+                      <span className="context-value">
+                        {computerUse ? "On" : "Off"}
+                      </span>
+                    </span>
+                    <span className="context-switch" aria-hidden="true" />
+                  </button>
+                )}
 
-              {showMemoryManager && (
                 <button
-                  className="context-row"
+                  className={
+                    "context-row" +
+                    (toolApproval !== "guarded" ? " context-on" : "")
+                  }
                   type="button"
-                  onClick={() => {
-                    setMenu(null);
-                    onManageMemory();
-                  }}
-                  title="Choose thread and project memory scope"
+                  onClick={onCycleToolApproval}
+                  title={
+                    toolApproval === "open"
+                      ? "Open mode for Claude CLI uses Claude's bypass-permissions mode. Claude may run tools and commands without additional Claude prompts. Use only in trusted workspaces."
+                      : "Cycle tool approval mode"
+                  }
                 >
-                  <span className="context-icon"><Lightbulb size={14} /></span>
+                  <span className="context-icon">
+                    <Shield size={14} />
+                  </span>
                   <span className="context-copy">
-                    <span className="context-title">Memory scope</span>
-                    <span className="context-value">Thread, project, all</span>
+                    <span className="context-title">Tool approval</span>
+                    <span className="context-value">
+                      {TOOL_APPROVAL_LABEL[toolApproval]}
+                    </span>
                   </span>
                   <ChevronDown size={12} className="context-chev" />
                 </button>
-              )}
 
-              <button
-                className={"context-row" + (privacy !== "off" ? " context-on" : "")}
-                type="button"
-                onClick={onCyclePrivacy}
-                title="Scan PII before sending to a remote provider. Click to cycle Off, Redact, Block."
-              >
-                <span className="context-icon"><Shield size={14} /></span>
-                <span className="context-copy">
-                  <span className="context-title">Private mode</span>
-                  <span className="context-value">{PRIVACY_LABEL[privacy]}</span>
-                </span>
-                <ChevronDown size={12} className="context-chev" />
-              </button>
+                <button
+                  className={"context-row" + (memory ? " context-on" : "")}
+                  type="button"
+                  onClick={onToggleMemory}
+                  aria-pressed={memory}
+                  title="Let the agent use scoped thread and project memories"
+                >
+                  <span className="context-icon">
+                    <Lightbulb size={14} />
+                  </span>
+                  <span className="context-copy">
+                    <span className="context-title">Memory</span>
+                    <span className="context-value">
+                      {memory ? "On" : "Off"}
+                    </span>
+                  </span>
+                  <span className="context-switch" aria-hidden="true" />
+                </button>
+
+                {showMemoryManager && (
+                  <button
+                    className="context-row"
+                    type="button"
+                    onClick={() => {
+                      setMenu(null);
+                      onManageMemory();
+                    }}
+                    title="Choose thread and project memory scope"
+                  >
+                    <span className="context-icon">
+                      <Lightbulb size={14} />
+                    </span>
+                    <span className="context-copy">
+                      <span className="context-title">Memory scope</span>
+                      <span className="context-value">
+                        Thread, project, all
+                      </span>
+                    </span>
+                    <ChevronDown size={12} className="context-chev" />
+                  </button>
+                )}
+
+                <button
+                  className={
+                    "context-row" + (privacy !== "off" ? " context-on" : "")
+                  }
+                  type="button"
+                  onClick={onCyclePrivacy}
+                  title="Scan PII before sending to a remote provider. Click to cycle Off, Redact, Block."
+                >
+                  <span className="context-icon">
+                    <Shield size={14} />
+                  </span>
+                  <span className="context-copy">
+                    <span className="context-title">Private mode</span>
+                    <span className="context-value">
+                      {PRIVACY_LABEL[privacy]}
+                    </span>
+                  </span>
+                  <ChevronDown size={12} className="context-chev" />
+                </button>
               </div>
             )}
           </div>

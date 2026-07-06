@@ -173,7 +173,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/codex/rate-limits", get(routes::codex_rate_limits))
         .route("/codex/models", get(routes::codex_models))
         .route("/codex/run", post(routes::codex_run))
-        // Claude Code CLI bridge (separate from Anthropic API-key providers)
+        // Installed Claude CLI bridge (separate from Anthropic API-key providers)
         .route("/claude/status", get(routes::claude_status))
         .route("/claude/run", post(routes::claude_run))
         // MCP tools (server bridge: exposes our tools to MCP clients)

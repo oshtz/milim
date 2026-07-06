@@ -72,4 +72,4 @@ curl http://127.0.0.1:7377/v1/chat/completions `
 | Tools refuse the folder | The thread has no workspace folder. Use the folder control or `/folder C:\path\to\repo`. |
 | Remote send is blocked | Privacy is set to `block` and the scanner detected PII or a secret-looking value. |
 | Sandbox fails | Docker is not installed, not running, or cannot start the default container. |
-| Account runtime is missing | Codex or Claude Code must be installed and authenticated outside the provider key registry. |
+| Account runtime is missing | Codex or Anthropic's official Claude CLI must be installed and authenticated outside the provider key registry. |

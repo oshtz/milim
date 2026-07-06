@@ -27,7 +27,7 @@ milim is a local-first AI desktop app with an embedded Rust backend and local HT
 | Desktop app | Tauri 2, Vite, React, TypeScript, Simple/Workbench UI modes, persisted UI state, and per-launch bearer auth. |
 | Embedded server | Axum HTTP server with OpenAI, Anthropic, Ollama, provider, workspace, agent, memory, MCP, media, mobile, and privacy routes. |
 | Local data | Provider records, settings, threads, memories, schedules, and runtime state live under the Milim home directory. |
-| Remote traffic | Hosted chat, embeddings, media, Codex, and Claude Code calls pass through explicit routing and the privacy gate. |
+| Remote traffic | Hosted chat, embeddings, media, Codex, and installed Claude CLI calls pass through explicit routing and the privacy gate. |
 
 ## Source map
 
@@ -41,4 +41,4 @@ milim is a local-first AI desktop app with an embedded Rust backend and local HT
 
 ## Local-first line
 
-Local-first does not mean local-only. milim can talk to OpenAI, Anthropic, Gemini, OpenRouter, Ollama, LM Studio, Replicate, fal, Codex, and Claude Code. The important boundary is explicit routing: local API runtimes stay on the machine, and remote sends can pass through the server-side privacy gate before leaving it.
+Local-first does not mean local-only. milim can talk to OpenAI, Anthropic, Gemini, OpenRouter, Ollama, LM Studio, Replicate, fal, Codex, and the installed Claude CLI. The important boundary is explicit routing: local API runtimes stay on the machine, and remote sends can pass through the server-side privacy gate before leaving it.

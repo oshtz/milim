@@ -58,7 +58,7 @@ use crate::preview_runtime::{PreviewAppStageRequest, PreviewAppStartRequest};
 use crate::privacy::{kinds_summary, PrivacyMode};
 use crate::sse::{agent_sse, anthropic_sse, ollama_ndjson, openai_sse, ChunkCtx};
 use crate::state::AppState;
-use crate::threads::{missing_threads_error, ChildRunSpec, ThreadSupervisor};
+use crate::threads::{missing_threads_error, ChildRunSpec, SupervisorEvent, ThreadSupervisor};
 use crate::translate::{
     anthropic_response_blocks, anthropic_stop_reason, anthropic_to_completion,
     ollama_format_to_response_format, ollama_think_effort, ollama_to_completion,
@@ -3266,7 +3266,7 @@ pub(crate) async fn codex_run(
         .into_response())
 }
 
-/// `GET /claude/status` - current Claude Code CLI auth/runtime state.
+/// `GET /claude/status` - current installed Claude CLI auth/runtime state.
 pub(crate) async fn claude_status(
     State(st): State<AppState>,
     headers: HeaderMap,
@@ -3277,7 +3277,7 @@ pub(crate) async fn claude_status(
     Ok(Json(status).into_response())
 }
 
-/// `POST /claude/run` - run a Claude Code CLI turn as a separate account runtime.
+/// `POST /claude/run` - run an installed Claude CLI turn as a separate account runtime.
 pub(crate) async fn claude_run(
     State(st): State<AppState>,
     headers: HeaderMap,
@@ -8715,6 +8715,8 @@ struct ChildThreadReadArgs {
     include_events: bool,
     #[serde(default)]
     event_limit: Option<usize>,
+    #[serde(default)]
+    after_seq: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -8892,7 +8894,8 @@ impl Tool for ChildThreadReadTool {
             "properties": {
                 "thread_id": { "type": "string" },
                 "include_events": { "type": "boolean" },
-                "event_limit": { "type": "integer", "minimum": 1, "maximum": 5000 }
+                "event_limit": { "type": "integer", "minimum": 1, "maximum": 5000 },
+                "after_seq": { "type": "integer", "minimum": 0 }
             },
             "required": ["thread_id"],
             "additionalProperties": false
@@ -8910,9 +8913,13 @@ impl Tool for ChildThreadReadTool {
             .ok_or_else(|| Error::ModelNotFound(format!("thread {thread_id}")))?;
         if args.include_events {
             let limit = args.event_limit.unwrap_or(DEFAULT_THREAD_EVENT_LIMIT);
-            let events = self
-                .supervisor
-                .events(&thread_id, thread_event_limit(limit))?;
+            let limit = thread_event_limit(limit);
+            let events = if let Some(after_seq) = args.after_seq {
+                self.supervisor
+                    .events_after(&thread_id, after_seq.max(0), limit)?
+            } else {
+                self.supervisor.events(&thread_id, limit)?
+            };
             let event_count = self.supervisor.event_count(&thread_id)?;
             Ok(json!({
                 "ok": true,
@@ -9626,6 +9633,8 @@ pub(crate) struct ThreadReadQuery {
     include_events: bool,
     #[serde(default)]
     event_limit: Option<usize>,
+    #[serde(default)]
+    after_seq: Option<i64>,
 }
 
 const DEFAULT_THREAD_EVENT_LIMIT: usize = 1000;
@@ -9643,6 +9652,14 @@ pub(crate) struct ThreadChildrenQuery {
     limit: Option<usize>,
 }
 
+#[derive(Deserialize)]
+pub(crate) struct ThreadEventsQuery {
+    #[serde(default)]
+    after_seq: Option<i64>,
+    #[serde(default)]
+    event_limit: Option<usize>,
+}
+
 /// `GET /threads/{id}` - inspect one child thread.
 pub(crate) async fn thread_get(
     State(st): State<AppState>,
@@ -9658,10 +9675,14 @@ pub(crate) async fn thread_get(
         .map_err(ApiError)?
         .ok_or_else(|| ApiError(Error::ModelNotFound(format!("thread {id}"))))?;
     if query.include_events {
-        let limit = query.event_limit.unwrap_or(DEFAULT_THREAD_EVENT_LIMIT);
-        let events = supervisor
-            .events(&id, thread_event_limit(limit))
-            .map_err(ApiError)?;
+        let limit = thread_event_limit(query.event_limit.unwrap_or(DEFAULT_THREAD_EVENT_LIMIT));
+        let events = if let Some(after_seq) = query.after_seq {
+            supervisor
+                .events_after(&id, after_seq.max(0), limit)
+                .map_err(ApiError)?
+        } else {
+            supervisor.events(&id, limit).map_err(ApiError)?
+        };
         let event_count = supervisor.event_count(&id).map_err(ApiError)?;
         Ok(Json(json!({
             "thread": thread,
@@ -9699,23 +9720,50 @@ pub(crate) async fn thread_children(
 pub(crate) async fn thread_events(
     State(st): State<AppState>,
     Path(id): Path<String>,
+    Query(query): Query<ThreadEventsQuery>,
     headers: HeaderMap,
     peer: Peer,
 ) -> Result<Response, ApiError> {
     authorize(&st, &headers, peer_addr(peer))?;
     let supervisor = thread_supervisor(&st)?;
     let mut events = supervisor.subscribe();
+    let event_limit = thread_event_limit(query.event_limit.unwrap_or(DEFAULT_THREAD_EVENT_LIMIT));
+    let initial_after_seq = query.after_seq.unwrap_or(0).max(0);
     let stream = async_stream::stream! {
+        let mut last_seq = initial_after_seq;
+        if let Ok(backfill) = supervisor.child_events_after(&id, last_seq, event_limit) {
+            for (thread, event) in backfill {
+                last_seq = last_seq.max(event.seq);
+                let data = serde_json::to_string(&SupervisorEvent::ChildThreadEvent { thread, event })
+                    .unwrap_or_else(|_| "{}".to_string());
+                yield Ok::<Event, Infallible>(Event::default().data(data));
+            }
+        }
         loop {
             match events.recv().await {
                 Ok(event) => {
                     if event.thread().parent_id != id {
                         continue;
                     }
+                    if let SupervisorEvent::ChildThreadEvent { event: stored, .. } = &event {
+                        if stored.seq <= last_seq {
+                            continue;
+                        }
+                        last_seq = stored.seq;
+                    }
                     let data = serde_json::to_string(&event).unwrap_or_else(|_| "{}".to_string());
                     yield Ok::<Event, Infallible>(Event::default().data(data));
                 }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                    if let Ok(backfill) = supervisor.child_events_after(&id, last_seq, event_limit) {
+                        for (thread, event) in backfill {
+                            last_seq = last_seq.max(event.seq);
+                            let data = serde_json::to_string(&SupervisorEvent::ChildThreadEvent { thread, event })
+                                .unwrap_or_else(|_| "{}".to_string());
+                            yield Ok::<Event, Infallible>(Event::default().data(data));
+                        }
+                    }
+                }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
         }

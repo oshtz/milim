@@ -35,12 +35,12 @@ Model routing is provider-agnostic. The provider registry stores enabled remotes
 
 ## Account runtimes
 
-Codex and Claude Code are separate from saved provider records. They are backed by installed CLIs, appear in the model picker after authentication, and reuse the active Milim chat session when the runtime exposes a native session id.
+Codex and the installed Claude CLI are separate from saved provider records. They are backed by user-installed CLIs, appear in the model picker after authentication, and reuse the active Milim chat session when the runtime exposes a native session id. Milim does not include Claude Code, provide Anthropic credentials, or manage Claude credentials; it only invokes the separately installed official Claude CLI.
 
 | Runtime | Setup | Session behavior |
 |---|---|---|
 | Codex | Use `/codex/login/device`, `/codex/login/chatgpt-device`, or `/codex/login/api-key`. | Milim stores the returned Codex thread id on the Milim chat when persistence is enabled. |
-| Claude Code | Install `claude` and run `claude auth login` outside Milim. | Milim stores one Claude session id per Milim chat, uses `--session-id` for new native sessions and `--resume` for existing project transcripts, and retries once after terminating a matching stale process if Claude still reports the session is already in use. |
+| Installed Claude CLI | Install Anthropic's official `claude` CLI separately and run `claude auth login` outside Milim. | Milim stores one Claude session id per Milim chat, uses `--session-id` for new native sessions and `--resume` for existing project transcripts, and asks before stopping a matching local Claude CLI process if Claude reports the session is already in use. |
 
 The repo-level account runtime reference lives at `docs/account-runtimes.md`.
 

@@ -117,12 +117,13 @@ export interface WorkspaceCheckpoint {
 }
 
 export interface ChatApprovalRequest {
-  kind: "tool";
-  scope: "reply" | "goal";
+  kind: "tool" | "claude_session_recovery";
+  scope: "reply" | "goal" | "claude_session_recovery";
   status: "pending" | "approved" | "denied";
   requestedAt: number;
   resolvedAt?: number;
   model?: string;
+  detail?: string;
 }
 
 export interface ChatMessage {
@@ -224,7 +225,9 @@ export interface RunTrace {
   error?: string;
 }
 
-export function attachmentsToPromptContext(attachments?: ChatAttachment[]): string {
+export function attachmentsToPromptContext(
+  attachments?: ChatAttachment[],
+): string {
   if (!attachments?.length) return "";
   const blocks = attachments.map((attachment) => {
     const meta = [
@@ -237,10 +240,14 @@ export function attachmentsToPromptContext(attachments?: ChatAttachment[]): stri
       .filter(Boolean)
       .join(" ");
     const content = attachment.content?.trimEnd();
-    const imageNote = attachment.dataUrl ? "[Image preview is available in the desktop UI. No OCR text was extracted.]" : "";
+    const imageNote = attachment.dataUrl
+      ? "[Image preview is available in the desktop UI. No OCR text was extracted.]"
+      : "";
     return [
       `--- attachment ${meta} ---`,
-      content ? content : imageNote || "[No text content available for this attachment.]",
+      content
+        ? content
+        : imageNote || "[No text content available for this attachment.]",
       "--- end attachment ---",
     ].join("\n");
   });
@@ -251,11 +258,15 @@ export function wireMessageContent(message: ChatMessage): string {
   if (message.approval) return "";
   const attachmentContext = attachmentsToPromptContext(message.attachments);
   if (!attachmentContext) return message.content;
-  return message.content ? `${message.content}\n\n${attachmentContext}` : attachmentContext;
+  return message.content
+    ? `${message.content}\n\n${attachmentContext}`
+    : attachmentContext;
 }
 
 /** Strip UI-only fields so only the wire contract (`role`, `content`) is sent. */
-function wireMessages(messages: ChatMessage[]): Array<{ role: string; content: string }> {
+function wireMessages(
+  messages: ChatMessage[],
+): Array<{ role: string; content: string }> {
   return messages
     .filter((m) => !m.approval)
     .map((m) => ({ role: m.role, content: wireMessageContent(m) }));
@@ -264,7 +275,8 @@ function wireMessages(messages: ChatMessage[]): Array<{ role: string; content: s
 const DEFAULT_BASE = "http://127.0.0.1:7377";
 const BASE = DEFAULT_BASE;
 const CODEX_PICKER_TIMEOUT_MS = 1500;
-const inTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+const inTauri =
+  typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
 let tokenPromise: Promise<string | null> | null = null;
 let apiBasePromise: Promise<string> | null = null;
@@ -314,26 +326,40 @@ export async function discoverHarnessImports(): Promise<HarnessImportPreview> {
   }
 }
 
-async function resolveApiInput(input: RequestInfo | URL): Promise<RequestInfo | URL> {
+async function resolveApiInput(
+  input: RequestInfo | URL,
+): Promise<RequestInfo | URL> {
   const base = await localApiBaseUrl();
   if (base === DEFAULT_BASE) return input;
   if (typeof input === "string") {
-    return input.startsWith(DEFAULT_BASE) ? `${base}${input.slice(DEFAULT_BASE.length)}` : input;
+    return input.startsWith(DEFAULT_BASE)
+      ? `${base}${input.slice(DEFAULT_BASE.length)}`
+      : input;
   }
   if (input instanceof URL) {
     const text = input.toString();
-    return text.startsWith(DEFAULT_BASE) ? new URL(`${base}${text.slice(DEFAULT_BASE.length)}`) : input;
+    return text.startsWith(DEFAULT_BASE)
+      ? new URL(`${base}${text.slice(DEFAULT_BASE.length)}`)
+      : input;
   }
   return input;
 }
 
 export async function typeDictationText(text: string): Promise<void> {
-  if (!inTauri) throw new Error("Active-app dictation is only available in the desktop app.");
+  if (!inTauri)
+    throw new Error(
+      "Active-app dictation is only available in the desktop app.",
+    );
   await invoke("voice_type_text", { text });
 }
 
-export async function readAttachmentFile(path: string): Promise<Omit<ChatAttachment, "id">> {
-  if (!inTauri) throw new Error("Desktop file picking is only available in the desktop app.");
+export async function readAttachmentFile(
+  path: string,
+): Promise<Omit<ChatAttachment, "id">> {
+  if (!inTauri)
+    throw new Error(
+      "Desktop file picking is only available in the desktop app.",
+    );
   const payload = await invoke<{
     name: string;
     size: number;
@@ -350,9 +376,17 @@ export async function readAttachmentFile(path: string): Promise<Omit<ChatAttachm
   };
 }
 
-export async function listWorkspaceFiles(workspace: string, query: string, limit = 20): Promise<WorkspaceFileSuggestion[]> {
+export async function listWorkspaceFiles(
+  workspace: string,
+  query: string,
+  limit = 20,
+): Promise<WorkspaceFileSuggestion[]> {
   if (!inTauri || !workspace.trim()) return [];
-  return await invoke<WorkspaceFileSuggestion[]>("list_workspace_files", { workspace, query, limit });
+  return await invoke<WorkspaceFileSuggestion[]>("list_workspace_files", {
+    workspace,
+    query,
+    limit,
+  });
 }
 
 export async function saveArtifactFile(
@@ -361,7 +395,10 @@ export async function saveArtifactFile(
   content: string,
   overwrite = false,
 ): Promise<SavedArtifactFile> {
-  if (!inTauri) throw new Error("Saving artifacts to a working folder is only available in the desktop app.");
+  if (!inTauri)
+    throw new Error(
+      "Saving artifacts to a working folder is only available in the desktop app.",
+    );
   return await invoke<SavedArtifactFile>("save_artifact_file", {
     workspace,
     path,
@@ -370,7 +407,11 @@ export async function saveArtifactFile(
   });
 }
 
-export async function previewArtifactFile(workspace: string, path: string, content: string): Promise<ArtifactWritePreview> {
+export async function previewArtifactFile(
+  workspace: string,
+  path: string,
+  content: string,
+): Promise<ArtifactWritePreview> {
   if (!inTauri) {
     return {
       path,
@@ -380,7 +421,10 @@ export async function previewArtifactFile(workspace: string, path: string, conte
       new_content: content,
       old_bytes: null,
       new_bytes: content.length,
-      diff: content.split(/\r?\n/).map((line) => `+${line}`).join("\n"),
+      diff: content
+        .split(/\r?\n/)
+        .map((line) => `+${line}`)
+        .join("\n"),
       truncated: false,
     };
   }
@@ -391,15 +435,23 @@ export async function previewArtifactFile(workspace: string, path: string, conte
   });
 }
 
-export async function artifactFileStatus(path: string): Promise<ArtifactFileStatus> {
+export async function artifactFileStatus(
+  path: string,
+): Promise<ArtifactFileStatus> {
   if (!inTauri) {
     return { path, exists: true, is_file: true, is_dir: false, bytes: null };
   }
   return await invoke<ArtifactFileStatus>("artifact_file_status", { path });
 }
 
-export async function openArtifactLocation(path: string, target: ArtifactOpenTarget = "file"): Promise<void> {
-  if (!inTauri) throw new Error("Opening saved artifacts is only available in the desktop app.");
+export async function openArtifactLocation(
+  path: string,
+  target: ArtifactOpenTarget = "file",
+): Promise<void> {
+  if (!inTauri)
+    throw new Error(
+      "Opening saved artifacts is only available in the desktop app.",
+    );
   await invoke("open_artifact_location", { path, target });
 }
 
@@ -411,7 +463,9 @@ export async function openExternalUrl(url: string): Promise<void> {
   window.open(url, "_blank", "noopener,noreferrer");
 }
 
-export async function setActivePreviewTarget(target: { label: string; url?: string | null; native: boolean } | null): Promise<void> {
+export async function setActivePreviewTarget(
+  target: { label: string; url?: string | null; native: boolean } | null,
+): Promise<void> {
   if (!inTauri) return;
   await invoke("set_active_preview_target", {
     label: target?.label ?? null,
@@ -458,9 +512,15 @@ export function inferAttachmentMime(name: string): string {
   }
 }
 
-async function authFetch(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
+async function authFetch(
+  input: RequestInfo | URL,
+  init: RequestInit = {},
+): Promise<Response> {
   const headers = new Headers(init.headers);
-  const [token, resolvedInput] = await Promise.all([localApiToken(), resolveApiInput(input)]);
+  const [token, resolvedInput] = await Promise.all([
+    localApiToken(),
+    resolveApiInput(input),
+  ]);
   if (token) headers.set("Authorization", `Bearer ${token}`);
   return fetch(resolvedInput, { ...init, headers });
 }
@@ -510,7 +570,10 @@ export type MobileRelayAction =
   | "set_model"
   | "attach";
 
-export type MobileRelayAttachment = Pick<ChatAttachment, "id" | "name" | "mime" | "size" | "content" | "dataUrl" | "truncated">;
+export type MobileRelayAttachment = Pick<
+  ChatAttachment,
+  "id" | "name" | "mime" | "size" | "content" | "dataUrl" | "truncated"
+>;
 
 export interface MobileRelayEvent {
   id: number;
@@ -570,12 +633,22 @@ export interface MobileModelSummary {
   provider?: string | null;
 }
 
-async function parseJsonResponse<T>(resp: Response, fallback: string): Promise<T> {
+async function parseJsonResponse<T>(
+  resp: Response,
+  fallback: string,
+): Promise<T> {
   if (!resp.ok) throw new Error(await responseErrorMessage(resp, fallback));
   return (await resp.json()) as T;
 }
 
-export type PreviewAppState = "idle" | "staged" | "installing" | "starting" | "running" | "stopped" | "error";
+export type PreviewAppState =
+  | "idle"
+  | "staged"
+  | "installing"
+  | "starting"
+  | "running"
+  | "stopped"
+  | "error";
 
 export interface PreviewAppFile {
   path: string;
@@ -607,14 +680,19 @@ function previewAppUrl(threadId: string, suffix = ""): string {
   return `${BASE}/preview-apps/${encodeURIComponent(threadId)}${suffix}`;
 }
 
-export async function getPreviewAppStatus(threadId: string): Promise<PreviewAppStatus> {
+export async function getPreviewAppStatus(
+  threadId: string,
+): Promise<PreviewAppStatus> {
   return await parseJsonResponse<PreviewAppStatus>(
     await authFetch(previewAppUrl(threadId)),
     "preview app status failed",
   );
 }
 
-export async function stagePreviewApp(threadId: string, files: PreviewAppFile[]): Promise<PreviewAppStatus> {
+export async function stagePreviewApp(
+  threadId: string,
+  files: PreviewAppFile[],
+): Promise<PreviewAppStatus> {
   return await parseJsonResponse<PreviewAppStatus>(
     await authFetch(previewAppUrl(threadId, "/stage"), {
       method: "POST",
@@ -625,7 +703,10 @@ export async function stagePreviewApp(threadId: string, files: PreviewAppFile[])
   );
 }
 
-export async function startPreviewApp(threadId: string, options: PreviewAppStartOptions = {}): Promise<PreviewAppStatus> {
+export async function startPreviewApp(
+  threadId: string,
+  options: PreviewAppStartOptions = {},
+): Promise<PreviewAppStatus> {
   const cwd = options.cwd?.trim();
   return await parseJsonResponse<PreviewAppStatus>(
     await authFetch(previewAppUrl(threadId, "/start"), {
@@ -641,14 +722,19 @@ export async function startPreviewApp(threadId: string, options: PreviewAppStart
   );
 }
 
-export async function stopPreviewApp(threadId: string): Promise<PreviewAppStatus> {
+export async function stopPreviewApp(
+  threadId: string,
+): Promise<PreviewAppStatus> {
   return await parseJsonResponse<PreviewAppStatus>(
     await authFetch(previewAppUrl(threadId, "/stop"), { method: "POST" }),
     "preview app stop failed",
   );
 }
 
-export async function restartPreviewApp(threadId: string, options: PreviewAppStartOptions = {}): Promise<PreviewAppStatus> {
+export async function restartPreviewApp(
+  threadId: string,
+  options: PreviewAppStartOptions = {},
+): Promise<PreviewAppStatus> {
   const cwd = options.cwd?.trim();
   return await parseJsonResponse<PreviewAppStatus>(
     await authFetch(previewAppUrl(threadId, "/restart"), {
@@ -664,7 +750,9 @@ export async function restartPreviewApp(threadId: string, options: PreviewAppSta
   );
 }
 
-export async function getPreviewAppLogs(threadId: string): Promise<PreviewAppLog[]> {
+export async function getPreviewAppLogs(
+  threadId: string,
+): Promise<PreviewAppLog[]> {
   const payload = await parseJsonResponse<{ logs: PreviewAppLog[] }>(
     await authFetch(previewAppUrl(threadId, "/logs")),
     "preview app logs failed",
@@ -679,7 +767,9 @@ export async function getMobileCompanionStatus(): Promise<MobileCompanionStatus>
   );
 }
 
-export async function setMobileCompanionEnabled(enabled: boolean): Promise<MobileCompanionStatus> {
+export async function setMobileCompanionEnabled(
+  enabled: boolean,
+): Promise<MobileCompanionStatus> {
   return await parseJsonResponse<MobileCompanionStatus>(
     await authFetch(`${BASE}/mobile/enabled`, {
       method: "POST",
@@ -697,9 +787,13 @@ export async function startMobileCompanionPairing(): Promise<MobileCompanionPair
   );
 }
 
-export async function revokeMobileCompanionDevice(id: string): Promise<MobileCompanionStatus> {
+export async function revokeMobileCompanionDevice(
+  id: string,
+): Promise<MobileCompanionStatus> {
   return await parseJsonResponse<MobileCompanionStatus>(
-    await authFetch(`${BASE}/mobile/devices/${encodeURIComponent(id)}`, { method: "DELETE" }),
+    await authFetch(`${BASE}/mobile/devices/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    }),
     "mobile companion revoke failed",
   );
 }
@@ -712,7 +806,9 @@ export async function pollMobileCompanionEvents(): Promise<MobileRelayEvent[]> {
   return payload.events;
 }
 
-export async function publishMobileThreadSnapshot(snapshot: MobileThreadSnapshot): Promise<void> {
+export async function publishMobileThreadSnapshot(
+  snapshot: MobileThreadSnapshot,
+): Promise<void> {
   await parseJsonResponse<{ thread: unknown }>(
     await authFetch(`${BASE}/mobile/thread`, {
       method: "POST",
@@ -725,21 +821,41 @@ export async function publishMobileThreadSnapshot(snapshot: MobileThreadSnapshot
 
 export async function mobileTailscaleStatus(): Promise<MobileTailscaleStatus> {
   if (!inTauri) {
-    return { installed: false, logged_in: false, serve_configured: false, local_target: "", message: "Tailscale setup is available in the desktop app." };
+    return {
+      installed: false,
+      logged_in: false,
+      serve_configured: false,
+      local_target: "",
+      message: "Tailscale setup is available in the desktop app.",
+    };
   }
   return await invoke<MobileTailscaleStatus>("mobile_tailscale_status");
 }
 
 export async function configureMobileTailscaleRelay(): Promise<MobileTailscaleStatus> {
   if (!inTauri) {
-    return { installed: false, logged_in: false, serve_configured: false, local_target: "", message: "Tailscale setup is available in the desktop app." };
+    return {
+      installed: false,
+      logged_in: false,
+      serve_configured: false,
+      local_target: "",
+      message: "Tailscale setup is available in the desktop app.",
+    };
   }
-  return await invoke<MobileTailscaleStatus>("configure_mobile_tailscale_relay");
+  return await invoke<MobileTailscaleStatus>(
+    "configure_mobile_tailscale_relay",
+  );
 }
 
 export async function disableMobileTailscaleRelay(): Promise<MobileTailscaleStatus> {
   if (!inTauri) {
-    return { installed: false, logged_in: false, serve_configured: false, local_target: "", message: "Tailscale setup is available in the desktop app." };
+    return {
+      installed: false,
+      logged_in: false,
+      serve_configured: false,
+      local_target: "",
+      message: "Tailscale setup is available in the desktop app.",
+    };
   }
   return await invoke<MobileTailscaleStatus>("disable_mobile_tailscale_relay");
 }
@@ -767,7 +883,9 @@ export async function streamChat(
     signal,
   });
   if (!resp.ok || !resp.body) {
-    throw new Error(await responseErrorMessage(resp, `chat HTTP ${resp.status}`));
+    throw new Error(
+      await responseErrorMessage(resp, `chat HTTP ${resp.status}`),
+    );
   }
 
   const reader = resp.body.getReader();
@@ -800,15 +918,20 @@ export async function streamChat(
       if (usage) onUsage?.(usage);
       const delta: string | undefined = json.choices?.[0]?.delta?.content;
       const reasoning: string | undefined =
-        json.choices?.[0]?.delta?.reasoning_content ?? json.choices?.[0]?.delta?.reasoning;
+        json.choices?.[0]?.delta?.reasoning_content ??
+        json.choices?.[0]?.delta?.reasoning;
       if (reasoning) onReasoning?.(reasoning);
       if (delta) onToken(delta);
     }
   }
 }
 
-function reasoningEffortBody(reasoningEffort?: ReasoningEffort): { reasoning_effort?: ReasoningEffort } {
-  return reasoningEffort && reasoningEffort !== "auto" ? { reasoning_effort: reasoningEffort } : {};
+function reasoningEffortBody(reasoningEffort?: ReasoningEffort): {
+  reasoning_effort?: ReasoningEffort;
+} {
+  return reasoningEffort && reasoningEffort !== "auto"
+    ? { reasoning_effort: reasoningEffort }
+    : {};
 }
 
 export interface ChatCompletionResult {
@@ -820,7 +943,12 @@ export interface ChatCompletionResult {
 export async function completeChatWithMetrics(
   model: string,
   messages: ChatMessage[],
-  options: { signal?: AbortSignal; maxTokens?: number; temperature?: number; reasoningEffort?: ReasoningEffort } = {},
+  options: {
+    signal?: AbortSignal;
+    maxTokens?: number;
+    temperature?: number;
+    reasoningEffort?: ReasoningEffort;
+  } = {},
 ): Promise<ChatCompletionResult> {
   const resp = await authFetch(`${BASE}/v1/chat/completions`, {
     method: "POST",
@@ -836,11 +964,14 @@ export async function completeChatWithMetrics(
     signal: options.signal,
   });
   if (!resp.ok) {
-    throw new Error(await responseErrorMessage(resp, `chat HTTP ${resp.status}`));
+    throw new Error(
+      await responseErrorMessage(resp, `chat HTTP ${resp.status}`),
+    );
   }
   const json = await resp.json();
   const content = json.choices?.[0]?.message?.content;
-  if (typeof content !== "string") throw new Error("The model returned an empty response.");
+  if (typeof content !== "string")
+    throw new Error("The model returned an empty response.");
   const usage = parseTokenUsage(json.usage);
   const finishReason = json.choices?.[0]?.finish_reason;
   return {
@@ -853,7 +984,12 @@ export async function completeChatWithMetrics(
 export async function completeChat(
   model: string,
   messages: ChatMessage[],
-  options: { signal?: AbortSignal; maxTokens?: number; temperature?: number; reasoningEffort?: ReasoningEffort } = {},
+  options: {
+    signal?: AbortSignal;
+    maxTokens?: number;
+    temperature?: number;
+    reasoningEffort?: ReasoningEffort;
+  } = {},
 ): Promise<string> {
   const { content } = await completeChatWithMetrics(model, messages, options);
   return content;
@@ -865,8 +1001,17 @@ function parseTokenUsage(value: unknown): TokenUsage | null {
   const prompt = usage.prompt_tokens;
   const completion = usage.completion_tokens;
   const total = usage.total_tokens;
-  if (typeof prompt !== "number" || typeof completion !== "number" || typeof total !== "number") return null;
-  return { prompt_tokens: prompt, completion_tokens: completion, total_tokens: total };
+  if (
+    typeof prompt !== "number" ||
+    typeof completion !== "number" ||
+    typeof total !== "number"
+  )
+    return null;
+  return {
+    prompt_tokens: prompt,
+    completion_tokens: completion,
+    total_tokens: total,
+  };
 }
 
 /// List available models (returns [] if the server is unreachable or slow).
@@ -877,7 +1022,9 @@ export async function listModels(): Promise<string[]> {
     const r = await authFetch(`${BASE}/v1/models`, { signal: ctrl.signal });
     clearTimeout(timer);
     const j = await r.json();
-    return (j.data ?? []).map((m: { id: string }) => m.id).filter(isUsableChatModel);
+    return (j.data ?? [])
+      .map((m: { id: string }) => m.id)
+      .filter(isUsableChatModel);
   } catch {
     return [];
   }
@@ -899,7 +1046,16 @@ export interface ModelCapabilities {
   videoOutput?: boolean;
 }
 
-export type ReasoningEffort = "auto" | "none" | "minimal" | "low" | "medium" | "high" | "on" | "xhigh" | "max";
+export type ReasoningEffort =
+  | "auto"
+  | "none"
+  | "minimal"
+  | "low"
+  | "medium"
+  | "high"
+  | "on"
+  | "xhigh"
+  | "max";
 
 export interface ModelReasoningMetadata {
   supported_efforts: ReasoningEffort[];
@@ -951,15 +1107,25 @@ export async function listModelsDetailed(): Promise<ModelInfo[]> {
     clearTimeout(timer);
     const j = await r.json();
     const localModels = (j.data ?? [])
-      .map((m: { id: string; owned_by?: string; context_length?: number; max_prompt_tokens?: number; max_completion_tokens?: number; reasoning?: unknown; capabilities?: unknown }) => ({
-        id: m.id,
-        owned_by: m.owned_by ?? "local",
-        context_length: numberOrUndefined(m.context_length),
-        max_prompt_tokens: numberOrUndefined(m.max_prompt_tokens),
-        max_completion_tokens: numberOrUndefined(m.max_completion_tokens),
-        reasoning: normalizeModelReasoning(m.reasoning),
-        capabilities: normalizeModelCapabilities(m.capabilities),
-      }))
+      .map(
+        (m: {
+          id: string;
+          owned_by?: string;
+          context_length?: number;
+          max_prompt_tokens?: number;
+          max_completion_tokens?: number;
+          reasoning?: unknown;
+          capabilities?: unknown;
+        }) => ({
+          id: m.id,
+          owned_by: m.owned_by ?? "local",
+          context_length: numberOrUndefined(m.context_length),
+          max_prompt_tokens: numberOrUndefined(m.max_prompt_tokens),
+          max_completion_tokens: numberOrUndefined(m.max_completion_tokens),
+          reasoning: normalizeModelReasoning(m.reasoning),
+          capabilities: normalizeModelCapabilities(m.capabilities),
+        }),
+      )
       .filter((m: ModelInfo) => isUsableChatModel(m.id));
     const [codexModels, claudeModels] = await Promise.all([
       listCodexModelsForPicker(),
@@ -972,20 +1138,36 @@ export async function listModelsDetailed(): Promise<ModelInfo[]> {
 }
 
 function numberOrUndefined(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? value
+    : undefined;
 }
 
 function normalizeModelCapability(value: unknown): boolean | undefined {
   return typeof value === "boolean" ? value : undefined;
 }
 
-function normalizeModelCapabilities(value: unknown): ModelCapabilities | undefined {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+function normalizeModelCapabilities(
+  value: unknown,
+): ModelCapabilities | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    return undefined;
   const raw = value as Record<string, unknown>;
-  const imageInput = normalizeModelCapability(raw.imageInput ?? raw.image_input);
-  const imageOutput = normalizeModelCapability(raw.imageOutput ?? raw.image_output);
-  const videoOutput = normalizeModelCapability(raw.videoOutput ?? raw.video_output);
-  if (typeof imageInput !== "boolean" && typeof imageOutput !== "boolean" && typeof videoOutput !== "boolean") return undefined;
+  const imageInput = normalizeModelCapability(
+    raw.imageInput ?? raw.image_input,
+  );
+  const imageOutput = normalizeModelCapability(
+    raw.imageOutput ?? raw.image_output,
+  );
+  const videoOutput = normalizeModelCapability(
+    raw.videoOutput ?? raw.video_output,
+  );
+  if (
+    typeof imageInput !== "boolean" &&
+    typeof imageOutput !== "boolean" &&
+    typeof videoOutput !== "boolean"
+  )
+    return undefined;
   return {
     ...(typeof imageInput === "boolean" ? { imageInput } : {}),
     ...(typeof imageOutput === "boolean" ? { imageOutput } : {}),
@@ -993,38 +1175,71 @@ function normalizeModelCapabilities(value: unknown): ModelCapabilities | undefin
   };
 }
 
-const REASONING_EFFORTS: ReasoningEffort[] = ["auto", "none", "minimal", "low", "medium", "high", "on", "xhigh", "max"];
+const REASONING_EFFORTS: ReasoningEffort[] = [
+  "auto",
+  "none",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "on",
+  "xhigh",
+  "max",
+];
 
-function normalizeModelReasoning(value: unknown): ModelReasoningMetadata | undefined {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+function normalizeModelReasoning(
+  value: unknown,
+): ModelReasoningMetadata | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    return undefined;
   const raw = value as Record<string, unknown>;
   const supported = Array.isArray(raw.supported_efforts)
-    ? raw.supported_efforts.filter((item): item is ReasoningEffort =>
-        typeof item === "string" && REASONING_EFFORTS.includes(item as ReasoningEffort))
+    ? raw.supported_efforts.filter(
+        (item): item is ReasoningEffort =>
+          typeof item === "string" &&
+          REASONING_EFFORTS.includes(item as ReasoningEffort),
+      )
     : [];
-  const defaultEffort = typeof raw.default_effort === "string" && REASONING_EFFORTS.includes(raw.default_effort as ReasoningEffort)
-    ? raw.default_effort as ReasoningEffort
-    : undefined;
-  if (!supported.length && !defaultEffort && typeof raw.default_enabled !== "boolean" && typeof raw.mandatory !== "boolean") return undefined;
+  const defaultEffort =
+    typeof raw.default_effort === "string" &&
+    REASONING_EFFORTS.includes(raw.default_effort as ReasoningEffort)
+      ? (raw.default_effort as ReasoningEffort)
+      : undefined;
+  if (
+    !supported.length &&
+    !defaultEffort &&
+    typeof raw.default_enabled !== "boolean" &&
+    typeof raw.mandatory !== "boolean"
+  )
+    return undefined;
   return {
     supported_efforts: supported,
     default_effort: defaultEffort,
-    default_enabled: typeof raw.default_enabled === "boolean" ? raw.default_enabled : undefined,
+    default_enabled:
+      typeof raw.default_enabled === "boolean"
+        ? raw.default_enabled
+        : undefined,
     mandatory: typeof raw.mandatory === "boolean" ? raw.mandatory : undefined,
   };
 }
 
 function normalizeReasoningEffort(value: unknown): ReasoningEffort | undefined {
-  return typeof value === "string" && REASONING_EFFORTS.includes(value as ReasoningEffort)
-    ? value as ReasoningEffort
+  return typeof value === "string" &&
+    REASONING_EFFORTS.includes(value as ReasoningEffort)
+    ? (value as ReasoningEffort)
     : undefined;
 }
 
-function normalizeCodexReasoning(item: any): ModelReasoningMetadata | undefined {
+function normalizeCodexReasoning(
+  item: any,
+): ModelReasoningMetadata | undefined {
   const supported = Array.isArray(item?.supportedReasoningEfforts)
     ? item.supportedReasoningEfforts
         .map((entry: any) => normalizeReasoningEffort(entry?.reasoningEffort))
-        .filter((effort: ReasoningEffort | undefined): effort is ReasoningEffort => Boolean(effort))
+        .filter(
+          (effort: ReasoningEffort | undefined): effort is ReasoningEffort =>
+            Boolean(effort),
+        )
     : [];
   const defaultEffort = normalizeReasoningEffort(item?.defaultReasoningEffort);
   if (!supported.length && !defaultEffort) return undefined;
@@ -1048,13 +1263,16 @@ async function listCodexModelsForPicker(): Promise<ModelInfo[]> {
     const j = await r.json();
     const byId = new Map<string, ModelInfo>();
     for (const item of j.data ?? []) {
-      const raw = typeof item?.model === "string" && item.model.trim()
-        ? item.model.trim()
-        : typeof item?.id === "string"
-          ? item.id.trim()
-          : "";
+      const raw =
+        typeof item?.model === "string" && item.model.trim()
+          ? item.model.trim()
+          : typeof item?.id === "string"
+            ? item.id.trim()
+            : "";
       if (!raw) continue;
-      const inputModalities = Array.isArray(item?.inputModalities) ? item.inputModalities : [];
+      const inputModalities = Array.isArray(item?.inputModalities)
+        ? item.inputModalities
+        : [];
       byId.set(`${CODEX_MODEL_PREFIX}${raw}`, {
         id: `${CODEX_MODEL_PREFIX}${raw}`,
         owned_by: "Codex",
@@ -1097,7 +1315,12 @@ export interface ClaudeStatusResponse {
 
 export type CodexLoginEvent =
   | { type: "browser"; login_id: string; auth_url: string }
-  | { type: "device_code"; login_id: string; user_code: string; verification_url: string }
+  | {
+      type: "device_code";
+      login_id: string;
+      user_code: string;
+      verification_url: string;
+    }
   | { type: "done"; success: boolean; error?: string | null }
   | { type: "warning"; message: string }
   | { type: "error"; message: string };
@@ -1107,26 +1330,60 @@ export type CodexRunEvent =
   | { type: "start"; thread_id: string; turn_id: string }
   | { type: "token"; text: string }
   | { type: "reasoning"; text: string }
-  | { type: "tool"; id: string; name: string; status: ChatStreamEventStatus; label?: string | null; detail?: string | null; icon?: ChatStreamEventIcon | null }
-  | { type: "image"; id: string; status: string; url: string; revised_prompt?: string | null; saved_path?: string | null }
-  | { type: "done"; thread_id: string; turn_id?: string | null; status: string; usage?: TokenUsage; cost_usd?: number }
+  | {
+      type: "tool";
+      id: string;
+      name: string;
+      status: ChatStreamEventStatus;
+      label?: string | null;
+      detail?: string | null;
+      icon?: ChatStreamEventIcon | null;
+    }
+  | {
+      type: "image";
+      id: string;
+      status: string;
+      url: string;
+      revised_prompt?: string | null;
+      saved_path?: string | null;
+    }
+  | {
+      type: "done";
+      thread_id: string;
+      turn_id?: string | null;
+      status: string;
+      usage?: TokenUsage;
+      cost_usd?: number;
+    }
   | { type: "warning"; message: string }
   | { type: "error"; message: string; usage?: TokenUsage; cost_usd?: number };
 
 export type ClaudeRunEvent =
   | { type: "token"; text: string }
   | { type: "reasoning"; text: string }
-  | { type: "tool"; id: string; name: string; status: ChatStreamEventStatus; label?: string | null; detail?: string | null; icon?: ChatStreamEventIcon | null }
+  | {
+      type: "tool";
+      id: string;
+      name: string;
+      status: ChatStreamEventStatus;
+      label?: string | null;
+      detail?: string | null;
+      icon?: ChatStreamEventIcon | null;
+    }
   | { type: "rate_limit"; limit: ProviderLimitInfo }
   | { type: "done"; status: string; usage?: TokenUsage; cost_usd?: number }
   | { type: "warning"; message: string }
+  | { type: "session_recovery_required"; message: string }
   | { type: "error"; message: string; usage?: TokenUsage; cost_usd?: number };
 
 export function isCliPathWarningMessage(message?: string | null): boolean {
   return Boolean(message?.includes("CLI was not found on PATH"));
 }
 
-export async function getCodexAccount(refresh = false, signal?: AbortSignal): Promise<CodexAccountResponse> {
+export async function getCodexAccount(
+  refresh = false,
+  signal?: AbortSignal,
+): Promise<CodexAccountResponse> {
   const url = new URL(`${BASE}/codex/account`);
   if (refresh) url.searchParams.set("refresh", "true");
   return await parseJsonResponse<CodexAccountResponse>(
@@ -1159,7 +1416,7 @@ async function listClaudeModelsForPicker(): Promise<ModelInfo[]> {
       .filter((model) => model.trim())
       .map((model) => ({
         id: `${CLAUDE_MODEL_PREFIX}${model.trim()}`,
-        owned_by: "Claude Code",
+        owned_by: "Local Claude CLI",
         reasoning: {
           supported_efforts: ["low", "medium", "high", "xhigh", "max"],
           default_effort: "high",
@@ -1174,10 +1431,12 @@ async function listClaudeModelsForPicker(): Promise<ModelInfo[]> {
   }
 }
 
-export async function getClaudeStatus(signal?: AbortSignal): Promise<ClaudeStatusResponse> {
+export async function getClaudeStatus(
+  signal?: AbortSignal,
+): Promise<ClaudeStatusResponse> {
   return await parseJsonResponse<ClaudeStatusResponse>(
     await authFetch(`${BASE}/claude/status`, signal ? { signal } : undefined),
-    "Claude Code status check failed",
+    "Claude CLI status check failed",
   );
 }
 
@@ -1186,9 +1445,15 @@ export async function streamCodexDeviceLogin(
   signal?: AbortSignal,
   method: "chatgpt" | "chatgpt_device_code" = "chatgpt",
 ): Promise<void> {
-  const path = method === "chatgpt_device_code" ? "/codex/login/chatgpt-device" : "/codex/login/device";
+  const path =
+    method === "chatgpt_device_code"
+      ? "/codex/login/chatgpt-device"
+      : "/codex/login/device";
   const resp = await authFetch(`${BASE}${path}`, { method: "POST", signal });
-  if (!resp.ok || !resp.body) throw new Error(await responseErrorMessage(resp, `Codex login HTTP ${resp.status}`));
+  if (!resp.ok || !resp.body)
+    throw new Error(
+      await responseErrorMessage(resp, `Codex login HTTP ${resp.status}`),
+    );
   await streamJsonSse(resp, onEvent);
 }
 
@@ -1224,7 +1489,10 @@ export async function streamCodexRun(
     body: JSON.stringify(request),
     signal,
   });
-  if (!resp.ok || !resp.body) throw new Error(await responseErrorMessage(resp, `Codex run HTTP ${resp.status}`));
+  if (!resp.ok || !resp.body)
+    throw new Error(
+      await responseErrorMessage(resp, `Codex run HTTP ${resp.status}`),
+    );
   await streamJsonSse(resp, onEvent);
 }
 
@@ -1238,6 +1506,7 @@ export async function streamClaudeRun(
     tool_approval_policy?: ToolApprovalMode;
     tool_approval_grant?: boolean;
     plan_mode?: boolean;
+    allow_session_recovery?: boolean;
   },
   onEvent: (ev: ClaudeRunEvent) => void,
   signal?: AbortSignal,
@@ -1248,11 +1517,17 @@ export async function streamClaudeRun(
     body: JSON.stringify(request),
     signal,
   });
-  if (!resp.ok || !resp.body) throw new Error(await responseErrorMessage(resp, `Claude Code run HTTP ${resp.status}`));
+  if (!resp.ok || !resp.body)
+    throw new Error(
+      await responseErrorMessage(resp, `Claude CLI run HTTP ${resp.status}`),
+    );
   await streamJsonSse(resp, onEvent);
 }
 
-async function streamJsonSse<T>(resp: Response, onEvent: (ev: T) => void): Promise<void> {
+async function streamJsonSse<T>(
+  resp: Response,
+  onEvent: (ev: T) => void,
+): Promise<void> {
   const reader = resp.body?.getReader();
   if (!reader) return;
   const decoder = new TextDecoder();
@@ -1315,20 +1590,31 @@ const AGENT_DRAFT_SYSTEM_PROMPT = [
 function graphemes(text: string): string[] {
   const Segmenter = (Intl as any).Segmenter;
   if (Segmenter) {
-    return Array.from(new Segmenter(undefined, { granularity: "grapheme" }).segment(text), (x: any) => String(x.segment));
+    return Array.from(
+      new Segmenter(undefined, { granularity: "grapheme" }).segment(text),
+      (x: any) => String(x.segment),
+    );
   }
   return Array.from(text);
 }
 
 export function isLegacyAgentAvatar(value: string): boolean {
-  return value.startsWith("data:") || value.startsWith("/images/") || /\.(png|jpe?g|webp|gif)$/i.test(value);
+  return (
+    value.startsWith("data:") ||
+    value.startsWith("/images/") ||
+    /\.(png|jpe?g|webp|gif)$/i.test(value)
+  );
 }
 
 /** Text badge for an agent avatar. User-provided emoji or short labels win;
  *  old bundled image values fall back to the agent initial. */
-export function agentAvatarText(agent: { name?: string; avatar?: string }): string {
+export function agentAvatarText(agent: {
+  name?: string;
+  avatar?: string;
+}): string {
   const raw = (agent.avatar ?? "").trim();
-  if (raw && !isLegacyAgentAvatar(raw)) return graphemes(raw).slice(0, 2).join("");
+  if (raw && !isLegacyAgentAvatar(raw))
+    return graphemes(raw).slice(0, 2).join("");
   const name = (agent.name ?? "").trim();
   return graphemes(name)[0]?.toUpperCase() ?? "?";
 }
@@ -1361,13 +1647,13 @@ function extractJsonObject(text: string): string {
         escaped = false;
       } else if (ch === "\\") {
         escaped = true;
-      } else if (ch === "\"") {
+      } else if (ch === '"') {
         inString = false;
       }
       continue;
     }
 
-    if (ch === "\"") {
+    if (ch === '"') {
       inString = true;
     } else if (ch === "{") {
       depth += 1;
@@ -1395,14 +1681,19 @@ export function parseAgentDraftResponse(text: string): AgentDraft {
 
   const raw = parsed as Record<string, unknown>;
   const name = cleanDraftText(raw.name, 60).replace(/\s+/g, " ");
-  const systemPrompt = cleanDraftText(raw.system_prompt ?? raw.systemPrompt, 6000);
+  const systemPrompt = cleanDraftText(
+    raw.system_prompt ?? raw.systemPrompt,
+    6000,
+  );
   const rawAvatar = cleanDraftText(raw.avatar, 8);
-  const avatar = rawAvatar && !isLegacyAgentAvatar(rawAvatar)
-    ? graphemes(rawAvatar).slice(0, 2).join("")
-    : agentAvatarText({ name });
+  const avatar =
+    rawAvatar && !isLegacyAgentAvatar(rawAvatar)
+      ? graphemes(rawAvatar).slice(0, 2).join("")
+      : agentAvatarText({ name });
 
   if (!name) throw new Error("The model returned a draft without a name.");
-  if (!systemPrompt) throw new Error("The model returned a draft without a system prompt.");
+  if (!systemPrompt)
+    throw new Error("The model returned a draft without a system prompt.");
 
   return { name, system_prompt: systemPrompt, avatar };
 }
@@ -1425,7 +1716,9 @@ export async function listAgents(): Promise<Agent[]> {
   }
 }
 
-export async function saveAgent(a: Omit<Agent, "id"> & { id?: string }): Promise<Agent | null> {
+export async function saveAgent(
+  a: Omit<Agent, "id"> & { id?: string },
+): Promise<Agent | null> {
   const body = JSON.stringify({
     name: a.name,
     model: a.model,
@@ -1439,7 +1732,11 @@ export async function saveAgent(a: Omit<Agent, "id"> & { id?: string }): Promise
   const headers = { "Content-Type": "application/json" };
   try {
     const r = a.id
-      ? await authFetch(`${BASE}/agents/${encodeURIComponent(a.id)}`, { method: "PUT", headers, body })
+      ? await authFetch(`${BASE}/agents/${encodeURIComponent(a.id)}`, {
+          method: "PUT",
+          headers,
+          body,
+        })
       : await authFetch(`${BASE}/agents`, { method: "POST", headers, body });
     return r.ok ? normalizeAgent(await r.json()) : null;
   } catch {
@@ -1447,11 +1744,15 @@ export async function saveAgent(a: Omit<Agent, "id"> & { id?: string }): Promise
   }
 }
 
-export async function generateAgentDraft(prompt: string, model: string): Promise<AgentDraft> {
+export async function generateAgentDraft(
+  prompt: string,
+  model: string,
+): Promise<AgentDraft> {
   const request = prompt.trim();
   if (!request) throw new Error("Describe the agent first.");
   const draftModel = model.trim();
-  if (!isAgentDraftModel(draftModel)) throw new Error("Choose a model before drafting an agent.");
+  if (!isAgentDraftModel(draftModel))
+    throw new Error("Choose a model before drafting an agent.");
 
   const r = await authFetch(`${BASE}/v1/chat/completions`, {
     method: "POST",
@@ -1462,34 +1763,46 @@ export async function generateAgentDraft(prompt: string, model: string): Promise
       max_tokens: 900,
       messages: [
         { role: "system", content: AGENT_DRAFT_SYSTEM_PROMPT },
-        { role: "user", content: `Draft an agent profile from this request:\n${request}` },
+        {
+          role: "user",
+          content: `Draft an agent profile from this request:\n${request}`,
+        },
       ],
     }),
   });
 
   if (!r.ok) {
-    throw new Error(await responseErrorMessage(r, `agent draft HTTP ${r.status}`));
+    throw new Error(
+      await responseErrorMessage(r, `agent draft HTTP ${r.status}`),
+    );
   }
 
   const json = await r.json();
   const content = json.choices?.[0]?.message?.content;
-  if (typeof content !== "string") throw new Error("The model returned an empty draft.");
+  if (typeof content !== "string")
+    throw new Error("The model returned an empty draft.");
   return parseAgentDraftResponse(content);
 }
 
-function normalizeAgent(a: Partial<Agent> & { enabled_tools?: string[] }): Agent {
+function normalizeAgent(
+  a: Partial<Agent> & { enabled_tools?: string[] },
+): Agent {
   const enabledTools = a.enabled_tools ?? [];
-  const toolMode = a.tool_mode === "all" || a.tool_mode === "custom" || a.tool_mode === "none"
-    ? a.tool_mode
-    : enabledTools.length === 0
-      ? "all"
-      : "custom";
+  const toolMode =
+    a.tool_mode === "all" || a.tool_mode === "custom" || a.tool_mode === "none"
+      ? a.tool_mode
+      : enabledTools.length === 0
+        ? "all"
+        : "custom";
   const enabledSkills = a.enabled_skills ?? [];
-  const skillMode = a.skill_mode === "auto" || a.skill_mode === "custom" || a.skill_mode === "none"
-    ? a.skill_mode
-    : enabledSkills.length === 0
-      ? "auto"
-      : "custom";
+  const skillMode =
+    a.skill_mode === "auto" ||
+    a.skill_mode === "custom" ||
+    a.skill_mode === "none"
+      ? a.skill_mode
+      : enabledSkills.length === 0
+        ? "auto"
+        : "custom";
   const model = a.model ?? "";
   return {
     id: a.id ?? "",
@@ -1506,7 +1819,9 @@ function normalizeAgent(a: Partial<Agent> & { enabled_tools?: string[] }): Agent
 
 export async function deleteAgent(id: string): Promise<boolean> {
   try {
-    const r = await authFetch(`${BASE}/agents/${encodeURIComponent(id)}`, { method: "DELETE" });
+    const r = await authFetch(`${BASE}/agents/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    });
     return r.ok;
   } catch {
     return false;
@@ -1539,7 +1854,9 @@ export async function streamAgentRun(
   toolContext?: AgentToolContext,
   reasoningEffort?: ReasoningEffort,
 ): Promise<void> {
-  const url = agentId ? `${BASE}/agents/${encodeURIComponent(agentId)}/run` : `${BASE}/agents/run`;
+  const url = agentId
+    ? `${BASE}/agents/${encodeURIComponent(agentId)}/run`
+    : `${BASE}/agents/run`;
   const resp = await authFetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -1553,7 +1870,10 @@ export async function streamAgentRun(
     }),
     signal,
   });
-  if (!resp.ok || !resp.body) throw new Error(await responseErrorMessage(resp, `agent run HTTP ${resp.status}`));
+  if (!resp.ok || !resp.body)
+    throw new Error(
+      await responseErrorMessage(resp, `agent run HTTP ${resp.status}`),
+    );
 
   const reader = resp.body.getReader();
   const decoder = new TextDecoder();
@@ -1599,7 +1919,8 @@ export interface AgentToolContext {
   plan_mode?: boolean;
 }
 
-export type ChildThreadStatus = "queued" | "running" | "done" | "stopped" | "error";
+export type ChildThreadStatus =
+  "queued" | "running" | "done" | "stopped" | "error";
 
 export interface ChildThreadInfo {
   id: string;
@@ -1620,6 +1941,7 @@ export interface ChildThreadInfo {
 export interface ThreadEvent {
   id: string;
   thread_id: string;
+  seq: number;
   kind: string;
   payload: unknown;
   created_at: string;
@@ -1629,15 +1951,30 @@ export async function streamChildThreadEvents(
   parentId: string,
   onEvent: (ev: AgentEvent) => void,
   signal?: AbortSignal,
+  afterSeq?: number,
 ): Promise<void> {
-  const resp = await authFetch(`${BASE}/threads/${encodeURIComponent(parentId)}/events`, signal ? { signal } : undefined);
-  if (!resp.ok || !resp.body) throw new Error(await responseErrorMessage(resp, `child thread events HTTP ${resp.status}`));
+  const url = new URL(`${BASE}/threads/${encodeURIComponent(parentId)}/events`);
+  if (typeof afterSeq === "number" && Number.isFinite(afterSeq))
+    url.searchParams.set(
+      "after_seq",
+      String(Math.max(0, Math.floor(afterSeq))),
+    );
+  const resp = await authFetch(url.toString(), signal ? { signal } : undefined);
+  if (!resp.ok || !resp.body)
+    throw new Error(
+      await responseErrorMessage(
+        resp,
+        `child thread events HTTP ${resp.status}`,
+      ),
+    );
   await streamJsonSse(resp, onEvent);
 }
 
 export async function stopChildThread(id: string): Promise<ChildThreadInfo> {
   const data = await parseJsonResponse<{ thread: ChildThreadInfo }>(
-    await authFetch(`${BASE}/threads/${encodeURIComponent(id)}/stop`, { method: "POST" }),
+    await authFetch(`${BASE}/threads/${encodeURIComponent(id)}/stop`, {
+      method: "POST",
+    }),
     `child thread stop HTTP failed`,
   );
   return data.thread;
@@ -1645,7 +1982,9 @@ export async function stopChildThread(id: string): Promise<ChildThreadInfo> {
 
 export async function deleteThreadTree(id: string): Promise<void> {
   await parseJsonResponse<{ deleted: number }>(
-    await authFetch(`${BASE}/threads/${encodeURIComponent(id)}`, { method: "DELETE" }),
+    await authFetch(`${BASE}/threads/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    }),
     `thread delete HTTP failed`,
   );
 }
@@ -1664,6 +2003,7 @@ export interface AgentEvent {
     | "child_thread_started"
     | "child_thread_done"
     | "child_thread_error"
+    | "child_thread_stopped"
     | "child_thread_event"
     | "final"
     | "done"
@@ -1693,7 +2033,11 @@ export interface AgentEvent {
 
 /** Transcribe a WAV blob via the server's STT endpoint. Throws on error
  *  (e.g. voice not enabled / no model). */
-export async function transcribe(wav: Blob, voice?: VoiceSettings, signal?: AbortSignal): Promise<string> {
+export async function transcribe(
+  wav: Blob,
+  voice?: VoiceSettings,
+  signal?: AbortSignal,
+): Promise<string> {
   if (voice?.serverVadEnabled) {
     const activity = await detectSpeech(wav, voice, signal);
     if (!activity.is_speech) return "";
@@ -1704,18 +2048,24 @@ export async function transcribe(wav: Blob, voice?: VoiceSettings, signal?: Abor
   if (voice?.provider === "whisper" && voice.whisperModelPath.trim()) {
     url.searchParams.set("provider", "whisper");
     url.searchParams.set("model_path", voice.whisperModelPath.trim());
-  } else if (voice?.provider === "openai" && voice.openAiEndpoint.trim() && voice.openAiModel.trim()) {
+  } else if (
+    voice?.provider === "openai" &&
+    voice.openAiEndpoint.trim() &&
+    voice.openAiModel.trim()
+  ) {
     url.searchParams.set("provider", "openai");
     url.searchParams.set("endpoint", voice.openAiEndpoint.trim());
     url.searchParams.set("model", voice.openAiModel.trim());
-    if (voice.openAiApiKey.trim()) headers.set("X-Milim-STT-Api-Key", voice.openAiApiKey.trim());
+    if (voice.openAiApiKey.trim())
+      headers.set("X-Milim-STT-Api-Key", voice.openAiApiKey.trim());
   } else if (voice?.provider === "remote" && voice.remoteEndpoint.trim()) {
     url.searchParams.set("provider", "remote");
     url.searchParams.set("endpoint", voice.remoteEndpoint.trim());
   } else if (voice?.provider === "parakeet" && voice.parakeetCommand.trim()) {
     url.searchParams.set("provider", "parakeet");
     url.searchParams.set("command", voice.parakeetCommand.trim());
-    if (voice.parakeetModel.trim()) url.searchParams.set("model", voice.parakeetModel.trim());
+    if (voice.parakeetModel.trim())
+      url.searchParams.set("model", voice.parakeetModel.trim());
   }
 
   const resp = await authFetch(url, {
@@ -1725,7 +2075,8 @@ export async function transcribe(wav: Blob, voice?: VoiceSettings, signal?: Abor
     signal,
   });
   const j = await resp.json().catch(() => ({}));
-  if (!resp.ok || j.error) throw new Error(j.error || `transcription HTTP ${resp.status}`);
+  if (!resp.ok || j.error)
+    throw new Error(j.error || `transcription HTTP ${resp.status}`);
   return (j.text as string) ?? "";
 }
 
@@ -1734,14 +2085,22 @@ export interface VoiceActivityResult {
   speech_probability: number;
 }
 
-export async function detectSpeech(wav: Blob, voice?: VoiceSettings, signal?: AbortSignal): Promise<VoiceActivityResult> {
+export async function detectSpeech(
+  wav: Blob,
+  voice?: VoiceSettings,
+  signal?: AbortSignal,
+): Promise<VoiceActivityResult> {
   const url = new URL(`${BASE}/audio/vad`);
   if (voice?.serverVadProvider === "native") {
     url.searchParams.set("provider", "native");
-    if (voice.serverVadModelPath.trim()) url.searchParams.set("model_path", voice.serverVadModelPath.trim());
+    if (voice.serverVadModelPath.trim())
+      url.searchParams.set("model_path", voice.serverVadModelPath.trim());
   } else {
     url.searchParams.set("provider", "energy");
-    url.searchParams.set("threshold", String(voice?.serverVadThreshold ?? 0.015));
+    url.searchParams.set(
+      "threshold",
+      String(voice?.serverVadThreshold ?? 0.015),
+    );
   }
 
   const resp = await authFetch(url, {
@@ -1751,14 +2110,17 @@ export async function detectSpeech(wav: Blob, voice?: VoiceSettings, signal?: Ab
     signal,
   });
   const j = await resp.json().catch(() => ({}));
-  if (!resp.ok || j.error) throw new Error(j.error?.message || j.error || `VAD HTTP ${resp.status}`);
+  if (!resp.ok || j.error)
+    throw new Error(j.error?.message || j.error || `VAD HTTP ${resp.status}`);
   return {
     is_speech: Boolean(j.is_speech),
     speech_probability: Number(j.speech_probability ?? 0),
   };
 }
 
-export async function testVoiceTranscription(voice: VoiceSettings): Promise<string> {
+export async function testVoiceTranscription(
+  voice: VoiceSettings,
+): Promise<string> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 5000);
   try {
@@ -1773,7 +2135,9 @@ export async function testVoiceTranscription(voice: VoiceSettings): Promise<stri
   }
 }
 
-export async function testVoiceActivity(voice: VoiceSettings): Promise<VoiceActivityResult> {
+export async function testVoiceActivity(
+  voice: VoiceSettings,
+): Promise<VoiceActivityResult> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 5000);
   try {
@@ -1790,7 +2154,10 @@ export async function testVoiceActivity(voice: VoiceSettings): Promise<VoiceActi
 
 export type VoiceSetupTarget = "stt" | "tts" | "vad";
 
-export async function checkVoiceSetup(voice: VoiceSettings, target: VoiceSetupTarget): Promise<string> {
+export async function checkVoiceSetup(
+  voice: VoiceSettings,
+  target: VoiceSetupTarget,
+): Promise<string> {
   let body: Record<string, string | undefined>;
   if (target === "stt") {
     if (voice.provider === "parakeet") {
@@ -1802,7 +2169,10 @@ export async function checkVoiceSetup(voice: VoiceSettings, target: VoiceSetupTa
     }
   } else if (target === "vad") {
     if (voice.serverVadProvider === "native") {
-      body = { kind: "native-vad", model_path: voice.serverVadModelPath.trim() };
+      body = {
+        kind: "native-vad",
+        model_path: voice.serverVadModelPath.trim(),
+      };
     } else {
       return `Energy VAD threshold: ${voice.serverVadThreshold}`;
     }
@@ -1834,7 +2204,8 @@ export async function checkVoiceSetup(voice: VoiceSettings, target: VoiceSetupTa
     body: JSON.stringify(body),
   });
   const j = await resp.json().catch(() => ({}));
-  if (!resp.ok || j.error) throw new Error(j.error || `setup check HTTP ${resp.status}`);
+  if (!resp.ok || j.error)
+    throw new Error(j.error || `setup check HTTP ${resp.status}`);
   return (j.message as string) ?? "Setup check passed.";
 }
 
@@ -1870,7 +2241,9 @@ export async function installPiperPreset(
   });
   if (!resp.ok || !resp.body) {
     const j = await resp.json().catch(() => ({}));
-    throw new Error(j.error?.message || j.error || `Piper install HTTP ${resp.status}`);
+    throw new Error(
+      j.error?.message || j.error || `Piper install HTTP ${resp.status}`,
+    );
   }
 
   const reader = resp.body.getReader();
@@ -1887,10 +2260,17 @@ export async function installPiperPreset(
       buffer = buffer.slice(nl + 1);
       if (!line.startsWith("data:")) continue;
       try {
-        const progress = JSON.parse(line.slice(5).trim()) as PiperPresetInstallProgress;
+        const progress = JSON.parse(
+          line.slice(5).trim(),
+        ) as PiperPresetInstallProgress;
         if (progress.error) throw new Error(progress.error);
         onProgress?.(progress);
-        if (progress.done && progress.id && progress.model_path && progress.config_path) {
+        if (
+          progress.done &&
+          progress.id &&
+          progress.model_path &&
+          progress.config_path
+        ) {
           finalResult = progress as PiperPresetInstallResult;
         }
       } catch (e) {
@@ -1938,7 +2318,9 @@ export async function installKokoroPreset(
   });
   if (!resp.ok || !resp.body) {
     const j = await resp.json().catch(() => ({}));
-    throw new Error(j.error?.message || j.error || `Kokoro install HTTP ${resp.status}`);
+    throw new Error(
+      j.error?.message || j.error || `Kokoro install HTTP ${resp.status}`,
+    );
   }
 
   const reader = resp.body.getReader();
@@ -1955,10 +2337,18 @@ export async function installKokoroPreset(
       buffer = buffer.slice(nl + 1);
       if (!line.startsWith("data:")) continue;
       try {
-        const progress = JSON.parse(line.slice(5).trim()) as KokoroPresetInstallProgress;
+        const progress = JSON.parse(
+          line.slice(5).trim(),
+        ) as KokoroPresetInstallProgress;
         if (progress.error) throw new Error(progress.error);
         onProgress?.(progress);
-        if (progress.done && progress.id && progress.model_path && progress.config_path && progress.voice_path) {
+        if (
+          progress.done &&
+          progress.id &&
+          progress.model_path &&
+          progress.config_path &&
+          progress.voice_path
+        ) {
           finalResult = progress as KokoroPresetInstallResult;
         }
       } catch (e) {
@@ -2000,7 +2390,9 @@ export async function installVadPreset(
   });
   if (!resp.ok || !resp.body) {
     const j = await resp.json().catch(() => ({}));
-    throw new Error(j.error?.message || j.error || `VAD install HTTP ${resp.status}`);
+    throw new Error(
+      j.error?.message || j.error || `VAD install HTTP ${resp.status}`,
+    );
   }
 
   const reader = resp.body.getReader();
@@ -2017,7 +2409,9 @@ export async function installVadPreset(
       buffer = buffer.slice(nl + 1);
       if (!line.startsWith("data:")) continue;
       try {
-        const progress = JSON.parse(line.slice(5).trim()) as VadPresetInstallProgress;
+        const progress = JSON.parse(
+          line.slice(5).trim(),
+        ) as VadPresetInstallProgress;
         if (progress.error) throw new Error(progress.error);
         onProgress?.(progress);
         if (progress.done && progress.id && progress.model_path) {
@@ -2057,7 +2451,11 @@ export async function installPiperExecutable(
   });
   if (!resp.ok || !resp.body) {
     const j = await resp.json().catch(() => ({}));
-    throw new Error(j.error?.message || j.error || `Piper executable install HTTP ${resp.status}`);
+    throw new Error(
+      j.error?.message ||
+        j.error ||
+        `Piper executable install HTTP ${resp.status}`,
+    );
   }
 
   const reader = resp.body.getReader();
@@ -2074,7 +2472,9 @@ export async function installPiperExecutable(
       buffer = buffer.slice(nl + 1);
       if (!line.startsWith("data:")) continue;
       try {
-        const progress = JSON.parse(line.slice(5).trim()) as PiperExecutableInstallProgress;
+        const progress = JSON.parse(
+          line.slice(5).trim(),
+        ) as PiperExecutableInstallProgress;
         if (progress.error) throw new Error(progress.error);
         onProgress?.(progress);
         if (progress.done && progress.executable_path) {
@@ -2088,11 +2488,15 @@ export async function installPiperExecutable(
       }
     }
   }
-  if (!finalResult) throw new Error("Piper executable install did not complete");
+  if (!finalResult)
+    throw new Error("Piper executable install did not complete");
   return finalResult;
 }
 
-export async function speakText(text: string, voice?: VoiceSettings): Promise<Blob> {
+export async function speakText(
+  text: string,
+  voice?: VoiceSettings,
+): Promise<Blob> {
   const input = text.trim();
   if (!input) throw new Error("TTS input is required");
   if (!voice?.ttsEnabled) throw new Error("Text-to-speech is disabled");
@@ -2110,7 +2514,8 @@ export async function speakText(text: string, voice?: VoiceSettings): Promise<Bl
   } else if (voice.ttsProvider === "openai") {
     const endpoint = voice.ttsOpenAiEndpoint.trim();
     const model = voice.ttsOpenAiModel.trim();
-    if (!endpoint) throw new Error("OpenAI-compatible TTS endpoint is required");
+    if (!endpoint)
+      throw new Error("OpenAI-compatible TTS endpoint is required");
     if (!model) throw new Error("OpenAI-compatible TTS model is required");
     url.searchParams.set("provider", "openai");
     url.searchParams.set("endpoint", endpoint);
@@ -2133,7 +2538,8 @@ export async function speakText(text: string, voice?: VoiceSettings): Promise<Bl
     url.searchParams.set("provider", "command");
     url.searchParams.set("command", command);
   }
-  if (voice.ttsVoice.trim()) url.searchParams.set("voice", voice.ttsVoice.trim());
+  if (voice.ttsVoice.trim())
+    url.searchParams.set("voice", voice.ttsVoice.trim());
   if (Number.isFinite(voice.ttsSpeed) && voice.ttsSpeed > 0) {
     url.searchParams.set("speed", String(voice.ttsSpeed));
   }
@@ -2156,7 +2562,8 @@ export async function speakText(text: string, voice?: VoiceSettings): Promise<Bl
 
 // ----- Providers (LLM remotes and media credentials) -----
 
-export type ProviderKind = "openai_compatible" | "anthropic" | "gemini" | "replicate" | "fal";
+export type ProviderKind =
+  "openai_compatible" | "anthropic" | "gemini" | "replicate" | "fal";
 
 export interface ProviderInfo {
   id: string;
@@ -2188,16 +2595,66 @@ export interface ProviderDiscovery {
 }
 
 /** One-click presets; base URLs include the provider version segment. */
-export const PROVIDER_PRESETS: Array<{ name: string; kind: ProviderKind; base_url: string; needsKey: boolean }> = [
-  { name: "OpenAI", kind: "openai_compatible", base_url: "https://api.openai.com/v1", needsKey: true },
-  { name: "OpenRouter", kind: "openai_compatible", base_url: "https://openrouter.ai/api/v1", needsKey: true },
-  { name: "Groq", kind: "openai_compatible", base_url: "https://api.groq.com/openai/v1", needsKey: true },
-  { name: "Anthropic", kind: "anthropic", base_url: "https://api.anthropic.com/v1", needsKey: true },
-  { name: "Gemini", kind: "gemini", base_url: "https://generativelanguage.googleapis.com/v1beta", needsKey: true },
-  { name: "Replicate", kind: "replicate", base_url: "https://api.replicate.com/v1", needsKey: true },
-  { name: "fal", kind: "fal", base_url: "https://queue.fal.run", needsKey: true },
-  { name: "Ollama (local)", kind: "openai_compatible", base_url: "http://localhost:11434/v1", needsKey: false },
-  { name: "LM Studio (local)", kind: "openai_compatible", base_url: "http://localhost:1234/v1", needsKey: false },
+export const PROVIDER_PRESETS: Array<{
+  name: string;
+  kind: ProviderKind;
+  base_url: string;
+  needsKey: boolean;
+}> = [
+  {
+    name: "OpenAI",
+    kind: "openai_compatible",
+    base_url: "https://api.openai.com/v1",
+    needsKey: true,
+  },
+  {
+    name: "OpenRouter",
+    kind: "openai_compatible",
+    base_url: "https://openrouter.ai/api/v1",
+    needsKey: true,
+  },
+  {
+    name: "Groq",
+    kind: "openai_compatible",
+    base_url: "https://api.groq.com/openai/v1",
+    needsKey: true,
+  },
+  {
+    name: "Anthropic",
+    kind: "anthropic",
+    base_url: "https://api.anthropic.com/v1",
+    needsKey: true,
+  },
+  {
+    name: "Gemini",
+    kind: "gemini",
+    base_url: "https://generativelanguage.googleapis.com/v1beta",
+    needsKey: true,
+  },
+  {
+    name: "Replicate",
+    kind: "replicate",
+    base_url: "https://api.replicate.com/v1",
+    needsKey: true,
+  },
+  {
+    name: "fal",
+    kind: "fal",
+    base_url: "https://queue.fal.run",
+    needsKey: true,
+  },
+  {
+    name: "Ollama (local)",
+    kind: "openai_compatible",
+    base_url: "http://localhost:11434/v1",
+    needsKey: false,
+  },
+  {
+    name: "LM Studio (local)",
+    kind: "openai_compatible",
+    base_url: "http://localhost:1234/v1",
+    needsKey: false,
+  },
 ];
 
 export async function listProviders(): Promise<ProviderInfo[]> {
@@ -2217,7 +2674,9 @@ export async function discoverLocalProviders(): Promise<ProviderDiscovery[]> {
   try {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), 3500);
-    const r = await authFetch(`${BASE}/providers/discover`, { signal: ctrl.signal });
+    const r = await authFetch(`${BASE}/providers/discover`, {
+      signal: ctrl.signal,
+    });
     clearTimeout(t);
     const j = await r.json();
     return (j.providers ?? []) as ProviderDiscovery[];
@@ -2248,7 +2707,9 @@ export async function saveProvider(p: {
 
 export async function deleteProvider(id: string): Promise<boolean> {
   try {
-    const r = await authFetch(`${BASE}/providers/${encodeURIComponent(id)}`, { method: "DELETE" });
+    const r = await authFetch(`${BASE}/providers/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    });
     return r.ok;
   } catch {
     return false;
@@ -2346,24 +2807,36 @@ export interface MediaGenerationResult {
   raw?: unknown;
 }
 
-export function isOpenRouterProvider(provider: Pick<ProviderInfo, "kind" | "name" | "base_url">): boolean {
-  return provider.kind === "openai_compatible" && (
-    provider.name.trim().toLowerCase() === "openrouter" ||
-    provider.base_url.trim().toLowerCase().includes("openrouter.ai/")
+export function isOpenRouterProvider(
+  provider: Pick<ProviderInfo, "kind" | "name" | "base_url">,
+): boolean {
+  return (
+    provider.kind === "openai_compatible" &&
+    (provider.name.trim().toLowerCase() === "openrouter" ||
+      provider.base_url.trim().toLowerCase().includes("openrouter.ai/"))
   );
 }
 
-export function supportsMediaMetadataProvider(provider: Pick<ProviderInfo, "kind" | "name" | "base_url">): boolean {
-  return provider.kind === "replicate" ||
+export function supportsMediaMetadataProvider(
+  provider: Pick<ProviderInfo, "kind" | "name" | "base_url">,
+): boolean {
+  return (
+    provider.kind === "replicate" ||
     provider.kind === "fal" ||
-    provider.kind === "openai_compatible" && isOpenRouterProvider(provider);
+    (provider.kind === "openai_compatible" && isOpenRouterProvider(provider))
+  );
 }
 
 export function mediaProviders(providers: ProviderInfo[]): ProviderInfo[] {
-  return providers.filter((provider) => provider.enabled && supportsMediaMetadataProvider(provider));
+  return providers.filter(
+    (provider) => provider.enabled && supportsMediaMetadataProvider(provider),
+  );
 }
 
-export async function generateMedia(request: MediaGenerationRequest, signal?: AbortSignal): Promise<MediaGenerationResult> {
+export async function generateMedia(
+  request: MediaGenerationRequest,
+  signal?: AbortSignal,
+): Promise<MediaGenerationResult> {
   const r = await authFetch(`${BASE}/media/generate`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -2371,12 +2844,18 @@ export async function generateMedia(request: MediaGenerationRequest, signal?: Ab
     signal,
   });
   if (!r.ok) {
-    throw new Error(await responseErrorMessage(r, `media generation HTTP ${r.status}`));
+    throw new Error(
+      await responseErrorMessage(r, `media generation HTTP ${r.status}`),
+    );
   }
   return (await r.json()) as MediaGenerationResult;
 }
 
-export async function listMediaModels(providerId: string, kind: MediaKind = "image", options: MediaModelListOptions = {}): Promise<MediaModelInfo[]> {
+export async function listMediaModels(
+  providerId: string,
+  kind: MediaKind = "image",
+  options: MediaModelListOptions = {},
+): Promise<MediaModelInfo[]> {
   const url = new URL(`${BASE}/media/models`);
   url.searchParams.set("provider_id", providerId);
   url.searchParams.set("kind", kind);
@@ -2384,34 +2863,48 @@ export async function listMediaModels(providerId: string, kind: MediaKind = "ima
   if (options.refresh) url.searchParams.set("refresh", "true");
   const r = await authFetch(url);
   if (!r.ok) {
-    throw new Error(await responseErrorMessage(r, `media models HTTP ${r.status}`));
+    throw new Error(
+      await responseErrorMessage(r, `media models HTTP ${r.status}`),
+    );
   }
   const j = await r.json();
   return (j.models ?? []) as MediaModelInfo[];
 }
 
-export async function getMediaModelSchema(providerId: string, model: string, options: { refresh?: boolean } = {}): Promise<MediaModelSchema> {
+export async function getMediaModelSchema(
+  providerId: string,
+  model: string,
+  options: { refresh?: boolean } = {},
+): Promise<MediaModelSchema> {
   const url = new URL(`${BASE}/media/model-schema`);
   url.searchParams.set("provider_id", providerId);
   url.searchParams.set("model", model);
   if (options.refresh) url.searchParams.set("refresh", "true");
   const r = await authFetch(url);
   if (!r.ok) {
-    throw new Error(await responseErrorMessage(r, `media model schema HTTP ${r.status}`));
+    throw new Error(
+      await responseErrorMessage(r, `media model schema HTTP ${r.status}`),
+    );
   }
   return (await r.json()) as MediaModelSchema;
 }
 
-export async function getMediaStatus(request: MediaStatusRequest): Promise<MediaGenerationResult> {
+export async function getMediaStatus(
+  request: MediaStatusRequest,
+): Promise<MediaGenerationResult> {
   const url = new URL(`${BASE}/media/status`);
   url.searchParams.set("provider_id", request.provider_id);
   url.searchParams.set("id", request.id);
   if (request.model) url.searchParams.set("model", request.model);
-  if (request.response_url) url.searchParams.set("response_url", request.response_url);
-  if (request.status_url) url.searchParams.set("status_url", request.status_url);
+  if (request.response_url)
+    url.searchParams.set("response_url", request.response_url);
+  if (request.status_url)
+    url.searchParams.set("status_url", request.status_url);
   const r = await authFetch(url);
   if (!r.ok) {
-    throw new Error(await responseErrorMessage(r, `media status HTTP ${r.status}`));
+    throw new Error(
+      await responseErrorMessage(r, `media status HTTP ${r.status}`),
+    );
   }
   return (await r.json()) as MediaGenerationResult;
 }
@@ -2473,7 +2966,18 @@ export interface WorkspaceGitBranch {
   behind: number;
 }
 
-export type WorkspaceGitAction = "diff" | "fetch" | "pull" | "push" | "publish" | "commit" | "commit_push" | "checkout_branch" | "create_branch" | "checkpoint" | "restore_checkpoint";
+export type WorkspaceGitAction =
+  | "diff"
+  | "fetch"
+  | "pull"
+  | "push"
+  | "publish"
+  | "commit"
+  | "commit_push"
+  | "checkout_branch"
+  | "create_branch"
+  | "checkpoint"
+  | "restore_checkpoint";
 
 export interface WorkspaceGitActionResult {
   ok: boolean;
@@ -2500,15 +3004,27 @@ export async function getWorkspaceGitStatus(): Promise<WorkspaceGitStatus | null
 
 export async function runWorkspaceGitAction(
   action: WorkspaceGitAction,
-  options: { message?: string; checkpoint?: string; stage_all?: boolean; staged_only?: boolean; branch?: string } = {},
+  options: {
+    message?: string;
+    checkpoint?: string;
+    stage_all?: boolean;
+    staged_only?: boolean;
+    branch?: string;
+  } = {},
 ): Promise<WorkspaceGitActionResult> {
   const r = await authFetch(`${BASE}/workspace/git/action`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ action, ...options }),
   });
-  if (r.status === 404) throw new Error("Restart the desktop backend to enable Git command buttons.");
-  if (!r.ok) throw new Error(await responseErrorMessage(r, `git action HTTP ${r.status}`));
+  if (r.status === 404)
+    throw new Error(
+      "Restart the desktop backend to enable Git command buttons.",
+    );
+  if (!r.ok)
+    throw new Error(
+      await responseErrorMessage(r, `git action HTTP ${r.status}`),
+    );
   return (await r.json()) as WorkspaceGitActionResult;
 }
 
@@ -2563,7 +3079,10 @@ export async function setPrivacyMode(mode: PrivacyMode): Promise<boolean> {
   }
 }
 
-async function responseErrorMessage(resp: Response, fallback: string): Promise<string> {
+async function responseErrorMessage(
+  resp: Response,
+  fallback: string,
+): Promise<string> {
   try {
     const json = await resp.json();
     return String(json.error?.message ?? json.error ?? fallback);
@@ -2572,14 +3091,18 @@ async function responseErrorMessage(resp: Response, fallback: string): Promise<s
   }
 }
 
-export async function scanPrivacyText(text: string): Promise<PrivacyScanResult> {
+export async function scanPrivacyText(
+  text: string,
+): Promise<PrivacyScanResult> {
   const r = await authFetch(`${BASE}/privacy/scan`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ text }),
   });
   if (!r.ok) {
-    throw new Error(await responseErrorMessage(r, `privacy scan HTTP ${r.status}`));
+    throw new Error(
+      await responseErrorMessage(r, `privacy scan HTTP ${r.status}`),
+    );
   }
   return (await r.json()) as PrivacyScanResult;
 }
@@ -2659,9 +3182,12 @@ export interface MemoryRegistration {
   notice: MemoryNotice;
 }
 
-export async function registerGraphMemory(input: RegisterMemoryInput): Promise<MemoryRegistration | null> {
+export async function registerGraphMemory(
+  input: RegisterMemoryInput,
+): Promise<MemoryRegistration | null> {
   try {
-    const memoryModel = input.model && isUsableChatModel(input.model) ? input.model : "default";
+    const memoryModel =
+      input.model && isUsableChatModel(input.model) ? input.model : "default";
     const r = await authFetch(`${BASE}/memory/register`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -2683,11 +3209,13 @@ export async function registerGraphMemory(input: RegisterMemoryInput): Promise<M
   }
 }
 
-export async function listMemoryNodes(options: {
-  scope?: MemoryScopeRef;
-  includeArchived?: boolean;
-  limit?: number;
-} = {}): Promise<MemoryNode[]> {
+export async function listMemoryNodes(
+  options: {
+    scope?: MemoryScopeRef;
+    includeArchived?: boolean;
+    limit?: number;
+  } = {},
+): Promise<MemoryNode[]> {
   try {
     const params = new URLSearchParams();
     if (options.scope) {
@@ -2736,16 +3264,21 @@ export async function searchGraphMemory(
 
 export async function updateMemoryNode(
   id: string,
-  update: Partial<Pick<MemoryNode, "kind" | "title" | "body" | "confidence" | "source">>,
+  update: Partial<
+    Pick<MemoryNode, "kind" | "title" | "body" | "confidence" | "source">
+  >,
   model?: string,
 ): Promise<MemoryNode | null> {
   try {
     const memoryModel = model && isUsableChatModel(model) ? model : "default";
-    const r = await authFetch(`${BASE}/memory/nodes/${encodeURIComponent(id)}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model: memoryModel, ...update }),
-    });
+    const r = await authFetch(
+      `${BASE}/memory/nodes/${encodeURIComponent(id)}`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: memoryModel, ...update }),
+      },
+    );
     return r.ok ? ((await r.json()) as MemoryNode) : null;
   } catch {
     return null;
@@ -2754,7 +3287,10 @@ export async function updateMemoryNode(
 
 export async function deleteMemoryNode(id: string): Promise<boolean> {
   try {
-    const r = await authFetch(`${BASE}/memory/nodes/${encodeURIComponent(id)}`, { method: "DELETE" });
+    const r = await authFetch(
+      `${BASE}/memory/nodes/${encodeURIComponent(id)}`,
+      { method: "DELETE" },
+    );
     if (!r.ok) return false;
     const j = await r.json();
     return Boolean(j.deleted);
@@ -2765,7 +3301,10 @@ export async function deleteMemoryNode(id: string): Promise<boolean> {
 
 export async function archiveMemoryNode(id: string): Promise<boolean> {
   try {
-    const r = await authFetch(`${BASE}/memory/nodes/${encodeURIComponent(id)}/archive`, { method: "POST" });
+    const r = await authFetch(
+      `${BASE}/memory/nodes/${encodeURIComponent(id)}/archive`,
+      { method: "POST" },
+    );
     if (!r.ok) return false;
     const j = await r.json();
     return Boolean(j.archived);
@@ -2841,7 +3380,9 @@ export async function createSchedule(s: {
   }
 }
 
-export async function updateSchedule(s: ScheduleInfo): Promise<ScheduleInfo | null> {
+export async function updateSchedule(
+  s: ScheduleInfo,
+): Promise<ScheduleInfo | null> {
   try {
     const r = await authFetch(`${BASE}/schedules/${encodeURIComponent(s.id)}`, {
       method: "PUT",
@@ -2856,7 +3397,9 @@ export async function updateSchedule(s: ScheduleInfo): Promise<ScheduleInfo | nu
 
 export async function deleteSchedule(id: string): Promise<boolean> {
   try {
-    const r = await authFetch(`${BASE}/schedules/${encodeURIComponent(id)}`, { method: "DELETE" });
+    const r = await authFetch(`${BASE}/schedules/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    });
     return r.ok;
   } catch {
     return false;
@@ -2878,11 +3421,35 @@ export interface McpServerInfo {
 }
 
 /** Suggested MCP servers (command + args) for quick setup. */
-export const MCP_PRESETS: Array<{ name: string; command: string; args: string[]; note?: string }> = [
-  { name: "Filesystem", command: "npx", args: ["-y", "@modelcontextprotocol/server-filesystem", "."], note: "Replace '.' with a folder to expose." },
-  { name: "Fetch", command: "npx", args: ["-y", "@modelcontextprotocol/server-fetch"], note: "Web fetch as an MCP tool." },
-  { name: "Memory", command: "npx", args: ["-y", "@modelcontextprotocol/server-memory"], note: "Knowledge-graph memory." },
-  { name: "Sequential Thinking", command: "npx", args: ["-y", "@modelcontextprotocol/server-sequential-thinking"] },
+export const MCP_PRESETS: Array<{
+  name: string;
+  command: string;
+  args: string[];
+  note?: string;
+}> = [
+  {
+    name: "Filesystem",
+    command: "npx",
+    args: ["-y", "@modelcontextprotocol/server-filesystem", "."],
+    note: "Replace '.' with a folder to expose.",
+  },
+  {
+    name: "Fetch",
+    command: "npx",
+    args: ["-y", "@modelcontextprotocol/server-fetch"],
+    note: "Web fetch as an MCP tool.",
+  },
+  {
+    name: "Memory",
+    command: "npx",
+    args: ["-y", "@modelcontextprotocol/server-memory"],
+    note: "Knowledge-graph memory.",
+  },
+  {
+    name: "Sequential Thinking",
+    command: "npx",
+    args: ["-y", "@modelcontextprotocol/server-sequential-thinking"],
+  },
 ];
 
 export async function listMcpServers(): Promise<McpServerInfo[]> {
@@ -2923,7 +3490,9 @@ export async function saveMcpServer(s: {
 
 export async function deleteMcpServer(id: string): Promise<boolean> {
   try {
-    const r = await authFetch(`${BASE}/mcp/servers/${encodeURIComponent(id)}`, { method: "DELETE" });
+    const r = await authFetch(`${BASE}/mcp/servers/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    });
     return r.ok;
   } catch {
     return false;
@@ -2968,7 +3537,10 @@ export async function createSkill(input: {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ enabled: true, ...input }),
     });
-    if (!r.ok) throw new Error(await responseErrorMessage(r, `skill create HTTP ${r.status}`));
+    if (!r.ok)
+      throw new Error(
+        await responseErrorMessage(r, `skill create HTTP ${r.status}`),
+      );
     return (await r.json()) as SkillInfo;
   } catch {
     return null;
@@ -2977,11 +3549,14 @@ export async function createSkill(input: {
 
 export async function updateSkill(skill: SkillInfo): Promise<SkillInfo | null> {
   try {
-    const r = await authFetch(`${BASE}/skills/${encodeURIComponent(skill.id)}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(skill),
-    });
+    const r = await authFetch(
+      `${BASE}/skills/${encodeURIComponent(skill.id)}`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(skill),
+      },
+    );
     return r.ok ? ((await r.json()) as SkillInfo) : null;
   } catch {
     return null;
@@ -2990,7 +3565,9 @@ export async function updateSkill(skill: SkillInfo): Promise<SkillInfo | null> {
 
 export async function deleteSkill(id: string): Promise<boolean> {
   try {
-    const r = await authFetch(`${BASE}/skills/${encodeURIComponent(id)}`, { method: "DELETE" });
+    const r = await authFetch(`${BASE}/skills/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    });
     if (!r.ok) return false;
     const j = await r.json();
     return Boolean(j.deleted);
@@ -2999,7 +3576,10 @@ export async function deleteSkill(id: string): Promise<boolean> {
   }
 }
 
-export async function selectSkills(query: string, limit = 3): Promise<SkillInfo[]> {
+export async function selectSkills(
+  query: string,
+  limit = 3,
+): Promise<SkillInfo[]> {
   try {
     if (!query.trim()) return [];
     const r = await authFetch(`${BASE}/skills/select`, {

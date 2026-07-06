@@ -1,4 +1,4 @@
-//! Thin bridge to the official `claude` CLI subscription runtime.
+//! Thin local bridge to the user's installed official `claude` CLI.
 
 use std::collections::BTreeMap;
 use std::convert::Infallible;
@@ -38,6 +38,8 @@ pub(crate) struct ClaudeRunRequest {
     pub tool_approval_grant: bool,
     #[serde(default)]
     pub plan_mode: bool,
+    #[serde(default)]
+    pub allow_session_recovery: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -78,6 +80,9 @@ enum ClaudeStreamEvent {
         cost_usd: Option<f64>,
     },
     Warning {
+        message: String,
+    },
+    SessionRecoveryRequired {
         message: String,
     },
 }
@@ -239,22 +244,13 @@ pub(crate) fn run_stream(
             match status {
                 Ok(status) if status.success() => {
                     if let Some(message) = locked_session_error {
-                        if !retried_locked_session {
-                            if let Some(session_id) = clean_optional(req.session_id.as_deref()) {
-                                if terminate_claude_session_processes(&session_id).await {
-                                    retried_locked_session = true;
-                                    yield sse_event(&ClaudeStreamEvent::Warning {
-                                        message: "Claude session was already in use; Milim stopped the stale Claude Code process and retried.".to_string(),
-                                    });
-                                    continue;
-                                }
-                            }
+                        if maybe_recover_locked_session(&req, &mut retried_locked_session).await {
+                            yield sse_event(&ClaudeStreamEvent::Warning {
+                                message: "Claude session was already in use; Milim stopped the matching local Claude CLI process and retried.".to_string(),
+                            });
+                            continue;
                         }
-                        yield sse_event(&ClaudeStreamEvent::Error {
-                            message,
-                            usage: None,
-                            cost_usd: None,
-                        });
+                        yield locked_session_error_event(&req, message);
                     } else if !saw_terminal_event {
                         yield sse_event(&ClaudeStreamEvent::Done {
                             status: "completed".to_string(),
@@ -267,22 +263,23 @@ pub(crate) fn run_stream(
                 Ok(status) => {
                     let message = locked_session_error
                         .unwrap_or_else(|| first_error(&stderr, &format!("claude exited with {status}")));
-                    if !retried_locked_session && claude_session_in_use_error(&message) {
-                        if let Some(session_id) = clean_optional(req.session_id.as_deref()) {
-                            if terminate_claude_session_processes(&session_id).await {
-                                retried_locked_session = true;
-                                yield sse_event(&ClaudeStreamEvent::Warning {
-                                    message: "Claude session was already in use; Milim stopped the stale Claude Code process and retried.".to_string(),
-                                });
-                                continue;
-                            }
-                        }
+                    if claude_session_in_use_error(&message)
+                        && maybe_recover_locked_session(&req, &mut retried_locked_session).await
+                    {
+                        yield sse_event(&ClaudeStreamEvent::Warning {
+                            message: "Claude session was already in use; Milim stopped the matching local Claude CLI process and retried.".to_string(),
+                        });
+                        continue;
                     }
-                    yield sse_event(&ClaudeStreamEvent::Error {
-                        message,
-                        usage: None,
-                        cost_usd: None,
-                    });
+                    if claude_session_in_use_error(&message) {
+                        yield locked_session_error_event(&req, message);
+                    } else {
+                        yield sse_event(&ClaudeStreamEvent::Error {
+                            message,
+                            usage: None,
+                            cost_usd: None,
+                        });
+                    }
                     break;
                 }
                 Err(e) => {
@@ -297,6 +294,42 @@ pub(crate) fn run_stream(
         }
         yield Ok(Event::default().data("[DONE]"));
     }
+}
+
+async fn maybe_recover_locked_session(
+    req: &ClaudeRunRequest,
+    retried_locked_session: &mut bool,
+) -> bool {
+    if *retried_locked_session || !req.allow_session_recovery {
+        return false;
+    }
+    let Some(session_id) = clean_optional(req.session_id.as_deref()) else {
+        return false;
+    };
+    if terminate_claude_session_processes(&session_id).await {
+        *retried_locked_session = true;
+        true
+    } else {
+        false
+    }
+}
+
+fn locked_session_error_event(
+    req: &ClaudeRunRequest,
+    message: String,
+) -> std::result::Result<Event, Infallible> {
+    if req.allow_session_recovery {
+        return sse_event(&ClaudeStreamEvent::Error {
+            message,
+            usage: None,
+            cost_usd: None,
+        });
+    }
+    sse_event(&ClaudeStreamEvent::SessionRecoveryRequired {
+        message: format!(
+            "This Claude session appears to be in use by another Claude CLI process. Milim can try to stop the matching local Claude process and retry, or you can cancel and resume manually. Claude reported: {message}"
+        ),
+    })
 }
 
 fn handle_line(
@@ -540,11 +573,10 @@ async fn terminate_claude_registry_session_process(session_id: &str) -> bool {
         return false;
     };
     let killed = terminate_process_id(entry.pid).await;
-    let removed = std::fs::remove_file(&entry.path).is_ok();
-    if killed || removed {
+    if killed {
         tokio::time::sleep(Duration::from_millis(300)).await;
     }
-    killed || removed
+    killed
 }
 
 fn find_claude_session_registry_entry(session_id: &str) -> Option<ClaudeSessionRegistryEntry> {
@@ -894,7 +926,7 @@ fn usage_from_claude_result(value: &Value) -> Option<Usage> {
 
 fn claude_rate_limit(info: &Value) -> Value {
     json!({
-        "provider": "Claude Code",
+        "provider": "Local Claude CLI",
         "status": info.get("status").and_then(Value::as_str),
         "kind": info.get("rateLimitType").and_then(Value::as_str),
         "reset_at": info.get("resetsAt").and_then(Value::as_i64),
@@ -929,9 +961,9 @@ fn compact(value: &str, limit: usize) -> String {
 
 fn claude_spawn_error_message(error: &std::io::Error) -> String {
     if error.kind() == std::io::ErrorKind::NotFound {
-        return cli_path_warning("Claude Code", "claude");
+        return cli_path_warning("Claude CLI", "claude");
     }
-    format!("failed to start `claude`: {error}. Install Claude Code and sign in with `claude auth login`.")
+    format!("failed to start `claude`: {error}. Install Anthropic's official Claude CLI and sign in with `claude auth login`.")
 }
 
 fn cli_path_warning(label: &str, command: &str) -> String {
@@ -1093,6 +1125,7 @@ mod tests {
             tool_approval_policy: Some("open".into()),
             tool_approval_grant: true,
             plan_mode: false,
+            allow_session_recovery: false,
         });
         assert!(args
             .windows(2)
@@ -1113,6 +1146,7 @@ mod tests {
             tool_approval_policy: None,
             tool_approval_grant: false,
             plan_mode: false,
+            allow_session_recovery: false,
         });
         assert!(args.iter().any(|arg| arg == "--no-session-persistence"));
         assert!(!args.iter().any(|arg| arg == "--max-turns"));
@@ -1141,6 +1175,7 @@ mod tests {
             tool_approval_policy: Some("guarded".into()),
             tool_approval_grant: false,
             plan_mode: false,
+            allow_session_recovery: false,
         };
         assert_eq!(claude_permission_mode(&req), "acceptEdits");
         assert_eq!(claude_denied_tools(&req), vec!["Bash", "PowerShell"]);

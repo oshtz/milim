@@ -66,6 +66,7 @@ type StreamClaudeRunFn = (
     tool_approval_policy?: ToolApprovalMode;
     tool_approval_grant?: boolean;
     plan_mode?: boolean;
+    allow_session_recovery?: boolean;
   },
   onEvent: (event: ClaudeRunEvent) => void,
   signal?: AbortSignal,
@@ -138,9 +139,13 @@ export function claudeCompactionSummaryRequest({
   };
 }
 
+export const CLAUDE_SESSION_RECOVERY_REQUIRED =
+  "CLAUDE_SESSION_RECOVERY_REQUIRED";
+
 export type AccountRuntimeEventState = {
   warning: string | null;
   error: string | null;
+  sessionRecoveryRequired: string | null;
 };
 
 export type TurnRuntimeErrorResult = {
@@ -385,7 +390,11 @@ export function createAccountRuntimeEventHandler({
   state: AccountRuntimeEventState;
   handle: (event: AccountRuntimeEvent) => void;
 } {
-  const state: AccountRuntimeEventState = { warning: null, error: null };
+  const state: AccountRuntimeEventState = {
+    warning: null,
+    error: null,
+    sessionRecoveryRequired: null,
+  };
   return {
     state,
     handle(event) {
@@ -408,6 +417,8 @@ export function createAccountRuntimeEventHandler({
         captureRuntimeMetrics(event);
       } else if (event.type === "warning") {
         state.warning = event.message;
+      } else if (event.type === "session_recovery_required") {
+        state.sessionRecoveryRequired = event.message;
       } else if (event.type === "error") {
         captureRuntimeMetrics(event);
         state.error = event.message;
@@ -481,6 +492,7 @@ type RunAccountRuntimeTurnParams = {
   toolApproval: ToolApprovalMode;
   toolApprovalGrant: boolean;
   planMode: boolean;
+  allowClaudeSessionRecovery?: boolean;
   append: (text: string) => void;
   appendThinking: (text: string) => void;
   flush: () => void;
@@ -523,6 +535,7 @@ export async function runAccountRuntimeTurn(
     toolApproval,
     toolApprovalGrant,
     planMode,
+    allowClaudeSessionRecovery,
     append,
     appendThinking,
     flush,
@@ -590,10 +603,26 @@ export async function runAccountRuntimeTurn(
         tool_approval_policy: toolApproval,
         tool_approval_grant: toolApprovalGrant,
         plan_mode: planMode,
+        allow_session_recovery: allowClaudeSessionRecovery,
       },
       events.handle,
       signal,
     );
+  }
+
+  if (events.state.sessionRecoveryRequired) {
+    flush();
+    appendStreamEvent(
+      statusPart(
+        "Claude session recovery needs approval",
+        events.state.sessionRecoveryRequired,
+        "warning",
+      ),
+    );
+    return {
+      status: "skipped",
+      error: `${CLAUDE_SESSION_RECOVERY_REQUIRED}: ${events.state.sessionRecoveryRequired}`,
+    };
   }
 
   if (events.state.warning) {
@@ -602,7 +631,7 @@ export async function runAccountRuntimeTurn(
       statusPart(
         params.kind === "codex"
           ? "Codex not on PATH"
-          : "Claude Code not on PATH",
+          : "Claude CLI not on PATH",
         events.state.warning,
         "warning",
       ),
@@ -962,6 +991,16 @@ export function createAgentRunEventHandler({
             "Worker error",
             event.message ?? childThreadDetail(event.thread),
             "error",
+          ),
+        );
+        break;
+      case "child_thread_stopped":
+        flush();
+        if (event.thread) updateChildThread(event.thread);
+        appendStreamEvent(
+          statusPart(
+            "Worker stopped",
+            event.message ?? childThreadDetail(event.thread),
           ),
         );
         break;

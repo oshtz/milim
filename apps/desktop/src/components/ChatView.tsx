@@ -221,6 +221,7 @@ import {
   resolveTurnToolApproval,
 } from "../lib/turnPrompt";
 import {
+  CLAUDE_SESSION_RECOVERY_REQUIRED,
   claudeCompactionSummaryRequest,
   codexCompactionSummaryRequest,
   codexPromptFromMessages,
@@ -1768,6 +1769,7 @@ type RunTurnResult = {
 type RunTurnOptions = {
   goal?: GoalSettings;
   toolApprovalGrant?: boolean;
+  claudeSessionRecoveryGrant?: boolean;
 };
 
 type ToolApprovalScope = ChatApprovalRequest["scope"];
@@ -1775,16 +1777,20 @@ type ToolApprovalScope = ChatApprovalRequest["scope"];
 function toolApprovalMessage(
   scope: ToolApprovalScope,
   model: string,
+  detail?: string,
 ): ChatMessage {
+  const kind =
+    scope === "claude_session_recovery" ? "claude_session_recovery" : "tool";
   return {
     role: "assistant",
     content: "",
     approval: {
-      kind: "tool",
+      kind,
       scope,
       status: "pending",
       requestedAt: Date.now(),
       model: model.trim() || undefined,
+      detail,
     },
   };
 }
@@ -1805,12 +1811,24 @@ function resolveApprovalMessage(
 }
 
 function toolApprovalCardTitle(approval: ChatApprovalRequest): string {
+  if (approval.kind === "claude_session_recovery")
+    return "Claude session recovery";
   if (approval.scope === "goal") return "Goal tool access";
   return "Tool access request";
 }
 
 function toolApprovalCardDetail(approval: ChatApprovalRequest): string {
   const model = approval.model ? ` for ${approval.model}` : "";
+  if (approval.kind === "claude_session_recovery") {
+    if (approval.status === "approved")
+      return `Approved Claude session recovery${model}.`;
+    if (approval.status === "denied")
+      return `Canceled Claude session recovery${model}.`;
+    return (
+      approval.detail ||
+      "This Claude session appears to be in use by another Claude CLI process. Milim can try to stop the matching local Claude process and retry, or you can cancel and resume manually."
+    );
+  }
   if (approval.status === "approved") return `Approved${model}.`;
   if (approval.status === "denied") return `Denied${model}.`;
   return approval.scope === "goal"
@@ -2704,7 +2722,8 @@ export function ChatView({
     } else if (
       ev.type === "child_thread_event" ||
       ev.type === "child_thread_done" ||
-      ev.type === "child_thread_error"
+      ev.type === "child_thread_error" ||
+      ev.type === "child_thread_stopped"
     ) {
       store.updateChildThread(thread, events);
     }
@@ -3650,7 +3669,7 @@ export function ChatView({
     const provider = codexModel
       ? "Codex"
       : claudeModel
-        ? "Claude Code"
+        ? "Local Claude CLI"
         : selectedProvider?.name;
     const summaryReasoningEffort =
       compactionSummaryReasoningEffort(selectedProvider);
@@ -4051,6 +4070,30 @@ export function ChatView({
     });
   }
 
+  function requestClaudeSessionRecoveryCard(
+    sessionId: string,
+    convo: ChatMessage[],
+    selectedModel: string,
+    detail: string,
+  ) {
+    const next = [
+      ...convo.filter(
+        (message) =>
+          !(
+            message.approval?.kind === "claude_session_recovery" &&
+            message.approval.status === "pending"
+          ),
+      ),
+      toolApprovalMessage("claude_session_recovery", selectedModel, detail),
+    ];
+    setMessages(sessionId, next, { autoTitle: autoTitleChats });
+    setChatNotice({
+      tone: "warning",
+      message:
+        "Claude session recovery needs approval before Milim stops a local Claude CLI process.",
+    });
+  }
+
   function updateApprovalAt(
     messageIndex: number,
     status: "approved" | "denied",
@@ -4102,6 +4145,17 @@ export function ChatView({
     const selectedModel = approval.model || requireChatModel();
     if (!selectedModel) return;
     const approvedMessages = updateApprovalAt(messageIndex, "approved");
+    if (approval.kind === "claude_session_recovery") {
+      setChatNotice({
+        tone: "warning",
+        message:
+          "Claude session recovery approved. Milim will try to stop the matching local Claude CLI process and retry.",
+      });
+      void runTurnAndDrain(approvedMessages, selectedModel, {
+        claudeSessionRecoveryGrant: true,
+      });
+      return;
+    }
     if (approval.scope === "goal") {
       startApprovedGoalRun(activeId, selectedModel);
       return;
@@ -4119,6 +4173,14 @@ export function ChatView({
     const approval = message.approval;
     if (!approval || approval.status !== "pending" || busy) return;
     updateApprovalAt(messageIndex, "denied");
+    if (approval.kind === "claude_session_recovery") {
+      setChatNotice({
+        tone: "info",
+        message:
+          "Claude session recovery canceled. Resume or stop the Claude CLI process manually.",
+      });
+      return;
+    }
     if (approval.scope === "goal") {
       updateGoalState(activeId, {
         status: "paused",
@@ -5157,8 +5219,8 @@ export function ChatView({
       const status = await getClaudeStatus();
       if (status.available && status.authenticated) return { ok: true };
       const message = status.available
-        ? "Claude Code is not signed in. Run `claude auth login` in a terminal, then refresh models."
-        : `Claude Code is unavailable: ${status.error || "install Claude Code and make sure `claude` is on PATH."}`;
+        ? "Claude CLI is not signed in. Authenticate through Claude's own tooling with `claude auth login`, then refresh models."
+        : `Claude CLI is unavailable: ${status.error || "install Anthropic's official Claude CLI separately and make sure `claude` is on PATH."}`;
       const warning =
         Boolean(status.warning) || isCliPathWarningMessage(message);
       setChatNotice({
@@ -5167,7 +5229,7 @@ export function ChatView({
       });
       return { ok: false, message, warning };
     } catch (e) {
-      const message = `Claude Code is unavailable: ${e instanceof Error ? e.message : String(e)}`;
+      const message = `Claude CLI is unavailable: ${e instanceof Error ? e.message : String(e)}`;
       const warning = isCliPathWarningMessage(message);
       setChatNotice({ tone: warning ? "warning" : "error", message });
       return { ok: false, message, warning };
@@ -5466,6 +5528,7 @@ export function ChatView({
           toolApproval: turnToolApproval,
           toolApprovalGrant,
           planMode: turnPlanMode,
+          allowClaudeSessionRecovery: options.claudeSessionRecoveryGrant,
           append,
           appendThinking,
           flush: () => streamBatcher.flush(),
@@ -5500,6 +5563,22 @@ export function ChatView({
         if (accountResult?.status === "skipped") {
           resultStatus = "skipped";
           resultError = accountResult.error;
+          if (
+            accountResult.error?.startsWith(CLAUDE_SESSION_RECOVERY_REQUIRED)
+          ) {
+            const detail = accountResult.error
+              .slice(CLAUDE_SESSION_RECOVERY_REQUIRED.length + 1)
+              .trim();
+            requestClaudeSessionRecoveryCard(
+              id,
+              sessionMessages(id).filter(
+                (message) => message.id !== assistantMessageId,
+              ),
+              turnModel,
+              detail,
+            );
+            resultError = undefined;
+          }
         }
       } else if (useTools) {
         startChildThreadEvents(id);

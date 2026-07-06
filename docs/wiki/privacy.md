@@ -29,7 +29,7 @@ The scanner is deterministic regex-based detection for common email, phone, toke
 | Remote embeddings | Enforced before embedding inputs leave the machine. |
 | Remote media providers | Enforced before Replicate, fal, or OpenRouter media prompts are sent. |
 | Codex runtime | Enforced before `/codex/run` forwards a prompt to the Codex app-server. |
-| Claude Code runtime | Enforced before `/claude/run` forwards a prompt to the `claude` CLI. |
+| Installed Claude CLI | Enforced before `/claude/run` forwards a prompt to the local `claude` executable. |
 | Local Ollama or LM Studio | Not scanned by Milim because the configured local runtime receives the prompt on the machine. |
 
 The gate is process-global. The desktop syncs the active setting through `POST /privacy/mode`, and the router reads that same setting when a remote request is about to leave.

@@ -43,8 +43,14 @@ const KIND_LABEL: Record<ProviderKind, string> = {
   fal: "fal media",
 };
 
-function isMediaProvider(provider: Pick<ProviderInfo, "kind" | "name" | "base_url">): boolean {
-  return provider.kind === "replicate" || provider.kind === "fal" || isOpenRouterProvider(provider);
+function isMediaProvider(
+  provider: Pick<ProviderInfo, "kind" | "name" | "base_url">,
+): boolean {
+  return (
+    provider.kind === "replicate" ||
+    provider.kind === "fal" ||
+    isOpenRouterProvider(provider)
+  );
 }
 
 function isLocalEndpoint(baseUrl: string): boolean {
@@ -52,20 +58,31 @@ function isLocalEndpoint(baseUrl: string): boolean {
     const url = new URL(baseUrl);
     return ["localhost", "127.0.0.1", "::1", "[::1]"].includes(url.hostname);
   } catch {
-    return /^(https?:\/\/)?(localhost|127\.0\.0\.1|\[::1\])/i.test(baseUrl.trim());
+    return /^(https?:\/\/)?(localhost|127\.0\.0\.1|\[::1\])/i.test(
+      baseUrl.trim(),
+    );
   }
 }
 
-function providerNeedsKey(provider: Pick<ProviderInfo, "kind" | "name" | "base_url">): boolean {
-  const normalizedBase = provider.base_url.trim().replace(/\/+$/, "").toLowerCase();
+function providerNeedsKey(
+  provider: Pick<ProviderInfo, "kind" | "name" | "base_url">,
+): boolean {
+  const normalizedBase = provider.base_url
+    .trim()
+    .replace(/\/+$/, "")
+    .toLowerCase();
   const preset = PROVIDER_PRESETS.find(
-    (p) => p.kind === provider.kind && p.base_url.trim().replace(/\/+$/, "").toLowerCase() === normalizedBase,
+    (p) =>
+      p.kind === provider.kind &&
+      p.base_url.trim().replace(/\/+$/, "").toLowerCase() === normalizedBase,
   );
   if (preset) return preset.needsKey;
   return !isLocalEndpoint(provider.base_url);
 }
 
-function providerCategory(provider: Pick<ProviderInfo, "kind" | "name" | "base_url">): string {
+function providerCategory(
+  provider: Pick<ProviderInfo, "kind" | "name" | "base_url">,
+): string {
   if (provider.kind === "replicate" || provider.kind === "fal") return "Media";
   if (isOpenRouterProvider(provider)) return "Chat + media";
   return "Chat";
@@ -78,27 +95,55 @@ function providerGroup(provider: ProviderInfo): string {
   return "Hosted chat";
 }
 
-function providerStatus(provider: ProviderInfo): { tone: StatusTone; label: string; detail: string } {
+function providerStatus(provider: ProviderInfo): {
+  tone: StatusTone;
+  label: string;
+  detail: string;
+} {
   if (!provider.enabled) {
-    return { tone: "off", label: "Disabled", detail: "Saved but unavailable to model pickers." };
+    return {
+      tone: "off",
+      label: "Disabled",
+      detail: "Saved but unavailable to model pickers.",
+    };
   }
   if (provider.error) {
     return { tone: "error", label: "Unreachable", detail: provider.error };
   }
   if (isMediaProvider(provider)) {
     if (providerNeedsKey(provider) && !provider.has_key) {
-      return { tone: "warning", label: "Key needed", detail: "Add an API key before media workflows can use it." };
+      return {
+        tone: "warning",
+        label: "Key needed",
+        detail: "Add an API key before media workflows can use it.",
+      };
     }
-    return { tone: "ready", label: "Media ready", detail: "Credential is available for media workflows." };
+    return {
+      tone: "ready",
+      label: "Media ready",
+      detail: "Credential is available for media workflows.",
+    };
   }
   if (provider.models.length) {
-    return { tone: "ready", label: "Connected", detail: `${provider.models.length} model${provider.models.length === 1 ? "" : "s"} available.` };
+    return {
+      tone: "ready",
+      label: "Connected",
+      detail: `${provider.models.length} model${provider.models.length === 1 ? "" : "s"} available.`,
+    };
   }
-  return { tone: "warning", label: "No models", detail: "Saved, but no models were returned." };
+  return {
+    tone: "warning",
+    label: "No models",
+    detail: "Saved, but no models were returned.",
+  };
 }
 
-function providerKeyStatus(provider: ProviderInfo): { tone: StatusTone; label: string } {
-  if (!providerNeedsKey(provider)) return { tone: "ready", label: "No key needed" };
+function providerKeyStatus(provider: ProviderInfo): {
+  tone: StatusTone;
+  label: string;
+} {
+  if (!providerNeedsKey(provider))
+    return { tone: "ready", label: "No key needed" };
   if (provider.has_key) return { tone: "ready", label: "Key saved" };
   return { tone: "warning", label: "No key" };
 }
@@ -120,12 +165,22 @@ export function ProvidersManager({ onClose }: { onClose: () => void }) {
   const [enabled, setEnabled] = useState(true);
   const [busy, setBusy] = useState(false);
   const [detecting, setDetecting] = useState(false);
-  const [codexAccount, setCodexAccount] = useState<CodexAccountResponse | null>(null);
+  const [codexAccount, setCodexAccount] = useState<CodexAccountResponse | null>(
+    null,
+  );
   const [codexBusy, setCodexBusy] = useState(false);
-  const [codexNote, setCodexNote] = useState<{ tone: StatusTone; message: string } | null>(null);
-  const [claudeStatus, setClaudeStatus] = useState<ClaudeStatusResponse | null>(null);
+  const [codexNote, setCodexNote] = useState<{
+    tone: StatusTone;
+    message: string;
+  } | null>(null);
+  const [claudeStatus, setClaudeStatus] = useState<ClaudeStatusResponse | null>(
+    null,
+  );
   const [claudeBusy, setClaudeBusy] = useState(false);
-  const [claudeNote, setClaudeNote] = useState<{ tone: StatusTone; message: string } | null>(null);
+  const [claudeNote, setClaudeNote] = useState<{
+    tone: StatusTone;
+    message: string;
+  } | null>(null);
   const [discoveries, setDiscoveries] = useState<ProviderDiscovery[]>([]);
   const [note, setNote] = useState<string | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
@@ -183,19 +238,35 @@ export function ProvidersManager({ onClose }: { onClose: () => void }) {
       const status = await getClaudeStatus();
       setClaudeStatus(status);
       if (showNote) {
-        const message = status.error || "Run `claude auth login` in a terminal, then refresh.";
-        const warning = Boolean(status.warning) || isCliPathWarningMessage(message);
+        const message =
+          status.error ||
+          "Run `claude auth login` in a terminal, then refresh.";
+        const warning =
+          Boolean(status.warning) || isCliPathWarningMessage(message);
         setClaudeNote(
           status.available && status.authenticated
-            ? { tone: "ready", message: "Claude Code connected. Models will appear in the picker after refresh." }
-            : { tone: status.available || warning ? "warning" : "error", message },
+            ? {
+                tone: "ready",
+                message:
+                  "Installed Claude CLI connected. Models will appear in the picker after refresh.",
+              }
+            : {
+                tone: status.available || warning ? "warning" : "error",
+                message,
+              },
         );
       }
     } catch (error) {
       setClaudeStatus(null);
       if (showNote) {
-        const message = error instanceof Error ? error.message : "Claude Code status check failed.";
-        setClaudeNote({ tone: isCliPathWarningMessage(message) ? "warning" : "error", message });
+        const message =
+          error instanceof Error
+            ? error.message
+            : "Claude CLI status check failed.";
+        setClaudeNote({
+          tone: isCliPathWarningMessage(message) ? "warning" : "error",
+          message,
+        });
       }
     } finally {
       setClaudeBusy(false);
@@ -209,7 +280,9 @@ export function ProvidersManager({ onClose }: { onClose: () => void }) {
     setDiscoveries(found);
     setDetecting(false);
     if (found.length === 0) {
-      setNote("No local provider probes completed. Check that the desktop backend is running.");
+      setNote(
+        "No local provider probes completed. Check that the desktop backend is running.",
+      );
     }
   }
 
@@ -277,10 +350,10 @@ export function ProvidersManager({ onClose }: { onClose: () => void }) {
           ? "Media credential checked. Image/video workflows can use this encrypted credential when those surfaces are enabled."
           : "Media provider saved. Image/video generation workflows can use this encrypted credential when those surfaces are enabled."
         : saved.models.length
-        ? `Connected - ${saved.models.length} models available`
-        : saved.error
-          ? `Error: Couldn't reach provider: ${saved.error}`
-          : "Saved, but no models returned - check the URL/key.",
+          ? `Connected - ${saved.models.length} models available`
+          : saved.error
+            ? `Error: Couldn't reach provider: ${saved.error}`
+            : "Saved, but no models returned - check the URL/key.",
     );
   }
 
@@ -306,18 +379,30 @@ export function ProvidersManager({ onClose }: { onClose: () => void }) {
           if (!opened) {
             opened = true;
             void openExternalUrl(ev.auth_url).catch((error) => {
-              setCodexNote({ tone: "error", message: `Could not open Codex login URL: ${error instanceof Error ? error.message : String(error)}` });
+              setCodexNote({
+                tone: "error",
+                message: `Could not open Codex login URL: ${error instanceof Error ? error.message : String(error)}`,
+              });
             });
           }
-          setCodexNote({ tone: "warning", message: "Complete Codex login in the browser, then return here." });
+          setCodexNote({
+            tone: "warning",
+            message: "Complete Codex login in the browser, then return here.",
+          });
         } else if (ev.type === "device_code") {
           if (!opened) {
             opened = true;
             void openExternalUrl(ev.verification_url).catch((error) => {
-              setCodexNote({ tone: "error", message: `Could not open Codex device-code URL: ${error instanceof Error ? error.message : String(error)}` });
+              setCodexNote({
+                tone: "error",
+                message: `Could not open Codex device-code URL: ${error instanceof Error ? error.message : String(error)}`,
+              });
             });
           }
-          setCodexNote({ tone: "warning", message: `Complete Codex login with code ${ev.user_code}.` });
+          setCodexNote({
+            tone: "warning",
+            message: `Complete Codex login with code ${ev.user_code}.`,
+          });
         } else if (ev.type === "done") {
           completed = ev.success;
           failed = ev.error ?? "";
@@ -333,12 +418,23 @@ export function ProvidersManager({ onClose }: { onClose: () => void }) {
       warning ||= isCliPathWarningMessage(failed);
       setCodexNote(
         completed
-          ? { tone: "ready", message: "Codex connected. Models will appear in the picker after refresh." }
-          : { tone: warning ? "warning" : "error", message: failed || "Codex login did not complete." },
+          ? {
+              tone: "ready",
+              message:
+                "Codex connected. Models will appear in the picker after refresh.",
+            }
+          : {
+              tone: warning ? "warning" : "error",
+              message: failed || "Codex login did not complete.",
+            },
       );
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Codex login failed.";
-      setCodexNote({ tone: isCliPathWarningMessage(message) ? "warning" : "error", message });
+      const message =
+        error instanceof Error ? error.message : "Codex login failed.";
+      setCodexNote({
+        tone: isCliPathWarningMessage(message) ? "warning" : "error",
+        message,
+      });
     } finally {
       setCodexBusy(false);
     }
@@ -352,7 +448,11 @@ export function ProvidersManager({ onClose }: { onClose: () => void }) {
       await refreshCodexAccount();
       setCodexNote({ tone: "ready", message: "Codex disconnected." });
     } catch (error) {
-      setCodexNote({ tone: "error", message: error instanceof Error ? error.message : "Codex logout failed." });
+      setCodexNote({
+        tone: "error",
+        message:
+          error instanceof Error ? error.message : "Codex logout failed.",
+      });
     } finally {
       setCodexBusy(false);
     }
@@ -372,414 +472,660 @@ export function ProvidersManager({ onClose }: { onClose: () => void }) {
     setSel(null);
   }
 
-  const mediaReady = providers.some((p) => p.enabled && isMediaProvider(p) && (!providerNeedsKey(p) || p.has_key));
-  const localReady = providers.some((p) => p.enabled && isLocalEndpoint(p.base_url) && p.models.length);
-  const hostedReady = providers.some((p) => p.enabled && !isLocalEndpoint(p.base_url) && !isMediaProvider(p) && p.models.length);
-  const codexReady = Boolean(codexAccount?.account || (codexAccount && !codexAccount.requiresOpenaiAuth));
-  const claudeReady = Boolean(claudeStatus?.available && claudeStatus.authenticated);
+  const mediaReady = providers.some(
+    (p) =>
+      p.enabled && isMediaProvider(p) && (!providerNeedsKey(p) || p.has_key),
+  );
+  const localReady = providers.some(
+    (p) => p.enabled && isLocalEndpoint(p.base_url) && p.models.length,
+  );
+  const hostedReady = providers.some(
+    (p) =>
+      p.enabled &&
+      !isLocalEndpoint(p.base_url) &&
+      !isMediaProvider(p) &&
+      p.models.length,
+  );
+  const codexReady = Boolean(
+    codexAccount?.account || (codexAccount && !codexAccount.requiresOpenaiAuth),
+  );
+  const claudeReady = Boolean(
+    claudeStatus?.available && claudeStatus.authenticated,
+  );
   const accountReady = codexReady || claudeReady;
-  const claudeAccountLabel = claudeStatus?.auth?.email ?? claudeStatus?.auth?.subscriptionType ?? null;
+  const claudeAccountLabel =
+    claudeStatus?.auth?.email ?? claudeStatus?.auth?.subscriptionType ?? null;
   const selectedProvider = sel && sel !== "new" ? sel : null;
   const selectedPreset = PROVIDER_PRESETS.find(
-    (p) => p.kind === kind && p.name === name && p.base_url.trim().replace(/\/+$/, "") === baseUrl.trim().replace(/\/+$/, ""),
+    (p) =>
+      p.kind === kind &&
+      p.name === name &&
+      p.base_url.trim().replace(/\/+$/, "") ===
+        baseUrl.trim().replace(/\/+$/, ""),
   );
   const draftProvider = { name, kind, base_url: baseUrl };
   const draftNeedsKey = providerNeedsKey(draftProvider);
   const draftCategory = providerCategory(draftProvider);
-  const hasDraftFields = Boolean(name.trim() || baseUrl.trim() || apiKey.trim());
+  const hasDraftFields = Boolean(
+    name.trim() || baseUrl.trim() || apiKey.trim(),
+  );
   const isDirty =
     sel === "new"
       ? hasDraftFields
       : Boolean(
           selectedProvider &&
-            (name !== selectedProvider.name ||
-              kind !== selectedProvider.kind ||
-              baseUrl !== selectedProvider.base_url ||
-              enabled !== selectedProvider.enabled ||
-              apiKey.length > 0),
+          (name !== selectedProvider.name ||
+            kind !== selectedProvider.kind ||
+            baseUrl !== selectedProvider.base_url ||
+            enabled !== selectedProvider.enabled ||
+            apiKey.length > 0),
         );
   const canSave = Boolean(name.trim() && baseUrl.trim() && !busy);
-  const saveStateLabel = sel === "new" ? "Draft provider" : isDirty ? "Unsaved changes" : "Saved";
-  const selectedStatus = selectedProvider ? providerStatus(selectedProvider) : null;
-  const selectedKeyStatus = selectedProvider ? providerKeyStatus(selectedProvider) : null;
+  const saveStateLabel =
+    sel === "new" ? "Draft provider" : isDirty ? "Unsaved changes" : "Saved";
+  const selectedStatus = selectedProvider
+    ? providerStatus(selectedProvider)
+    : null;
+  const selectedKeyStatus = selectedProvider
+    ? providerKeyStatus(selectedProvider)
+    : null;
   const providerGroups = ["Local", "Hosted chat", "Media", "Disabled"]
-    .map((label) => ({ label, items: providers.filter((provider) => providerGroup(provider) === label) }))
+    .map((label) => ({
+      label,
+      items: providers.filter((provider) => providerGroup(provider) === label),
+    }))
     .filter((group) => group.items.length > 0);
-  const readinessItems: Array<{ label: string; value: string; tone: StatusTone }> = [
-    { label: "Local", value: localReady ? "Ready" : "Not set", tone: localReady ? "ready" : "off" },
-    { label: "Hosted", value: hostedReady ? "Ready" : "Not set", tone: hostedReady ? "ready" : "off" },
-    { label: "Media", value: mediaReady ? "Ready" : "Optional", tone: mediaReady ? "ready" : "warning" },
-    { label: "Accounts", value: accountReady ? "Ready" : "Not connected", tone: accountReady ? "ready" : "off" },
+  const readinessItems: Array<{
+    label: string;
+    value: string;
+    tone: StatusTone;
+  }> = [
+    {
+      label: "Local",
+      value: localReady ? "Ready" : "Not set",
+      tone: localReady ? "ready" : "off",
+    },
+    {
+      label: "Hosted",
+      value: hostedReady ? "Ready" : "Not set",
+      tone: hostedReady ? "ready" : "off",
+    },
+    {
+      label: "Media",
+      value: mediaReady ? "Ready" : "Optional",
+      tone: mediaReady ? "ready" : "warning",
+    },
+    {
+      label: "Accounts",
+      value: accountReady ? "Ready" : "Not connected",
+      tone: accountReady ? "ready" : "off",
+    },
   ];
 
   return (
-    <SheetDialog title="Providers" className="sheet agents-sheet providers-sheet" onClose={onClose}>
-        <div className="sheet-header providers-header">
-          <div className="providers-title">
-            <h2>Connection Center</h2>
-            <p className="sheet-sub providers-subtitle">
-              Connect chat, media, local, Codex, and Claude Code runtimes. Provider keys stay encrypted on this device.
-            </p>
-          </div>
-          <div className="providers-header-actions">
-            <button className="btn-accent providers-add-button" data-testid="new-provider" type="button" onClick={() => edit("new")}>
-              <Plus size={14} />
-              <span>Add provider</span>
-            </button>
-            <button className="icon-btn sheet-close providers-close" data-testid="close-providers" type="button" onClick={onClose} title="Close" aria-label="Close providers">
-              <X size={16} />
-            </button>
-          </div>
+    <SheetDialog
+      title="Providers"
+      className="sheet agents-sheet providers-sheet"
+      onClose={onClose}
+    >
+      <div className="sheet-header providers-header">
+        <div className="providers-title">
+          <h2>Connection Center</h2>
+          <p className="sheet-sub providers-subtitle">
+            Connect chat, media, local, Codex, and bring-your-own Claude CLI
+            runtimes. Provider keys stay encrypted on this device.
+          </p>
         </div>
+        <div className="providers-header-actions">
+          <button
+            className="btn-accent providers-add-button"
+            data-testid="new-provider"
+            type="button"
+            onClick={() => edit("new")}
+          >
+            <Plus size={14} />
+            <span>Add provider</span>
+          </button>
+          <button
+            className="icon-btn sheet-close providers-close"
+            data-testid="close-providers"
+            type="button"
+            onClick={onClose}
+            title="Close"
+            aria-label="Close providers"
+          >
+            <X size={16} />
+          </button>
+        </div>
+      </div>
 
-        <div className="agents-body providers-body">
-          <aside className="providers-rail" aria-label="Provider connections">
-            <div className="providers-rail-actions">
-              <button className="provider-rail-action" type="button" onClick={() => edit("new")}>
-                <Plus size={14} />
-                <span>New</span>
-              </button>
-              <button className="provider-rail-action" type="button" onClick={detectLocal} disabled={detecting}>
-                <Search size={14} />
-                <span>{detecting ? "Detecting..." : "Detect local"}</span>
-              </button>
-            </div>
+      <div className="agents-body providers-body">
+        <aside className="providers-rail" aria-label="Provider connections">
+          <div className="providers-rail-actions">
+            <button
+              className="provider-rail-action"
+              type="button"
+              onClick={() => edit("new")}
+            >
+              <Plus size={14} />
+              <span>New</span>
+            </button>
+            <button
+              className="provider-rail-action"
+              type="button"
+              onClick={detectLocal}
+              disabled={detecting}
+            >
+              <Search size={14} />
+              <span>{detecting ? "Detecting..." : "Detect local"}</span>
+            </button>
+          </div>
 
-            <div className="providers-list" role="list">
-              {providerGroups.map((group) => (
-                <div className="provider-group" key={group.label}>
-                  <span className="provider-group-label">{group.label}</span>
-                  {group.items.map((p) => {
-                    const status = providerStatus(p);
-                    const keyStatus = providerKeyStatus(p);
-                    return (
-                      <button
-                        key={p.id}
-                        className={"provider-list-row" + (selectedProvider?.id === p.id ? " active" : "")}
-                        type="button"
-                        onClick={() => edit(p)}
-                      >
-                        <span className="provider-row-top">
-                          <span className={"provider-status-dot " + status.tone} />
-                          <span className="provider-row-name">{p.name}</span>
+          <div className="providers-list" role="list">
+            {providerGroups.map((group) => (
+              <div className="provider-group" key={group.label}>
+                <span className="provider-group-label">{group.label}</span>
+                {group.items.map((p) => {
+                  const status = providerStatus(p);
+                  const keyStatus = providerKeyStatus(p);
+                  return (
+                    <button
+                      key={p.id}
+                      className={
+                        "provider-list-row" +
+                        (selectedProvider?.id === p.id ? " active" : "")
+                      }
+                      type="button"
+                      onClick={() => edit(p)}
+                    >
+                      <span className="provider-row-top">
+                        <span
+                          className={"provider-status-dot " + status.tone}
+                        />
+                        <span className="provider-row-name">{p.name}</span>
+                      </span>
+                      <span className="provider-row-meta">
+                        <span>{providerCategory(p)}</span>
+                        <span>{KIND_LABEL[p.kind]}</span>
+                      </span>
+                      <span className="provider-row-foot">
+                        <span
+                          className={"provider-key-badge " + keyStatus.tone}
+                        >
+                          {keyStatus.label}
                         </span>
-                        <span className="provider-row-meta">
-                          <span>{providerCategory(p)}</span>
-                          <span>{KIND_LABEL[p.kind]}</span>
+                        <span className={"provider-ready-label " + status.tone}>
+                          {status.label}
                         </span>
-                        <span className="provider-row-foot">
-                          <span className={"provider-key-badge " + keyStatus.tone}>{keyStatus.label}</span>
-                          <span className={"provider-ready-label " + status.tone}>{status.label}</span>
-                        </span>
-                      </button>
-                    );
-                  })}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            ))}
+            {providers.length === 0 && (
+              <div className="providers-list-empty">
+                <span>No providers</span>
+              </div>
+            )}
+          </div>
+        </aside>
+
+        <main className="providers-detail">
+          <div
+            className="provider-readiness-grid"
+            data-testid="provider-readiness"
+          >
+            {readinessItems.map((item) => (
+              <div
+                className={"provider-readiness-tile " + item.tone}
+                key={item.label}
+              >
+                <span className={"provider-status-dot " + item.tone} />
+                <div>
+                  <strong>{item.label}</strong>
+                  <span>{item.value}</span>
                 </div>
-              ))}
-              {providers.length === 0 && (
-                <div className="providers-list-empty">
-                  <span>No providers</span>
-                </div>
-              )}
-            </div>
-          </aside>
+              </div>
+            ))}
+          </div>
 
-          <main className="providers-detail">
-            <div className="provider-readiness-grid" data-testid="provider-readiness">
-              {readinessItems.map((item) => (
-                <div className={"provider-readiness-tile " + item.tone} key={item.label}>
-                  <span className={"provider-status-dot " + item.tone} />
+          <section
+            className="provider-account-panel"
+            aria-labelledby="provider-account-title"
+          >
+            <div className="providers-section-head">
+              <h4 id="provider-account-title">Account runtimes</h4>
+              <p>
+                Codex and the installed Claude CLI use their own signed-in
+                desktop tooling.
+              </p>
+              <p>
+                Milim does not include Claude Code, provide Anthropic
+                credentials, or manage Claude credentials. It only invokes the
+                official Claude CLI installed and authenticated separately on
+                this machine.
+              </p>
+            </div>
+            <div className="provider-account-grid">
+              <div
+                className={
+                  "provider-account-card " + (codexReady ? "ready" : "off")
+                }
+              >
+                <div className="provider-account-main">
+                  <span
+                    className={
+                      "provider-status-dot " + (codexReady ? "ready" : "off")
+                    }
+                  />
                   <div>
-                    <strong>{item.label}</strong>
-                    <span>{item.value}</span>
+                    <strong>Codex</strong>
+                    <span>
+                      {codexAccount?.account?.email ??
+                        "ChatGPT account runtime"}
+                    </span>
                   </div>
                 </div>
-              ))}
+                <button
+                  className="btn-ghost"
+                  data-testid="codex-connect"
+                  type="button"
+                  onClick={() =>
+                    void (codexReady ? disconnectCodex() : connectCodex())
+                  }
+                  disabled={codexBusy}
+                >
+                  {codexBusy
+                    ? "Working..."
+                    : codexReady
+                      ? "Disconnect"
+                      : "Connect"}
+                </button>
+              </div>
+              <div
+                className={
+                  "provider-account-card " + (claudeReady ? "ready" : "off")
+                }
+              >
+                <div className="provider-account-main">
+                  <span
+                    className={
+                      "provider-status-dot " + (claudeReady ? "ready" : "off")
+                    }
+                  />
+                  <div>
+                    <strong>Installed Claude CLI</strong>
+                    <span>
+                      {claudeAccountLabel ??
+                        (claudeStatus?.available
+                          ? "Run `claude auth login`, then refresh."
+                          : "Install Anthropic's official Claude CLI separately.")}
+                    </span>
+                  </div>
+                </div>
+                <button
+                  className="btn-ghost"
+                  data-testid="claude-code-status"
+                  type="button"
+                  onClick={() => void refreshClaudeStatus(true)}
+                  disabled={claudeBusy}
+                >
+                  {claudeBusy ? "Checking..." : "Refresh"}
+                </button>
+              </div>
             </div>
+            {codexNote && (
+              <p className={"provider-note " + codexNote.tone}>
+                {codexNote.message}
+              </p>
+            )}
+            {claudeNote && (
+              <p className={"provider-note " + claudeNote.tone}>
+                {claudeNote.message}
+              </p>
+            )}
+          </section>
 
-            <section className="provider-account-panel" aria-labelledby="provider-account-title">
-              <div className="providers-section-head">
-                <h4 id="provider-account-title">Account runtimes</h4>
-                <p>Codex and Claude Code use their own signed-in desktop CLIs.</p>
-              </div>
-              <div className="provider-account-grid">
-                <div className={"provider-account-card " + (codexReady ? "ready" : "off")}>
-                  <div className="provider-account-main">
-                    <span className={"provider-status-dot " + (codexReady ? "ready" : "off")} />
-                    <div>
-                      <strong>Codex</strong>
-                      <span>{codexAccount?.account?.email ?? "ChatGPT account runtime"}</span>
-                    </div>
-                  </div>
-                  <button
-                    className="btn-ghost"
-                    data-testid="codex-connect"
-                    type="button"
-                    onClick={() => void (codexReady ? disconnectCodex() : connectCodex())}
-                    disabled={codexBusy}
-                  >
-                    {codexBusy ? "Working..." : codexReady ? "Disconnect" : "Connect"}
-                  </button>
-                </div>
-                <div className={"provider-account-card " + (claudeReady ? "ready" : "off")}>
-                  <div className="provider-account-main">
-                    <span className={"provider-status-dot " + (claudeReady ? "ready" : "off")} />
-                    <div>
-                      <strong>Claude Code</strong>
-                      <span>{claudeAccountLabel ?? (claudeStatus?.available ? "Run `claude auth login`, then refresh." : "Install Claude Code CLI.")}</span>
-                    </div>
-                  </div>
-                  <button
-                    className="btn-ghost"
-                    data-testid="claude-code-status"
-                    type="button"
-                    onClick={() => void refreshClaudeStatus(true)}
-                    disabled={claudeBusy}
-                  >
-                    {claudeBusy ? "Checking..." : "Refresh"}
-                  </button>
-                </div>
-              </div>
-              {codexNote && <p className={"provider-note " + codexNote.tone}>{codexNote.message}</p>}
-              {claudeNote && <p className={"provider-note " + claudeNote.tone}>{claudeNote.message}</p>}
-            </section>
-
-            <section className="provider-quick-panel" aria-labelledby="provider-quick-title">
-              <div className="providers-section-head">
-                <h4 id="provider-quick-title">Add providers</h4>
-                <p>Detect local runtimes or start a hosted API-key connection.</p>
-              </div>
-              <div className="provider-quick-grid">
+          <section
+            className="provider-quick-panel"
+            aria-labelledby="provider-quick-title"
+          >
+            <div className="providers-section-head">
+              <h4 id="provider-quick-title">Add providers</h4>
+              <p>Detect local runtimes or start a hosted API-key connection.</p>
+            </div>
+            <div className="provider-quick-grid">
+              <button
+                className="provider-quick-action"
+                type="button"
+                onClick={() => startPreset("OpenRouter")}
+                title="Start OpenRouter provider setup."
+                aria-label="Start OpenRouter provider setup"
+              >
+                <Plus size={13} />
+                <strong>OpenRouter</strong>
+                <span>Endpoint and encrypted key.</span>
+              </button>
+              <button
+                className="provider-quick-action"
+                data-testid="detect-local-providers"
+                type="button"
+                onClick={detectLocal}
+                disabled={detecting}
+                title="Find Ollama or LM Studio on this machine."
+                aria-label={
+                  detecting
+                    ? "Detecting local providers"
+                    : "Detect local providers"
+                }
+              >
+                <Search size={13} />
+                <strong>
+                  {detecting ? "Detecting local" : "Detect local"}
+                </strong>
+                <span>Find Ollama or LM Studio.</span>
+              </button>
+              {["OpenAI", "Anthropic", "Gemini"].map((presetName) => (
                 <button
                   className="provider-quick-action"
                   type="button"
-                  onClick={() => startPreset("OpenRouter")}
-                  title="Start OpenRouter provider setup."
-                  aria-label="Start OpenRouter provider setup"
+                  key={presetName}
+                  onClick={() => startPreset(presetName)}
+                  title={`Start ${presetName} provider setup.`}
+                  aria-label={`Start ${presetName} provider setup`}
                 >
                   <Plus size={13} />
-                  <strong>OpenRouter</strong>
+                  <strong>{presetName}</strong>
                   <span>Endpoint and encrypted key.</span>
                 </button>
-                <button
-                  className="provider-quick-action"
-                  data-testid="detect-local-providers"
-                  type="button"
-                  onClick={detectLocal}
-                  disabled={detecting}
-                  title="Find Ollama or LM Studio on this machine."
-                  aria-label={detecting ? "Detecting local providers" : "Detect local providers"}
-                >
-                  <Search size={13} />
-                  <strong>{detecting ? "Detecting local" : "Detect local"}</strong>
-                  <span>Find Ollama or LM Studio.</span>
-                </button>
-                {["OpenAI", "Anthropic", "Gemini"].map((presetName) => (
-                  <button
-                    className="provider-quick-action"
-                    type="button"
-                    key={presetName}
-                    onClick={() => startPreset(presetName)}
-                    title={`Start ${presetName} provider setup.`}
-                    aria-label={`Start ${presetName} provider setup`}
-                  >
-                    <Plus size={13} />
-                    <strong>{presetName}</strong>
-                    <span>Endpoint and encrypted key.</span>
-                  </button>
-                ))}
-              </div>
-            </section>
+              ))}
+            </div>
+          </section>
 
-            {discoveries.length > 0 && (
-              <div className="provider-discovery">
-                <div className="provider-discovery-head">
-                  <span className="setting-mini-title">Local providers</span>
-                  <span>Reachable endpoints can be added without pasting a key.</span>
-                </div>
-                {discoveries.map((d) => (
-                  <div className="provider-discovery-row" key={d.base_url}>
-                    <div>
-                      <strong>{d.name}</strong>
-                      <span>
-                        {d.reachable
-                          ? `${d.models.length} model${d.models.length === 1 ? "" : "s"} found at ${d.base_url}`
-                          : d.error
-                            ? "Not running"
-                            : "No response"}
-                      </span>
-                    </div>
-                    {d.configured ? (
-                      <span className="provider-pill ready">Added</span>
-                    ) : d.reachable ? (
-                      <button className="btn-ghost" type="button" disabled={busy} onClick={() => void addDiscovery(d)}>
-                        Add
-                      </button>
-                    ) : (
-                      <span className="provider-pill muted">Start app</span>
-                    )}
-                  </div>
-                ))}
+          {discoveries.length > 0 && (
+            <div className="provider-discovery">
+              <div className="provider-discovery-head">
+                <span className="setting-mini-title">Local providers</span>
+                <span>
+                  Reachable endpoints can be added without pasting a key.
+                </span>
               </div>
-            )}
-
-            {sel ? (
-              <>
-                <div className="providers-detail-head">
+              {discoveries.map((d) => (
+                <div className="provider-discovery-row" key={d.base_url}>
                   <div>
-                    <span className="providers-detail-kicker">{sel === "new" ? "New connection" : "Provider connection"}</span>
-                    <h3>{name.trim() || "Untitled provider"}</h3>
-                    <p>
-                      {sel === "new"
-                        ? "Choose a preset or enter the endpoint details manually."
-                        : selectedStatus?.detail ?? "Review readiness, credentials, and endpoint details."}
-                    </p>
+                    <strong>{d.name}</strong>
+                    <span>
+                      {d.reachable
+                        ? `${d.models.length} model${d.models.length === 1 ? "" : "s"} found at ${d.base_url}`
+                        : d.error
+                          ? "Not running"
+                          : "No response"}
+                    </span>
                   </div>
-                  <span className={"provider-save-state " + (isDirty || sel === "new" ? "draft" : "ready")}>{saveStateLabel}</span>
-                </div>
-
-                <section className="providers-section">
-                  <div className="providers-section-head">
-                    <h4>Connection</h4>
-                    <p>Pick a known profile or enter any OpenAI-compatible endpoint manually.</p>
-                  </div>
-                  <div className="providers-field-grid three">
-                    <label className="field provider-field">
-                      <span>Provider preset</span>
-                      <Select
-                        value={selectedPreset?.name ?? ""}
-                        testId="provider-preset-select"
-                        placeholder="Choose a preset..."
-                        options={PROVIDER_PRESETS.map((p) => ({ label: p.name, value: p.name }))}
-                        onChange={applyPreset}
-                      />
-                    </label>
-                    <label className="field provider-field">
-                      <span>Name</span>
-                      <input
-                        className="css-input"
-                        data-testid="provider-name-input"
-                        value={name}
-                        onChange={(e) => setName(e.target.value)}
-                        placeholder="OpenAI"
-                      />
-                    </label>
-                    <label className="field provider-field">
-                      <span>Provider type</span>
-                      <Select value={kind} testId="provider-kind-select" options={PROVIDER_KIND_OPTIONS} onChange={(v) => setKind(v as ProviderKind)} />
-                    </label>
-                  </div>
-                  <label className="field provider-field">
-                    <span>Base URL</span>
-                    <input
-                      className="css-input"
-                      data-testid="provider-base-url-input"
-                      value={baseUrl}
-                      onChange={(e) => setBaseUrl(e.target.value)}
-                      placeholder="https://api.openai.com/v1"
-                    />
-                  </label>
-                </section>
-
-                <section className="providers-section">
-                  <div className="providers-section-head">
-                    <h4>Credentials</h4>
-                    <p>
-                      {sel !== "new"
-                        ? "Leave the key blank to keep the encrypted value already stored on this device."
-                        : draftNeedsKey
-                          ? "Hosted providers usually require a key before models or media jobs can run."
-                          : "Local endpoints can usually be saved without an API key."}
-                    </p>
-                  </div>
-                  <label className="field provider-field">
-                    <span>API key {sel !== "new" && <em>(leave blank to keep)</em>}</span>
-                    <input
-                      className="css-input"
-                      data-testid="provider-api-key-input"
-                      type="password"
-                      value={apiKey}
-                      onChange={(e) => setApiKey(e.target.value)}
-                      placeholder="sk-..."
-                    />
-                  </label>
-                </section>
-
-                <section className="providers-section">
-                  <div className="providers-section-head">
-                    <h4>Models and diagnostics</h4>
-                    <p>Refresh models after changing credentials, endpoint, or local server state.</p>
-                  </div>
-                  <div className="provider-capability-grid">
-                    <div>
-                      <span>Category</span>
-                      <strong>{draftCategory}</strong>
-                    </div>
-                    <div>
-                      <span>Credential</span>
-                      <strong>{selectedKeyStatus?.label ?? (draftNeedsKey ? "Add key" : "No key needed")}</strong>
-                    </div>
-                    <div>
-                      <span>Models</span>
-                      <strong>{selectedProvider ? (selectedProvider.models.length ? String(selectedProvider.models.length) : "None returned") : "After save"}</strong>
-                    </div>
-                    <div>
-                      <span>Readiness</span>
-                      <strong>{selectedStatus?.label ?? "Draft"}</strong>
-                    </div>
-                  </div>
-                  <div className="provider-enabled-row">
-                    <Toggle checked={enabled} onChange={setEnabled} label="Enabled" testId="provider-enabled-toggle" />
-                    <span>Disabled providers remain saved but are hidden from active workflows.</span>
-                  </div>
-                  {selectedProvider?.models.length ? (
-                    <div className="provider-model-list" aria-label="Provider models">
-                      {selectedProvider.models.slice(0, 8).map((model) => (
-                        <span key={model}>{model}</span>
-                      ))}
-                    </div>
+                  {d.configured ? (
+                    <span className="provider-pill ready">Added</span>
+                  ) : d.reachable ? (
+                    <button
+                      className="btn-ghost"
+                      type="button"
+                      disabled={busy}
+                      onClick={() => void addDiscovery(d)}
+                    >
+                      Add
+                    </button>
                   ) : (
-                    <p className="provider-section-note">No cached models yet. Save and test the connection to populate this provider.</p>
+                    <span className="provider-pill muted">Start app</span>
                   )}
-                  <div className="provider-diagnostics-row">
-                    <button className="btn-ghost" data-testid="provider-test-connection" type="button" disabled={!canSave} onClick={() => void testConnection()}>
-                      <Refresh size={13} />
-                      <span>{busy ? "Testing..." : "Test connection"}</span>
-                    </button>
-                    <button className="btn-ghost" type="button" onClick={() => void refresh()}>
-                      Refresh list
-                    </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {sel ? (
+            <>
+              <div className="providers-detail-head">
+                <div>
+                  <span className="providers-detail-kicker">
+                    {sel === "new" ? "New connection" : "Provider connection"}
+                  </span>
+                  <h3>{name.trim() || "Untitled provider"}</h3>
+                  <p>
+                    {sel === "new"
+                      ? "Choose a preset or enter the endpoint details manually."
+                      : (selectedStatus?.detail ??
+                        "Review readiness, credentials, and endpoint details.")}
+                  </p>
+                </div>
+                <span
+                  className={
+                    "provider-save-state " +
+                    (isDirty || sel === "new" ? "draft" : "ready")
+                  }
+                >
+                  {saveStateLabel}
+                </span>
+              </div>
+
+              <section className="providers-section">
+                <div className="providers-section-head">
+                  <h4>Connection</h4>
+                  <p>
+                    Pick a known profile or enter any OpenAI-compatible endpoint
+                    manually.
+                  </p>
+                </div>
+                <div className="providers-field-grid three">
+                  <label className="field provider-field">
+                    <span>Provider preset</span>
+                    <Select
+                      value={selectedPreset?.name ?? ""}
+                      testId="provider-preset-select"
+                      placeholder="Choose a preset..."
+                      options={PROVIDER_PRESETS.map((p) => ({
+                        label: p.name,
+                        value: p.name,
+                      }))}
+                      onChange={applyPreset}
+                    />
+                  </label>
+                  <label className="field provider-field">
+                    <span>Name</span>
+                    <input
+                      className="css-input"
+                      data-testid="provider-name-input"
+                      value={name}
+                      onChange={(e) => setName(e.target.value)}
+                      placeholder="OpenAI"
+                    />
+                  </label>
+                  <label className="field provider-field">
+                    <span>Provider type</span>
+                    <Select
+                      value={kind}
+                      testId="provider-kind-select"
+                      options={PROVIDER_KIND_OPTIONS}
+                      onChange={(v) => setKind(v as ProviderKind)}
+                    />
+                  </label>
+                </div>
+                <label className="field provider-field">
+                  <span>Base URL</span>
+                  <input
+                    className="css-input"
+                    data-testid="provider-base-url-input"
+                    value={baseUrl}
+                    onChange={(e) => setBaseUrl(e.target.value)}
+                    placeholder="https://api.openai.com/v1"
+                  />
+                </label>
+              </section>
+
+              <section className="providers-section">
+                <div className="providers-section-head">
+                  <h4>Credentials</h4>
+                  <p>
+                    {sel !== "new"
+                      ? "Leave the key blank to keep the encrypted value already stored on this device."
+                      : draftNeedsKey
+                        ? "Hosted providers usually require a key before models or media jobs can run."
+                        : "Local endpoints can usually be saved without an API key."}
+                  </p>
+                </div>
+                <label className="field provider-field">
+                  <span>
+                    API key {sel !== "new" && <em>(leave blank to keep)</em>}
+                  </span>
+                  <input
+                    className="css-input"
+                    data-testid="provider-api-key-input"
+                    type="password"
+                    value={apiKey}
+                    onChange={(e) => setApiKey(e.target.value)}
+                    placeholder="sk-..."
+                  />
+                </label>
+              </section>
+
+              <section className="providers-section">
+                <div className="providers-section-head">
+                  <h4>Models and diagnostics</h4>
+                  <p>
+                    Refresh models after changing credentials, endpoint, or
+                    local server state.
+                  </p>
+                </div>
+                <div className="provider-capability-grid">
+                  <div>
+                    <span>Category</span>
+                    <strong>{draftCategory}</strong>
                   </div>
-                </section>
-
-                {note && <p className={"provider-note " + noteTone(note)}>{note}</p>}
-
-                <div className="providers-footer-actions">
-                  {sel !== "new" && (
-                    <button className="btn-ghost danger provider-delete-action" type="button" disabled={busy} onClick={remove}>
-                      {confirmDeleteId === selectedProvider?.id ? "Confirm delete" : "Delete"}
-                    </button>
-                  )}
-                  <span className="spacer" />
-                  <button className="btn-accent" data-testid="save-provider" type="button" disabled={!canSave} onClick={save}>
-                    {busy ? "Connecting..." : sel === "new" ? "Save and test" : isDirty ? "Save changes" : "Saved"}
+                  <div>
+                    <span>Credential</span>
+                    <strong>
+                      {selectedKeyStatus?.label ??
+                        (draftNeedsKey ? "Add key" : "No key needed")}
+                    </strong>
+                  </div>
+                  <div>
+                    <span>Models</span>
+                    <strong>
+                      {selectedProvider
+                        ? selectedProvider.models.length
+                          ? String(selectedProvider.models.length)
+                          : "None returned"
+                        : "After save"}
+                    </strong>
+                  </div>
+                  <div>
+                    <span>Readiness</span>
+                    <strong>{selectedStatus?.label ?? "Draft"}</strong>
+                  </div>
+                </div>
+                <div className="provider-enabled-row">
+                  <Toggle
+                    checked={enabled}
+                    onChange={setEnabled}
+                    label="Enabled"
+                    testId="provider-enabled-toggle"
+                  />
+                  <span>
+                    Disabled providers remain saved but are hidden from active
+                    workflows.
+                  </span>
+                </div>
+                {selectedProvider?.models.length ? (
+                  <div
+                    className="provider-model-list"
+                    aria-label="Provider models"
+                  >
+                    {selectedProvider.models.slice(0, 8).map((model) => (
+                      <span key={model}>{model}</span>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="provider-section-note">
+                    No cached models yet. Save and test the connection to
+                    populate this provider.
+                  </p>
+                )}
+                <div className="provider-diagnostics-row">
+                  <button
+                    className="btn-ghost"
+                    data-testid="provider-test-connection"
+                    type="button"
+                    disabled={!canSave}
+                    onClick={() => void testConnection()}
+                  >
+                    <Refresh size={13} />
+                    <span>{busy ? "Testing..." : "Test connection"}</span>
+                  </button>
+                  <button
+                    className="btn-ghost"
+                    type="button"
+                    onClick={() => void refresh()}
+                  >
+                    Refresh list
                   </button>
                 </div>
-              </>
-            ) : (
-              <div className="providers-empty">
-                <div>
-                  <strong>Select a provider to edit</strong>
-                  <span>Use the rail for saved providers, or start from the setup actions above.</span>
-                </div>
-                <button className="btn-accent providers-add-button" type="button" onClick={() => edit("new")}>
-                  <Plus size={14} />
-                  <span>Add provider</span>
+              </section>
+
+              {note && (
+                <p className={"provider-note " + noteTone(note)}>{note}</p>
+              )}
+
+              <div className="providers-footer-actions">
+                {sel !== "new" && (
+                  <button
+                    className="btn-ghost danger provider-delete-action"
+                    type="button"
+                    disabled={busy}
+                    onClick={remove}
+                  >
+                    {confirmDeleteId === selectedProvider?.id
+                      ? "Confirm delete"
+                      : "Delete"}
+                  </button>
+                )}
+                <span className="spacer" />
+                <button
+                  className="btn-accent"
+                  data-testid="save-provider"
+                  type="button"
+                  disabled={!canSave}
+                  onClick={save}
+                >
+                  {busy
+                    ? "Connecting..."
+                    : sel === "new"
+                      ? "Save and test"
+                      : isDirty
+                        ? "Save changes"
+                        : "Saved"}
                 </button>
               </div>
-            )}
-          </main>
-        </div>
-      </SheetDialog>
+            </>
+          ) : (
+            <div className="providers-empty">
+              <div>
+                <strong>Select a provider to edit</strong>
+                <span>
+                  Use the rail for saved providers, or start from the setup
+                  actions above.
+                </span>
+              </div>
+              <button
+                className="btn-accent providers-add-button"
+                type="button"
+                onClick={() => edit("new")}
+              >
+                <Plus size={14} />
+                <span>Add provider</span>
+              </button>
+            </div>
+          )}
+        </main>
+      </div>
+    </SheetDialog>
   );
 }

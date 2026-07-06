@@ -1,9 +1,24 @@
 import { strict as assert } from "node:assert";
 import type { ChatMessage, ModelInfo, ReasoningEffort } from "../src/api.js";
 import { checkpointMessage } from "../src/lib/contextCompaction.js";
-import { accountRuntimeNotReadyForTurn, accountRuntimeNotReadyTurn, accountRuntimeSelectionError, appendUserTurn, editResendConversation, prepareAndStartTurn, prepareTurnOutbound, regenerateTurnConversation, resolveTurnModel, resolveTurnSetup } from "../src/lib/turnContext.js";
+import {
+  accountRuntimeNotReadyForTurn,
+  accountRuntimeNotReadyTurn,
+  accountRuntimeSelectionError,
+  appendUserTurn,
+  editResendConversation,
+  prepareAndStartTurn,
+  prepareTurnOutbound,
+  regenerateTurnConversation,
+  resolveTurnModel,
+  resolveTurnSetup,
+} from "../src/lib/turnContext.js";
 
-const tinyModel: ModelInfo = { id: "tiny", owned_by: "Test", context_length: 1200 };
+const tinyModel: ModelInfo = {
+  id: "tiny",
+  owned_by: "Test",
+  context_length: 1200,
+};
 const effort: ReasoningEffort = "medium";
 
 function user(content: string): ChatMessage {
@@ -14,17 +29,46 @@ function assistant(content: string): ChatMessage {
   return { role: "assistant", content };
 }
 
-const attachment = [{ id: "a1", name: "note.txt", mime: "text/plain", size: 4, content: "test" }];
+const attachment = [
+  { id: "a1", name: "note.txt", mime: "text/plain", size: 4, content: "test" },
+];
 const appended = appendUserTurn([assistant("old")], "new", attachment);
-assert.deepEqual(appended, [assistant("old"), { role: "user", content: "new", attachments: attachment }]);
-const retryWithTrailingAssistants = [user("u1"), assistant("a1"), assistant("a2")];
-assert.deepEqual(regenerateTurnConversation(retryWithTrailingAssistants), [retryWithTrailingAssistants[0]]);
+assert.deepEqual(appended, [
+  assistant("old"),
+  { role: "user", content: "new", attachments: attachment },
+]);
+const retryWithTrailingAssistants = [
+  user("u1"),
+  assistant("a1"),
+  assistant("a2"),
+];
+assert.deepEqual(regenerateTurnConversation(retryWithTrailingAssistants), [
+  retryWithTrailingAssistants[0],
+]);
 const retryFromLatestUser = [user("u1"), assistant("a1"), user("u2")];
-assert.deepEqual(regenerateTurnConversation(retryFromLatestUser), retryFromLatestUser);
-assert.equal(regenerateTurnConversation([user("u1"), checkpointMessage("saved context", { auto: true, sourceTokens: 10 })]), null);
+assert.deepEqual(
+  regenerateTurnConversation(retryFromLatestUser),
+  retryFromLatestUser,
+);
+assert.equal(
+  regenerateTurnConversation([
+    user("u1"),
+    checkpointMessage("saved context", { auto: true, sourceTokens: 10 }),
+  ]),
+  null,
+);
 assert.equal(regenerateTurnConversation([assistant("orphan")]), null);
-const edited = editResendConversation([{ role: "user", content: "old", attachments: attachment }, assistant("drop")], 0, " new ");
-assert.deepEqual(edited, [{ role: "user", content: "new", attachments: attachment }]);
+const edited = editResendConversation(
+  [
+    { role: "user", content: "old", attachments: attachment },
+    assistant("drop"),
+  ],
+  0,
+  " new ",
+);
+assert.deepEqual(edited, [
+  { role: "user", content: "new", attachments: attachment },
+]);
 assert.equal(editResendConversation([user("old")], 0, "   "), null);
 assert.equal(editResendConversation([user("old")], 2, "new"), null);
 
@@ -33,45 +77,63 @@ const requireModel = () => {
   requiredModelCalls += 1;
   return "required-model";
 };
-assert.deepEqual(resolveTurnModel({
-  selectedModel: "selected-model",
-  session: { worker: { model: "worker-model" } },
-  activeAgent: { model: "agent-model" },
-  settings: { model: "settings-model" },
-  requireModel,
-}), { ok: true, model: "selected-model" });
-assert.deepEqual(resolveTurnModel({
-  session: { worker: { model: " worker-model " } },
-  activeAgent: { model: "agent-model" },
-  settings: { model: "settings-model" },
-  requireModel,
-}), { ok: true, model: "worker-model" });
-assert.deepEqual(resolveTurnModel({
-  session: null,
-  activeAgent: { model: " agent-model " },
-  settings: { model: "settings-model" },
-  requireModel,
-}), { ok: true, model: "agent-model" });
-assert.deepEqual(resolveTurnModel({
-  session: null,
-  activeAgent: null,
-  settings: { model: " settings-model " },
-  requireModel,
-}), { ok: true, model: "settings-model" });
-assert.deepEqual(resolveTurnModel({
-  selectedModel: "",
-  session: null,
-  activeAgent: null,
-  settings: { model: "" },
-  requireModel,
-}), { ok: true, model: "required-model" });
+assert.deepEqual(
+  resolveTurnModel({
+    selectedModel: "selected-model",
+    session: { worker: { model: "worker-model" } },
+    activeAgent: { model: "agent-model" },
+    settings: { model: "settings-model" },
+    requireModel,
+  }),
+  { ok: true, model: "selected-model" },
+);
+assert.deepEqual(
+  resolveTurnModel({
+    session: { worker: { model: " worker-model " } },
+    activeAgent: { model: "agent-model" },
+    settings: { model: "settings-model" },
+    requireModel,
+  }),
+  { ok: true, model: "worker-model" },
+);
+assert.deepEqual(
+  resolveTurnModel({
+    session: null,
+    activeAgent: { model: " agent-model " },
+    settings: { model: "settings-model" },
+    requireModel,
+  }),
+  { ok: true, model: "agent-model" },
+);
+assert.deepEqual(
+  resolveTurnModel({
+    session: null,
+    activeAgent: null,
+    settings: { model: " settings-model " },
+    requireModel,
+  }),
+  { ok: true, model: "settings-model" },
+);
+assert.deepEqual(
+  resolveTurnModel({
+    selectedModel: "",
+    session: null,
+    activeAgent: null,
+    settings: { model: "" },
+    requireModel,
+  }),
+  { ok: true, model: "required-model" },
+);
 assert.equal(requiredModelCalls, 1);
-assert.deepEqual(resolveTurnModel({
-  session: null,
-  activeAgent: null,
-  settings: { model: "" },
-  requireModel: () => "",
-}), { ok: false, error: "No model selected." });
+assert.deepEqual(
+  resolveTurnModel({
+    session: null,
+    activeAgent: null,
+    settings: { model: "" },
+    requireModel: () => "",
+  }),
+  { ok: false, error: "No model selected." },
+);
 
 const setupSettings = {
   model: "thread-model",
@@ -103,46 +165,61 @@ if (setup.ok) {
   assert.equal(setup.settings, setupSettings);
   assert.equal(setup.activeAgent?.id, "agent-1");
 }
-assert.deepEqual(resolveTurnSetup({
-  sessionId: "missing",
-  selectedModel: "codex:",
-  sessions: [],
-  settings: { ...setupSettings, activeAgentId: null, model: "" },
-  agents: [],
-  activeTitle: "Active title",
-  requireModel: () => "fallback",
-  codexRuntimeModel: () => null,
-  claudeRuntimeModel: () => null,
-  isCodexModel: (model) => model.startsWith("codex:"),
-  isClaudeModel: () => false,
-}), { ok: false, error: "Choose a concrete Codex model." });
+assert.deepEqual(
+  resolveTurnSetup({
+    sessionId: "missing",
+    selectedModel: "codex:",
+    sessions: [],
+    settings: { ...setupSettings, activeAgentId: null, model: "" },
+    agents: [],
+    activeTitle: "Active title",
+    requireModel: () => "fallback",
+    codexRuntimeModel: () => null,
+    claudeRuntimeModel: () => null,
+    isCodexModel: (model) => model.startsWith("codex:"),
+    isClaudeModel: () => false,
+  }),
+  { ok: false, error: "Choose a concrete Codex model." },
+);
 
-assert.equal(accountRuntimeSelectionError({
-  model: "codex:",
-  codexModel: null,
-  claudeModel: null,
-  isCodexModel: (model) => model.startsWith("codex:"),
-  isClaudeModel: () => false,
-}), "Choose a concrete Codex model.");
-assert.equal(accountRuntimeSelectionError({
-  model: "claude:",
-  codexModel: null,
-  claudeModel: null,
-  isCodexModel: () => false,
-  isClaudeModel: (model) => model.startsWith("claude:"),
-}), "Choose a concrete Claude Code model.");
-assert.equal(accountRuntimeSelectionError({
-  model: "codex:gpt-5",
-  codexModel: "gpt-5",
-  claudeModel: null,
-  isCodexModel: (model) => model.startsWith("codex:"),
-  isClaudeModel: () => false,
-}), null);
-assert.equal(accountRuntimeNotReadyTurn({
-  kind: "codex",
-  ready: { ok: true },
-  conversation: [user("hello")],
-}), null);
+assert.equal(
+  accountRuntimeSelectionError({
+    model: "codex:",
+    codexModel: null,
+    claudeModel: null,
+    isCodexModel: (model) => model.startsWith("codex:"),
+    isClaudeModel: () => false,
+  }),
+  "Choose a concrete Codex model.",
+);
+assert.equal(
+  accountRuntimeSelectionError({
+    model: "claude:",
+    codexModel: null,
+    claudeModel: null,
+    isCodexModel: () => false,
+    isClaudeModel: (model) => model.startsWith("claude:"),
+  }),
+  "Choose a concrete Claude CLI model.",
+);
+assert.equal(
+  accountRuntimeSelectionError({
+    model: "codex:gpt-5",
+    codexModel: "gpt-5",
+    claudeModel: null,
+    isCodexModel: (model) => model.startsWith("codex:"),
+    isClaudeModel: () => false,
+  }),
+  null,
+);
+assert.equal(
+  accountRuntimeNotReadyTurn({
+    kind: "codex",
+    ready: { ok: true },
+    conversation: [user("hello")],
+  }),
+  null,
+);
 const codexMissing = accountRuntimeNotReadyTurn({
   kind: "codex",
   ready: { ok: false, message: "CLI was not found on PATH", warning: true },
@@ -158,7 +235,10 @@ const claudeMissing = accountRuntimeNotReadyTurn({
   conversation: [user("hello")],
 });
 assert.equal(claudeMissing?.status, "error");
-assert.match(claudeMissing?.messages[1].content ?? "", /Claude Code is not ready/);
+assert.match(
+  claudeMissing?.messages[1].content ?? "",
+  /Claude CLI is not ready/,
+);
 let runtimeChecks = "";
 const codexCheck = await accountRuntimeNotReadyForTurn({
   codexModel: "gpt-5",
@@ -168,18 +248,24 @@ const codexCheck = await accountRuntimeNotReadyForTurn({
     runtimeChecks += "codex";
     return { ok: false, message: "missing codex", warning: true };
   },
-  ensureClaudeAccount: async () => assert.fail("claude should not be checked when codex runtime is selected"),
+  ensureClaudeAccount: async () =>
+    assert.fail("claude should not be checked when codex runtime is selected"),
 });
 assert.equal(codexCheck?.status, "skipped");
 assert.equal(codexCheck?.error, "missing codex");
 assert.equal(runtimeChecks, "codex");
-assert.equal(await accountRuntimeNotReadyForTurn({
-  codexModel: null,
-  claudeModel: null,
-  conversation: [user("hello")],
-  ensureCodexAccount: async () => assert.fail("codex should not be checked for model chat"),
-  ensureClaudeAccount: async () => assert.fail("claude should not be checked for model chat"),
-}), null);
+assert.equal(
+  await accountRuntimeNotReadyForTurn({
+    codexModel: null,
+    claudeModel: null,
+    conversation: [user("hello")],
+    ensureCodexAccount: async () =>
+      assert.fail("codex should not be checked for model chat"),
+    ensureClaudeAccount: async () =>
+      assert.fail("claude should not be checked for model chat"),
+  }),
+  null,
+);
 
 const shortConversation = [user("hello"), assistant("hi")];
 const idleRef = { current: false };
@@ -193,12 +279,14 @@ const noCompaction = await prepareTurnOutbound({
   folder: "C:\\work",
   reasoningEffort: effort,
   compactionInFlightRef: idleRef,
-  setChatNotice: () => assert.fail("notice should not change without compaction"),
+  setChatNotice: () =>
+    assert.fail("notice should not change without compaction"),
   createCompactionCheckpoint: async () => {
     checkpointCalls += 1;
     return checkpointMessage("unused", { auto: true, sourceTokens: 1 });
   },
-  clearAccountRuntime: () => assert.fail("runtime should not reset without compaction"),
+  clearAccountRuntime: () =>
+    assert.fail("runtime should not reset without compaction"),
 });
 assert.equal(noCompaction.conversation, shortConversation);
 assert.deepEqual(noCompaction.outbound, shortConversation);
@@ -230,7 +318,12 @@ const compacted = await prepareTurnOutbound({
   compactionInFlightRef: busyRef,
   setChatNotice: (notice) => notices.push(notice?.message ?? null),
   signal: compactionSignal,
-  createCompactionCheckpoint: async (sessionId, sourceMessages, model, options) => {
+  createCompactionCheckpoint: async (
+    sessionId,
+    sourceMessages,
+    model,
+    options,
+  ) => {
     assert.equal(sessionId, "s2");
     assert.equal(model, "tiny");
     assert.equal(options.folder, "C:\\work");
@@ -238,7 +331,10 @@ const compacted = await prepareTurnOutbound({
     assert.equal(options.auto, true);
     assert.equal(options.signal, compactionSignal);
     checkpointSources.push(sourceMessages);
-    return checkpointMessage("Keep prior decisions.", { auto: true, sourceTokens: 100 });
+    return checkpointMessage("Keep prior decisions.", {
+      auto: true,
+      sourceTokens: 100,
+    });
   },
   clearAccountRuntime: (sessionId) => {
     clearedRuntime = sessionId;
@@ -253,9 +349,15 @@ assert.deepEqual(checkpointSources[0], longConversation.slice(0, 2));
 assert.equal(compacted.conversation.length, 8);
 assert.match(compacted.conversation[2].content, /Keep prior decisions/);
 assert.deepEqual(compacted.conversation.slice(3), longConversation.slice(2));
-assert(compacted.outbound.some((message) => message.content.includes("Previous thread context checkpoint")));
+assert(
+  compacted.outbound.some((message) =>
+    message.content.includes("Previous thread context checkpoint"),
+  ),
+);
 assert(compacted.outbound.some((message) => message.content === "tail one"));
-assert(compacted.outbound.some((message) => message.content === "tail answer two"));
+assert(
+  compacted.outbound.some((message) => message.content === "tail answer two"),
+);
 
 const nativeHistory = await prepareTurnOutbound({
   sessionId: "s3",
@@ -266,15 +368,22 @@ const nativeHistory = await prepareTurnOutbound({
   folder: "C:\\work",
   reasoningEffort: effort,
   compactionInFlightRef: { current: false },
-  setChatNotice: () => assert.fail("native-history turns should not auto-compact visible transcript"),
+  setChatNotice: () =>
+    assert.fail(
+      "native-history turns should not auto-compact visible transcript",
+    ),
   createCompactionCheckpoint: async () => {
     throw new Error("native-history turns should not create a checkpoint");
   },
-  clearAccountRuntime: () => assert.fail("native-history turns should not clear runtime state"),
+  clearAccountRuntime: () =>
+    assert.fail("native-history turns should not clear runtime state"),
   skipAutoCompaction: true,
 });
 assert.equal(nativeHistory.conversation, longConversation);
-assert.deepEqual(nativeHistory.outbound, [{ role: "system", content: "Runtime context." }, longConversation.at(-1)]);
+assert.deepEqual(nativeHistory.outbound, [
+  { role: "system", content: "Runtime context." },
+  longConversation.at(-1),
+]);
 
 const order: string[] = [];
 const prepareSignal = new AbortController().signal;
@@ -282,8 +391,13 @@ const started = await prepareAndStartTurn({
   contextMessages: [{ role: "system", content: "Use tests." }],
   conversation: shortConversation,
   prepareOutbound: async (contextMessages, conversation, options) => {
-    order.push(`prepare:${contextMessages.length}:${conversation.length}:${options?.signal === prepareSignal}`);
-    return { conversation: [...conversation, assistant("prepared")], outbound: contextMessages };
+    order.push(
+      `prepare:${contextMessages.length}:${conversation.length}:${options?.signal === prepareSignal}`,
+    );
+    return {
+      conversation: [...conversation, assistant("prepared")],
+      outbound: contextMessages,
+    };
   },
   beginAssistant: (conversation) => {
     order.push(`begin:${conversation.length}`);
