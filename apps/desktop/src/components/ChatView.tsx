@@ -5541,7 +5541,8 @@ export function ChatView({
           reasoningEffort: turnReasoningEffort,
         });
       }
-      streamBatcher.flush();
+      if (resultStatus === "done") await streamBatcher.drain();
+      else streamBatcher.flush();
     } catch (e) {
       const errorResult = handleTurnRuntimeError({
         error: e,
