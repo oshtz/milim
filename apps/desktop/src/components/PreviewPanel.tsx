@@ -613,18 +613,20 @@ export function PreviewPanel({
             {isUrlPreview ? (
               <>
                 <div className="preview-browser-bar" data-testid="preview-browser-bar">
-                  <button className="preview-browser-action" title="Back" aria-label="Back" disabled={!canGoBack} onClick={() => navigateBrowser(-1)}>
-                    <ArrowLeft size={14} />
-                  </button>
-                  <button className="preview-browser-action" title="Forward" aria-label="Forward" disabled={!canGoForward} onClick={() => navigateBrowser(1)}>
-                    <ArrowRight size={14} />
-                  </button>
-                  <button className="preview-browser-action" title="Reload" aria-label="Reload" disabled={!browserUrl} onClick={reloadBrowser}>
-                    <Refresh size={14} />
-                  </button>
-                  <button className="preview-browser-action" title="New" aria-label="New blank page" onClick={blankBrowser}>
-                    <Plus size={14} />
-                  </button>
+                  <div className="preview-browser-nav">
+                    <button className="preview-browser-action" title="Back" aria-label="Back" disabled={!canGoBack} onClick={() => navigateBrowser(-1)}>
+                      <ArrowLeft size={14} />
+                    </button>
+                    <button className="preview-browser-action" title="Forward" aria-label="Forward" disabled={!canGoForward} onClick={() => navigateBrowser(1)}>
+                      <ArrowRight size={14} />
+                    </button>
+                    <button className="preview-browser-action" title="Reload" aria-label="Reload" disabled={!browserUrl} onClick={reloadBrowser}>
+                      <Refresh size={14} />
+                    </button>
+                    <button className="preview-browser-action" title="New" aria-label="New blank page" onClick={blankBrowser}>
+                      <Plus size={14} />
+                    </button>
+                  </div>
                   <form className="preview-browser-form" onSubmit={submitBrowserUrl}>
                     <Globe size={14} />
                     <input
@@ -647,7 +649,7 @@ export function PreviewPanel({
                       onRestart={onRuntimeRestart}
                     />
                   )}
-                  <button className="preview-browser-action" title="Open in browser" aria-label="Open in browser" disabled={!browserUrl} onClick={openBrowserUrlExternal}>
+                  <button className="preview-browser-action preview-browser-open-external" title="Open in browser" aria-label="Open in browser" disabled={!browserUrl} onClick={openBrowserUrlExternal}>
                     <ArrowRight size={14} />
                   </button>
                 </div>

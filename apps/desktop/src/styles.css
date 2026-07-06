@@ -2700,6 +2700,7 @@ button.git-row:hover svg {
 .preview-tab-panel {
   flex: 1;
   display: flex;
+  min-width: 0;
   min-height: 0;
 }
 .preview-tab-panel[hidden],
@@ -2719,6 +2720,7 @@ button.git-row:hover svg {
   position: relative;
   flex: 1;
   display: flex;
+  min-width: 0;
   min-height: 0;
   overflow: hidden;
 }
@@ -2747,7 +2749,9 @@ button.git-row:hover svg {
   flex: 1;
   display: flex;
   flex-direction: column;
+  min-width: 0;
   min-height: 0;
+  container: preview-runtime / inline-size;
 }
 .preview-control-overlay {
   position: absolute;
@@ -2932,13 +2936,25 @@ html[data-dark="true"] .preview-control-cursor {
 }
 .preview-browser-bar {
   flex: 0 0 auto;
-  display: flex;
+  display: grid;
+  grid-template-columns: auto minmax(128px, 1fr) minmax(154px, auto) auto;
   align-items: center;
   gap: 6px;
   min-width: 0;
   padding: 8px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-secondary);
+}
+.preview-browser-nav {
+  grid-column: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: max-content;
+}
+.preview-browser-open-external {
+  grid-column: 4;
+  grid-row: 1;
 }
 .preview-browser-action {
   flex: 0 0 28px;
@@ -2963,7 +2979,8 @@ html[data-dark="true"] .preview-control-cursor {
   opacity: 0.55;
 }
 .preview-managed-runtime {
-  flex: 0 1 auto;
+  grid-column: 3;
+  grid-row: 1;
   display: flex;
   align-items: center;
   min-width: 0;
@@ -3023,7 +3040,6 @@ html[data-dark="true"] .preview-control-cursor {
   gap: 2px;
 }
 .preview-browser-form {
-  flex: 1 1 auto;
   min-width: 0;
   display: flex;
   align-items: center;
@@ -3051,6 +3067,20 @@ html[data-dark="true"] .preview-control-cursor {
 .preview-browser-form input::placeholder {
   color: var(--placeholder-text);
 }
+@container preview-runtime (max-width: 460px) {
+  .preview-browser-bar {
+    grid-template-columns: auto minmax(128px, 1fr) auto;
+  }
+  .preview-managed-runtime {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    justify-self: start;
+    max-width: 100%;
+  }
+  .preview-browser-open-external {
+    grid-column: 3;
+  }
+}
 .preview-browser-error {
   flex: 0 0 auto;
   padding: 6px 12px;
@@ -3065,6 +3095,7 @@ html[data-dark="true"] .preview-control-cursor {
   place-content: center;
   justify-items: center;
   gap: 10px;
+  min-width: 0;
   min-height: 0;
   padding: 28px;
   background: color-mix(in srgb, var(--bg-primary) 96%, var(--accent));
