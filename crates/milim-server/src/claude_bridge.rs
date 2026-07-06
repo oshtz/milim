@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::convert::Infallible;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -19,6 +19,7 @@ use crate::privacy::Unredactor;
 
 const CLAUDE_STATUS_TIMEOUT: Duration = Duration::from_secs(10);
 const CLAUDE_MODEL_ALIASES: &[&str] = &["sonnet", "opus", "haiku", "fable"];
+const CLAUDE_PROJECT_DIR_NAME_LIMIT: usize = 200;
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct ClaudeRunRequest {
@@ -589,17 +590,10 @@ fn claude_session_registry_entry_from_value(
 }
 
 fn claude_session_registry_dirs() -> Vec<PathBuf> {
-    let mut dirs = Vec::new();
-    if let Some(profile) = std::env::var_os("USERPROFILE") {
-        dirs.push(PathBuf::from(profile).join(".claude").join("sessions"));
-    }
-    if let Some(home) = std::env::var_os("HOME") {
-        let dir = PathBuf::from(home).join(".claude").join("sessions");
-        if !dirs.iter().any(|existing| existing == &dir) {
-            dirs.push(dir);
-        }
-    }
-    dirs
+    claude_home_dirs()
+        .into_iter()
+        .map(|dir| dir.join("sessions"))
+        .collect()
 }
 
 #[cfg(windows)]
@@ -717,7 +711,11 @@ fn claude_run_args(req: &ClaudeRunRequest) -> Vec<String> {
         "--include-partial-messages".to_string(),
     ];
     if let Some(session_id) = clean_optional(req.session_id.as_deref()) {
-        args.extend(["--session-id".to_string(), session_id]);
+        if claude_project_session_exists(req, &session_id) {
+            args.extend(["--resume".to_string(), session_id]);
+        } else {
+            args.extend(["--session-id".to_string(), session_id]);
+        }
     } else {
         args.push("--no-session-persistence".to_string());
     }
@@ -735,6 +733,97 @@ fn claude_run_args(req: &ClaudeRunRequest) -> Vec<String> {
         args.extend(["--effort".to_string(), effort.to_string()]);
     }
     args
+}
+
+fn claude_project_session_exists(req: &ClaudeRunRequest, session_id: &str) -> bool {
+    let Some(session_id) = safe_session_id_for_process_match(session_id) else {
+        return false;
+    };
+    let Some(cwd) = claude_session_cwd(req) else {
+        return false;
+    };
+    for projects_dir in claude_projects_dirs() {
+        let project_name = claude_project_dir_name(cwd.to_string_lossy().as_ref());
+        let session_file = projects_dir
+            .join(&project_name)
+            .join(format!("{session_id}.jsonl"));
+        if session_file.is_file() {
+            return true;
+        }
+        if project_name.len() <= CLAUDE_PROJECT_DIR_NAME_LIMIT {
+            continue;
+        }
+        let prefix = format!("{}-", &project_name[..CLAUDE_PROJECT_DIR_NAME_LIMIT]);
+        let Ok(entries) = std::fs::read_dir(&projects_dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if !file_type.is_dir() {
+                continue;
+            }
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.starts_with(&prefix)
+                && entry.path().join(format!("{session_id}.jsonl")).is_file()
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn claude_session_cwd(req: &ClaudeRunRequest) -> Option<PathBuf> {
+    if let Some(cwd) = clean_optional(req.cwd.as_deref()) {
+        return Some(normalize_claude_cwd(Path::new(&cwd)));
+    }
+    std::env::current_dir()
+        .ok()
+        .map(|path| normalize_claude_cwd(&path))
+}
+
+fn normalize_claude_cwd(path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        return path.to_path_buf();
+    }
+    std::env::current_dir()
+        .map(|cwd| cwd.join(path))
+        .unwrap_or_else(|_| path.to_path_buf())
+}
+
+fn claude_project_dir_name(cwd: &str) -> String {
+    let normalized: String = cwd
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
+        .collect();
+    if normalized.len() <= CLAUDE_PROJECT_DIR_NAME_LIMIT {
+        return normalized;
+    }
+    normalized
+}
+
+fn claude_projects_dirs() -> Vec<PathBuf> {
+    claude_home_dirs()
+        .into_iter()
+        .map(|dir| dir.join("projects"))
+        .collect()
+}
+
+fn claude_home_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Some(profile) = std::env::var_os("USERPROFILE") {
+        dirs.push(PathBuf::from(profile).join(".claude"));
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        let dir = PathBuf::from(home).join(".claude");
+        if !dirs.iter().any(|existing| existing == &dir) {
+            dirs.push(dir);
+        }
+    }
+    dirs
 }
 
 fn account_runtime_policy(value: Option<&str>) -> &str {
@@ -1027,6 +1116,18 @@ mod tests {
         });
         assert!(args.iter().any(|arg| arg == "--no-session-persistence"));
         assert!(!args.iter().any(|arg| arg == "--max-turns"));
+    }
+
+    #[test]
+    fn claude_project_dir_names_match_cli_sanitizer() {
+        assert_eq!(
+            claude_project_dir_name("C:\\Users\\USER\\Documents\\DEV\\screenmeister"),
+            "C--Users-USER-Documents-DEV-screenmeister"
+        );
+        assert_eq!(
+            claude_project_dir_name("/Users/omer/Documents/DEV/milim"),
+            "-Users-omer-Documents-DEV-milim"
+        );
     }
 
     #[test]
