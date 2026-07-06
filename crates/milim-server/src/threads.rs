@@ -19,6 +19,8 @@ use milim_core::{Error, Result};
 use milim_inference::SharedService;
 use milim_tools::ToolRegistry;
 
+const TOKEN_EVENT_FLUSH_INTERVAL: Duration = Duration::from_millis(250);
+
 #[derive(Clone)]
 pub struct ThreadSupervisor {
     store: Arc<ThreadStore>,
@@ -49,6 +51,10 @@ pub enum SupervisorEvent {
         thread: AgentThread,
         message: String,
     },
+    ChildThreadStopped {
+        thread: AgentThread,
+        message: String,
+    },
     ChildThreadEvent {
         thread: AgentThread,
         event: ThreadEvent,
@@ -61,6 +67,7 @@ impl SupervisorEvent {
             SupervisorEvent::ChildThreadStarted { thread }
             | SupervisorEvent::ChildThreadDone { thread }
             | SupervisorEvent::ChildThreadError { thread, .. }
+            | SupervisorEvent::ChildThreadStopped { thread, .. }
             | SupervisorEvent::ChildThreadEvent { thread, .. } => thread,
         }
     }
@@ -150,25 +157,65 @@ impl ThreadSupervisor {
         self.store.events(thread_id, limit)
     }
 
+    pub fn events_after(
+        &self,
+        thread_id: &str,
+        after_seq: i64,
+        limit: usize,
+    ) -> Result<Vec<ThreadEvent>> {
+        self.store.events_after(thread_id, after_seq, limit)
+    }
+
+    pub fn child_events_after(
+        &self,
+        parent_id: &str,
+        after_seq: i64,
+        limit: usize,
+    ) -> Result<Vec<(AgentThread, ThreadEvent)>> {
+        self.store.child_events_after(parent_id, after_seq, limit)
+    }
+
     pub fn event_count(&self, thread_id: &str) -> Result<usize> {
         self.store.event_count(thread_id)
     }
 
     pub async fn wait(&self, id: &str, timeout_ms: u64) -> Result<Option<AgentThread>> {
-        let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+        let mut events = self.subscribe();
+        let current = self.store.get(id)?;
+        if current
+            .as_ref()
+            .map(|t| thread_status_terminal(&t.status))
+            .unwrap_or(true)
+        {
+            return Ok(current);
+        }
+
+        let timeout = tokio::time::sleep(Duration::from_millis(timeout_ms));
+        tokio::pin!(timeout);
         loop {
-            let thread = self.store.get(id)?;
-            if thread
-                .as_ref()
-                .map(|t| thread_status_terminal(&t.status))
-                .unwrap_or(true)
-            {
-                return Ok(thread);
+            tokio::select! {
+                _ = &mut timeout => return self.store.get(id),
+                received = events.recv() => {
+                    match received {
+                        Ok(event) => {
+                            if event.thread().id == id && thread_status_terminal(&event.thread().status) {
+                                return Ok(Some(event.thread().clone()));
+                            }
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                            let current = self.store.get(id)?;
+                            if current
+                                .as_ref()
+                                .map(|t| thread_status_terminal(&t.status))
+                                .unwrap_or(true)
+                            {
+                                return Ok(current);
+                            }
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => return self.store.get(id),
+                    }
+                }
             }
-            if Instant::now() >= deadline {
-                return Ok(thread);
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
 
@@ -181,19 +228,20 @@ impl ThreadSupervisor {
         {
             handle.abort();
         }
-        let thread =
+        let updated =
             self.store
                 .update_status(id, THREAD_STATUS_STOPPED, None, Some("stopped by parent"))?;
-        if let Some(thread) = thread.as_ref() {
-            let _ = self.events.send(SupervisorEvent::ChildThreadError {
+        if let Some(thread) = updated.as_ref() {
+            let _ = self.events.send(SupervisorEvent::ChildThreadStopped {
                 thread: thread.clone(),
                 message: thread
                     .error
                     .clone()
                     .unwrap_or_else(|| "stopped by parent".to_string()),
             });
+            return Ok(updated);
         }
-        Ok(thread)
+        self.store.get(id)
     }
 
     pub fn stop_running_children(&self, message: &str) -> Result<usize> {
@@ -237,6 +285,19 @@ fn emit_thread_event(
     }
 }
 
+fn flush_token_event(
+    store: &ThreadStore,
+    events: &broadcast::Sender<SupervisorEvent>,
+    thread: &AgentThread,
+    token_buffer: &mut String,
+) {
+    if token_buffer.is_empty() {
+        return;
+    }
+    let text = std::mem::take(token_buffer);
+    emit_thread_event(store, events, thread, "token", json!({ "text": text }));
+}
+
 async fn run_child_thread(
     store: Arc<ThreadStore>,
     events: broadcast::Sender<SupervisorEvent>,
@@ -260,14 +321,21 @@ async fn run_child_thread(
     ));
     let mut text = String::new();
     let mut final_text = None;
+    let mut token_buffer = String::new();
+    let mut last_token_flush = Instant::now();
 
     while let Some(event) = stream.next().await {
         match event {
             AgentEvent::Token { text: chunk } => {
                 text.push_str(&chunk);
-                emit_thread_event(&store, &events, &thread, "token", json!({ "text": chunk }));
+                token_buffer.push_str(&chunk);
+                if last_token_flush.elapsed() >= TOKEN_EVENT_FLUSH_INTERVAL {
+                    flush_token_event(&store, &events, &thread, &mut token_buffer);
+                    last_token_flush = Instant::now();
+                }
             }
             AgentEvent::Reasoning { text } => {
+                flush_token_event(&store, &events, &thread, &mut token_buffer);
                 emit_thread_event(
                     &store,
                     &events,
@@ -277,6 +345,7 @@ async fn run_child_thread(
                 );
             }
             AgentEvent::UsageDelta { usage } => {
+                flush_token_event(&store, &events, &thread, &mut token_buffer);
                 emit_thread_event(
                     &store,
                     &events,
@@ -290,6 +359,7 @@ async fn run_child_thread(
                 name,
                 arguments,
             } => {
+                flush_token_event(&store, &events, &thread, &mut token_buffer);
                 emit_thread_event(
                     &store,
                     &events,
@@ -303,6 +373,7 @@ async fn run_child_thread(
                 name,
                 result,
             } => {
+                flush_token_event(&store, &events, &thread, &mut token_buffer);
                 emit_thread_event(
                     &store,
                     &events,
@@ -312,6 +383,7 @@ async fn run_child_thread(
                 );
             }
             AgentEvent::Final { content } => {
+                flush_token_event(&store, &events, &thread, &mut token_buffer);
                 final_text = Some(content.clone());
                 emit_thread_event(
                     &store,
@@ -326,11 +398,17 @@ async fn run_child_thread(
                 stopped_at_limit,
                 usage,
             } => {
+                flush_token_event(&store, &events, &thread, &mut token_buffer);
                 let summary = final_text
                     .as_deref()
                     .filter(|s| !s.trim().is_empty())
                     .unwrap_or_else(|| text.trim());
-                let event = store.append_event(
+                match store.update_status(&thread.id, THREAD_STATUS_DONE, Some(summary), None) {
+                    Ok(Some(done)) => thread = done,
+                    Ok(None) => return,
+                    Err(_) => return,
+                }
+                if let Ok(event) = store.append_event(
                     &thread.id,
                     "done",
                     json!({
@@ -338,13 +416,7 @@ async fn run_child_thread(
                         "stopped_at_limit": stopped_at_limit,
                         "usage": usage
                     }),
-                );
-                if let Ok(Some(done)) =
-                    store.update_status(&thread.id, THREAD_STATUS_DONE, Some(summary), None)
-                {
-                    thread = done;
-                }
-                if let Ok(event) = event {
+                ) {
                     let _ = events.send(SupervisorEvent::ChildThreadEvent {
                         thread: thread.clone(),
                         event,
@@ -354,13 +426,15 @@ async fn run_child_thread(
                 return;
             }
             AgentEvent::Error { message } => {
-                let event = store.append_event(&thread.id, "error", json!({ "message": message }));
-                if let Ok(Some(error_thread)) =
-                    store.update_status(&thread.id, THREAD_STATUS_ERROR, None, Some(&message))
-                {
-                    thread = error_thread;
+                flush_token_event(&store, &events, &thread, &mut token_buffer);
+                match store.update_status(&thread.id, THREAD_STATUS_ERROR, None, Some(&message)) {
+                    Ok(Some(error_thread)) => thread = error_thread,
+                    Ok(None) => return,
+                    Err(_) => return,
                 }
-                if let Ok(event) = event {
+                if let Ok(event) =
+                    store.append_event(&thread.id, "error", json!({ "message": message }))
+                {
                     let _ = events.send(SupervisorEvent::ChildThreadEvent {
                         thread: thread.clone(),
                         event,
@@ -377,6 +451,7 @@ async fn run_child_thread(
         }
     }
 
+    flush_token_event(&store, &events, &thread, &mut token_buffer);
     let message = "child thread ended without a terminal event";
     if let Ok(Some(error_thread)) =
         store.update_status(&thread.id, THREAD_STATUS_ERROR, None, Some(message))
@@ -390,4 +465,85 @@ async fn run_child_thread(
 
 pub fn missing_threads_error() -> Error {
     Error::InvalidRequest("child thread storage is not configured".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use milim_storage::Database;
+
+    fn supervisor() -> ThreadSupervisor {
+        ThreadSupervisor::new(ThreadStore::new(Database::open_in_memory().unwrap()).unwrap())
+    }
+
+    #[tokio::test]
+    async fn wait_returns_latest_thread_on_timeout() {
+        let supervisor = supervisor();
+        let thread = supervisor
+            .store()
+            .create("parent-1", "Worker", "test-echo", None, "work")
+            .unwrap();
+        supervisor
+            .store()
+            .update_status(&thread.id, THREAD_STATUS_RUNNING, None, None)
+            .unwrap();
+
+        let waited = supervisor.wait(&thread.id, 5).await.unwrap().unwrap();
+
+        assert_eq!(waited.id, thread.id);
+        assert_eq!(waited.status, THREAD_STATUS_RUNNING);
+    }
+
+    #[tokio::test]
+    async fn wait_wakes_from_stopped_event() {
+        let supervisor = supervisor();
+        let thread = supervisor
+            .store()
+            .create("parent-1", "Worker", "test-echo", None, "work")
+            .unwrap();
+        supervisor
+            .store()
+            .update_status(&thread.id, THREAD_STATUS_RUNNING, None, None)
+            .unwrap();
+        let waiter = {
+            let supervisor = supervisor.clone();
+            let id = thread.id.clone();
+            tokio::spawn(async move { supervisor.wait(&id, 10_000).await.unwrap().unwrap() })
+        };
+        tokio::time::sleep(Duration::from_millis(10)).await;
+
+        supervisor.stop(&thread.id).unwrap();
+        let stopped = waiter.await.unwrap();
+
+        assert_eq!(stopped.status, THREAD_STATUS_STOPPED);
+    }
+
+    #[test]
+    fn stop_emits_stopped_not_error_and_preserves_terminal_state() {
+        let supervisor = supervisor();
+        let mut events = supervisor.subscribe();
+        let thread = supervisor
+            .store()
+            .create("parent-1", "Worker", "test-echo", None, "work")
+            .unwrap();
+        supervisor
+            .store()
+            .update_status(&thread.id, THREAD_STATUS_RUNNING, None, None)
+            .unwrap();
+
+        let stopped = supervisor.stop(&thread.id).unwrap().unwrap();
+        let done_after_stop = supervisor
+            .store()
+            .update_status(&thread.id, THREAD_STATUS_DONE, Some("done"), None)
+            .unwrap();
+        let event = events.try_recv().unwrap();
+
+        assert_eq!(stopped.status, THREAD_STATUS_STOPPED);
+        assert!(done_after_stop.is_none());
+        assert!(matches!(event, SupervisorEvent::ChildThreadStopped { .. }));
+        assert_eq!(
+            supervisor.store().get(&thread.id).unwrap().unwrap().status,
+            THREAD_STATUS_STOPPED
+        );
+    }
 }

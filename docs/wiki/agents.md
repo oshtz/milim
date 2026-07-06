@@ -18,7 +18,7 @@ Agents are for repeatable behavior, tool access, and longer work. Keep one-off q
 | Named agents | Saved profiles with name, avatar text, system prompt, model override, tool mode, and skill mode. |
 | Tool modes | `all`, `custom`, or `none`. |
 | Skill modes | `auto`, `custom`, or `none`; auto selects enabled skills by keyword. |
-| Run timeline | Start, token, reasoning, tool call, tool result, memory, child-thread, per-request usage deltas, final usage, and error events render as structured stream parts. Full tool results stay visible in the timeline, while replay back into later model iterations and old compaction summary prompts are capped to keep agent loops efficient. Runs stop at 100 model turns by default (`stopped_at_limit: true`), and stream-open failures are retried once before surfacing an error. |
+| Run timeline | Start, token, reasoning, tool call, tool result, memory, child-thread, per-request usage deltas, final usage, and error events render as structured stream parts. Full tool results stay visible in the timeline, while replay back into later model iterations and old compaction summary prompts are capped to keep agent loops efficient. Child-thread events carry monotonic `seq` cursors; event reads keep the newest tail when limited, and `/threads/{id}` plus child-thread SSE support `after_seq` backfill. Runs stop at 100 model turns by default (`stopped_at_limit: true`), and stream-open failures are retried once before surfacing an error. |
 | Schedules | Cron schedules can run prompts with optional agent profiles and attached file context; due schedules fire in the background loop and land completed results as desktop threads. |
 | Tool approval | The UI sends approval policy and grants to the server-side agent loop. |
 
@@ -44,7 +44,7 @@ Parent runs can expose child-thread tools when the run has a parent thread id an
 | `child_thread_wait` | Wait for a child thread to finish or time out. |
 | `child_thread_stop` | Stop a running child thread. |
 
-Child threads cannot spawn more children. In `open` approval mode they inherit the parent run's effective tools after folder, sandbox, computer-use, MCP, memory, and named-agent filters are applied. In `guarded` and ungranted `review` runs they stay read-only: they can inspect and fetch context, but cannot write files or run shell commands. If the server restarts, unfinished child threads are marked `error` with `interrupted by restart`; graceful server shutdown marks running children `stopped`.
+Child threads cannot spawn more children. In `open` approval mode they inherit the parent run's effective tools after folder, sandbox, computer-use, MCP, memory, and named-agent filters are applied. In `guarded` and ungranted `review` runs they stay read-only: they can inspect and fetch context, but cannot write files or run shell commands. If the server restarts, unfinished child threads are marked `error` with `interrupted by restart`; graceful server shutdown marks running children `stopped`. Manual stops emit a stopped child-thread event and terminal thread states are not overwritten by late done/error updates.
 
 ## Plan mode versus agent mode
 

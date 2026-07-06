@@ -38,41 +38,59 @@ pub struct AgentThread {
 pub struct ThreadEvent {
     pub id: String,
     pub thread_id: String,
+    pub seq: i64,
     pub kind: String,
     pub payload: Value,
     pub created_at: String,
 }
 
-pub const THREAD_MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    name: "threads",
-    sql: "CREATE TABLE threads (
-            id          TEXT PRIMARY KEY,
-            parent_id   TEXT NOT NULL,
-            root_id     TEXT NOT NULL,
-            title       TEXT NOT NULL,
-            status      TEXT NOT NULL,
-            model       TEXT NOT NULL DEFAULT '',
-            agent_id    TEXT,
-            prompt      TEXT NOT NULL,
-            summary     TEXT,
-            error       TEXT,
-            created_at  TEXT NOT NULL DEFAULT (datetime('now')),
-            updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
-            finished_at TEXT
-          );
-          CREATE INDEX idx_threads_parent ON threads(parent_id, created_at);
-          CREATE INDEX idx_threads_status ON threads(status, updated_at);
-          CREATE TABLE thread_events (
-            id         TEXT PRIMARY KEY,
-            thread_id  TEXT NOT NULL,
-            kind       TEXT NOT NULL,
-            payload    TEXT NOT NULL DEFAULT '{}',
-            created_at TEXT NOT NULL DEFAULT (datetime('now')),
-            FOREIGN KEY(thread_id) REFERENCES threads(id) ON DELETE CASCADE
-          );
-          CREATE INDEX idx_thread_events_thread ON thread_events(thread_id, created_at);",
-}];
+pub const THREAD_MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        name: "threads",
+        sql: "CREATE TABLE threads (
+                id          TEXT PRIMARY KEY,
+                parent_id   TEXT NOT NULL,
+                root_id     TEXT NOT NULL,
+                title       TEXT NOT NULL,
+                status      TEXT NOT NULL,
+                model       TEXT NOT NULL DEFAULT '',
+                agent_id    TEXT,
+                prompt      TEXT NOT NULL,
+                summary     TEXT,
+                error       TEXT,
+                created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+                finished_at TEXT
+              );
+              CREATE INDEX idx_threads_parent ON threads(parent_id, created_at);
+              CREATE INDEX idx_threads_status ON threads(status, updated_at);
+              CREATE TABLE thread_events (
+                id         TEXT PRIMARY KEY,
+                thread_id  TEXT NOT NULL,
+                kind       TEXT NOT NULL,
+                payload    TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY(thread_id) REFERENCES threads(id) ON DELETE CASCADE
+              );
+              CREATE INDEX idx_thread_events_thread ON thread_events(thread_id, created_at);",
+    },
+    Migration {
+        version: 2,
+        name: "thread_event_seq",
+        sql: "ALTER TABLE thread_events ADD COLUMN seq INTEGER;
+              UPDATE thread_events
+              SET seq = (
+                SELECT COUNT(*)
+                FROM thread_events AS earlier
+                WHERE earlier.created_at < thread_events.created_at
+                   OR (earlier.created_at = thread_events.created_at AND earlier.id <= thread_events.id)
+              )
+              WHERE seq IS NULL;
+              CREATE INDEX idx_thread_events_thread_seq ON thread_events(thread_id, seq);
+              CREATE UNIQUE INDEX idx_thread_events_seq ON thread_events(seq);",
+    },
+];
 
 /// CRUD over parent/child thread rows.
 pub struct ThreadStore {
@@ -249,7 +267,8 @@ impl ThreadStore {
                            WHEN ?2 IN ('done', 'stopped', 'error') THEN datetime('now')
                            ELSE finished_at
                          END
-                     WHERE id = ?1",
+                     WHERE id = ?1
+                       AND status NOT IN ('done', 'stopped', 'error')",
                     params![id, status, summary, error],
                 )
                 .map_err(sqlite)?
@@ -302,7 +321,8 @@ impl ThreadStore {
         let db = self.db.lock().expect("threads db poisoned");
         db.conn()
             .execute(
-                "INSERT INTO thread_events (id, thread_id, kind, payload) VALUES (?1, ?2, ?3, ?4)",
+                "INSERT INTO thread_events (id, thread_id, seq, kind, payload)
+                 VALUES (?1, ?2, COALESCE((SELECT MAX(seq) FROM thread_events), 0) + 1, ?3, ?4)",
                 params![id, thread_id, kind, payload_json],
             )
             .map_err(sqlite)?;
@@ -316,11 +336,15 @@ impl ThreadStore {
         let mut stmt = db
             .conn()
             .prepare(
-                "SELECT id, thread_id, kind, payload, created_at
-                 FROM thread_events
-                 WHERE thread_id = ?1
-                 ORDER BY created_at ASC
-                 LIMIT ?2",
+                "SELECT id, thread_id, seq, kind, payload, created_at
+                 FROM (
+                   SELECT id, thread_id, seq, kind, payload, created_at
+                   FROM thread_events
+                   WHERE thread_id = ?1
+                   ORDER BY seq DESC
+                   LIMIT ?2
+                 )
+                 ORDER BY seq ASC",
             )
             .map_err(sqlite)?;
         let mut out = Vec::new();
@@ -328,6 +352,69 @@ impl ThreadStore {
             .query_map(
                 params![thread_id, limit.clamp(1, 5000) as i64],
                 row_to_event,
+            )
+            .map_err(sqlite)?
+        {
+            out.push(row.map_err(sqlite)?);
+        }
+        Ok(out)
+    }
+
+    pub fn events_after(
+        &self,
+        thread_id: &str,
+        after_seq: i64,
+        limit: usize,
+    ) -> Result<Vec<ThreadEvent>> {
+        let db = self.db.lock().expect("threads db poisoned");
+        let mut stmt = db
+            .conn()
+            .prepare(
+                "SELECT id, thread_id, seq, kind, payload, created_at
+                 FROM thread_events
+                 WHERE thread_id = ?1 AND seq > ?2
+                 ORDER BY seq ASC
+                 LIMIT ?3",
+            )
+            .map_err(sqlite)?;
+        let mut out = Vec::new();
+        for row in stmt
+            .query_map(
+                params![thread_id, after_seq, limit.clamp(1, 5000) as i64],
+                row_to_event,
+            )
+            .map_err(sqlite)?
+        {
+            out.push(row.map_err(sqlite)?);
+        }
+        Ok(out)
+    }
+
+    pub fn child_events_after(
+        &self,
+        parent_id: &str,
+        after_seq: i64,
+        limit: usize,
+    ) -> Result<Vec<(AgentThread, ThreadEvent)>> {
+        let db = self.db.lock().expect("threads db poisoned");
+        let mut stmt = db
+            .conn()
+            .prepare(
+                "SELECT t.id, t.parent_id, t.root_id, t.title, t.status, t.model, t.agent_id, t.prompt,
+                        t.summary, t.error, t.created_at, t.updated_at, t.finished_at,
+                        e.id, e.thread_id, e.seq, e.kind, e.payload, e.created_at
+                 FROM thread_events e
+                 JOIN threads t ON t.id = e.thread_id
+                 WHERE t.parent_id = ?1 AND e.seq > ?2
+                 ORDER BY e.seq ASC
+                 LIMIT ?3",
+            )
+            .map_err(sqlite)?;
+        let mut out = Vec::new();
+        for row in stmt
+            .query_map(
+                params![parent_id, after_seq, limit.clamp(1, 5000) as i64],
+                |r| Ok((row_to_thread(r)?, row_to_event_offset(r, 13)?)),
             )
             .map_err(sqlite)?
         {
@@ -398,7 +485,7 @@ impl ThreadStore {
         let db = self.db.lock().expect("threads db poisoned");
         db.conn()
             .query_row(
-                "SELECT id, thread_id, kind, payload, created_at FROM thread_events WHERE id = ?1",
+                "SELECT id, thread_id, seq, kind, payload, created_at FROM thread_events WHERE id = ?1",
                 params![id],
                 row_to_event,
             )
@@ -433,13 +520,18 @@ fn row_to_thread(r: &rusqlite::Row) -> rusqlite::Result<AgentThread> {
 }
 
 fn row_to_event(r: &rusqlite::Row) -> rusqlite::Result<ThreadEvent> {
-    let payload: String = r.get(3)?;
+    row_to_event_offset(r, 0)
+}
+
+fn row_to_event_offset(r: &rusqlite::Row, offset: usize) -> rusqlite::Result<ThreadEvent> {
+    let payload: String = r.get(offset + 4)?;
     Ok(ThreadEvent {
-        id: r.get(0)?,
-        thread_id: r.get(1)?,
-        kind: r.get(2)?,
+        id: r.get(offset)?,
+        thread_id: r.get(offset + 1)?,
+        seq: r.get(offset + 2)?,
+        kind: r.get(offset + 3)?,
         payload: serde_json::from_str(&payload).unwrap_or(Value::Null),
-        created_at: r.get(4)?,
+        created_at: r.get(offset + 5)?,
     })
 }
 
@@ -503,7 +595,77 @@ mod tests {
         let events = s.events(&thread.id, 20).unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].kind, "final");
+        assert_eq!(events[0].seq, event.seq);
         assert_eq!(s.event_count(&thread.id).unwrap(), 1);
+    }
+
+    #[test]
+    fn event_reads_preserve_tail_and_cursor_order() {
+        let s = store();
+        let thread = s
+            .create("parent-1", "Research", "test-echo", None, "look this up")
+            .unwrap();
+        let other = s
+            .create("parent-1", "Other", "test-echo", None, "look elsewhere")
+            .unwrap();
+        let first = s
+            .append_event(&thread.id, "token", serde_json::json!({"text": "one"}))
+            .unwrap();
+        let second = s
+            .append_event(&thread.id, "token", serde_json::json!({"text": "two"}))
+            .unwrap();
+        let third = s
+            .append_event(&thread.id, "final", serde_json::json!({"content": "three"}))
+            .unwrap();
+        let other_event = s
+            .append_event(&other.id, "final", serde_json::json!({"content": "other"}))
+            .unwrap();
+
+        assert!(first.seq < second.seq);
+        assert!(second.seq < third.seq);
+        assert!(third.seq < other_event.seq);
+
+        let tail = s.events(&thread.id, 2).unwrap();
+        assert_eq!(
+            tail.iter().map(|e| e.kind.as_str()).collect::<Vec<_>>(),
+            vec!["token", "final"]
+        );
+        assert_eq!(tail[0].seq, second.seq);
+        assert_eq!(tail[1].seq, third.seq);
+
+        let after = s.events_after(&thread.id, first.seq, 10).unwrap();
+        assert_eq!(
+            after.iter().map(|e| e.seq).collect::<Vec<_>>(),
+            vec![second.seq, third.seq]
+        );
+
+        let child_events = s.child_events_after("parent-1", second.seq, 10).unwrap();
+        assert_eq!(
+            child_events.iter().map(|(_, e)| e.seq).collect::<Vec<_>>(),
+            vec![third.seq, other_event.seq]
+        );
+    }
+
+    #[test]
+    fn terminal_status_is_not_overwritten() {
+        let s = store();
+        let thread = s
+            .create("parent-1", "Research", "test-echo", None, "look this up")
+            .unwrap();
+        let stopped = s
+            .update_status(&thread.id, THREAD_STATUS_STOPPED, None, Some("stopped"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(stopped.status, THREAD_STATUS_STOPPED);
+
+        let done = s
+            .update_status(&thread.id, THREAD_STATUS_DONE, Some("finished"), None)
+            .unwrap();
+        assert!(done.is_none());
+        assert_eq!(
+            s.get(&thread.id).unwrap().unwrap().status,
+            THREAD_STATUS_STOPPED
+        );
     }
 
     #[test]
