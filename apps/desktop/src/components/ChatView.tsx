@@ -1,5 +1,6 @@
 import {
   lazy,
+  memo,
   Suspense,
   useEffect,
   useMemo,
@@ -8,6 +9,7 @@ import {
   type CSSProperties,
   type KeyboardEvent,
   type MouseEvent,
+  type MutableRefObject,
   type PointerEvent,
   type SetStateAction,
 } from "react";
@@ -131,6 +133,7 @@ import {
   artifactRevisionChoiceByOccurrence,
   artifactRevisionGroups,
   type ArtifactRevision,
+  type ArtifactRevisionChoice,
   type ArtifactRevisionGroup,
 } from "../lib/artifactRevisions";
 import { hiddenArtifactIdsForMessage } from "../lib/artifactVisibility";
@@ -274,7 +277,7 @@ import { InlineMediaControls } from "./InlineMediaControls";
 import { AssistantMessage } from "./AssistantMessage";
 import { ArtifactList } from "./ArtifactList";
 import { ChatSearchPopover } from "./ChatSearchPopover";
-import { useContextMenu } from "./ContextMenu";
+import { useContextMenu, type ContextMenuItem } from "./ContextMenu";
 import { GitWorkspacePanel } from "./GitPanel";
 import { PreviewPanel } from "./PreviewPanel";
 import { RunTimeline } from "./RunTimeline";
@@ -682,6 +685,508 @@ function isPreviewAppActive(status: PreviewAppStatus | null): boolean {
     status?.status === "running"
   );
 }
+
+type MessageRowActions = {
+  openContextMenu: (
+    event: MouseEvent,
+    items: ContextMenuItem[],
+    label?: string,
+  ) => boolean;
+  setArtifactPanelTab: (sessionId: string, tab: "code" | "preview") => void;
+  startPreviewRuntimeForArtifacts: (
+    artifacts?: readonly ChatArtifact[],
+  ) => Promise<void>;
+  openPreviewArtifact: (
+    artifact: ChatArtifact,
+    artifacts?: readonly ChatArtifact[],
+    previewDeferred?: boolean,
+    revision?: ArtifactRevision,
+  ) => void;
+  artifactRevisionChoice: (
+    messageIndex: number,
+    artifactIndex: number,
+  ) => ArtifactRevisionChoice | undefined;
+  executePlan: (messageIndex: number, message: ChatMessage) => void;
+  speakMessage: (messageIndex: number, text: string) => Promise<void>;
+  restoreWorkspaceCheckpoint: (
+    checkpoint: WorkspaceCheckpoint,
+  ) => Promise<void>;
+  forkThreadAt: (messageIndex: number) => void;
+  setEditing: (messageIndex: number | null) => void;
+  deleteMessageAt: (messageIndex: number) => void;
+  regenerate: () => void;
+  editResend: (messageIndex: number, text: string) => void;
+  editMessageInPlace: (messageIndex: number, text: string) => void;
+  approveToolApproval: (messageIndex: number, message: ChatMessage) => void;
+  denyToolApproval: (messageIndex: number, message: ChatMessage) => void;
+  handleSaveArtifact: (
+    messageIndex: number,
+    artifact: ChatArtifact,
+    options?: {
+      overwrite?: boolean;
+      path?: string;
+      source?: SavedArtifactFile["source"];
+    },
+    revision?: ArtifactRevision,
+  ) => Promise<SavedArtifactFile>;
+  handlePreviewArtifact: (
+    artifact: ChatArtifact,
+    path?: string,
+    revision?: ArtifactRevision,
+  ) => Promise<ArtifactWritePreview>;
+  handleCheckArtifact: (
+    saved: SavedArtifactFile,
+  ) => Promise<ArtifactFileStatus>;
+  handleOpenArtifact: (
+    saved: SavedArtifactFile,
+    target: ArtifactOpenTarget,
+  ) => Promise<void>;
+  onOpenSchedules: () => void;
+};
+
+type MessageRowProps = {
+  activeId: string;
+  message: ChatMessage;
+  index: number;
+  isEditing: boolean;
+  isLastAssistant: boolean;
+  assistantStreaming: boolean;
+  busy: boolean;
+  activeMediaTargetPresent: boolean;
+  folderIsEmpty: boolean;
+  ttsReady: boolean;
+  activeRun?: RunTrace | null;
+  previewArtifacts?: ChatArtifact[];
+  previewAppBusy: "start" | "stop" | "restart" | null;
+  previewAppStatus: PreviewAppStatus | null;
+  toolApproval: ToolApprovalMode;
+  actionsRef: MutableRefObject<MessageRowActions | null>;
+};
+
+function MessageRowView({
+  activeId,
+  message: m,
+  index: i,
+  isEditing,
+  isLastAssistant,
+  assistantStreaming,
+  busy,
+  activeMediaTargetPresent,
+  folderIsEmpty,
+  ttsReady,
+  activeRun,
+  previewArtifacts,
+  previewAppBusy,
+  previewAppStatus,
+  toolApproval,
+  actionsRef,
+}: MessageRowProps) {
+  markPerfRender("MessageRow");
+  const actions = actionsRef.current;
+  const messageIsCompaction = isCompactionCheckpoint(m);
+  const isApprovalMessage = Boolean(m.approval);
+  const artifactContext = m.artifacts?.length ? m.artifacts : previewArtifacts;
+  const openMessagePreview = (
+    artifact: ChatArtifact,
+    revision?: ArtifactRevision,
+  ) => {
+    if (!actions) return;
+    if (
+      folderIsEmpty &&
+      !assistantStreaming &&
+      hasPreviewPackageJson(previewRuntimeFiles(artifactContext))
+    ) {
+      void actions.startPreviewRuntimeForArtifacts(artifactContext);
+      return;
+    }
+    const artifactIndex =
+      m.artifacts?.findIndex((item) => item.id === artifact.id) ?? -1;
+    const choice =
+      !revision && artifactIndex >= 0
+        ? actions.artifactRevisionChoice(i, artifactIndex)
+        : undefined;
+    if (!isPreviewableArtifact(artifact))
+      actions.setArtifactPanelTab(activeId, "code");
+    actions.openPreviewArtifact(
+      artifact,
+      artifactContext ?? [artifact],
+      assistantStreaming,
+      revision ?? choice?.revision,
+    );
+  };
+  const previewArtifactsStreaming =
+    assistantStreaming && Boolean(previewArtifacts?.length);
+  const hasStreamTranscript = Boolean(m.streamParts?.length);
+  const hasAssistantOutput = Boolean(m.content || hasStreamTranscript);
+  const metricsLabel = formatResponseMetrics(m.metrics);
+  const canExecutePlan =
+    m.role === "assistant" &&
+    m.plan?.status === "proposed" &&
+    !assistantStreaming &&
+    Boolean(m.content.trim());
+  const runtimeFiles =
+    folderIsEmpty && !assistantStreaming
+      ? previewRuntimeFiles(m.artifacts)
+      : [];
+  const canStartRuntime =
+    runtimeFiles.length > 0 && hasPreviewPackageJson(runtimeFiles);
+  const openMessageContextMenu = (event: MouseEvent<HTMLDivElement>) => {
+    if (!actions) return;
+    actions.openContextMenu(
+      event,
+      [
+        ...(canExecutePlan
+          ? [
+              {
+                id: "execute-plan",
+                label: "Execute plan",
+                icon: <ArrowRight size={13} />,
+                action: () => actions.executePlan(i, m),
+              },
+            ]
+          : []),
+        ...(m.role === "assistant" &&
+        !messageIsCompaction &&
+        m.content &&
+        ttsReady
+          ? [
+              {
+                id: "speak",
+                label: "Speak",
+                icon: <Volume2 size={13} />,
+                action: () => void actions.speakMessage(i, m.content),
+              },
+            ]
+          : []),
+        ...(m.workspaceCheckpoint
+          ? [
+              {
+                id: "restore-checkpoint",
+                label: "Restore workspace checkpoint",
+                icon: <Refresh size={13} />,
+                disabled: busy,
+                action: () =>
+                  void actions.restoreWorkspaceCheckpoint(
+                    m.workspaceCheckpoint!,
+                  ),
+              },
+            ]
+          : []),
+        ...(!messageIsCompaction
+          ? [
+              {
+                id: "branch",
+                label: "Branch from here",
+                icon: <GitBranch size={13} />,
+                disabled: busy,
+                separatorBefore: true,
+                action: () => actions.forkThreadAt(i),
+              },
+            ]
+          : []),
+        ...(!isApprovalMessage
+          ? [
+              {
+                id: "copy",
+                label: "Copy",
+                icon: <Copy size={13} />,
+                action: () =>
+                  void navigator.clipboard?.writeText(wireMessageContent(m)),
+              },
+            ]
+          : []),
+        ...(m.role === "user"
+          ? [
+              {
+                id: "edit-resend",
+                label: "Edit and resend",
+                icon: <Pencil size={13} />,
+                disabled: busy,
+                action: () => actions.setEditing(i),
+              },
+            ]
+          : []),
+        ...(m.role === "assistant" && !messageIsCompaction && !isApprovalMessage
+          ? [
+              {
+                id: "edit",
+                label: "Edit message",
+                icon: <Pencil size={13} />,
+                disabled: busy,
+                action: () => actions.setEditing(i),
+              },
+            ]
+          : []),
+        ...(!messageIsCompaction
+          ? [
+              {
+                id: "delete",
+                label: "Delete message",
+                icon: <Trash size={13} />,
+                disabled: busy,
+                danger: true,
+                separatorBefore: true,
+                action: () => actions.deleteMessageAt(i),
+              },
+            ]
+          : []),
+        ...(isLastAssistant
+          ? [
+              {
+                id: "regenerate",
+                label: "Regenerate",
+                icon: <Refresh size={13} />,
+                disabled: busy,
+                action: actions.regenerate,
+              },
+            ]
+          : []),
+      ],
+      m.role === "assistant" ? "Assistant message" : "User message",
+    );
+  };
+
+  if (isEditing) {
+    return (
+      <div className={"msg " + m.role}>
+        <MessageEditor
+          initial={m.content}
+          saveLabel={m.role === "user" ? "Send" : "Save"}
+          onCancel={() => actions?.setEditing(null)}
+          onSave={(text) =>
+            m.role === "user"
+              ? actions?.editResend(i, text)
+              : actions?.editMessageInPlace(i, text)
+          }
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className={"msg " + m.role}
+      data-testid={
+        m.role === "assistant" ? "assistant-message" : "user-message"
+      }
+      onContextMenu={openMessageContextMenu}
+    >
+      <div className="msg-content">
+        {m.role === "assistant" ? (
+          <>
+            {m.run && m.run !== activeRun && <RunTimeline run={m.run} />}
+            {!hasStreamTranscript && (
+              <MemoryBreadcrumbs memories={m.memories} />
+            )}
+            {m.approval && (
+              <ToolApprovalCard
+                approval={m.approval}
+                disabled={busy || activeMediaTargetPresent}
+                onApprove={() => actions?.approveToolApproval(i, m)}
+                onDeny={() => actions?.denyToolApproval(i, m)}
+              />
+            )}
+            {(hasAssistantOutput || assistantStreaming) && (
+              <AssistantMessage
+                content={m.content}
+                streamParts={m.streamParts}
+                previewArtifacts={previewArtifacts}
+                onOpenPreview={openMessagePreview}
+                streaming={assistantStreaming}
+                previewArtifactsStreaming={previewArtifactsStreaming}
+                workDurationMs={m.metrics?.durationMs}
+              />
+            )}
+            {renderMessageMedia(m.mediaResults)}
+            <AutomationCards
+              run={m.run}
+              onOpenSchedules={() => actions?.onOpenSchedules()}
+            />
+            <ArtifactList
+              artifacts={m.artifacts}
+              currentSessionId={APP_SESSION_ID}
+              hiddenArtifactIds={hiddenArtifactIdsForMessage(m, folderIsEmpty)}
+              onOpenPreview={openMessagePreview}
+              onSaveToWorkspace={(artifact, options, revision) =>
+                actions?.handleSaveArtifact(i, artifact, options, revision) ??
+                Promise.reject(new Error("message actions unavailable"))
+              }
+              onPreviewArtifact={(artifact, path, revision) =>
+                actions?.handlePreviewArtifact(artifact, path, revision) ??
+                Promise.reject(new Error("message actions unavailable"))
+              }
+              onCheckSavedArtifact={(saved) =>
+                actions?.handleCheckArtifact(saved) ??
+                Promise.reject(new Error("message actions unavailable"))
+              }
+              onOpenSavedArtifact={(saved, target) =>
+                actions?.handleOpenArtifact(saved, target) ??
+                Promise.reject(new Error("message actions unavailable"))
+              }
+              revisionForArtifact={(artifactIndex) =>
+                actions?.artifactRevisionChoice(i, artifactIndex)
+              }
+              autoSaveArtifacts={toolApproval === "open" && !assistantStreaming}
+              storageLabel={folderIsEmpty ? "virtual project" : "folder"}
+            />
+            {canStartRuntime && (
+              <div className="artifact-runtime-actions">
+                <button
+                  className="msg-act msg-act-text"
+                  data-testid="preview-app-start"
+                  title="Stage named files and start preview app"
+                  disabled={
+                    previewAppBusy != null ||
+                    isPreviewAppActive(previewAppStatus)
+                  }
+                  onClick={() =>
+                    void actions?.startPreviewRuntimeForArtifacts(m.artifacts)
+                  }
+                >
+                  <Globe size={13} />
+                  <span>
+                    {previewAppBusy === "start"
+                      ? "Starting preview..."
+                      : "Start preview app"}
+                  </span>
+                </button>
+              </div>
+            )}
+            {metricsLabel && (
+              <div className="response-metrics">{metricsLabel}</div>
+            )}
+          </>
+        ) : (
+          <>
+            {m.content && <span>{m.content}</span>}
+            {renderMessageAttachments(m.attachments)}
+          </>
+        )}
+      </div>
+      <div className="msg-actions">
+        {canExecutePlan && (
+          <button
+            className="msg-act msg-act-text"
+            data-testid="execute-plan"
+            title="Execute plan"
+            onClick={() => actions?.executePlan(i, m)}
+          >
+            <ArrowRight size={13} />
+            <span>Execute plan</span>
+          </button>
+        )}
+        {m.role === "assistant" &&
+          !messageIsCompaction &&
+          m.content &&
+          ttsReady && (
+            <button
+              className="msg-act"
+              title="Speak"
+              aria-label="Speak"
+              onClick={() => void actions?.speakMessage(i, m.content)}
+            >
+              <Volume2 size={13} />
+            </button>
+          )}
+        {m.workspaceCheckpoint && !busy && (
+          <button
+            className="msg-act"
+            title="Restore workspace to before this turn"
+            aria-label="Restore workspace to before this turn"
+            onClick={() =>
+              void actions?.restoreWorkspaceCheckpoint(m.workspaceCheckpoint!)
+            }
+          >
+            <Refresh size={13} />
+          </button>
+        )}
+        {!messageIsCompaction && !busy && (
+          <button
+            className="msg-act"
+            title="Branch from here"
+            aria-label="Branch from here"
+            onClick={() => actions?.forkThreadAt(i)}
+          >
+            <GitBranch size={13} />
+          </button>
+        )}
+        {!isApprovalMessage && (
+          <button
+            className="msg-act"
+            title="Copy"
+            onClick={() =>
+              void navigator.clipboard?.writeText(wireMessageContent(m))
+            }
+          >
+            <Copy size={13} />
+          </button>
+        )}
+        {m.role === "user" && !busy && (
+          <button
+            className="msg-act"
+            title="Edit & resend"
+            onClick={() => actions?.setEditing(i)}
+          >
+            <Pencil size={13} />
+          </button>
+        )}
+        {m.role === "assistant" &&
+          !messageIsCompaction &&
+          !isApprovalMessage &&
+          !busy && (
+            <button
+              className="msg-act"
+              title="Edit message"
+              aria-label="Edit message"
+              onClick={() => actions?.setEditing(i)}
+            >
+              <Pencil size={13} />
+            </button>
+          )}
+        {!messageIsCompaction && !busy && (
+          <button
+            className="msg-act danger"
+            title="Delete message"
+            aria-label="Delete message"
+            onClick={() => actions?.deleteMessageAt(i)}
+          >
+            <Trash size={13} />
+          </button>
+        )}
+        {isLastAssistant && !busy && (
+          <button
+            className="msg-act"
+            title="Regenerate"
+            onClick={actions?.regenerate}
+          >
+            <Refresh size={13} />
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+const MessageRow = memo(
+  MessageRowView,
+  (prev, next) =>
+    prev.activeId === next.activeId &&
+    prev.message === next.message &&
+    prev.index === next.index &&
+    prev.isEditing === next.isEditing &&
+    prev.isLastAssistant === next.isLastAssistant &&
+    prev.assistantStreaming === next.assistantStreaming &&
+    prev.busy === next.busy &&
+    prev.activeMediaTargetPresent === next.activeMediaTargetPresent &&
+    prev.folderIsEmpty === next.folderIsEmpty &&
+    prev.ttsReady === next.ttsReady &&
+    prev.activeRun === next.activeRun &&
+    prev.previewArtifacts === next.previewArtifacts &&
+    prev.previewAppBusy === next.previewAppBusy &&
+    prev.previewAppStatus === next.previewAppStatus &&
+    prev.toolApproval === next.toolApproval &&
+    prev.actionsRef === next.actionsRef,
+);
 
 function previewRuntimeText(value?: string | null): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
@@ -1775,6 +2280,7 @@ export function ChatView({
 }) {
   markPerfRender("ChatView");
   const { openContextMenu } = useContextMenu();
+  const messageRowActionsRef = useRef<MessageRowActions | null>(null);
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [input, setInputState] = useState("");
   const [providersOpen, setProvidersOpen] = useState(false);
@@ -3507,11 +4013,9 @@ export function ChatView({
     const current = sessionGoal(sessionId);
     const updatedAt = current.updatedAt ?? 0;
     if (!updatedAt || (current.lastSeenAt ?? 0) >= updatedAt) return;
-    useSessions
-      .getState()
-      .updateSettings(sessionId, {
-        goal: { ...current, lastSeenAt: Date.now() },
-      });
+    useSessions.getState().updateSettings(sessionId, {
+      goal: { ...current, lastSeenAt: Date.now() },
+    });
   }
 
   function openGoalPanel(prefill: string | null = null) {
@@ -5075,6 +5579,8 @@ export function ChatView({
           : undefined,
         commitResponseMetrics: (targetId, metrics) =>
           commitResponseMetrics(targetId, assistantMessageId, metrics),
+        finalizeMessageArtifacts: (targetId) =>
+          store.finalizeMessageArtifacts(targetId, assistantMessageId),
         clearController: (targetId) =>
           generationControllersRef.current.delete(targetId),
         setSessionGenerating: store.setSessionGenerating,
@@ -5816,6 +6322,30 @@ export function ChatView({
     </div>
   );
 
+  messageRowActionsRef.current = {
+    openContextMenu,
+    setArtifactPanelTab,
+    startPreviewRuntimeForArtifacts,
+    openPreviewArtifact,
+    artifactRevisionChoice,
+    executePlan,
+    speakMessage,
+    restoreWorkspaceCheckpoint,
+    forkThreadAt,
+    setEditing,
+    deleteMessageAt,
+    regenerate,
+    editResend,
+    editMessageInPlace,
+    approveToolApproval,
+    denyToolApproval,
+    handleSaveArtifact,
+    handlePreviewArtifact,
+    handleCheckArtifact,
+    handleOpenArtifact,
+    onOpenSchedules,
+  };
+
   return (
     <div
       className={"chat" + (emptyThread ? " chat-empty" : "")}
@@ -5842,7 +6372,6 @@ export function ChatView({
             {!emptyThread && (
               <div className="messages">
                 {messages.map((m, i) => {
-                  markPerfRender("MessageRow");
                   const messageIsCompaction = isCompactionCheckpoint(m);
                   const isApprovalMessage = Boolean(m.approval);
                   const isLastAssistant =
@@ -5850,421 +6379,26 @@ export function ChatView({
                     !messageIsCompaction &&
                     !isApprovalMessage &&
                     i === messages.length - 1;
-                  const assistantStreaming = busy && isLastAssistant;
-                  const previewArtifacts = previewArtifactsForMessage(m);
-                  const artifactContext = m.artifacts?.length
-                    ? m.artifacts
-                    : previewArtifacts;
-                  const openMessagePreview = (
-                    artifact: ChatArtifact,
-                    revision?: ArtifactRevision,
-                  ) => {
-                    if (
-                      !folder.trim() &&
-                      !assistantStreaming &&
-                      hasPreviewPackageJson(
-                        previewRuntimeFiles(artifactContext),
-                      )
-                    ) {
-                      void startPreviewRuntimeForArtifacts(artifactContext);
-                      return;
-                    }
-                    const artifactIndex =
-                      m.artifacts?.findIndex(
-                        (item) => item.id === artifact.id,
-                      ) ?? -1;
-                    const choice =
-                      !revision && artifactIndex >= 0
-                        ? artifactRevisionChoice(i, artifactIndex)
-                        : undefined;
-                    if (!isPreviewableArtifact(artifact))
-                      setArtifactPanelTab(activeId, "code");
-                    openPreviewArtifact(
-                      artifact,
-                      artifactContext ?? [artifact],
-                      assistantStreaming,
-                      revision ?? choice?.revision,
-                    );
-                  };
-                  const previewArtifactsStreaming =
-                    assistantStreaming && Boolean(previewArtifacts?.length);
-                  const hasStreamTranscript = Boolean(m.streamParts?.length);
-                  const hasAssistantOutput = Boolean(
-                    m.content || hasStreamTranscript,
-                  );
-                  const metricsLabel = formatResponseMetrics(m.metrics);
-                  const canExecutePlan =
-                    m.role === "assistant" &&
-                    m.plan?.status === "proposed" &&
-                    !assistantStreaming &&
-                    Boolean(m.content.trim());
-                  const runtimeFiles =
-                    !folder.trim() && !assistantStreaming
-                      ? previewRuntimeFiles(m.artifacts)
-                      : [];
-                  const canStartRuntime =
-                    runtimeFiles.length > 0 &&
-                    hasPreviewPackageJson(runtimeFiles);
-                  const openMessageContextMenu = (
-                    event: MouseEvent<HTMLDivElement>,
-                  ) => {
-                    openContextMenu(
-                      event,
-                      [
-                        ...(canExecutePlan
-                          ? [
-                              {
-                                id: "execute-plan",
-                                label: "Execute plan",
-                                icon: <ArrowRight size={13} />,
-                                action: () => executePlan(i, m),
-                              },
-                            ]
-                          : []),
-                        ...(m.role === "assistant" &&
-                        !messageIsCompaction &&
-                        m.content &&
-                        ttsReady
-                          ? [
-                              {
-                                id: "speak",
-                                label: "Speak",
-                                icon: <Volume2 size={13} />,
-                                action: () => void speakMessage(i, m.content),
-                              },
-                            ]
-                          : []),
-                        ...(m.workspaceCheckpoint
-                          ? [
-                              {
-                                id: "restore-checkpoint",
-                                label: "Restore workspace checkpoint",
-                                icon: <Refresh size={13} />,
-                                disabled: busy,
-                                action: () =>
-                                  void restoreWorkspaceCheckpoint(
-                                    m.workspaceCheckpoint!,
-                                  ),
-                              },
-                            ]
-                          : []),
-                        ...(!messageIsCompaction
-                          ? [
-                              {
-                                id: "branch",
-                                label: "Branch from here",
-                                icon: <GitBranch size={13} />,
-                                disabled: busy,
-                                separatorBefore: true,
-                                action: () => forkThreadAt(i),
-                              },
-                            ]
-                          : []),
-                        ...(!isApprovalMessage
-                          ? [
-                              {
-                                id: "copy",
-                                label: "Copy",
-                                icon: <Copy size={13} />,
-                                action: () =>
-                                  void navigator.clipboard?.writeText(
-                                    wireMessageContent(m),
-                                  ),
-                              },
-                            ]
-                          : []),
-                        ...(m.role === "user"
-                          ? [
-                              {
-                                id: "edit-resend",
-                                label: "Edit and resend",
-                                icon: <Pencil size={13} />,
-                                disabled: busy,
-                                action: () => setEditing(i),
-                              },
-                            ]
-                          : []),
-                        ...(m.role === "assistant" &&
-                        !messageIsCompaction &&
-                        !isApprovalMessage
-                          ? [
-                              {
-                                id: "edit",
-                                label: "Edit message",
-                                icon: <Pencil size={13} />,
-                                disabled: busy,
-                                action: () => setEditing(i),
-                              },
-                            ]
-                          : []),
-                        ...(!messageIsCompaction
-                          ? [
-                              {
-                                id: "delete",
-                                label: "Delete message",
-                                icon: <Trash size={13} />,
-                                disabled: busy,
-                                danger: true,
-                                separatorBefore: true,
-                                action: () => deleteMessageAt(i),
-                              },
-                            ]
-                          : []),
-                        ...(isLastAssistant
-                          ? [
-                              {
-                                id: "regenerate",
-                                label: "Regenerate",
-                                icon: <Refresh size={13} />,
-                                disabled: busy,
-                                action: regenerate,
-                              },
-                            ]
-                          : []),
-                      ],
-                      m.role === "assistant"
-                        ? "Assistant message"
-                        : "User message",
-                    );
-                  };
-                  if (editing === i) {
-                    return (
-                      <div key={i} className={"msg " + m.role}>
-                        <MessageEditor
-                          initial={m.content}
-                          saveLabel={m.role === "user" ? "Send" : "Save"}
-                          onCancel={() => setEditing(null)}
-                          onSave={(t) =>
-                            m.role === "user"
-                              ? editResend(i, t)
-                              : editMessageInPlace(i, t)
-                          }
-                        />
-                      </div>
-                    );
-                  }
                   return (
-                    <div
-                      key={i}
-                      className={"msg " + m.role}
-                      data-testid={
-                        m.role === "assistant"
-                          ? "assistant-message"
-                          : "user-message"
-                      }
-                      onContextMenu={openMessageContextMenu}
-                    >
-                      <div className="msg-content">
-                        {m.role === "assistant" ? (
-                          <>
-                            {m.run && m.run !== activeRun && (
-                              <RunTimeline run={m.run} />
-                            )}
-                            {!hasStreamTranscript && (
-                              <MemoryBreadcrumbs memories={m.memories} />
-                            )}
-                            {m.approval && (
-                              <ToolApprovalCard
-                                approval={m.approval}
-                                disabled={busy || Boolean(activeMediaTarget)}
-                                onApprove={() => approveToolApproval(i, m)}
-                                onDeny={() => denyToolApproval(i, m)}
-                              />
-                            )}
-                            {(hasAssistantOutput || assistantStreaming) && (
-                              <AssistantMessage
-                                content={m.content}
-                                streamParts={m.streamParts}
-                                previewArtifacts={previewArtifacts}
-                                onOpenPreview={openMessagePreview}
-                                streaming={busy && isLastAssistant}
-                                previewArtifactsStreaming={
-                                  previewArtifactsStreaming
-                                }
-                                workDurationMs={m.metrics?.durationMs}
-                              />
-                            )}
-                            {renderMessageMedia(m.mediaResults)}
-                            <AutomationCards
-                              run={m.run}
-                              onOpenSchedules={onOpenSchedules}
-                            />
-                            <ArtifactList
-                              artifacts={m.artifacts}
-                              currentSessionId={APP_SESSION_ID}
-                              hiddenArtifactIds={hiddenArtifactIdsForMessage(
-                                m,
-                                !folder.trim(),
-                              )}
-                              onOpenPreview={openMessagePreview}
-                              onSaveToWorkspace={(
-                                artifact,
-                                options,
-                                revision,
-                              ) =>
-                                handleSaveArtifact(
-                                  i,
-                                  artifact,
-                                  options,
-                                  revision,
-                                )
-                              }
-                              onPreviewArtifact={handlePreviewArtifact}
-                              onCheckSavedArtifact={handleCheckArtifact}
-                              onOpenSavedArtifact={handleOpenArtifact}
-                              revisionForArtifact={(artifactIndex) =>
-                                artifactRevisionChoice(i, artifactIndex)
-                              }
-                              autoSaveArtifacts={
-                                toolApproval === "open" && !assistantStreaming
-                              }
-                              storageLabel={
-                                folder.trim() ? "folder" : "virtual project"
-                              }
-                            />
-                            {canStartRuntime && (
-                              <div className="artifact-runtime-actions">
-                                <button
-                                  className="msg-act msg-act-text"
-                                  data-testid="preview-app-start"
-                                  title="Stage named files and start preview app"
-                                  disabled={
-                                    previewAppBusy != null ||
-                                    isPreviewAppActive(previewAppStatus)
-                                  }
-                                  onClick={() =>
-                                    void startPreviewRuntimeForArtifacts(
-                                      m.artifacts,
-                                    )
-                                  }
-                                >
-                                  <Globe size={13} />
-                                  <span>
-                                    {previewAppBusy === "start"
-                                      ? "Starting preview..."
-                                      : "Start preview app"}
-                                  </span>
-                                </button>
-                              </div>
-                            )}
-                            {metricsLabel && (
-                              <div className="response-metrics">
-                                {metricsLabel}
-                              </div>
-                            )}
-                          </>
-                        ) : (
-                          <>
-                            {m.content && <span>{m.content}</span>}
-                            {renderMessageAttachments(m.attachments)}
-                          </>
-                        )}
-                      </div>
-                      <div className="msg-actions">
-                        {canExecutePlan && (
-                          <button
-                            className="msg-act msg-act-text"
-                            data-testid="execute-plan"
-                            title="Execute plan"
-                            onClick={() => executePlan(i, m)}
-                          >
-                            <ArrowRight size={13} />
-                            <span>Execute plan</span>
-                          </button>
-                        )}
-                        {m.role === "assistant" &&
-                          !messageIsCompaction &&
-                          m.content &&
-                          ttsReady && (
-                            <button
-                              className="msg-act"
-                              title="Speak"
-                              aria-label="Speak"
-                              onClick={() => void speakMessage(i, m.content)}
-                            >
-                              <Volume2 size={13} />
-                            </button>
-                          )}
-                        {m.workspaceCheckpoint && !busy && (
-                          <button
-                            className="msg-act"
-                            title="Restore workspace to before this turn"
-                            aria-label="Restore workspace to before this turn"
-                            onClick={() =>
-                              void restoreWorkspaceCheckpoint(
-                                m.workspaceCheckpoint!,
-                              )
-                            }
-                          >
-                            <Refresh size={13} />
-                          </button>
-                        )}
-                        {!messageIsCompaction && !busy && (
-                          <button
-                            className="msg-act"
-                            title="Branch from here"
-                            aria-label="Branch from here"
-                            onClick={() => forkThreadAt(i)}
-                          >
-                            <GitBranch size={13} />
-                          </button>
-                        )}
-                        {!isApprovalMessage && (
-                          <button
-                            className="msg-act"
-                            title="Copy"
-                            onClick={() =>
-                              navigator.clipboard?.writeText(
-                                wireMessageContent(m),
-                              )
-                            }
-                          >
-                            <Copy size={13} />
-                          </button>
-                        )}
-                        {m.role === "user" && !busy && (
-                          <button
-                            className="msg-act"
-                            title="Edit & resend"
-                            onClick={() => setEditing(i)}
-                          >
-                            <Pencil size={13} />
-                          </button>
-                        )}
-                        {m.role === "assistant" &&
-                          !messageIsCompaction &&
-                          !isApprovalMessage &&
-                          !busy && (
-                            <button
-                              className="msg-act"
-                              title="Edit message"
-                              aria-label="Edit message"
-                              onClick={() => setEditing(i)}
-                            >
-                              <Pencil size={13} />
-                            </button>
-                          )}
-                        {!messageIsCompaction && !busy && (
-                          <button
-                            className="msg-act danger"
-                            title="Delete message"
-                            aria-label="Delete message"
-                            onClick={() => deleteMessageAt(i)}
-                          >
-                            <Trash size={13} />
-                          </button>
-                        )}
-                        {isLastAssistant && !busy && (
-                          <button
-                            className="msg-act"
-                            title="Regenerate"
-                            onClick={regenerate}
-                          >
-                            <Refresh size={13} />
-                          </button>
-                        )}
-                      </div>
-                    </div>
+                    <MessageRow
+                      key={m.id ?? i}
+                      activeId={activeId}
+                      message={m}
+                      index={i}
+                      isEditing={editing === i}
+                      isLastAssistant={isLastAssistant}
+                      assistantStreaming={busy && isLastAssistant}
+                      busy={busy}
+                      activeMediaTargetPresent={Boolean(activeMediaTarget)}
+                      folderIsEmpty={!folder.trim()}
+                      ttsReady={ttsReady}
+                      activeRun={activeRun}
+                      previewArtifacts={previewArtifactsForMessage(m)}
+                      previewAppBusy={previewAppBusy}
+                      previewAppStatus={previewAppStatus}
+                      toolApproval={toolApproval}
+                      actionsRef={messageRowActionsRef}
+                    />
                   );
                 })}
               </div>

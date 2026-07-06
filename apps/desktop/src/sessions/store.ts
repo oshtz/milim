@@ -817,7 +817,7 @@ function appendStreamChunksToMessages(
     }
   }
 
-  next[targetIndex] = normalizeMessageArtifacts({
+  next[targetIndex] = ensureChatMessageId({
     ...target,
     content,
     streamParts,
@@ -1183,6 +1183,7 @@ interface SessionState {
     messageIdOrChunks: string | BufferedStreamChunk[],
     chunks?: BufferedStreamChunk[],
   ) => void;
+  finalizeMessageArtifacts: (id: string, messageId?: string) => void;
   appendStreamEvent: (
     id: string,
     messageIdOrPart: string | ChatStreamEventPart,
@@ -2092,6 +2093,22 @@ export const useSessions = create<SessionState>()(
           }
         },
 
+        finalizeMessageArtifacts: (id, messageId) =>
+          set((st) => ({
+            sessions: st.sessions.map((s) => {
+              if (s.id !== id) return s;
+              const targetIndex = messageId
+                ? s.messages.findIndex((message) => message.id === messageId)
+                : s.messages.length - 1;
+              if (targetIndex < 0) return s;
+              const target = s.messages[targetIndex];
+              if (target.role !== "assistant") return s;
+              const messages = s.messages.slice();
+              messages[targetIndex] = normalizeMessageArtifacts(target);
+              return { ...s, messages, updatedAt: Date.now() };
+            }),
+          })),
+
         appendStreamEvent: (id, messageIdOrPart, partArg) =>
           set((st) => ({
             sessions: st.sessions.map((s) => {
@@ -2166,10 +2183,10 @@ export const useSessions = create<SessionState>()(
                 : s.messages.length - 1;
               if (targetIndex < 0) return s;
               const messages = s.messages.slice();
-              messages[targetIndex] = normalizeMessageArtifacts({
+              messages[targetIndex] = {
                 ...messages[targetIndex],
                 run,
-              });
+              };
               return { ...s, messages, updatedAt: Date.now() };
             }),
           })),

@@ -1,11 +1,18 @@
-import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { lazy, memo, Suspense, useEffect, useRef, useState } from "react";
 import type { ChatArtifact, ChatStreamEventIcon, ChatStreamPart } from "../api";
 import { markPerfRender } from "../lib/perf";
-import { groupCompletedStreamActivity, liveWorkGroupSummary, type ChatStreamToolGroup, type ChatStreamWorkGroup } from "../lib/streamParts";
+import {
+  groupCompletedStreamActivity,
+  liveWorkGroupSummary,
+  type ChatStreamToolGroup,
+  type ChatStreamWorkGroup,
+} from "../lib/streamParts";
 import { formatDuration } from "../lib/usageMetrics";
 import { Calendar, Code, Eye, FileText, Lightbulb, Pencil, X } from "./icons";
 
-const Markdown = lazy(() => import("./Markdown").then((mod) => ({ default: mod.Markdown })));
+const Markdown = lazy(() =>
+  import("./Markdown").then((mod) => ({ default: mod.Markdown })),
+);
 type ChatStreamEventPart = Extract<ChatStreamPart, { kind: "event" }>;
 
 type AssistantMessageProps = {
@@ -21,23 +28,42 @@ type AssistantMessageProps = {
 /** Split out a `<think>...</think>` reasoning span (reasoning models like
  *  DeepSeek-R1 / QwQ emit it inline). Handles the still-streaming case where
  *  the closing tag hasn't arrived yet. */
-function splitThink(content: string): { think: string | null; answer: string; thinking: boolean } {
+function splitThink(content: string): {
+  think: string | null;
+  answer: string;
+  thinking: boolean;
+} {
   const open = content.indexOf("<think>");
   if (open === -1) return { think: null, answer: content, thinking: false };
   const close = content.indexOf("</think>", open);
-  if (close === -1) return { think: content.slice(open + 7), answer: "", thinking: true };
-  return { think: content.slice(open + 7, close), answer: content.slice(close + 8), thinking: false };
+  if (close === -1)
+    return { think: content.slice(open + 7), answer: "", thinking: true };
+  return {
+    think: content.slice(open + 7, close),
+    answer: content.slice(close + 8),
+    thinking: false,
+  };
 }
 
-function fallbackParts(content: string): { parts: ChatStreamPart[]; thinking: boolean } {
+function fallbackParts(content: string): {
+  parts: ChatStreamPart[];
+  thinking: boolean;
+} {
   const { think, answer, thinking } = splitThink(content);
   const parts: ChatStreamPart[] = [];
-  if (think != null && think.trim()) parts.push({ kind: "thinking", content: think });
+  if (think != null && think.trim())
+    parts.push({ kind: "thinking", content: think });
   if (answer.trim()) parts.push({ kind: "text", content: answer });
   return { parts, thinking };
 }
 
-function StreamIcon({ icon, status }: { icon?: ChatStreamEventIcon; status?: string }) {
+function StreamIcon({
+  icon,
+  status,
+}: {
+  icon?: ChatStreamEventIcon;
+  status?: string;
+}) {
   if (status === "error" || icon === "error") return <X size={13} />;
   switch (icon) {
     case "thinking":
@@ -57,7 +83,11 @@ function StreamIcon({ icon, status }: { icon?: ChatStreamEventIcon; status?: str
   }
 }
 
-function StreamEvent({ part }: { part: Extract<ChatStreamPart, { kind: "event" }> }) {
+function StreamEvent({
+  part,
+}: {
+  part: Extract<ChatStreamPart, { kind: "event" }>;
+}) {
   const status = part.status ?? "done";
   return (
     <div
@@ -68,31 +98,55 @@ function StreamEvent({ part }: { part: Extract<ChatStreamPart, { kind: "event" }
       <span className="stream-event-icon" aria-hidden="true">
         <StreamIcon icon={part.icon} status={status} />
       </span>
-      <span className={"stream-event-label" + (status === "running" ? " shiny-text" : "")}>{part.label}</span>
-      {part.detail && <StreamEventDetail detail={part.detail} running={status === "running"} />}
+      <span
+        className={
+          "stream-event-label" + (status === "running" ? " shiny-text" : "")
+        }
+      >
+        {part.label}
+      </span>
+      {part.detail && (
+        <StreamEventDetail
+          detail={part.detail}
+          running={status === "running"}
+        />
+      )}
     </div>
   );
 }
 
 function compactToolNames(parts: ChatStreamEventPart[]): string {
-  const names = parts.map((part) => part.name?.trim() || part.label.replace(/^Used\s+/i, "").trim() || "tool");
+  const names = parts.map(
+    (part) =>
+      part.name?.trim() || part.label.replace(/^Used\s+/i, "").trim() || "tool",
+  );
   const joined = names.join(", ");
   return joined.length > 90 ? `${joined.slice(0, 89)}...` : joined;
 }
 
 function StreamToolGroup({ group }: { group: ChatStreamToolGroup }) {
   return (
-    <details className="stream-tool-group" data-testid="assistant-stream-tool-group">
+    <details
+      className="stream-tool-group"
+      data-testid="assistant-stream-tool-group"
+    >
       <summary className="stream-event stream-event-tool stream-event-done">
         <span className="stream-event-icon" aria-hidden="true">
           <StreamIcon icon="tool" />
         </span>
-        <span className="stream-event-label">Used {group.parts.length} tools</span>
-        <code className="stream-event-detail">{compactToolNames(group.parts)}</code>
+        <span className="stream-event-label">
+          Used {group.parts.length} tools
+        </span>
+        <code className="stream-event-detail">
+          {compactToolNames(group.parts)}
+        </code>
       </summary>
       <div className="stream-tool-group-body">
         {group.parts.map((part, index) => (
-          <StreamEvent key={`${part.name ?? part.label}-${index}`} part={part} />
+          <StreamEvent
+            key={`${part.name ?? part.label}-${index}`}
+            part={part}
+          />
         ))}
       </div>
     </details>
@@ -104,46 +158,94 @@ function plural(count: number, singular: string): string {
 }
 
 function isCommandEvent(part: ChatStreamPart): boolean {
-  return part.kind === "event" && part.eventType === "tool" && (
-    part.icon === "command" ||
-    part.name === "shell" ||
-    part.name === "run_command" ||
-    /command/i.test(part.label)
+  return (
+    part.kind === "event" &&
+    part.eventType === "tool" &&
+    (part.icon === "command" ||
+      part.name === "shell" ||
+      part.name === "run_command" ||
+      /command/i.test(part.label))
   );
 }
 
 function workGroupDetail(group: ChatStreamWorkGroup): string {
-  const reasoning = group.parts.filter((part) => part.kind === "thinking").length;
+  const reasoning = group.parts.filter(
+    (part) => part.kind === "thinking",
+  ).length;
   const commands = group.parts.filter(isCommandEvent).length;
-  const tools = group.parts.filter((part) => part.kind === "event" && part.eventType === "tool" && !isCommandEvent(part)).length;
-  return [
-    commands ? plural(commands, "command") : null,
-    tools ? plural(tools, "tool") : null,
-    reasoning ? `${plural(reasoning, "reasoning note")}` : null,
-  ].filter(Boolean).join(", ") || plural(group.parts.length, "step");
+  const tools = group.parts.filter(
+    (part) =>
+      part.kind === "event" &&
+      part.eventType === "tool" &&
+      !isCommandEvent(part),
+  ).length;
+  return (
+    [
+      commands ? plural(commands, "command") : null,
+      tools ? plural(tools, "tool") : null,
+      reasoning ? `${plural(reasoning, "reasoning note")}` : null,
+    ]
+      .filter(Boolean)
+      .join(", ") || plural(group.parts.length, "step")
+  );
 }
 
-function StreamWorkGroup({ group, durationMs, streaming = false }: { group: ChatStreamWorkGroup; durationMs?: number; streaming?: boolean }) {
+function StreamWorkGroup({
+  group,
+  durationMs,
+  streaming = false,
+}: {
+  group: ChatStreamWorkGroup;
+  durationMs?: number;
+  streaming?: boolean;
+}) {
   const liveSummary = streaming ? liveWorkGroupSummary(group) : null;
   return (
-    <details className="stream-tool-group stream-work-group" data-testid="assistant-stream-work-group">
-      <summary className={`stream-event stream-event-${liveSummary?.eventType ?? "tool"} stream-event-${liveSummary?.status ?? "done"}`}>
+    <details
+      className="stream-tool-group stream-work-group"
+      data-testid="assistant-stream-work-group"
+    >
+      <summary
+        className={`stream-event stream-event-${liveSummary?.eventType ?? "tool"} stream-event-${liveSummary?.status ?? "done"}`}
+      >
         <span className="stream-event-icon" aria-hidden="true">
-          <StreamIcon icon={liveSummary?.icon ?? "thinking"} status={liveSummary?.status} />
+          <StreamIcon
+            icon={liveSummary?.icon ?? "thinking"}
+            status={liveSummary?.status}
+          />
         </span>
-        <span className={"stream-event-label" + (liveSummary?.status === "running" ? " shiny-text" : "")}>
-          {liveSummary?.label ?? (durationMs != null && durationMs > 0 ? `Worked for ${formatDuration(durationMs)}` : `Worked through ${group.parts.length} steps`)}
+        <span
+          className={
+            "stream-event-label" +
+            (liveSummary?.status === "running" ? " shiny-text" : "")
+          }
+        >
+          {liveSummary?.label ??
+            (durationMs != null && durationMs > 0
+              ? `Worked for ${formatDuration(durationMs)}`
+              : `Worked through ${group.parts.length} steps`)}
         </span>
         {liveSummary?.detail ? (
-          <StreamEventDetail detail={liveSummary.detail} running={liveSummary.status === "running"} />
+          <StreamEventDetail
+            detail={liveSummary.detail}
+            running={liveSummary.status === "running"}
+          />
         ) : (
           <code className="stream-event-detail">{workGroupDetail(group)}</code>
         )}
       </summary>
       <div className="stream-tool-group-body">
         {group.parts.map((part, index) => {
-          if (part.kind === "thinking") return <ThinkingBlock key={`${part.kind}-${index}`} content={part.content} streaming={false} />;
-          if (part.kind === "event") return <StreamEvent key={`${part.kind}-${index}`} part={part} />;
+          if (part.kind === "thinking")
+            return (
+              <ThinkingBlock
+                key={`${part.kind}-${index}`}
+                content={part.content}
+                streaming={false}
+              />
+            );
+          if (part.kind === "event")
+            return <StreamEvent key={`${part.kind}-${index}`} part={part} />;
           return null;
         })}
       </div>
@@ -151,7 +253,13 @@ function StreamWorkGroup({ group, durationMs, streaming = false }: { group: Chat
   );
 }
 
-function StreamEventDetail({ detail, running }: { detail: string; running: boolean }) {
+function StreamEventDetail({
+  detail,
+  running,
+}: {
+  detail: string;
+  running: boolean;
+}) {
   const tokens = detail.split(/(\s+)/);
   return (
     <code className="stream-event-detail">
@@ -172,7 +280,13 @@ function StreamEventDetail({ detail, running }: { detail: string; running: boole
   );
 }
 
-function WaitingBlock({ label = "reasoning...", icon = "thinking" }: { label?: string; icon?: ChatStreamEventIcon }) {
+function WaitingBlock({
+  label = "reasoning...",
+  icon = "thinking",
+}: {
+  label?: string;
+  icon?: ChatStreamEventIcon;
+}) {
   return (
     <div
       className="stream-event stream-event-thinking stream-event-running stream-waiting"
@@ -188,7 +302,9 @@ function WaitingBlock({ label = "reasoning...", icon = "thinking" }: { label?: s
   );
 }
 
-function activityCueForParts(parts: ChatStreamPart[]): { label: string; icon: ChatStreamEventIcon } | null {
+function activityCueForParts(
+  parts: ChatStreamPart[],
+): { label: string; icon: ChatStreamEventIcon } | null {
   const last = parts[parts.length - 1];
   if (!last) return { label: "reasoning...", icon: "thinking" };
   if (last.kind === "thinking") return null;
@@ -197,7 +313,13 @@ function activityCueForParts(parts: ChatStreamPart[]): { label: string; icon: Ch
   return { label: "reasoning...", icon: "thinking" };
 }
 
-function ThinkingBlock({ content, streaming }: { content: string; streaming: boolean }) {
+function ThinkingBlock({
+  content,
+  streaming,
+}: {
+  content: string;
+  streaming: boolean;
+}) {
   const [expanded, setExpanded] = useState(false);
   const lastContent = useRef(content);
   useEffect(() => {
@@ -222,12 +344,20 @@ function ThinkingBlock({ content, streaming }: { content: string; streaming: boo
         setExpanded((e.target as HTMLDetailsElement).open);
       }}
     >
-      <summary className={`stream-event stream-event-thinking${streaming ? " stream-event-running" : ""}`}>
+      <summary
+        className={`stream-event stream-event-thinking${streaming ? " stream-event-running" : ""}`}
+      >
         <span className="stream-event-icon" aria-hidden="true">
           <StreamIcon icon="thinking" />
         </span>
-        <span className={"stream-event-label" + (streaming ? " shiny-text" : "")}>{streaming ? "reasoning..." : "Reasoning"}</span>
-        <span className="stream-reasoning-meta">{streaming ? "live" : `${charCount.toLocaleString()} chars`}</span>
+        <span
+          className={"stream-event-label" + (streaming ? " shiny-text" : "")}
+        >
+          {streaming ? "reasoning..." : "Reasoning"}
+        </span>
+        <span className="stream-reasoning-meta">
+          {streaming ? "live" : `${charCount.toLocaleString()} chars`}
+        </span>
       </summary>
       <div className="stream-reasoning-body">
         <Suspense fallback={<span className="typing">...</span>}>
@@ -265,7 +395,7 @@ function AnswerText({
   );
 }
 
-export function AssistantMessage({
+function AssistantMessageView({
   content,
   streamParts,
   previewArtifacts,
@@ -279,16 +409,30 @@ export function AssistantMessage({
   const fallback = fallbackParts(content);
   const parts = streamParts?.length ? streamParts : fallback.parts;
   const displayParts = groupCompletedStreamActivity(parts, streaming);
-  const workGroupCount = displayParts.filter((part) => part.kind === "workGroup").length;
+  const workGroupCount = displayParts.filter(
+    (part) => part.kind === "workGroup",
+  ).length;
   const fallbackThinking = !streamParts?.length && fallback.thinking;
   const lastDisplayPart = displayParts[displayParts.length - 1];
-  const activityCue = streaming && lastDisplayPart?.kind !== "workGroup" ? activityCueForParts(parts) : null;
+  const activityCue =
+    streaming && lastDisplayPart?.kind !== "workGroup"
+      ? activityCueForParts(parts)
+      : null;
 
   return (
     <div className="assistant-stream">
       {displayParts.map((part, index) => {
-        if (part.kind === "toolGroup") return <StreamToolGroup key={`${part.kind}-${index}`} group={part} />;
-        if (part.kind === "workGroup") return <StreamWorkGroup key={`${part.kind}-${index}`} group={part} durationMs={workGroupCount === 1 ? workDurationMs : undefined} streaming={streaming} />;
+        if (part.kind === "toolGroup")
+          return <StreamToolGroup key={`${part.kind}-${index}`} group={part} />;
+        if (part.kind === "workGroup")
+          return (
+            <StreamWorkGroup
+              key={`${part.kind}-${index}`}
+              group={part}
+              durationMs={workGroupCount === 1 ? workDurationMs : undefined}
+              streaming={streaming}
+            />
+          );
         const isLatest = index === displayParts.length - 1;
         if (part.kind === "thinking") {
           const thinking = fallbackThinking || (streaming && isLatest);
@@ -300,7 +444,8 @@ export function AssistantMessage({
             />
           );
         }
-        if (part.kind === "event") return <StreamEvent key={`${part.kind}-${index}`} part={part} />;
+        if (part.kind === "event")
+          return <StreamEvent key={`${part.kind}-${index}`} part={part} />;
         return (
           <AnswerText
             key={`${part.kind}-${index}`}
@@ -308,11 +453,17 @@ export function AssistantMessage({
             previewArtifacts={previewArtifacts}
             onOpenPreview={onOpenPreview}
             streaming={streaming && isLatest}
-            previewArtifactsStreaming={previewArtifactsStreaming && streaming && isLatest}
+            previewArtifactsStreaming={
+              previewArtifactsStreaming && streaming && isLatest
+            }
           />
         );
       })}
-      {activityCue ? <WaitingBlock label={activityCue.label} icon={activityCue.icon} /> : null}
+      {activityCue ? (
+        <WaitingBlock label={activityCue.label} icon={activityCue.icon} />
+      ) : null}
     </div>
   );
 }
+
+export const AssistantMessage = memo(AssistantMessageView);

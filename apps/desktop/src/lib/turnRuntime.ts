@@ -816,6 +816,7 @@ export function finalizeTurnRuntime({
   flush,
   metrics,
   commitResponseMetrics,
+  finalizeMessageArtifacts,
   clearController,
   setSessionGenerating,
   setSessionUnread,
@@ -831,6 +832,7 @@ export function finalizeTurnRuntime({
   flush: () => void;
   metrics?: ResponseMetrics;
   commitResponseMetrics: (sessionId: string, metrics: ResponseMetrics) => void;
+  finalizeMessageArtifacts?: (sessionId: string) => void;
   clearController: (sessionId: string) => void;
   setSessionGenerating: (sessionId: string, generating: boolean) => void;
   setSessionUnread: (sessionId: string, unread: boolean) => void;
@@ -846,6 +848,7 @@ export function finalizeTurnRuntime({
   const finalStatus: FinalizeTurnRuntimeStatus =
     status === "error" && signal?.aborted ? "aborted" : status;
   flush();
+  finalizeMessageArtifacts?.(sessionId);
   if (metrics) commitResponseMetrics(sessionId, metrics);
   clearController(sessionId);
   setSessionGenerating(sessionId, false);
