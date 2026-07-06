@@ -112,7 +112,15 @@ jobs:
           cp "$dmg" "$alias_dmg"
           hash="$(shasum -a 256 "$alias_dmg" | awk '{print $1}')"
           printf "%s  milim-macos-universal.dmg\n" "$hash" > "$alias_dmg.sha256"
-          gh release upload "${{ env.MILIM_RELEASE_TAG }}" "$alias_dmg" "$alias_dmg.sha256" --clobber
+          for attempt in 1 2 3; do
+            if gh release upload "${{ env.MILIM_RELEASE_TAG }}" "$alias_dmg" "$alias_dmg.sha256" --clobber; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              exit 1
+            fi
+            sleep $((attempt * 10))
+          done
       - name: Create macOS app zip updater asset
         if: matrix.os == 'macos-latest'
         working-directory: apps/desktop
@@ -135,7 +143,19 @@ jobs:
         shell: bash
         run: |
           app_zip="$(find src-tauri/target -path '*/release/bundle/macos/milim.app.zip' -print -quit)"
-          gh release upload "${{ env.MILIM_RELEASE_TAG }}" "$app_zip" "$app_zip.sha256" --clobber
+          if [ -z "$app_zip" ]; then
+            echo "milim.app.zip not found under src-tauri/target" >&2
+            exit 1
+          fi
+          for attempt in 1 2 3; do
+            if gh release upload "${{ env.MILIM_RELEASE_TAG }}" "$app_zip" "$app_zip.sha256" --clobber; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              exit 1
+            fi
+            sleep $((attempt * 10))
+          done
       - name: Build Windows portable binary
         if: matrix.os == 'windows-latest'
         run: pnpm -C apps/desktop tauri build --no-bundle
@@ -163,7 +183,16 @@ jobs:
           Copy-Item -LiteralPath $portable.FullName -Destination $aliasExe
           $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $aliasExe).Hash.ToLowerInvariant()
           Set-Content -Encoding ASCII -LiteralPath "$aliasExe.sha256" -Value "$hash  milim-windows-x64-portable.exe"
-          gh release upload "${{ env.MILIM_RELEASE_TAG }}" $aliasExe "$aliasExe.sha256" --clobber
+          for ($attempt = 1; $attempt -le 3; $attempt++) {
+            gh release upload "${{ env.MILIM_RELEASE_TAG }}" $aliasExe "$aliasExe.sha256" --clobber
+            if ($LASTEXITCODE -eq 0) {
+              break
+            }
+            if ($attempt -eq 3) {
+              exit $LASTEXITCODE
+            }
+            Start-Sleep -Seconds ($attempt * 10)
+          }
       - name: Generate artifact manifest
         working-directory: apps/desktop
         run: node scripts/generate-release-manifest.mjs
@@ -183,10 +212,26 @@ jobs:
         run: |
           rm -rf release-checksums
           mkdir release-checksums
-          gh release download "${MILIM_RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --pattern "*.sha256" --dir release-checksums
+          for attempt in 1 2 3; do
+            if gh release download "${MILIM_RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --pattern "*.sha256" --dir release-checksums; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              exit 1
+            fi
+            sleep $((attempt * 10))
+          done
           if ! compgen -G "release-checksums/*.sha256" > /dev/null; then
             echo "No updater checksum sidecars found on release ${MILIM_RELEASE_TAG}" >&2
             exit 1
           fi
           cat release-checksums/*.sha256 | sort -k2 > SHA256SUMS.txt
-          gh release upload "${MILIM_RELEASE_TAG}" SHA256SUMS.txt --repo "${GITHUB_REPOSITORY}" --clobber
+          for attempt in 1 2 3; do
+            if gh release upload "${MILIM_RELEASE_TAG}" SHA256SUMS.txt --repo "${GITHUB_REPOSITORY}" --clobber; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              exit 1
+            fi
+            sleep $((attempt * 10))
+          done
