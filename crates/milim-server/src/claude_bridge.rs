@@ -615,9 +615,7 @@ fn claude_session_registry_entry_from_value(
         .and_then(Value::as_u64)
         .and_then(|pid| u32::try_from(pid).ok())?;
     let session_id = value.get("sessionId").and_then(Value::as_str)?.trim();
-    if safe_session_id_for_process_match(session_id).is_none() {
-        return None;
-    }
+    safe_session_id_for_process_match(session_id)?;
     Some(ClaudeSessionRegistryEntry { pid, path })
 }
 

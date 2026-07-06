@@ -737,7 +737,7 @@ fn set_sessions_snapshot_locked(conn: &Connection, value_json: &str) -> Result<(
                 .collect::<std::result::Result<Vec<_>, _>>()
                 .map_err(json_error)?;
             let sort_order = index as i64;
-            let changed = existing.get(id).map_or(true, |row| {
+            let changed = existing.get(id).is_none_or(|row| {
                 row.session_json != session_json
                     || row.sort_order != sort_order
                     || row.messages != message_jsons
