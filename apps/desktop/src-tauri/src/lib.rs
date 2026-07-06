@@ -29,7 +29,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{Manager, WindowEvent};
+use tauri::{Emitter, Manager, WindowEvent};
 use toml::Value as TomlValue;
 
 #[cfg(target_os = "windows")]
@@ -58,11 +58,18 @@ struct MobileRelayLocalTarget(String);
 
 struct UserDataState(Arc<milim_storage::UserDataStore>);
 
+#[tauri::command]
+fn quit_after_user_state_flush(app: tauri::AppHandle) {
+    app.exit(0);
+}
+
 const TAILSCALE_SERVE_PORT: u16 = 10000;
 const TAILSCALE_COMMAND_TIMEOUT_SECS: u64 = 12;
 const MAIN_WINDOW_LABEL: &str = "main";
 const TRAY_OPEN_ID: &str = "open";
 const TRAY_QUIT_ID: &str = "quit";
+const FLUSH_USER_STATE_EVENT: &str = "milim://flush-user-state";
+const FLUSH_USER_STATE_AND_EXIT_EVENT: &str = "milim://flush-user-state-and-exit";
 const MAX_ATTACHMENT_BYTES: u64 = 128 * 1024;
 const MAX_ARTIFACT_PREVIEW_BYTES: usize = 256 * 1024;
 // ponytail: bounded scan, add an index if very large workspaces need complete matching.
@@ -2428,6 +2435,15 @@ fn show_main_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     }
 }
 
+fn request_user_state_flush_then_exit<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    let _ = app.emit(FLUSH_USER_STATE_AND_EXIT_EVENT, ());
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        app.exit(0);
+    });
+}
+
 fn setup_tray<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<()> {
     let open = MenuItem::with_id(app, TRAY_OPEN_ID, "Open milim", true, None::<&str>)?;
     let separator = PredefinedMenuItem::separator(app)?;
@@ -2439,7 +2455,7 @@ fn setup_tray<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<()>
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id().as_ref() {
             TRAY_OPEN_ID => show_main_window(app),
-            TRAY_QUIT_ID => app.exit(0),
+            TRAY_QUIT_ID => request_user_state_flush_then_exit(app),
             _ => {}
         })
         .on_tray_icon_event(|tray, event| match event {
@@ -2561,6 +2577,7 @@ pub fn run() {
             if window.label() == MAIN_WINDOW_LABEL {
                 if let WindowEvent::CloseRequested { api, .. } = event {
                     api.prevent_close();
+                    let _ = window.emit(FLUSH_USER_STATE_EVENT, ());
                     let _ = window.hide();
                 }
             }
@@ -2579,6 +2596,7 @@ pub fn run() {
             user_sessions_set,
             user_sessions_delete,
             user_state_import_legacy,
+            quit_after_user_state_flush,
             user_data_path,
             read_attachment_file,
             list_workspace_files,
