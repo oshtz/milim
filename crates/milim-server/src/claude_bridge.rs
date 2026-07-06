@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::convert::Infallible;
+use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -136,114 +137,162 @@ pub(crate) fn run_stream(
     redactions: BTreeMap<String, String>,
 ) -> impl Stream<Item = std::result::Result<Event, Infallible>> {
     async_stream::stream! {
-        let mut command = claude_command();
-        for arg in claude_run_args(&req) {
-            command.arg(arg);
-        }
-        command
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
-        if let Some(cwd) = clean_optional(req.cwd.as_deref()) {
-            command.current_dir(cwd);
-        }
-        #[cfg(windows)]
-        command.creation_flags(milim_core::proc::CREATE_NO_WINDOW);
+        let mut retried_locked_session = false;
+        loop {
+            let mut command = claude_command();
+            for arg in claude_run_args(&req) {
+                command.arg(arg);
+            }
+            command
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .kill_on_drop(true);
+            if let Some(cwd) = clean_optional(req.cwd.as_deref()) {
+                command.current_dir(cwd);
+            }
+            #[cfg(windows)]
+            command.creation_flags(milim_core::proc::CREATE_NO_WINDOW);
 
-        let mut child = match command.spawn() {
-            Ok(child) => child,
-            Err(e) => {
-                let message = claude_spawn_error_message(&e);
-                if is_cli_path_warning(&message) {
-                    yield sse_event(&ClaudeStreamEvent::Warning { message });
-                } else {
+            let mut child = match command.spawn() {
+                Ok(child) => child,
+                Err(e) => {
+                    let message = claude_spawn_error_message(&e);
+                    if is_cli_path_warning(&message) {
+                        yield sse_event(&ClaudeStreamEvent::Warning { message });
+                    } else {
+                        yield sse_event(&ClaudeStreamEvent::Error {
+                            message,
+                            usage: None,
+                            cost_usd: None,
+                        });
+                    }
+                    yield Ok(Event::default().data("[DONE]"));
+                    return;
+                }
+            };
+            let Some(stdout) = child.stdout.take() else {
+                yield sse_event(&ClaudeStreamEvent::Error {
+                    message: "claude stdout was not available".to_string(),
+                    usage: None,
+                    cost_usd: None,
+                });
+                yield Ok(Event::default().data("[DONE]"));
+                return;
+            };
+            let stderr = child.stderr.take();
+            let stderr_task = tokio::spawn(async move {
+                let mut text = String::new();
+                if let Some(stderr) = stderr {
+                    let _ = BufReader::new(stderr).read_to_string(&mut text).await;
+                }
+                text
+            });
+
+            let mut lines = BufReader::new(stdout).lines();
+            let mut content = Unredactor::new(redactions.clone());
+            let mut reasoning = Unredactor::new(redactions.clone());
+            let mut tools = BTreeMap::new();
+            let mut saw_terminal_event = false;
+            let mut locked_session_error = None;
+
+            loop {
+                match lines.next_line().await {
+                    Ok(Some(line)) => {
+                        for event in handle_line(&line, &mut content, &mut reasoning, &mut tools, &mut saw_terminal_event) {
+                            if matches!(&event, ClaudeStreamEvent::Error { message, .. } if claude_session_in_use_error(message) && !retried_locked_session)
+                            {
+                                if let ClaudeStreamEvent::Error { message, .. } = event {
+                                    locked_session_error = Some(message);
+                                }
+                            } else {
+                                yield sse_event(&event);
+                            }
+                        }
+                    }
+                    Ok(None) => break,
+                    Err(e) => {
+                        yield sse_event(&ClaudeStreamEvent::Error {
+                            message: format!("claude stream failed: {e}"),
+                            usage: None,
+                            cost_usd: None,
+                        });
+                        yield Ok(Event::default().data("[DONE]"));
+                        return;
+                    }
+                }
+
+            }
+
+            let status = child.wait().await;
+            let stderr = stderr_task.await.unwrap_or_default();
+            let tail = content.flush();
+            if !tail.is_empty() {
+                yield sse_event(&ClaudeStreamEvent::Token { text: tail });
+            }
+            let rtail = reasoning.flush();
+            if !rtail.is_empty() {
+                yield sse_event(&ClaudeStreamEvent::Reasoning { text: rtail });
+            }
+
+            match status {
+                Ok(status) if status.success() => {
+                    if let Some(message) = locked_session_error {
+                        if !retried_locked_session {
+                            if let Some(session_id) = clean_optional(req.session_id.as_deref()) {
+                                if terminate_claude_session_processes(&session_id).await {
+                                    retried_locked_session = true;
+                                    yield sse_event(&ClaudeStreamEvent::Warning {
+                                        message: "Claude session was already in use; Milim stopped the stale Claude Code process and retried.".to_string(),
+                                    });
+                                    continue;
+                                }
+                            }
+                        }
+                        yield sse_event(&ClaudeStreamEvent::Error {
+                            message,
+                            usage: None,
+                            cost_usd: None,
+                        });
+                    } else if !saw_terminal_event {
+                        yield sse_event(&ClaudeStreamEvent::Done {
+                            status: "completed".to_string(),
+                            usage: None,
+                            cost_usd: None,
+                        });
+                    }
+                    break;
+                }
+                Ok(status) => {
+                    let message = locked_session_error
+                        .unwrap_or_else(|| first_error(&stderr, &format!("claude exited with {status}")));
+                    if !retried_locked_session && claude_session_in_use_error(&message) {
+                        if let Some(session_id) = clean_optional(req.session_id.as_deref()) {
+                            if terminate_claude_session_processes(&session_id).await {
+                                retried_locked_session = true;
+                                yield sse_event(&ClaudeStreamEvent::Warning {
+                                    message: "Claude session was already in use; Milim stopped the stale Claude Code process and retried.".to_string(),
+                                });
+                                continue;
+                            }
+                        }
+                    }
                     yield sse_event(&ClaudeStreamEvent::Error {
                         message,
                         usage: None,
                         cost_usd: None,
                     });
+                    break;
                 }
-                yield Ok(Event::default().data("[DONE]"));
-                return;
-            }
-        };
-        let Some(stdout) = child.stdout.take() else {
-            yield sse_event(&ClaudeStreamEvent::Error {
-                message: "claude stdout was not available".to_string(),
-                usage: None,
-                cost_usd: None,
-            });
-            yield Ok(Event::default().data("[DONE]"));
-            return;
-        };
-        let stderr = child.stderr.take();
-        let stderr_task = tokio::spawn(async move {
-            let mut text = String::new();
-            if let Some(stderr) = stderr {
-                let _ = BufReader::new(stderr).read_to_string(&mut text).await;
-            }
-            text
-        });
-
-        let mut lines = BufReader::new(stdout).lines();
-        let mut content = Unredactor::new(redactions.clone());
-        let mut reasoning = Unredactor::new(redactions);
-        let mut tools = BTreeMap::new();
-        let mut saw_terminal_event = false;
-
-        loop {
-            match lines.next_line().await {
-                Ok(Some(line)) => {
-                    for event in handle_line(&line, &mut content, &mut reasoning, &mut tools, &mut saw_terminal_event) {
-                        yield sse_event(&event);
-                    }
-                }
-                Ok(None) => break,
                 Err(e) => {
                     yield sse_event(&ClaudeStreamEvent::Error {
-                        message: format!("claude stream failed: {e}"),
+                        message: format!("claude exit status failed: {e}"),
                         usage: None,
                         cost_usd: None,
                     });
-                    yield Ok(Event::default().data("[DONE]"));
-                    return;
+                    break;
                 }
             }
-
-        }
-
-        let status = child.wait().await;
-        let stderr = stderr_task.await.unwrap_or_default();
-        let tail = content.flush();
-        if !tail.is_empty() {
-            yield sse_event(&ClaudeStreamEvent::Token { text: tail });
-        }
-        let rtail = reasoning.flush();
-        if !rtail.is_empty() {
-            yield sse_event(&ClaudeStreamEvent::Reasoning { text: rtail });
-        }
-
-        match status {
-            Ok(status) if status.success() => {
-                if !saw_terminal_event {
-                    yield sse_event(&ClaudeStreamEvent::Done {
-                        status: "completed".to_string(),
-                        usage: None,
-                        cost_usd: None,
-                    });
-                }
-            }
-            Ok(status) => yield sse_event(&ClaudeStreamEvent::Error {
-                message: first_error(&stderr, &format!("claude exited with {status}")),
-                usage: None,
-                cost_usd: None,
-            }),
-            Err(e) => yield sse_event(&ClaudeStreamEvent::Error {
-                message: format!("claude exit status failed: {e}"),
-                usage: None,
-                cost_usd: None,
-            }),
         }
         yield Ok(Event::default().data("[DONE]"));
     }
@@ -276,6 +325,7 @@ fn handle_line(
                 match delta.get("type").and_then(Value::as_str) {
                     Some("text_delta") => {
                         if let Some(text) = delta.get("text").and_then(Value::as_str) {
+                            out.extend(close_claude_tools(tools, false));
                             let text = content.push(text);
                             if !text.is_empty() {
                                 out.push(ClaudeStreamEvent::Token { text });
@@ -284,6 +334,7 @@ fn handle_line(
                     }
                     Some("thinking_delta") => {
                         if let Some(text) = delta.get("thinking").and_then(Value::as_str) {
+                            out.extend(close_claude_tools(tools, false));
                             let text = reasoning.push(text);
                             if !text.is_empty() {
                                 out.push(ClaudeStreamEvent::Reasoning { text });
@@ -439,6 +490,214 @@ fn first_error(stderr: &str, fallback: &str) -> String {
         .find(|line| !line.trim().is_empty())
         .map(str::to_string)
         .unwrap_or_else(|| fallback.to_string())
+}
+
+fn claude_session_in_use_error(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("session id") && lower.contains("already in use")
+}
+
+fn safe_session_id_for_process_match(session_id: &str) -> Option<&str> {
+    let session_id = session_id.trim();
+    if session_id.len() < 8 || session_id.len() > 128 {
+        return None;
+    }
+    if session_id
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '-')
+    {
+        Some(session_id)
+    } else {
+        None
+    }
+}
+
+#[cfg_attr(windows, allow(dead_code))]
+fn process_matches_claude_session(name: &str, command_line: &str, session_id: &str) -> bool {
+    let name = name.trim().to_ascii_lowercase();
+    matches!(name.as_str(), "claude" | "claude.exe" | "node" | "node.exe")
+        && command_line.contains(session_id)
+}
+
+async fn terminate_claude_session_processes(session_id: &str) -> bool {
+    let Some(session_id) = safe_session_id_for_process_match(session_id) else {
+        return false;
+    };
+    let killed_from_registry = terminate_claude_registry_session_process(session_id).await;
+    let killed_from_command_line = terminate_claude_session_processes_impl(session_id).await;
+    killed_from_registry || killed_from_command_line
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ClaudeSessionRegistryEntry {
+    pid: u32,
+    path: PathBuf,
+}
+
+async fn terminate_claude_registry_session_process(session_id: &str) -> bool {
+    let Some(entry) = find_claude_session_registry_entry(session_id) else {
+        return false;
+    };
+    let killed = terminate_process_id(entry.pid).await;
+    let removed = std::fs::remove_file(&entry.path).is_ok();
+    if killed || removed {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+    killed || removed
+}
+
+fn find_claude_session_registry_entry(session_id: &str) -> Option<ClaudeSessionRegistryEntry> {
+    for dir in claude_session_registry_dirs() {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|value| value.to_str()) != Some("json") {
+                continue;
+            }
+            let Ok(raw) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let Ok(value) = serde_json::from_str::<Value>(&raw) else {
+                continue;
+            };
+            let Some(entry) = claude_session_registry_entry_from_value(&value, path) else {
+                continue;
+            };
+            if value.get("sessionId").and_then(Value::as_str) == Some(session_id) {
+                return Some(entry);
+            }
+        }
+    }
+    None
+}
+
+fn claude_session_registry_entry_from_value(
+    value: &Value,
+    path: PathBuf,
+) -> Option<ClaudeSessionRegistryEntry> {
+    let pid = value
+        .get("pid")
+        .and_then(Value::as_u64)
+        .and_then(|pid| u32::try_from(pid).ok())?;
+    let session_id = value.get("sessionId").and_then(Value::as_str)?.trim();
+    if safe_session_id_for_process_match(session_id).is_none() {
+        return None;
+    }
+    Some(ClaudeSessionRegistryEntry { pid, path })
+}
+
+fn claude_session_registry_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Some(profile) = std::env::var_os("USERPROFILE") {
+        dirs.push(PathBuf::from(profile).join(".claude").join("sessions"));
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        let dir = PathBuf::from(home).join(".claude").join("sessions");
+        if !dirs.iter().any(|existing| existing == &dir) {
+            dirs.push(dir);
+        }
+    }
+    dirs
+}
+
+#[cfg(windows)]
+async fn terminate_process_id(pid: u32) -> bool {
+    Command::new("taskkill")
+        .arg("/PID")
+        .arg(pid.to_string())
+        .arg("/F")
+        .status()
+        .await
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+#[cfg(not(windows))]
+async fn terminate_process_id(pid: u32) -> bool {
+    Command::new("kill")
+        .arg("-TERM")
+        .arg(pid.to_string())
+        .status()
+        .await
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+#[cfg(windows)]
+async fn terminate_claude_session_processes_impl(session_id: &str) -> bool {
+    let current_pid = std::process::id();
+    let script = format!(
+        "$sid = '{session_id}'; $self = {current_pid}; Get-CimInstance Win32_Process | Where-Object {{ $_.ProcessId -ne $self -and $_.CommandLine -like \"*$sid*\" -and ($_.Name -ieq 'claude.exe' -or $_.Name -ieq 'claude' -or $_.Name -ieq 'node.exe' -or $_.Name -ieq 'node') }} | ForEach-Object {{ Write-Output $_.ProcessId; Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }}"
+    );
+    let mut command = Command::new("powershell");
+    command
+        .arg("-NoProfile")
+        .arg("-NonInteractive")
+        .arg("-ExecutionPolicy")
+        .arg("Bypass")
+        .arg("-Command")
+        .arg(script);
+    command.creation_flags(milim_core::proc::CREATE_NO_WINDOW);
+    match command.output().await {
+        Ok(output) if output.status.success() => {
+            let killed = !String::from_utf8_lossy(&output.stdout).trim().is_empty();
+            if killed {
+                tokio::time::sleep(Duration::from_millis(300)).await;
+            }
+            killed
+        }
+        _ => false,
+    }
+}
+
+#[cfg(not(windows))]
+async fn terminate_claude_session_processes_impl(session_id: &str) -> bool {
+    let output = match Command::new("ps")
+        .arg("-axo")
+        .arg("pid=,comm=,args=")
+        .output()
+        .await
+    {
+        Ok(output) if output.status.success() => output,
+        _ => return false,
+    };
+    let current_pid = std::process::id();
+    let mut killed = false;
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let line = line.trim_start();
+        let Some((pid_text, rest)) = line.split_once(char::is_whitespace) else {
+            continue;
+        };
+        let Ok(pid) = pid_text.trim().parse::<u32>() else {
+            continue;
+        };
+        if pid == current_pid {
+            continue;
+        }
+        let rest = rest.trim_start();
+        let Some((name, command_line)) = rest.split_once(char::is_whitespace) else {
+            continue;
+        };
+        if !process_matches_claude_session(name, command_line, session_id) {
+            continue;
+        }
+        if Command::new("kill")
+            .arg("-TERM")
+            .arg(pid.to_string())
+            .status()
+            .await
+            .map(|status| status.success())
+            .unwrap_or(false)
+        {
+            killed = true;
+        }
+    }
+    if killed {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+    killed
 }
 
 fn clean_optional(value: Option<&str>) -> Option<String> {
@@ -626,6 +885,39 @@ mod tests {
     }
 
     #[test]
+    fn closes_open_tool_before_text_delta() {
+        let mut content = Unredactor::new(BTreeMap::new());
+        let mut reasoning = Unredactor::new(BTreeMap::new());
+        let mut tools = BTreeMap::new();
+        let mut done = false;
+        let started = handle_line(
+            r#"{"type":"stream_event","event":{"type":"content_block_start","content_block":{"type":"tool_use","id":"toolu_1","name":"Read","input":{"file_path":"README.md"}}}}"#,
+            &mut content,
+            &mut reasoning,
+            &mut tools,
+            &mut done,
+        );
+        assert!(
+            matches!(started.first(), Some(ClaudeStreamEvent::Tool { status, label: Some(label), .. }) if status == "running" && label == "Using Read")
+        );
+
+        let events = handle_line(
+            r#"{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"I'll continue"}}}"#,
+            &mut content,
+            &mut reasoning,
+            &mut tools,
+            &mut done,
+        );
+        assert!(
+            matches!(events.first(), Some(ClaudeStreamEvent::Tool { status, label: Some(label), .. }) if status == "done" && label == "Used Read")
+        );
+        assert!(
+            matches!(events.get(1), Some(ClaudeStreamEvent::Token { text }) if text == "I'll continue")
+        );
+        assert!(tools.is_empty());
+    }
+
+    #[test]
     fn flushes_before_result_done() {
         let mut content = Unredactor::new(BTreeMap::new());
         let mut reasoning = Unredactor::new(BTreeMap::new());
@@ -767,5 +1059,57 @@ mod tests {
         assert!(is_cli_path_warning(&message));
         assert!(message.contains("claude"));
         assert!(message.contains("macOS"));
+    }
+
+    #[test]
+    fn detects_locked_claude_session_errors() {
+        assert!(claude_session_in_use_error(
+            "Error: Session ID 374c9003-5446-4eba-841a-78bf02c93b95 is already in use."
+        ));
+        assert!(!claude_session_in_use_error(
+            "claude exited with exit status: 1"
+        ));
+    }
+
+    #[test]
+    fn process_kill_matching_is_narrow() {
+        let sid = "374c9003-5446-4eba-841a-78bf02c93b95";
+        assert_eq!(safe_session_id_for_process_match(sid), Some(sid));
+        assert_eq!(safe_session_id_for_process_match("bad'id"), None);
+        assert!(process_matches_claude_session(
+            "node.exe",
+            &format!("node claude.js --session-id {sid}"),
+            sid,
+        ));
+        assert!(process_matches_claude_session(
+            "claude",
+            &format!("claude -p hi --session-id {sid}"),
+            sid,
+        ));
+        assert!(!process_matches_claude_session(
+            "powershell.exe",
+            &format!("powershell {sid}"),
+            sid,
+        ));
+    }
+
+    #[test]
+    fn parses_claude_session_registry_entries() {
+        let path = PathBuf::from("44856.json");
+        let value = json!({
+            "pid": 44856,
+            "sessionId": "baee7712-0151-4f0c-a6d3-9b77207b6575",
+            "cwd": "C:\\Users\\USER\\Documents\\DEV\\screenmeister",
+        });
+        assert_eq!(
+            claude_session_registry_entry_from_value(&value, path.clone()),
+            Some(ClaudeSessionRegistryEntry { pid: 44856, path }),
+        );
+
+        let bad = json!({ "pid": 44856, "sessionId": "bad'id" });
+        assert_eq!(
+            claude_session_registry_entry_from_value(&bad, PathBuf::new()),
+            None
+        );
     }
 }

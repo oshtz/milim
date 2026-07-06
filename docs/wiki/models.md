@@ -40,7 +40,7 @@ Codex and Claude Code are separate from saved provider records. They are backed 
 | Runtime | Setup | Session behavior |
 |---|---|---|
 | Codex | Use `/codex/login/device`, `/codex/login/chatgpt-device`, or `/codex/login/api-key`. | Milim stores the returned Codex thread id on the Milim chat when persistence is enabled. |
-| Claude Code | Install `claude` and run `claude auth login` outside Milim. | Milim stores one Claude session id per Milim chat and passes it as `--session-id`. |
+| Claude Code | Install `claude` and run `claude auth login` outside Milim. | Milim stores one Claude session id per Milim chat, passes it as `--session-id`, and retries once after terminating a matching stale process when Claude reports the session is already in use. |
 
 The repo-level account runtime reference lives at `docs/account-runtimes.md`.
 
