@@ -19,7 +19,8 @@ serde_json.workspace = true
 futures.workspace = true
 async-stream.workspace = true
 tracing.workspace = true
+tokio = { workspace = true }
 
 [dev-dependencies]
+async-trait.workspace = true
 milim-inference = { workspace = true, features = ["test-backend"] }
-tokio = { workspace = true }

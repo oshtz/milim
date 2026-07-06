@@ -1407,6 +1407,7 @@ name = "milim-agents"
 version = "0.1.9"
 dependencies = [
  "async-stream",
+ "async-trait",
  "futures",
  "milim-core",
  "milim-inference",

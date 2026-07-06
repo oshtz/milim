@@ -18,6 +18,7 @@ pub use threads::{
 };
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use futures::{Stream, StreamExt};
 use serde::Serialize;
@@ -26,15 +27,44 @@ use serde_json::{json, Value};
 use milim_core::api::openai::{
     ChatMessage, Content, ContentPart, ImageUrl, ReasoningEffort, Tool, ToolFunction, Usage,
 };
-use milim_core::Result;
+use milim_core::{Error, Result};
 use milim_inference::{
-    CompletionRequest, ModelService, SamplingParams, SharedService, StreamEvent,
+    CompletionRequest, EventStream, ModelService, SamplingParams, SharedService, StreamEvent,
     ToolCallAccumulator,
 };
 use milim_tools::ToolRegistry;
 
+const DEFAULT_AGENT_MAX_ITERATIONS: usize = 100;
+const DEFAULT_INITIAL_STREAM_RETRY_BACKOFF_MS: u64 = 250;
 const TOOL_REPLAY_MAX_LINES: usize = 2_000;
 const TOOL_REPLAY_MAX_BYTES: usize = 50 * 1024;
+
+/// Configuration for one agent loop run.
+#[derive(Debug, Clone)]
+pub struct AgentRunConfig {
+    /// Maximum number of model turns before the loop stops without executing
+    /// another round of tool calls.
+    pub max_iterations: usize,
+    /// Backoff before retrying a failed initial streaming request once.
+    pub initial_stream_retry_backoff: Duration,
+}
+
+impl Default for AgentRunConfig {
+    fn default() -> Self {
+        Self {
+            max_iterations: DEFAULT_AGENT_MAX_ITERATIONS,
+            initial_stream_retry_backoff: Duration::from_millis(
+                DEFAULT_INITIAL_STREAM_RETRY_BACKOFF_MS,
+            ),
+        }
+    }
+}
+
+impl AgentRunConfig {
+    fn max_iterations(&self) -> usize {
+        self.max_iterations.max(1)
+    }
+}
 
 /// One executed tool call within a run.
 #[derive(Debug, Clone, Serialize)]
@@ -53,7 +83,7 @@ pub struct AgentOutcome {
     pub steps: Vec<ToolStep>,
     /// Number of model turns taken.
     pub iterations: usize,
-    /// Kept for API compatibility; agent runs no longer stop at an iteration limit.
+    /// True when the run stopped because it reached the configured iteration limit.
     pub stopped_at_limit: bool,
 }
 
@@ -62,10 +92,31 @@ pub async fn run_agent(
     service: &dyn ModelService,
     tools: &ToolRegistry,
     model: &str,
-    mut messages: Vec<ChatMessage>,
+    messages: Vec<ChatMessage>,
     reasoning_effort: Option<ReasoningEffort>,
 ) -> Result<AgentOutcome> {
+    run_agent_with_config(
+        service,
+        tools,
+        model,
+        messages,
+        reasoning_effort,
+        AgentRunConfig::default(),
+    )
+    .await
+}
+
+/// Run the tool-use loop with explicit loop configuration.
+pub async fn run_agent_with_config(
+    service: &dyn ModelService,
+    tools: &ToolRegistry,
+    model: &str,
+    mut messages: Vec<ChatMessage>,
+    reasoning_effort: Option<ReasoningEffort>,
+    config: AgentRunConfig,
+) -> Result<AgentOutcome> {
     let core_tools = tools_to_core(tools);
+    let max_iterations = config.max_iterations();
     let mut steps = Vec::new();
 
     let mut iteration = 0;
@@ -91,6 +142,14 @@ pub async fn run_agent(
                 steps,
                 iterations: iteration,
                 stopped_at_limit: false,
+            });
+        }
+        if iteration >= max_iterations {
+            return Ok(AgentOutcome {
+                message: limit_message(max_iterations),
+                steps,
+                iterations: iteration,
+                stopped_at_limit: true,
             });
         }
 
@@ -173,8 +232,8 @@ pub enum AgentEvent {
     },
     /// The final assistant answer.
     Final { content: String },
-    /// Terminal event with the turn count. `stopped_at_limit` is retained for
-    /// API compatibility and is always false.
+    /// Terminal event with the turn count and whether the configured iteration
+    /// limit stopped the loop before a final model answer.
     Done {
         iterations: usize,
         stopped_at_limit: bool,
@@ -193,8 +252,29 @@ pub fn run_agent_stream(
     messages: Vec<ChatMessage>,
     reasoning_effort: Option<ReasoningEffort>,
 ) -> impl Stream<Item = AgentEvent> + Send {
+    run_agent_stream_with_config(
+        service,
+        tools,
+        model,
+        messages,
+        reasoning_effort,
+        AgentRunConfig::default(),
+    )
+}
+
+/// Stream the tool-use loop with explicit loop configuration.
+pub fn run_agent_stream_with_config(
+    service: SharedService,
+    tools: Arc<ToolRegistry>,
+    model: String,
+    messages: Vec<ChatMessage>,
+    reasoning_effort: Option<ReasoningEffort>,
+    config: AgentRunConfig,
+) -> impl Stream<Item = AgentEvent> + Send {
     async_stream::stream! {
         let core_tools = tools_to_core(&tools);
+        let max_iterations = config.max_iterations();
+        let retry_backoff = config.initial_stream_retry_backoff;
         let mut messages = messages;
         let mut total_usage = Usage::default();
 
@@ -213,7 +293,7 @@ pub fn run_agent_stream(
                 sampling: SamplingParams::default(),
                 reasoning_effort,
             };
-            let mut stream = match service.stream(req).await {
+            let mut stream = match stream_with_initial_retry(&service, req, retry_backoff).await {
                 Ok(s) => s,
                 Err(e) => {
                     yield AgentEvent::Error { message: e.to_string() };
@@ -255,6 +335,12 @@ pub fn run_agent_stream(
             if calls.is_empty() {
                 yield AgentEvent::Final { content };
                 yield AgentEvent::Done { iterations: iteration, stopped_at_limit: false, usage: total_usage };
+                return;
+            }
+            if iteration >= max_iterations {
+                let content = limit_message_text(max_iterations);
+                yield AgentEvent::Final { content };
+                yield AgentEvent::Done { iterations: iteration, stopped_at_limit: true, usage: total_usage };
                 return;
             }
 
@@ -310,6 +396,35 @@ pub fn run_agent_stream(
             messages.extend(pending_images);
         }
     }
+}
+
+fn limit_message(max_iterations: usize) -> ChatMessage {
+    ChatMessage::text("assistant", limit_message_text(max_iterations))
+}
+
+fn limit_message_text(max_iterations: usize) -> String {
+    format!("Agent stopped after reaching the iteration limit ({max_iterations} model turns).")
+}
+
+async fn stream_with_initial_retry(
+    service: &SharedService,
+    req: CompletionRequest,
+    backoff: Duration,
+) -> Result<EventStream> {
+    let first_error = match service.stream(req.clone()).await {
+        Ok(stream) => return Ok(stream),
+        Err(error) => error,
+    };
+
+    if !backoff.is_zero() {
+        tokio::time::sleep(backoff).await;
+    }
+
+    service.stream(req).await.map_err(|retry_error| {
+        Error::Inference(format!(
+            "initial stream failed after retry: {first_error}; retry failed: {retry_error}"
+        ))
+    })
 }
 
 fn add_usage(total: &mut Usage, usage: Usage) {
@@ -475,7 +590,79 @@ fn tools_to_core(tools: &ToolRegistry) -> Vec<Tool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use async_trait::async_trait;
+    use milim_core::api::openai::{DeltaFunction, DeltaToolCall, Model};
     use milim_inference::test_backend::TestBackend;
+    use milim_inference::DeltaEvent;
+
+    struct LoopingToolBackend;
+
+    #[async_trait]
+    impl ModelService for LoopingToolBackend {
+        fn name(&self) -> &str {
+            "looping-tool"
+        }
+
+        async fn list_models(&self) -> Result<Vec<Model>> {
+            Ok(vec![Model::local("test-loop", 0)])
+        }
+
+        async fn stream(&self, _req: CompletionRequest) -> Result<EventStream> {
+            let stream = async_stream::stream! {
+                yield Ok(StreamEvent::Delta(DeltaEvent {
+                    tool_calls: vec![DeltaToolCall {
+                        index: 0,
+                        id: Some("call_loop".to_string()),
+                        kind: Some("function".to_string()),
+                        function: DeltaFunction {
+                            name: Some("missing_tool".to_string()),
+                            arguments: Some("{}".to_string()),
+                        },
+                    }],
+                    ..Default::default()
+                }));
+                yield Ok(StreamEvent::Done {
+                    finish_reason: "tool_calls".to_string(),
+                    usage: Usage::new(1, 1),
+                });
+            };
+            Ok(Box::pin(stream))
+        }
+
+        async fn embed(&self, _model: &str, inputs: Vec<String>) -> Result<Vec<Vec<f32>>> {
+            Ok(inputs.into_iter().map(|_| vec![0.0]).collect())
+        }
+    }
+
+    struct FlakyStreamBackend {
+        attempts: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl ModelService for FlakyStreamBackend {
+        fn name(&self) -> &str {
+            "flaky-stream"
+        }
+
+        async fn list_models(&self) -> Result<Vec<Model>> {
+            TestBackend::new().list_models().await
+        }
+
+        async fn stream(&self, req: CompletionRequest) -> Result<EventStream> {
+            if self.attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                return Err(Error::Inference(
+                    "temporary stream open failure".to_string(),
+                ));
+            }
+            TestBackend::new().stream(req).await
+        }
+
+        async fn embed(&self, model: &str, inputs: Vec<String>) -> Result<Vec<Vec<f32>>> {
+            TestBackend::new().embed(model, inputs).await
+        }
+    }
 
     #[tokio::test]
     async fn runs_a_two_step_tool_loop() {
@@ -494,6 +681,72 @@ mod tests {
         assert_eq!(outcome.steps[0].name, "echo");
         assert_eq!(outcome.steps[0].result["echoed"]["text"], "test");
         assert!(outcome.message.text_content().contains("Echo:"));
+    }
+
+    #[tokio::test]
+    async fn stops_when_iteration_cap_is_hit() {
+        let service = LoopingToolBackend;
+        let tools = ToolRegistry::new();
+        let messages = vec![ChatMessage::text("user", "keep calling tools")];
+        let outcome = run_agent_with_config(
+            &service,
+            &tools,
+            "test-loop",
+            messages,
+            None,
+            AgentRunConfig {
+                max_iterations: 2,
+                initial_stream_retry_backoff: Duration::ZERO,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome.iterations, 2);
+        assert!(outcome.stopped_at_limit);
+        assert_eq!(outcome.steps.len(), 1);
+        assert!(outcome.message.text_content().contains("iteration limit"));
+    }
+
+    #[tokio::test]
+    async fn stream_retries_initial_open_error_once() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let service: SharedService = Arc::new(FlakyStreamBackend {
+            attempts: attempts.clone(),
+        });
+        let tools = Arc::new(ToolRegistry::new());
+        let messages = vec![ChatMessage::text("user", "hello")];
+        let mut stream = Box::pin(run_agent_stream_with_config(
+            service,
+            tools,
+            "test-echo".into(),
+            messages,
+            None,
+            AgentRunConfig {
+                max_iterations: 100,
+                initial_stream_retry_backoff: Duration::ZERO,
+            },
+        ));
+
+        let mut saw_final = false;
+        let mut saw_done = false;
+        let mut saw_error = false;
+        while let Some(ev) = stream.next().await {
+            match ev {
+                AgentEvent::Final { content } => {
+                    saw_final = true;
+                    assert_eq!(content, "Echo: hello");
+                }
+                AgentEvent::Done { .. } => saw_done = true,
+                AgentEvent::Error { .. } => saw_error = true,
+                _ => {}
+            }
+        }
+
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        assert!(saw_final);
+        assert!(saw_done);
+        assert!(!saw_error);
     }
 
     #[tokio::test]

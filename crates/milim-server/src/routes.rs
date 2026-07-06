@@ -75,6 +75,19 @@ fn peer_addr(peer: Peer) -> Option<SocketAddr> {
     Some(peer.0)
 }
 
+fn agent_run_config_from_request(req: &ChatCompletionRequest) -> milim_agents::AgentRunConfig {
+    let mut config = milim_agents::AgentRunConfig::default();
+    if let Some(max_iterations) = req
+        .extra
+        .get("agent_max_iterations")
+        .and_then(Value::as_u64)
+        .and_then(|value| usize::try_from(value).ok())
+    {
+        config.max_iterations = max_iterations.max(1);
+    }
+    config
+}
+
 /// `GET /health`
 pub(crate) async fn health() -> Json<Value> {
     Json(json!({ "status": "ok", "service": "milim" }))
@@ -9341,6 +9354,7 @@ pub(crate) async fn agents_run(
     let model = req.model.clone();
     let want_stream = req.wants_stream();
     let reasoning_effort = req.reasoning_effort;
+    let agent_config = agent_run_config_from_request(&req);
     let tool_policy = tool_run_policy_from_request(&req);
     let memory = memory_context_from_request(&req, model.clone());
     let workspace_unavailable = desktop_workspace_unavailable(&st);
@@ -9350,12 +9364,13 @@ pub(crate) async fn agents_run(
     if want_stream {
         let tools =
             std::sync::Arc::new(agent_registry_with_memory(&st, Some(memory), &tool_policy));
-        let stream = milim_agents::run_agent_stream(
+        let stream = milim_agents::run_agent_stream_with_config(
             st.service.clone(),
             tools,
             model,
             messages,
             reasoning_effort,
+            agent_config,
         );
         return Ok(Sse::new(agent_sse(stream))
             .keep_alive(KeepAlive::default())
@@ -9363,12 +9378,13 @@ pub(crate) async fn agents_run(
     }
 
     let tools = agent_registry_with_memory(&st, Some(memory), &tool_policy);
-    let outcome = milim_agents::run_agent(
+    let outcome = milim_agents::run_agent_with_config(
         st.service.as_ref(),
         &tools,
         &model,
         messages,
         reasoning_effort,
+        agent_config,
     )
     .await
     .map_err(ApiError)?;
@@ -9475,6 +9491,7 @@ pub(crate) async fn agent_run_by_id(
     let want_stream = req.wants_stream();
     let requested_model = req.model.clone();
     let reasoning_effort = req.reasoning_effort;
+    let agent_config = agent_run_config_from_request(&req);
     let tool_policy = tool_run_policy_from_request(&req);
     let memory = memory_context_from_request(&req, requested_model.clone());
     let mut messages = Vec::new();
@@ -9509,12 +9526,13 @@ pub(crate) async fn agent_run_by_id(
             Some(memory),
             &tool_policy,
         ));
-        let stream = milim_agents::run_agent_stream(
+        let stream = milim_agents::run_agent_stream_with_config(
             st.service.clone(),
             tools,
             model,
             messages,
             reasoning_effort,
+            agent_config,
         );
         return Ok(Sse::new(agent_sse(stream))
             .keep_alive(KeepAlive::default())
@@ -9528,12 +9546,13 @@ pub(crate) async fn agent_run_by_id(
         Some(memory),
         &tool_policy,
     );
-    let outcome = milim_agents::run_agent(
+    let outcome = milim_agents::run_agent_with_config(
         st.service.as_ref(),
         &tools,
         &model,
         messages,
         reasoning_effort,
+        agent_config,
     )
     .await
     .map_err(ApiError)?;
