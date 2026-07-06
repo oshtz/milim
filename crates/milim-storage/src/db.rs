@@ -4,7 +4,7 @@
 //! Windows/Linux/macOS with no system SQLite). The harness subsystems (chat
 //! history, agents, memory, …) build their schemas as [`Migration`] lists.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::Mutex;
 
@@ -98,13 +98,26 @@ impl Database {
         let current = self.schema_version_scoped(scope)?;
         for m in migrations {
             if m.version > current {
-                self.conn.execute_batch(m.sql).map_err(sqlite)?;
                 self.conn
-                    .execute(
-                        "INSERT INTO _migrations (scope, version, name) VALUES (?1, ?2, ?3)",
-                        params![scope, m.version, m.name],
-                    )
+                    .execute_batch("BEGIN IMMEDIATE TRANSACTION;")
                     .map_err(sqlite)?;
+                let result = (|| -> Result<()> {
+                    self.conn.execute_batch(m.sql).map_err(sqlite)?;
+                    self.conn
+                        .execute(
+                            "INSERT INTO _migrations (scope, version, name) VALUES (?1, ?2, ?3)",
+                            params![scope, m.version, m.name],
+                        )
+                        .map_err(sqlite)?;
+                    Ok(())
+                })();
+                match result {
+                    Ok(()) => self.conn.execute_batch("COMMIT;").map_err(sqlite)?,
+                    Err(error) => {
+                        let _ = self.conn.execute_batch("ROLLBACK;");
+                        return Err(error);
+                    }
+                }
             }
         }
         Ok(())
@@ -533,10 +546,73 @@ fn session_messages_by_id(conn: &Connection) -> Result<BTreeMap<String, Vec<serd
     Ok(messages)
 }
 
+#[derive(Debug)]
+struct StoredSessionRow {
+    session_json: String,
+    sort_order: i64,
+    messages: Vec<String>,
+}
+
+fn stored_session_rows(conn: &Connection) -> Result<BTreeMap<String, StoredSessionRow>> {
+    let mut rows = BTreeMap::new();
+    let mut stmt = conn
+        .prepare("SELECT id, session_json, sort_order FROM user_sessions")
+        .map_err(sqlite)?;
+    let session_rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        })
+        .map_err(sqlite)?;
+    for row in session_rows {
+        let (id, session_json, sort_order) = row.map_err(sqlite)?;
+        rows.insert(
+            id,
+            StoredSessionRow {
+                session_json,
+                sort_order,
+                messages: Vec::new(),
+            },
+        );
+    }
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT session_id, message_json
+             FROM user_session_messages
+             ORDER BY session_id ASC, message_index ASC",
+        )
+        .map_err(sqlite)?;
+    let message_rows = stmt
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(sqlite)?;
+    for row in message_rows {
+        let (session_id, message_json) = row.map_err(sqlite)?;
+        if let Some(session) = rows.get_mut(&session_id) {
+            session.messages.push(message_json);
+        }
+    }
+    Ok(rows)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct SessionSnapshotStats {
     sessions: usize,
     messages: usize,
+    updated_at_ms: i64,
+}
+
+fn session_updated_at_ms(session: &serde_json::Value) -> i64 {
+    session
+        .get("updatedAt")
+        .or_else(|| session.get("updated_at_ms"))
+        .and_then(serde_json::Value::as_i64)
+        .unwrap_or_default()
 }
 
 fn session_snapshot_stats(sessions: &[serde_json::Value]) -> SessionSnapshotStats {
@@ -551,6 +627,11 @@ fn session_snapshot_stats(sessions: &[serde_json::Value]) -> SessionSnapshotStat
                     .map(Vec::len)
             })
             .sum(),
+        updated_at_ms: sessions
+            .iter()
+            .map(session_updated_at_ms)
+            .max()
+            .unwrap_or_default(),
     }
 }
 
@@ -575,7 +656,10 @@ fn should_migrate_sessions_snapshot(
     let current = session_snapshot_stats(current_sessions);
     Ok(current.sessions == 0
         || incoming.sessions > current.sessions
-        || (incoming.sessions == current.sessions && incoming.messages > current.messages))
+        || (incoming.sessions == current.sessions && incoming.messages > current.messages)
+        || (incoming.sessions == current.sessions
+            && incoming.messages == current.messages
+            && incoming.updated_at_ms > current.updated_at_ms))
 }
 
 fn should_ignore_default_sessions_snapshot(
@@ -629,16 +713,17 @@ fn set_sessions_snapshot_locked(conn: &Connection, value_json: &str) -> Result<(
     conn.execute_batch("BEGIN IMMEDIATE TRANSACTION;")
         .map_err(sqlite)?;
     let result = (|| -> Result<()> {
-        conn.execute("DELETE FROM user_session_messages", [])
-            .map_err(sqlite)?;
-        conn.execute("DELETE FROM user_sessions", [])
-            .map_err(sqlite)?;
+        let existing = stored_session_rows(conn)?;
+        let mut incoming_ids = BTreeSet::new();
         for (index, session) in sessions.iter().enumerate() {
             let id = session
                 .get("id")
                 .and_then(serde_json::Value::as_str)
                 .filter(|value| !value.trim().is_empty())
                 .ok_or_else(|| Error::InvalidRequest("session row is missing id".into()))?;
+            if !incoming_ids.insert(id.to_string()) {
+                return Err(Error::InvalidRequest(format!("duplicate session id: {id}")));
+            }
             let mut session_meta = session.clone();
             let messages = session_meta
                 .as_object_mut()
@@ -646,20 +731,48 @@ fn set_sessions_snapshot_locked(conn: &Connection, value_json: &str) -> Result<(
                 .and_then(|value| value.as_array().cloned())
                 .unwrap_or_default();
             let session_json = serde_json::to_string(&session_meta).map_err(json_error)?;
+            let message_jsons = messages
+                .iter()
+                .map(serde_json::to_string)
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(json_error)?;
+            let sort_order = index as i64;
+            let changed = existing.get(id).map_or(true, |row| {
+                row.session_json != session_json
+                    || row.sort_order != sort_order
+                    || row.messages != message_jsons
+            });
+            if !changed {
+                continue;
+            }
             conn.execute(
                 "INSERT INTO user_sessions (id, session_json, sort_order, updated_at_ms)
-                 VALUES (?1, ?2, ?3, ?4)",
-                params![id, session_json, index as i64, now],
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(id) DO UPDATE SET
+                    session_json = excluded.session_json,
+                    sort_order = excluded.sort_order,
+                    updated_at_ms = excluded.updated_at_ms",
+                params![id, session_json, sort_order, now],
             )
             .map_err(sqlite)?;
-            for (message_index, message) in messages.iter().enumerate() {
-                let message_json = serde_json::to_string(message).map_err(json_error)?;
+            conn.execute(
+                "DELETE FROM user_session_messages WHERE session_id = ?1",
+                params![id],
+            )
+            .map_err(sqlite)?;
+            for (message_index, message_json) in message_jsons.iter().enumerate() {
                 conn.execute(
                     "INSERT INTO user_session_messages (session_id, message_index, message_json)
                      VALUES (?1, ?2, ?3)",
                     params![id, message_index as i64, message_json],
                 )
                 .map_err(sqlite)?;
+            }
+        }
+        for id in existing.keys() {
+            if !incoming_ids.contains(id) {
+                conn.execute("DELETE FROM user_sessions WHERE id = ?1", params![id])
+                    .map_err(sqlite)?;
             }
         }
         conn.execute(
@@ -878,6 +991,79 @@ mod tests {
     }
 
     #[test]
+    fn user_sessions_set_keeps_unchanged_session_rows() {
+        let db = Database::open_in_memory().unwrap();
+        let store = UserDataStore::new(db).unwrap();
+        let snapshot = r#"{"state":{"sessions":[{"id":"a","title":"A","updatedAt":10,"messages":[{"role":"user","content":"hello"}]}],"activeId":"a"},"version":0}"#;
+
+        store.set_sessions_snapshot(snapshot).unwrap();
+        {
+            let db = store.db.lock().unwrap();
+            db.conn()
+                .execute(
+                    "UPDATE user_sessions SET updated_at_ms = 123 WHERE id = 'a'",
+                    [],
+                )
+                .unwrap();
+        }
+
+        store.set_sessions_snapshot(snapshot).unwrap();
+
+        let updated_at_ms: i64 = store
+            .db
+            .lock()
+            .unwrap()
+            .conn()
+            .query_row(
+                "SELECT updated_at_ms FROM user_sessions WHERE id = 'a'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(updated_at_ms, 123);
+    }
+
+    #[test]
+    fn user_sessions_set_diffs_upserts_and_deletes_rows() {
+        let db = Database::open_in_memory().unwrap();
+        let store = UserDataStore::new(db).unwrap();
+        let initial = r#"{"state":{"sessions":[{"id":"a","title":"A","messages":[{"role":"user","content":"old"}]},{"id":"b","title":"B","messages":[{"role":"assistant","content":"remove"}]}],"activeId":"a"},"version":0}"#;
+        let next = r#"{"state":{"sessions":[{"id":"a","title":"A","messages":[{"role":"user","content":"new"}]},{"id":"c","title":"C","messages":[]}],"activeId":"c"},"version":0}"#;
+
+        store.set_sessions_snapshot(initial).unwrap();
+        store.set_sessions_snapshot(next).unwrap();
+
+        let db = store.db.lock().unwrap();
+        let session_ids: Vec<String> = db
+            .conn()
+            .prepare("SELECT id FROM user_sessions ORDER BY sort_order ASC")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .map(|row| row.unwrap())
+            .collect();
+        assert_eq!(session_ids, vec!["a".to_string(), "c".to_string()]);
+        let message: String = db
+            .conn()
+            .query_row(
+                "SELECT message_json FROM user_session_messages WHERE session_id = 'a'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(message.contains("new"));
+        let removed_messages: i64 = db
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM user_session_messages WHERE session_id = 'b'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(removed_messages, 0);
+    }
+
+    #[test]
     fn user_sessions_get_migrates_legacy_blob() {
         let db = Database::open_in_memory().unwrap();
         let store = UserDataStore::new(db).unwrap();
@@ -895,6 +1081,24 @@ mod tests {
         assert!(store.get_json("milim.sessions").unwrap().is_none());
         assert!(store.delete_sessions_snapshot().unwrap());
         assert!(store.get_sessions_snapshot().unwrap().is_none());
+    }
+
+    #[test]
+    fn user_sessions_get_prefers_newer_legacy_blob_when_counts_tie() {
+        let db = Database::open_in_memory().unwrap();
+        let store = UserDataStore::new(db).unwrap();
+        let current = r#"{"state":{"sessions":[{"id":"current","title":"Current","updatedAt":1,"messages":[{"role":"user","content":"old"}]}],"activeId":"current"},"version":0}"#;
+        let legacy = r#"{"state":{"sessions":[{"id":"legacy","title":"Legacy","updatedAt":2,"messages":[{"role":"user","content":"new"}]}],"activeId":"legacy"},"version":0}"#;
+
+        store.set_sessions_snapshot(current).unwrap();
+        store.set_json("milim.sessions", legacy).unwrap();
+
+        let restored = store.get_sessions_snapshot().unwrap().unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&restored).unwrap(),
+            serde_json::from_str::<serde_json::Value>(legacy).unwrap()
+        );
+        assert!(store.get_json("milim.sessions").unwrap().is_none());
     }
 
     #[test]
