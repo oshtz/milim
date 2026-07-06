@@ -144,7 +144,7 @@ import { accountRuntimeNotReadyForTurn, appendUserTurn, editResendConversation, 
 import { prepareTurnPromptContext, resolveTurnToolApproval } from "../lib/turnPrompt";
 import { claudeCompactionSummaryRequest, codexCompactionSummaryRequest, codexPromptFromMessages, createAgentRunEventHandler, createTurnAssistantStarter, createTurnMetricsCapture, createTurnRunTraceState, finalizeTurnRuntime, handleTurnRuntimeError, runModelChatTurn, runSelectedAccountRuntimeTurn, runToolAgentTurn } from "../lib/turnRuntime";
 import { drainQueuedMessages as drainQueuedMessagesFromQueue, hasQueuedMessages, queuedModelForSession } from "../lib/turnQueue";
-import { startTurnStream } from "../lib/turnStream";
+import { claimTurnGeneration, releaseTurnGeneration, startTurnStream } from "../lib/turnStream";
 import { checkpointWorkspaceBeforeTurn } from "../lib/turnWorkspace";
 import { useSettings, type MediaSettings } from "../settings/store";
 import { themeCssVariables } from "../theme/applyTheme";
@@ -3458,14 +3458,38 @@ export function ChatView({
     const turnTitle = turnSetup.title;
     const codexModel = turnSetup.codexModel;
     const claudeModel = turnSetup.claudeModel;
-    const notReady = await accountRuntimeNotReadyForTurn({
-      codexModel,
-      claudeModel,
-      conversation: convo,
-      ensureCodexAccount,
-      ensureClaudeAccount,
+    const store = useSessions.getState();
+    const controller = claimTurnGeneration({
+      sessionId: id,
+      store,
+      generationControllersRef,
     });
+    if (!controller) {
+      return { status: "skipped", messages: sessionMessages(id, convo), error: "A turn is already running." };
+    }
+    let notReady: Awaited<ReturnType<typeof accountRuntimeNotReadyForTurn>>;
+    try {
+      notReady = await accountRuntimeNotReadyForTurn({
+        codexModel,
+        claudeModel,
+        conversation: convo,
+        ensureCodexAccount,
+        ensureClaudeAccount,
+      });
+    } catch (e) {
+      releaseTurnGeneration({
+        sessionId: id,
+        store,
+        generationControllersRef,
+      });
+      throw e;
+    }
     if (notReady) {
+      releaseTurnGeneration({
+        sessionId: id,
+        store,
+        generationControllersRef,
+      });
       setMessages(id, notReady.messages, { autoTitle: autoTitleChats });
       return { status: notReady.status, messages: sessionMessages(id, convo), error: notReady.error };
     }
@@ -3475,11 +3499,10 @@ export function ChatView({
     const turnId = attachmentId();
     setChatNotice(null);
 
-    const store = useSessions.getState();
-    const { controller, streamBatcher, append, appendThinking } = startTurnStream({
+    const { streamBatcher, append, appendThinking } = startTurnStream({
       sessionId: id,
       store,
-      generationControllersRef,
+      controller,
     });
     const assistantStart = createTurnAssistantStarter({
       conversation: convo,
@@ -3488,33 +3511,43 @@ export function ChatView({
     });
     const beginAssistant = assistantStart.beginAssistant;
     const metricsCapture = createTurnMetricsCapture();
-    const promptContext = await prepareTurnPromptContext({
-      sessionId: id,
-      threadTitle: turnTitle,
-      folder: turnFolder,
-      instructions: turnInstructions,
-      planMode: turnPlanMode,
-      memory: turnMemory,
-      conversation: convo,
-      activeAgent: turnActiveAgent ?? null,
-      skills,
-      goal: options.goal,
-      turnId,
-      codexModel,
-      claudeModel,
-      model: turnModel,
-      sandbox: turnSandbox,
-      computerUse: turnComputerUse,
-      previewTools: Boolean(sidePanelOpen && sidePanelMode !== "git" && visiblePreviewSelection),
-      activeAgentId: turnActiveAgentId,
-      toolApproval: turnToolApproval,
-      toolApprovalGrant: false,
-      experimentalHashlinePatch,
-      messageContent: wireMessageContent,
-      searchMemory: searchGraphMemory,
-      selectSkills,
-      virtualProjectFiles: turnFolder.trim() ? [] : sessionVirtualProjectFiles(store.sessions.find((session) => session.id === id)),
-    });
+    let promptContext: Awaited<ReturnType<typeof prepareTurnPromptContext>>;
+    try {
+      promptContext = await prepareTurnPromptContext({
+        sessionId: id,
+        threadTitle: turnTitle,
+        folder: turnFolder,
+        instructions: turnInstructions,
+        planMode: turnPlanMode,
+        memory: turnMemory,
+        conversation: convo,
+        activeAgent: turnActiveAgent ?? null,
+        skills,
+        goal: options.goal,
+        turnId,
+        codexModel,
+        claudeModel,
+        model: turnModel,
+        sandbox: turnSandbox,
+        computerUse: turnComputerUse,
+        previewTools: Boolean(sidePanelOpen && sidePanelMode !== "git" && visiblePreviewSelection),
+        activeAgentId: turnActiveAgentId,
+        toolApproval: turnToolApproval,
+        toolApprovalGrant: false,
+        experimentalHashlinePatch,
+        messageContent: wireMessageContent,
+        searchMemory: searchGraphMemory,
+        selectSkills,
+        virtualProjectFiles: turnFolder.trim() ? [] : sessionVirtualProjectFiles(store.sessions.find((session) => session.id === id)),
+      });
+    } catch (e) {
+      releaseTurnGeneration({
+        sessionId: id,
+        store,
+        generationControllersRef,
+      });
+      throw e;
+    }
     const {
       useTools,
       accountRuntimeMayUseTools,

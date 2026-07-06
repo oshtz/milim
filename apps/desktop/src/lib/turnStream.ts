@@ -38,18 +38,46 @@ export function createStreamUpdateBatcher(sessionId: string, store: ReturnType<t
   };
 }
 
-export function startTurnStream({
+type TurnGenerationStore = Pick<ReturnType<typeof useSessions.getState>, "setSessionGenerating">;
+
+export function claimTurnGeneration({
   sessionId,
   store,
   generationControllersRef,
 }: {
   sessionId: string;
-  store: ReturnType<typeof useSessions.getState>;
+  store: TurnGenerationStore;
   generationControllersRef: { current: Map<string, AbortController> };
-}) {
+}): AbortController | null {
+  if (generationControllersRef.current.has(sessionId)) return null;
   const controller = new AbortController();
   generationControllersRef.current.set(sessionId, controller);
   store.setSessionGenerating(sessionId, true);
+  return controller;
+}
+
+export function releaseTurnGeneration({
+  sessionId,
+  store,
+  generationControllersRef,
+}: {
+  sessionId: string;
+  store: TurnGenerationStore;
+  generationControllersRef: { current: Map<string, AbortController> };
+}) {
+  generationControllersRef.current.delete(sessionId);
+  store.setSessionGenerating(sessionId, false);
+}
+
+export function startTurnStream({
+  sessionId,
+  store,
+  controller,
+}: {
+  sessionId: string;
+  store: ReturnType<typeof useSessions.getState>;
+  controller: AbortController;
+}) {
   const streamBatcher = createStreamUpdateBatcher(sessionId, store);
   return {
     controller,

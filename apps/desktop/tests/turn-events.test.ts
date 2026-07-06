@@ -1,6 +1,6 @@
 import type { BufferedStreamChunk } from "../src/sessions/store.js";
 import { accountRuntimeToolPart, runtimeWarningMessage, statusPart, toolCompletedPart, toolStartedPart } from "../src/lib/turnEvents.js";
-import { createStreamUpdateBatcher, startTurnStream } from "../src/lib/turnStream.js";
+import { claimTurnGeneration, createStreamUpdateBatcher, startTurnStream } from "../src/lib/turnStream.js";
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -86,17 +86,24 @@ equal(appended[0].chunks[1].kind, "thinking", "batcher should keep thinking as a
 const generating: Array<{ sessionId: string; value: boolean }> = [];
 const controllers = { current: new Map<string, AbortController>() };
 const startedChunks: BufferedStreamChunk[] = [];
-const startedStream = startTurnStream({
+const streamStore = {
+  setSessionGenerating: (sessionId: string, value: boolean) => generating.push({ sessionId, value }),
+  appendStreamChunks: (_sessionId: string, chunks: BufferedStreamChunk[]) => startedChunks.push(...chunks),
+} as never;
+const controller = claimTurnGeneration({
   sessionId: "s2",
   generationControllersRef: controllers,
-  store: {
-    setSessionGenerating: (sessionId: string, value: boolean) => generating.push({ sessionId, value }),
-    appendStreamChunks: (_sessionId: string, chunks: BufferedStreamChunk[]) => startedChunks.push(...chunks),
-  } as never,
+  store: streamStore,
 });
-assert(controllers.current.get("s2") === startedStream.controller, "startTurnStream should register the controller");
-equal(generating.length, 1, "startTurnStream should mark the session generating once");
-equal(generating[0].sessionId, "s2", "startTurnStream should mark the requested session generating");
+assert(controller, "claimTurnGeneration should claim an idle session");
+const startedStream = startTurnStream({
+  sessionId: "s2",
+  controller,
+  store: streamStore,
+});
+assert(controllers.current.get("s2") === startedStream.controller, "claimTurnGeneration should register the controller");
+equal(generating.length, 1, "claimTurnGeneration should mark the session generating once");
+equal(generating[0].sessionId, "s2", "claimTurnGeneration should mark the requested session generating");
 startedStream.append("x");
 startedStream.appendThinking("y");
 startedStream.streamBatcher.flush();

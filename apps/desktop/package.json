@@ -13,7 +13,7 @@
     "test:selectors": "node tests/zustand-selector-lint.test.mjs",
     "test:store": "node tests/run-ts-test.mjs tests/session-store.test.ts tests/session-startup-hydration.test.ts tests/thread-titles.test.ts tests/sidebar-groups.test.ts tests/thread-export.test.ts tests/preview-runtime-keys.test.ts",
     "test:settings": "node tests/run-ts-test.mjs tests/settings-store.test.ts",
-    "test:assistant-stream": "node tests/run-ts-test.mjs tests/assistant-stream-grouping.test.ts tests/preview-activity.test.ts tests/turn-events.test.ts tests/turn-queue.test.ts tests/turn-prompt.test.ts tests/turn-runtime.test.ts",
+    "test:assistant-stream": "node tests/run-ts-test.mjs tests/assistant-stream-grouping.test.ts tests/preview-activity.test.ts tests/turn-events.test.ts tests/turn-queue.test.ts tests/turn-prompt.test.ts tests/turn-runtime.test.ts tests/turn-stream.test.ts",
     "test:context-compaction": "node tests/run-ts-test.mjs tests/context-compaction.test.ts tests/turn-context.test.ts",
     "test:reasoning": "node tests/run-ts-test.mjs tests/reasoning-effort.test.ts",
     "test:ui-preferences": "node tests/run-ts-test.mjs tests/ui-preferences-store.test.ts tests/shortcuts.test.ts tests/chat-search.test.ts tests/context-menu.test.ts",
