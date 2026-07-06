@@ -16,10 +16,23 @@ import type {
   ToolApprovalMode,
   TokenUsage,
 } from "../api.js";
-import { prepareAndStartTurn, type PreparedTurnOutbound, type PrepareTurnOutboundOptions } from "./turnContext.js";
+import {
+  prepareAndStartTurn,
+  type PreparedTurnOutbound,
+  type PrepareTurnOutboundOptions,
+} from "./turnContext.js";
 import { messagesForModelContext } from "./contextCompaction.js";
-import { accountRuntimeToolPart, statusPart, toolCompletedPart, toolErrorMessage, toolStartedPart } from "./turnEvents.js";
-import { contextMessagesForTurn, type TurnPromptContext } from "./turnPrompt.js";
+import {
+  accountRuntimeToolPart,
+  statusPart,
+  toolCompletedPart,
+  toolErrorMessage,
+  toolStartedPart,
+} from "./turnEvents.js";
+import {
+  contextMessagesForTurn,
+  type TurnPromptContext,
+} from "./turnPrompt.js";
 
 // ponytail: local copy avoids importing browser/Tauri API code into pure turn-runtime tests.
 const MAX_ATTACHMENT_BYTES = 128 * 1024;
@@ -142,7 +155,8 @@ export function turnAbortSentinel(): TurnAbortSentinel {
   return { [TURN_ABORT_SENTINEL]: true };
 }
 
-export type FinalizeTurnRuntimeStatus = "done" | "skipped" | "aborted" | "error";
+export type FinalizeTurnRuntimeStatus =
+  "done" | "skipped" | "aborted" | "error";
 
 export type TurnMetricsCapture = {
   state: {
@@ -152,7 +166,10 @@ export type TurnMetricsCapture = {
   };
   captureUsage: (usage?: TokenUsage) => void;
   captureUsageDelta: (usage?: TokenUsage) => TokenUsage | undefined;
-  captureRuntimeMetrics: (event: { usage?: TokenUsage; cost_usd?: number }) => void;
+  captureRuntimeMetrics: (event: {
+    usage?: TokenUsage;
+    cost_usd?: number;
+  }) => void;
   captureProviderLimit: (limit?: ProviderLimitInfo) => void;
 };
 
@@ -170,22 +187,30 @@ export function createTurnMetricsCapture(): TurnMetricsCapture {
     },
     captureRuntimeMetrics(event) {
       if (event.usage) state.usage = event.usage;
-      if (typeof event.cost_usd === "number" && event.cost_usd > 0) state.costUsd = event.cost_usd;
+      if (typeof event.cost_usd === "number" && event.cost_usd > 0)
+        state.costUsd = event.cost_usd;
     },
     captureProviderLimit(limit) {
       if (!limit) return;
       state.limits = [
-        ...state.limits.filter((item) => item.provider !== limit.provider || item.kind !== limit.kind),
+        ...state.limits.filter(
+          (item) =>
+            item.provider !== limit.provider || item.kind !== limit.kind,
+        ),
         limit,
       ];
     },
   };
 }
 
-function addTokenUsage(total: TokenUsage | undefined, usage: TokenUsage): TokenUsage {
+function addTokenUsage(
+  total: TokenUsage | undefined,
+  usage: TokenUsage,
+): TokenUsage {
   return {
     prompt_tokens: (total?.prompt_tokens ?? 0) + usage.prompt_tokens,
-    completion_tokens: (total?.completion_tokens ?? 0) + usage.completion_tokens,
+    completion_tokens:
+      (total?.completion_tokens ?? 0) + usage.completion_tokens,
     total_tokens: (total?.total_tokens ?? 0) + usage.total_tokens,
   };
 }
@@ -197,7 +222,9 @@ export type TurnRunTraceState = {
   snapshot: () => void;
 };
 
-export function createTurnRunTraceState(commitRun: (run: RunTrace) => void): TurnRunTraceState {
+export function createTurnRunTraceState(
+  commitRun: (run: RunTrace) => void,
+): TurnRunTraceState {
   let run: RunTrace | null = null;
   return {
     runRef: {
@@ -209,7 +236,8 @@ export function createTurnRunTraceState(commitRun: (run: RunTrace) => void): Tur
       },
     },
     snapshot() {
-      if (run) commitRun({ ...run, steps: run.steps.map((step) => ({ ...step })) });
+      if (run)
+        commitRun({ ...run, steps: run.steps.map((step) => ({ ...step })) });
     },
   };
 }
@@ -238,7 +266,15 @@ export function createTurnAssistantStarter({
       state.activeConversation = nextConversation;
       if (state.started) return;
       state.started = true;
-      setMessages([...nextConversation, { role: "assistant", content: "", streamParts: [], ...(planMode ? { plan: { status: "proposed" as const } } : {}) }]);
+      setMessages([
+        ...nextConversation,
+        {
+          role: "assistant",
+          content: "",
+          streamParts: [],
+          ...(planMode ? { plan: { status: "proposed" as const } } : {}),
+        },
+      ]);
     },
   };
 }
@@ -248,11 +284,12 @@ export function codexPromptFromMessages(messages: ChatMessage[]): string {
     .map((message) => {
       const content = wireRuntimeMessageContent(message).trim();
       if (!content) return "";
-      const role = message.role === "system"
-        ? "System"
-        : message.role === "assistant"
-          ? "Assistant"
-          : "User";
+      const role =
+        message.role === "system"
+          ? "System"
+          : message.role === "assistant"
+            ? "Assistant"
+            : "User";
       return `${role}:\n${content}`;
     })
     .filter(Boolean)
@@ -263,10 +300,14 @@ function wireRuntimeMessageContent(message: ChatMessage): string {
   if (message.approval) return "";
   const attachmentContext = attachmentsToPromptContext(message.attachments);
   if (!attachmentContext) return message.content;
-  return message.content ? `${message.content}\n\n${attachmentContext}` : attachmentContext;
+  return message.content
+    ? `${message.content}\n\n${attachmentContext}`
+    : attachmentContext;
 }
 
-function attachmentsToPromptContext(attachments: ChatMessage["attachments"]): string {
+function attachmentsToPromptContext(
+  attachments: ChatMessage["attachments"],
+): string {
   if (!attachments?.length) return "";
   const blocks = attachments.map((attachment) => {
     const meta = [
@@ -279,22 +320,31 @@ function attachmentsToPromptContext(attachments: ChatMessage["attachments"]): st
       .filter(Boolean)
       .join(" ");
     const content = attachment.content?.trimEnd();
-    const imageNote = attachment.dataUrl ? "[Image preview is available in the desktop UI. No OCR text was extracted.]" : "";
+    const imageNote = attachment.dataUrl
+      ? "[Image preview is available in the desktop UI. No OCR text was extracted.]"
+      : "";
     return [
       `--- attachment ${meta} ---`,
-      content ? content : imageNote || "[No text content available for this attachment.]",
+      content
+        ? content
+        : imageNote || "[No text content available for this attachment.]",
       "--- end attachment ---",
     ].join("\n");
   });
   return ["[Attached files]", ...blocks, "[/Attached files]"].join("\n");
 }
 
-function accountRuntimePromptMessages(contextMessages: ChatMessage[], convo: ChatMessage[]): ChatMessage[] {
+function accountRuntimePromptMessages(
+  contextMessages: ChatMessage[],
+  convo: ChatMessage[],
+): ChatMessage[] {
   const latestUser = convo
     .slice()
     .reverse()
     .find((message) => message.role === "user");
-  return latestUser ? [...contextMessages, latestUser] : [...contextMessages, ...convo.slice(-1)];
+  return latestUser
+    ? [...contextMessages, latestUser]
+    : [...contextMessages, ...convo.slice(-1)];
 }
 
 export function createAccountRuntimeEventHandler({
@@ -313,11 +363,17 @@ export function createAccountRuntimeEventHandler({
   flush: () => void;
   appendStreamEvent: (part: ChatStreamEventPart) => void;
   completeStreamEvent: (name: string, part: ChatStreamEventPart) => void;
-  captureRuntimeMetrics: (metrics: { usage?: TokenUsage; cost_usd?: number }) => void;
+  captureRuntimeMetrics: (metrics: {
+    usage?: TokenUsage;
+    cost_usd?: number;
+  }) => void;
   captureProviderLimit?: (limit?: ProviderLimitInfo) => void;
   setCodexThreadId?: (threadId: string) => void;
   appendImage?: (event: AccountRuntimeImageEvent) => void;
-}): { state: AccountRuntimeEventState; handle: (event: AccountRuntimeEvent) => void } {
+}): {
+  state: AccountRuntimeEventState;
+  handle: (event: AccountRuntimeEvent) => void;
+} {
   const state: AccountRuntimeEventState = { warning: null, error: null };
   return {
     state,
@@ -364,7 +420,11 @@ export async function runModelChatTurn({
 }: {
   promptContext: TurnPromptContext;
   conversation: ChatMessage[];
-  prepareOutbound: (contextMessages: ChatMessage[], conversation: ChatMessage[], options?: PrepareTurnOutboundOptions) => Promise<PreparedTurnOutbound>;
+  prepareOutbound: (
+    contextMessages: ChatMessage[],
+    conversation: ChatMessage[],
+    options?: PrepareTurnOutboundOptions,
+  ) => Promise<PreparedTurnOutbound>;
   beginAssistant: (conversation: ChatMessage[]) => void;
   streamChat: StreamChatFn;
   model: string;
@@ -397,7 +457,11 @@ export async function runModelChatTurn({
 type RunAccountRuntimeTurnParams = {
   promptContext: TurnPromptContext;
   conversation: ChatMessage[];
-  prepareOutbound: (contextMessages: ChatMessage[], conversation: ChatMessage[], options?: PrepareTurnOutboundOptions) => Promise<PreparedTurnOutbound>;
+  prepareOutbound: (
+    contextMessages: ChatMessage[],
+    conversation: ChatMessage[],
+    options?: PrepareTurnOutboundOptions,
+  ) => Promise<PreparedTurnOutbound>;
   beginAssistant: (conversation: ChatMessage[]) => void;
   checkpointWorkspace: () => Promise<void>;
   model: string;
@@ -411,7 +475,10 @@ type RunAccountRuntimeTurnParams = {
   flush: () => void;
   appendStreamEvent: (part: ChatStreamEventPart) => void;
   completeStreamEvent: (name: string, part: ChatStreamEventPart) => void;
-  captureRuntimeMetrics: (metrics: { usage?: TokenUsage; cost_usd?: number }) => void;
+  captureRuntimeMetrics: (metrics: {
+    usage?: TokenUsage;
+    cost_usd?: number;
+  }) => void;
   captureProviderLimit?: (limit?: ProviderLimitInfo) => void;
   signal?: AbortSignal;
 } & (
@@ -430,7 +497,9 @@ type RunAccountRuntimeTurnParams = {
     }
 );
 
-export async function runAccountRuntimeTurn(params: RunAccountRuntimeTurnParams): Promise<{ status: "done" | "skipped"; error?: string }> {
+export async function runAccountRuntimeTurn(
+  params: RunAccountRuntimeTurnParams,
+): Promise<{ status: "done" | "skipped"; error?: string }> {
   const {
     promptContext,
     conversation,
@@ -453,12 +522,16 @@ export async function runAccountRuntimeTurn(params: RunAccountRuntimeTurnParams)
     signal,
   } = params;
   const contextMessages = contextMessagesForTurn(promptContext, "model");
-  const hasNativeHistory = params.kind === "codex" ? Boolean(params.threadId) : params.hadSession;
+  const hasNativeHistory =
+    params.kind === "codex" ? Boolean(params.threadId) : params.hadSession;
   const prepared = await prepareAndStartTurn({
     contextMessages,
     conversation,
     prepareOutbound: (contextMessages, conversation, options) =>
-      prepareOutbound(contextMessages, conversation, { ...options, skipAutoCompaction: hasNativeHistory }),
+      prepareOutbound(contextMessages, conversation, {
+        ...options,
+        skipAutoCompaction: hasNativeHistory,
+      }),
     beginAssistant,
     checkpointWorkspace,
     prepareOptions: { signal },
@@ -514,7 +587,15 @@ export async function runAccountRuntimeTurn(params: RunAccountRuntimeTurnParams)
 
   if (events.state.warning) {
     flush();
-    appendStreamEvent(statusPart(params.kind === "codex" ? "Codex not on PATH" : "Claude Code not on PATH", events.state.warning, "warning"));
+    appendStreamEvent(
+      statusPart(
+        params.kind === "codex"
+          ? "Codex not on PATH"
+          : "Claude Code not on PATH",
+        events.state.warning,
+        "warning",
+      ),
+    );
     return { status: "skipped", error: events.state.warning };
   }
   if (events.state.error) {
@@ -534,10 +615,23 @@ export async function runSelectedAccountRuntimeTurn({
   streamCodexRun,
   streamClaudeRun,
   ...common
-}: Omit<RunAccountRuntimeTurnParams, "kind" | "model" | "threadId" | "stream" | "setThreadId" | "appendImage" | "sessionId" | "hadSession"> & {
+}: Omit<
+  RunAccountRuntimeTurnParams,
+  | "kind"
+  | "model"
+  | "threadId"
+  | "stream"
+  | "setThreadId"
+  | "appendImage"
+  | "sessionId"
+  | "hadSession"
+> & {
   codexModel?: string | null;
   claudeModel?: string | null;
-  accountRuntime?: { codexThreadId?: string | null; claudeSessionId?: string | null } | null;
+  accountRuntime?: {
+    codexThreadId?: string | null;
+    claudeSessionId?: string | null;
+  } | null;
   setCodexThreadId: (threadId: string) => void;
   appendImage?: (event: AccountRuntimeImageEvent) => void;
   ensureClaudeSessionId: () => string;
@@ -590,7 +684,11 @@ export async function runToolAgentTurn({
 }: {
   promptContext: TurnPromptContext;
   conversation: ChatMessage[];
-  prepareOutbound: (contextMessages: ChatMessage[], conversation: ChatMessage[], options?: PrepareTurnOutboundOptions) => Promise<PreparedTurnOutbound>;
+  prepareOutbound: (
+    contextMessages: ChatMessage[],
+    conversation: ChatMessage[],
+    options?: PrepareTurnOutboundOptions,
+  ) => Promise<PreparedTurnOutbound>;
   beginAssistant: (conversation: ChatMessage[]) => void;
   checkpointWorkspace: () => Promise<void>;
   streamAgentRun: StreamAgentRunFn;
@@ -616,7 +714,10 @@ export async function runToolAgentTurn({
     sourceSessionId,
   };
   snapshot();
-  const contextMessages = contextMessagesForTurn(promptContext, agentId ? "agent" : "tools");
+  const contextMessages = contextMessagesForTurn(
+    promptContext,
+    agentId ? "agent" : "tools",
+  );
   const prepared = await prepareAndStartTurn({
     contextMessages,
     conversation,
@@ -645,7 +746,8 @@ export async function runToolAgentTurn({
     snapshot();
     return { status: "done" };
   }
-  if (run.status === "error") return { status: "error", error: run.error || "Agent run failed." };
+  if (run.status === "error")
+    return { status: "error", error: run.error || "Agent run failed." };
   return { status: "done" };
 }
 
@@ -690,7 +792,10 @@ export function handleTurnRuntimeError({
     run.endedAt = now();
     snapshot();
   }
-  return { status: aborted ? "aborted" : "error", error: aborted ? undefined : message };
+  return {
+    status: aborted ? "aborted" : "error",
+    error: aborted ? undefined : message,
+  };
 }
 
 export function finalizeTurnRuntime({
@@ -706,6 +811,7 @@ export function finalizeTurnRuntime({
   activeSessionId,
   stopChildThreadEventsIfIdle,
   maybeGenerateAiThreadTitle,
+  flushUserState,
   signal,
 }: {
   sessionId: string;
@@ -719,17 +825,24 @@ export function finalizeTurnRuntime({
   setSessionUnread: (sessionId: string, unread: boolean) => void;
   activeSessionId: string;
   stopChildThreadEventsIfIdle: (sessionId: string) => void;
-  maybeGenerateAiThreadTitle: (sessionId: string, model: string) => Promise<void>;
+  maybeGenerateAiThreadTitle: (
+    sessionId: string,
+    model: string,
+  ) => Promise<void>;
+  flushUserState?: () => void | Promise<void>;
   signal?: AbortSignal;
 }): void {
-  const finalStatus: FinalizeTurnRuntimeStatus = status === "error" && signal?.aborted ? "aborted" : status;
+  const finalStatus: FinalizeTurnRuntimeStatus =
+    status === "error" && signal?.aborted ? "aborted" : status;
   flush();
   if (metrics) commitResponseMetrics(sessionId, metrics);
   clearController(sessionId);
   setSessionGenerating(sessionId, false);
   setSessionUnread(sessionId, activeSessionId !== sessionId);
   stopChildThreadEventsIfIdle(sessionId);
-  if (finalStatus === "done") void maybeGenerateAiThreadTitle(sessionId, model).catch(() => {});
+  void Promise.resolve(flushUserState?.()).catch(() => {});
+  if (finalStatus === "done")
+    void maybeGenerateAiThreadTitle(sessionId, model).catch(() => {});
 }
 
 export function createAgentRunEventHandler({
@@ -752,7 +865,11 @@ export function createAgentRunEventHandler({
   appendThinking: (text: string) => void;
   flush: () => void;
   appendStreamEvent: (part: ChatStreamEventPart) => void;
-  completeStreamEvent: (name: string, part: ChatStreamEventPart, callId?: string) => void;
+  completeStreamEvent: (
+    name: string,
+    part: ChatStreamEventPart,
+    callId?: string,
+  ) => void;
   appendMemoryNotice: (notice: MemoryNotice) => void;
   upsertChildThread: (thread: ChildThreadInfo) => void;
   updateChildThread: (thread: ChildThreadInfo) => void;
@@ -779,7 +896,12 @@ export function createAgentRunEventHandler({
         break;
       case "tool_call":
         flush();
-        run.steps.push({ callId: event.call_id, name: event.name ?? "tool", arguments: event.arguments, startedAt: now() });
+        run.steps.push({
+          callId: event.call_id,
+          name: event.name ?? "tool",
+          arguments: event.arguments,
+          startedAt: now(),
+        });
         appendStreamEvent(toolStartedPart(event));
         break;
       case "tool_result": {
@@ -791,7 +913,11 @@ export function createAgentRunEventHandler({
           else step.result = event.result;
           step.endedAt = now();
         }
-        completeStreamEvent(event.name ?? "tool", toolCompletedPart({ ...event, arguments: step?.arguments }), event.call_id);
+        completeStreamEvent(
+          event.name ?? "tool",
+          toolCompletedPart({ ...event, arguments: step?.arguments }),
+          event.call_id,
+        );
         break;
       }
       case "memory_registered": {
@@ -803,17 +929,27 @@ export function createAgentRunEventHandler({
       case "child_thread_started":
         flush();
         if (event.thread) upsertChildThread(event.thread);
-        appendStreamEvent(statusPart("Worker started", childThreadDetail(event.thread)));
+        appendStreamEvent(
+          statusPart("Worker started", childThreadDetail(event.thread)),
+        );
         break;
       case "child_thread_done":
         flush();
         if (event.thread) updateChildThread(event.thread);
-        appendStreamEvent(statusPart("Worker done", childThreadDetail(event.thread)));
+        appendStreamEvent(
+          statusPart("Worker done", childThreadDetail(event.thread)),
+        );
         break;
       case "child_thread_error":
         flush();
         if (event.thread) updateChildThread(event.thread);
-        appendStreamEvent(statusPart("Worker error", event.message ?? childThreadDetail(event.thread), "error"));
+        appendStreamEvent(
+          statusPart(
+            "Worker error",
+            event.message ?? childThreadDetail(event.thread),
+            "error",
+          ),
+        );
         break;
       case "error":
         flush();
@@ -826,8 +962,10 @@ export function createAgentRunEventHandler({
         captureUsage(event.usage);
         run.iterations = event.iterations;
         run.endedAt = now();
-        if (run.status !== "error") run.status = event.stopped_at_limit ? "stopped" : "done";
-        if (event.stopped_at_limit) appendStreamEvent(statusPart("Stopped before final answer"));
+        if (run.status !== "error")
+          run.status = event.stopped_at_limit ? "stopped" : "done";
+        if (event.stopped_at_limit)
+          appendStreamEvent(statusPart("Stopped before final answer"));
         break;
       // "final": answer text already arrived via token events.
     }
@@ -840,15 +978,30 @@ function throwIfTurnAborted(signal?: AbortSignal): void {
 }
 
 function isAbortError(error: unknown): boolean {
-  return isTurnAbortSentinel(error) || (typeof DOMException !== "undefined" && error instanceof DOMException && error.name === "AbortError");
+  return (
+    isTurnAbortSentinel(error) ||
+    (typeof DOMException !== "undefined" &&
+      error instanceof DOMException &&
+      error.name === "AbortError")
+  );
 }
 
 function isTurnAbortSentinel(error: unknown): error is TurnAbortSentinel {
-  return Boolean(error && typeof error === "object" && TURN_ABORT_SENTINEL in error);
+  return Boolean(
+    error && typeof error === "object" && TURN_ABORT_SENTINEL in error,
+  );
 }
 
 function normalizeMemoryNotice(event: AgentEvent): MemoryNotice | null {
-  if (event.type !== "memory_registered" || !event.id || !event.node_id || !event.scope_kind || !event.scope_label || !event.summary || !event.created_at) {
+  if (
+    event.type !== "memory_registered" ||
+    !event.id ||
+    !event.node_id ||
+    !event.scope_kind ||
+    !event.scope_label ||
+    !event.summary ||
+    !event.created_at
+  ) {
     return null;
   }
   return {
@@ -867,14 +1020,20 @@ function childThreadDetail(thread?: ChildThreadInfo): string | undefined {
   return summary ? `${thread.title}: ${summary.slice(0, 120)}` : thread.title;
 }
 
-function lastOpenStep(steps: RunStep[], name?: string, callId?: string): RunStep | undefined {
+function lastOpenStep(
+  steps: RunStep[],
+  name?: string,
+  callId?: string,
+): RunStep | undefined {
   if (callId) {
     for (let i = steps.length - 1; i >= 0; i -= 1) {
-      if (steps[i].endedAt == null && steps[i].callId === callId) return steps[i];
+      if (steps[i].endedAt == null && steps[i].callId === callId)
+        return steps[i];
     }
   }
   for (let i = steps.length - 1; i >= 0; i -= 1) {
-    if (steps[i].endedAt == null && (name == null || steps[i].name === name)) return steps[i];
+    if (steps[i].endedAt == null && (name == null || steps[i].name === name))
+      return steps[i];
   }
   return undefined;
 }

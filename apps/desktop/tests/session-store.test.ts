@@ -48,8 +48,20 @@ const {
   normalizeGoalSettings,
   parseGoalDecision,
 } = await import("../src/lib/goals.js");
-const { codexLimitsFromRateLimitPayload, estimateResponseCostUsd, formatProviderLimits, formatResponseMetrics, formatThreadMetrics, formatThreadMetricsBreakdown, latestProviderLimits, responseMetricsForTurn, summarizeMilimUsage, summarizeResponseMetrics } = await import("../src/lib/usageMetrics.js");
-const { previewRuntimeKeyForThread } = await import("../src/lib/previewRuntimeKeys.js");
+const {
+  codexLimitsFromRateLimitPayload,
+  estimateResponseCostUsd,
+  formatProviderLimits,
+  formatResponseMetrics,
+  formatThreadMetrics,
+  formatThreadMetricsBreakdown,
+  latestProviderLimits,
+  responseMetricsForTurn,
+  summarizeMilimUsage,
+  summarizeResponseMetrics,
+} = await import("../src/lib/usageMetrics.js");
+const { previewRuntimeKeyForThread } =
+  await import("../src/lib/previewRuntimeKeys.js");
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -57,7 +69,9 @@ function assert(condition: unknown, message: string): asserts condition {
 
 function equal<T>(actual: T, expected: T, message: string): void {
   if (actual !== expected) {
-    throw new Error(`${message}: expected ${String(expected)}, got ${String(actual)}`);
+    throw new Error(
+      `${message}: expected ${String(expected)}, got ${String(actual)}`,
+    );
   }
 }
 
@@ -77,7 +91,11 @@ function sortKeys(value: unknown): unknown {
 }
 
 const first = useSessions.getState().activeId;
-equal(useSessions.getState().getSettings(first).planMode, false, "plan mode should default off");
+equal(
+  useSessions.getState().getSettings(first).planMode,
+  false,
+  "plan mode should default off",
+);
 useSessions.getState().updateSettings(first, {
   model: "model-a",
   instructions: "prompt a",
@@ -93,36 +111,83 @@ useSessions.getState().updateSettings(first, {
 });
 useSessions.getState().setMessages(first, [{ role: "user", content: "hello" }]);
 useSessions.getState().setSessionGenerating(first, true);
-deepEqual(useSessions.getState().generatingSessionIds, [first], "generation state should track the running thread id");
+deepEqual(
+  useSessions.getState().generatingSessionIds,
+  [first],
+  "generation state should track the running thread id",
+);
 useSessions.getState().setSessionGenerating(first, true);
-deepEqual(useSessions.getState().generatingSessionIds, [first], "generation state should not duplicate running thread ids");
+deepEqual(
+  useSessions.getState().generatingSessionIds,
+  [first],
+  "generation state should not duplicate running thread ids",
+);
 useSessions.getState().setSessionGenerating(first, false);
-deepEqual(useSessions.getState().generatingSessionIds, [], "generation state should clear the stopped thread id");
+deepEqual(
+  useSessions.getState().generatingSessionIds,
+  [],
+  "generation state should clear the stopped thread id",
+);
 useSessions.getState().setSessionUnread(first, true);
-deepEqual(useSessions.getState().unreadSessionIds, [], "active thread should not be marked unread");
-const queuedOne = useSessions.getState().enqueueQueuedMessage(first, { content: "queued one" });
+deepEqual(
+  useSessions.getState().unreadSessionIds,
+  [],
+  "active thread should not be marked unread",
+);
+const queuedOne = useSessions
+  .getState()
+  .enqueueQueuedMessage(first, { content: "queued one" });
 const queuedTwo = useSessions.getState().enqueueQueuedMessage(first, {
   content: "queued two",
-  attachments: [{ id: "queued-attachment", name: "note.txt", mime: "text/plain", size: 4, content: "note" }],
+  attachments: [
+    {
+      id: "queued-attachment",
+      name: "note.txt",
+      mime: "text/plain",
+      size: 4,
+      content: "note",
+    },
+  ],
 });
 deepEqual(
-  useSessions.getState().queuedMessagesBySession[first]?.map((item) => item.content),
+  useSessions
+    .getState()
+    .queuedMessagesBySession[first]?.map((item) => item.content),
   ["queued one", "queued two"],
   "queued messages should append per thread",
 );
-useSessions.getState().updateQueuedMessage(first, queuedOne.id, { content: "queued edited" });
-equal(useSessions.getState().queuedMessagesBySession[first]?.[0]?.content, "queued edited", "queued message edits should update content");
+useSessions
+  .getState()
+  .updateQueuedMessage(first, queuedOne.id, { content: "queued edited" });
+equal(
+  useSessions.getState().queuedMessagesBySession[first]?.[0]?.content,
+  "queued edited",
+  "queued message edits should update content",
+);
 useSessions.getState().removeQueuedMessage(first, queuedTwo.id);
 deepEqual(
-  useSessions.getState().queuedMessagesBySession[first]?.map((item) => item.content),
+  useSessions
+    .getState()
+    .queuedMessagesBySession[first]?.map((item) => item.content),
   ["queued edited"],
   "queued message removal should keep the remaining queue",
 );
 const shiftedQueued = useSessions.getState().shiftQueuedMessage(first);
-equal(shiftedQueued?.content, "queued edited", "shift should return the first queued message");
-equal(useSessions.getState().queuedMessagesBySession[first], undefined, "shifting the last queued message should clear the thread queue");
+equal(
+  shiftedQueued?.content,
+  "queued edited",
+  "shift should return the first queued message",
+);
+equal(
+  useSessions.getState().queuedMessagesBySession[first],
+  undefined,
+  "shifting the last queued message should clear the thread queue",
+);
 useSessions.getState().enqueueQueuedMessage(first, { content: "persist me" });
-assert(localStorage.getItem("milim.sessions")?.includes("persist me"), "queued messages should persist in session storage");
+assert(
+  localStorage.getItem("milim.sessions")?.includes("persist me"),
+  "queued messages should persist in session storage",
+);
 assert(
   !localStorage.getItem("milim.sessions")?.includes("generatingSessionIds"),
   "runtime generation state should not persist in session storage",
@@ -131,7 +196,9 @@ assert(
   !localStorage.getItem("milim.sessions")?.includes("unreadSessionIds"),
   "runtime unread state should not persist in session storage",
 );
-const firstUpdatedBeforePreviewRuntime = useSessions.getState().sessions.find((session) => session.id === first)?.updatedAt;
+const firstUpdatedBeforePreviewRuntime = useSessions
+  .getState()
+  .sessions.find((session) => session.id === first)?.updatedAt;
 useSessions.getState().setPreviewRuntime(first, {
   status: "running",
   cwd: "C:\\Users\\USER\\.milim\\runtime\\preview-apps\\thread",
@@ -139,53 +206,92 @@ useSessions.getState().setPreviewRuntime(first, {
   pid: 1234,
   command: "pnpm dev",
 });
-const firstPreviewRuntimeSession = useSessions.getState().sessions.find((session) => session.id === first);
-equal(firstPreviewRuntimeSession?.previewRuntime?.url, "http://127.0.0.1:5173/", "preview runtime URL should persist on the thread");
-equal(firstPreviewRuntimeSession?.previewRuntime?.status, "running", "preview runtime status should persist on the thread");
-equal(firstPreviewRuntimeSession?.updatedAt, firstUpdatedBeforePreviewRuntime, "preview runtime polling should not change thread recency");
-assert(localStorage.getItem("milim.sessions")?.includes("http://127.0.0.1:5173/"), "preview runtime URL should persist in session storage");
-const projectRuntimeKey = previewRuntimeKeyForThread("other-thread", "C:\\workspace-a");
+const firstPreviewRuntimeSession = useSessions
+  .getState()
+  .sessions.find((session) => session.id === first);
+equal(
+  firstPreviewRuntimeSession?.previewRuntime?.url,
+  "http://127.0.0.1:5173/",
+  "preview runtime URL should persist on the thread",
+);
+equal(
+  firstPreviewRuntimeSession?.previewRuntime?.status,
+  "running",
+  "preview runtime status should persist on the thread",
+);
+equal(
+  firstPreviewRuntimeSession?.updatedAt,
+  firstUpdatedBeforePreviewRuntime,
+  "preview runtime polling should not change thread recency",
+);
+assert(
+  localStorage.getItem("milim.sessions")?.includes("http://127.0.0.1:5173/"),
+  "preview runtime URL should persist in session storage",
+);
+const projectRuntimeKey = previewRuntimeKeyForThread(
+  "other-thread",
+  "C:\\workspace-a",
+);
 useSessions.getState().setPreviewRuntimeByKey(projectRuntimeKey, {
   status: "running",
   cwd: "C:\\workspace-a",
   url: "http://127.0.0.1:5999/",
 });
-equal(useSessions.getState().previewRuntimesByKey[projectRuntimeKey]?.url, "http://127.0.0.1:5999/", "project preview runtime should persist by runtime key");
-assert(localStorage.getItem("milim.sessions")?.includes(projectRuntimeKey), "project runtime key should persist in session storage");
-useSessions.getState().setAccountRuntime(first, { codexThreadId: "codex-thread-1" });
 equal(
-  useSessions.getState().sessions.find((session) => session.id === first)?.accountRuntime?.codexThreadId,
+  useSessions.getState().previewRuntimesByKey[projectRuntimeKey]?.url,
+  "http://127.0.0.1:5999/",
+  "project preview runtime should persist by runtime key",
+);
+assert(
+  localStorage.getItem("milim.sessions")?.includes(projectRuntimeKey),
+  "project runtime key should persist in session storage",
+);
+useSessions
+  .getState()
+  .setAccountRuntime(first, { codexThreadId: "codex-thread-1" });
+equal(
+  useSessions.getState().sessions.find((session) => session.id === first)
+    ?.accountRuntime?.codexThreadId,
   "codex-thread-1",
   "Codex thread id should be stored on the Milim session",
 );
 useSessions.getState().clearAccountRuntime(first);
 equal(
-  useSessions.getState().sessions.find((session) => session.id === first)?.accountRuntime,
+  useSessions.getState().sessions.find((session) => session.id === first)
+    ?.accountRuntime,
   undefined,
   "clearing account runtime should reset native session ids",
 );
-useSessions.getState().setAccountRuntime(first, { codexThreadId: "codex-thread-1" });
+useSessions
+  .getState()
+  .setAccountRuntime(first, { codexThreadId: "codex-thread-1" });
 const claudeSessionId = useSessions.getState().ensureClaudeSessionId(first);
 equal(
   useSessions.getState().ensureClaudeSessionId(first),
   claudeSessionId,
   "Claude session id should be stable per Milim session",
 );
-assert(localStorage.getItem("milim.sessions")?.includes("codex-thread-1"), "account runtime ids should persist in session storage");
+assert(
+  localStorage.getItem("milim.sessions")?.includes("codex-thread-1"),
+  "account runtime ids should persist in session storage",
+);
 useSessions.getState().setMessages(first, [
   { role: "user", content: "transient stream" },
   { role: "assistant", content: "", streamParts: [] },
 ]);
 useSessions.getState().setSessionGenerating(first, true);
-useSessions.getState().appendStreamChunks(first, [{ kind: "text", content: "transient-token" }]);
+useSessions
+  .getState()
+  .appendStreamChunks(first, [{ kind: "text", content: "transient-token" }]);
 equal(
-  useSessions.getState().sessions.find((session) => session.id === first)?.messages[1]?.content,
+  useSessions.getState().sessions.find((session) => session.id === first)
+    ?.messages[1]?.content,
   "transient-token",
   "live streamed text should remain visible in the session store",
 );
 assert(
-  localStorage.getItem("milim.sessions")?.includes("transient-token"),
-  "live streamed text should persist while generating",
+  !localStorage.getItem("milim.sessions")?.includes("transient-token"),
+  "live streamed text should stay out of persistence while generating",
 );
 useSessions.getState().commitResponseMetrics(first, {
   startedAt: 1,
@@ -203,12 +309,32 @@ assert(
   localStorage.getItem("milim.sessions")?.includes("transient-token"),
   "completed streamed text should persist once generation stops",
 );
+const completedStreamSnapshot = JSON.parse(
+  localStorage.getItem("milim.sessions") ?? "{}",
+);
+const completedAssistant = completedStreamSnapshot.state.sessions.find(
+  (session: { id: string }) => session.id === first,
+)?.messages[1];
+assert(
+  !completedAssistant?.streamParts?.some(
+    (part: { kind: string }) => part.kind === "text",
+  ),
+  "persisted stream parts should omit reconstructable text chunks",
+);
 assert(
   localStorage.getItem("milim.sessions")?.includes('"durationMs":1'),
   "completed response metrics should persist once generation stops",
 );
-equal(DEFAULT_GOAL_SETTINGS.developerMaxTurns, null, "goal max-turn cap should default to uncapped");
-equal(goalChipVisible(DEFAULT_GOAL_SETTINGS), false, "empty idle goals should not show the composer chip");
+equal(
+  DEFAULT_GOAL_SETTINGS.developerMaxTurns,
+  null,
+  "goal max-turn cap should default to uncapped",
+);
+equal(
+  goalChipVisible(DEFAULT_GOAL_SETTINGS),
+  false,
+  "empty idle goals should not show the composer chip",
+);
 useSessions.getState().updateSettings(first, {
   goal: {
     objective: "Ship autonomous goals",
@@ -223,11 +349,27 @@ useSessions.getState().updateSettings(first, {
     developerMaxTurns: null,
   },
 });
-equal(useSessions.getState().getSettings(first).goal.status, "running", "live goal state should allow running");
-equal(goalChipVisible(useSessions.getState().getSettings(first).goal), true, "running goals should show the composer chip");
-assert(localStorage.getItem("milim.sessions")?.includes('"objective":"Ship autonomous goals"'), "goal state should persist in session storage");
 equal(
-  normalizeGoalSettings({ ...useSessions.getState().getSettings(first).goal, status: "running" }, { pauseRunning: true }).status,
+  useSessions.getState().getSettings(first).goal.status,
+  "running",
+  "live goal state should allow running",
+);
+equal(
+  goalChipVisible(useSessions.getState().getSettings(first).goal),
+  true,
+  "running goals should show the composer chip",
+);
+assert(
+  localStorage
+    .getItem("milim.sessions")
+    ?.includes('"objective":"Ship autonomous goals"'),
+  "goal state should persist in session storage",
+);
+equal(
+  normalizeGoalSettings(
+    { ...useSessions.getState().getSettings(first).goal, status: "running" },
+    { pauseRunning: true },
+  ).status,
   "paused",
   "hydration should convert running goals to paused",
 );
@@ -237,17 +379,23 @@ deepEqual(
   "invalid goal decision JSON should block the goal",
 );
 deepEqual(
-  parseGoalDecision('{"status":"continue","reason":"More work remains.","next":"Do step two."}'),
+  parseGoalDecision(
+    '{"status":"continue","reason":"More work remains.","next":"Do step two."}',
+  ),
   { status: "continue", reason: "More work remains.", next: "Do step two." },
   "strict goal decision JSON should parse",
 );
 deepEqual(
-  parseGoalDecision('```json\n{"status":"complete","reason":"Done.","next":""}\n```'),
+  parseGoalDecision(
+    '```json\n{"status":"complete","reason":"Done.","next":""}\n```',
+  ),
   { status: "complete", reason: "Done.", next: "" },
   "fenced goal decision JSON should parse",
 );
 deepEqual(
-  parseGoalDecision('Decision:\n{"status":"blocked","reason":"Missing {external} input.","next":""}\nThanks.'),
+  parseGoalDecision(
+    'Decision:\n{"status":"blocked","reason":"Missing {external} input.","next":""}\nThanks.',
+  ),
   { status: "blocked", reason: "Missing {external} input.", next: "" },
   "prose-wrapped goal decision JSON should parse",
 );
@@ -256,23 +404,83 @@ deepEqual(
   { status: "blocked", reason: "Goal decision was not valid JSON.", next: "" },
   "incomplete goal decision JSON should block the goal",
 );
-let loopGoal = normalizeGoalSettings({ ...DEFAULT_GOAL_SETTINGS, objective: "Loop test", status: "running" });
-loopGoal = applyGoalDecision(loopGoal, { status: "continue", reason: "More work remains.", next: "Do step two." });
-equal(loopGoal.status, "running", "continue decision should keep the goal running");
+let loopGoal = normalizeGoalSettings({
+  ...DEFAULT_GOAL_SETTINGS,
+  objective: "Loop test",
+  status: "running",
+});
+loopGoal = applyGoalDecision(loopGoal, {
+  status: "continue",
+  reason: "More work remains.",
+  next: "Do step two.",
+});
+equal(
+  loopGoal.status,
+  "running",
+  "continue decision should keep the goal running",
+);
 equal(loopGoal.turns, 1, "continue decision should increment turns");
-loopGoal = applyGoalDecision(loopGoal, { status: "continue", reason: "One more step remains.", next: "Do final step." });
-equal(loopGoal.nextPrompt, "Do final step.", "continue decision should store the next prompt");
-loopGoal = applyGoalDecision(loopGoal, { status: "complete", reason: "All criteria satisfied.", next: "" });
+loopGoal = applyGoalDecision(loopGoal, {
+  status: "continue",
+  reason: "One more step remains.",
+  next: "Do final step.",
+});
+equal(
+  loopGoal.nextPrompt,
+  "Do final step.",
+  "continue decision should store the next prompt",
+);
+loopGoal = applyGoalDecision(loopGoal, {
+  status: "complete",
+  reason: "All criteria satisfied.",
+  next: "",
+});
 equal(loopGoal.status, "complete", "complete decision should stop the loop");
 equal(loopGoal.turns, 3, "complete decision should increment the final turn");
-equal(goalChipVisible(normalizeGoalSettings({ ...loopGoal, updatedAt: 10, lastSeenAt: null })), true, "unread complete goals should show the composer chip");
-equal(goalChipVisible(normalizeGoalSettings({ ...loopGoal, updatedAt: 10, lastSeenAt: 10 })), false, "read complete goals should hide the composer chip");
-useSessions.getState().updateSettings(first, { goal: { ...DEFAULT_GOAL_SETTINGS, objective: "Edited goal", successCriteria: "New criteria" } });
-equal(useSessions.getState().getSettings(first).goal.objective, "Edited goal", "goal edits should update the objective");
-equal(useSessions.getState().getSettings(first).goal.successCriteria, "New criteria", "goal edits should update success criteria");
-equal(goalChipVisible(useSessions.getState().getSettings(first).goal), false, "saved idle goals should not show the composer chip");
+equal(
+  goalChipVisible(
+    normalizeGoalSettings({ ...loopGoal, updatedAt: 10, lastSeenAt: null }),
+  ),
+  true,
+  "unread complete goals should show the composer chip",
+);
+equal(
+  goalChipVisible(
+    normalizeGoalSettings({ ...loopGoal, updatedAt: 10, lastSeenAt: 10 }),
+  ),
+  false,
+  "read complete goals should hide the composer chip",
+);
+useSessions
+  .getState()
+  .updateSettings(first, {
+    goal: {
+      ...DEFAULT_GOAL_SETTINGS,
+      objective: "Edited goal",
+      successCriteria: "New criteria",
+    },
+  });
+equal(
+  useSessions.getState().getSettings(first).goal.objective,
+  "Edited goal",
+  "goal edits should update the objective",
+);
+equal(
+  useSessions.getState().getSettings(first).goal.successCriteria,
+  "New criteria",
+  "goal edits should update success criteria",
+);
+equal(
+  goalChipVisible(useSessions.getState().getSettings(first).goal),
+  false,
+  "saved idle goals should not show the composer chip",
+);
 useSessions.getState().updateSettings(first, { goal: DEFAULT_GOAL_SETTINGS });
-deepEqual(useSessions.getState().getSettings(first).goal, DEFAULT_GOAL_SETTINGS, "deleting a goal should clear goal state");
+deepEqual(
+  useSessions.getState().getSettings(first).goal,
+  DEFAULT_GOAL_SETTINGS,
+  "deleting a goal should clear goal state",
+);
 
 useSessions.getState().setMessages(first, [
   { role: "user", content: "stream please" },
@@ -284,8 +492,14 @@ useSessions.getState().appendStreamChunks(first, [
   { kind: "thinking", content: "checking" },
   { kind: "text", content: "!" },
 ]);
-const streamedAssistant = useSessions.getState().sessions.find((session) => session.id === first)?.messages[1];
-equal(streamedAssistant?.content, "Hello world!", "batched stream chunks should append visible text");
+const streamedAssistant = useSessions
+  .getState()
+  .sessions.find((session) => session.id === first)?.messages[1];
+equal(
+  streamedAssistant?.content,
+  "Hello world!",
+  "batched stream chunks should append visible text",
+);
 deepEqual(
   streamedAssistant?.streamParts,
   [
@@ -311,22 +525,40 @@ useSessions.getState().appendStreamEvent(first, {
   callId: "call-b",
   status: "running",
 });
-useSessions.getState().completeStreamEvent(first, "shell", {
-  kind: "event",
-  eventType: "tool",
-  label: "Used shell",
-  name: "shell",
-  callId: "call-a",
-  status: "done",
-}, "call-a");
-const toolParts = (useSessions.getState().sessions.find((session) => session.id === first)?.messages[1].streamParts ?? [])
-  .filter((part) => part.kind === "event" && part.name === "shell");
+useSessions.getState().completeStreamEvent(
+  first,
+  "shell",
+  {
+    kind: "event",
+    eventType: "tool",
+    label: "Used shell",
+    name: "shell",
+    callId: "call-a",
+    status: "done",
+  },
+  "call-a",
+);
+const toolParts = (
+  useSessions.getState().sessions.find((session) => session.id === first)
+    ?.messages[1].streamParts ?? []
+).filter((part) => part.kind === "event" && part.name === "shell");
 const firstToolPart = toolParts[0];
 const secondToolPart = toolParts[1];
 assert(firstToolPart?.kind === "event", "first shell part should be an event");
-assert(secondToolPart?.kind === "event", "second shell part should be an event");
-equal(firstToolPart.status, "done", "tool result should complete the matching call id");
-equal(secondToolPart.status, "running", "same-name later tool call should remain running");
+assert(
+  secondToolPart?.kind === "event",
+  "second shell part should be an event",
+);
+equal(
+  firstToolPart.status,
+  "done",
+  "tool result should complete the matching call id",
+);
+equal(
+  secondToolPart.status,
+  "running",
+  "same-name later tool call should remain running",
+);
 useSessions.getState().commitResponseMetrics(first, {
   startedAt: 1_000,
   endedAt: 4_200,
@@ -335,13 +567,34 @@ useSessions.getState().commitResponseMetrics(first, {
   provider: "OpenRouter",
   usage: { prompt_tokens: 1_000, completion_tokens: 400, total_tokens: 1_400 },
   costUsd: 0.004,
-  limits: [{ provider: "Claude Code", status: "rejected", kind: "five_hour", reset_at: 1_782_660_000 }],
+  limits: [
+    {
+      provider: "Claude Code",
+      status: "rejected",
+      kind: "five_hour",
+      reset_at: 1_782_660_000,
+    },
+  ],
 });
-const assistantMetrics = useSessions.getState().sessions.find((session) => session.id === first)?.messages[1].metrics;
-assert(assistantMetrics, "response metrics should be stored on the latest assistant message");
-equal(formatResponseMetrics(assistantMetrics), "3.2s · 1.4k tokens · est. $0.004", "response metrics should format compactly");
+const assistantMetrics = useSessions
+  .getState()
+  .sessions.find((session) => session.id === first)?.messages[1].metrics;
+assert(
+  assistantMetrics,
+  "response metrics should be stored on the latest assistant message",
+);
 equal(
-  formatThreadMetrics(summarizeResponseMetrics(useSessions.getState().sessions.find((session) => session.id === first)?.messages ?? [])),
+  formatResponseMetrics(assistantMetrics),
+  "3.2s · 1.4k tokens · est. $0.004",
+  "response metrics should format compactly",
+);
+equal(
+  formatThreadMetrics(
+    summarizeResponseMetrics(
+      useSessions.getState().sessions.find((session) => session.id === first)
+        ?.messages ?? [],
+    ),
+  ),
   "3.2s · 1.4k tokens · est. $0.004",
   "thread metrics should be derived from assistant responses",
 );
@@ -354,7 +607,11 @@ const compactedBreakdown = formatThreadMetricsBreakdown([
       endedAt: 4_200,
       durationMs: 3_200,
       model: "openrouter/test",
-      usage: { prompt_tokens: 1_000, completion_tokens: 400, total_tokens: 1_400 },
+      usage: {
+        prompt_tokens: 1_000,
+        completion_tokens: 400,
+        total_tokens: 1_400,
+      },
       costUsd: 0.004,
     },
   },
@@ -369,14 +626,22 @@ const compactedBreakdown = formatThreadMetricsBreakdown([
       baseline: {
         responseCount: 1,
         durationMs: 3_200,
-        usage: { prompt_tokens: 1_000, completion_tokens: 400, total_tokens: 1_400 },
+        usage: {
+          prompt_tokens: 1_000,
+          completion_tokens: 400,
+          total_tokens: 1_400,
+        },
         costUsd: 0.004,
       },
       summary: {
         model: "openrouter/test",
         provider: "OpenRouter",
         durationMs: 800,
-        usage: { prompt_tokens: 700, completion_tokens: 100, total_tokens: 800 },
+        usage: {
+          prompt_tokens: 700,
+          completion_tokens: 100,
+          total_tokens: 800,
+        },
         costUsd: 0.001,
       },
     },
@@ -395,42 +660,133 @@ const compactedBreakdown = formatThreadMetricsBreakdown([
     },
   },
 ]);
-assert(compactedBreakdown.label?.includes("since compact"), "thread usage label should show post-compaction usage");
-assert(compactedBreakdown.label?.includes("est. $0.007"), "thread usage label should include compaction-summary spend in lifetime cost");
-assert(compactedBreakdown.title?.includes("At latest checkpoint"), "thread usage tooltip should show checkpoint baseline");
-assert(compactedBreakdown.title?.includes("Compaction summary"), "thread usage tooltip should show summary generation cost");
-assert(formatProviderLimits(latestProviderLimits(useSessions.getState().sessions.find((session) => session.id === first)?.messages ?? []), 1_782_659_100_000)?.includes("limit hit"), "provider limits should format from latest response metrics");
-const codexLimits = codexLimitsFromRateLimitPayload({ rateLimits: { five_hour: { remaining: 2, limit: 10, resetAt: 1_782_660_000 } } });
-equal(codexLimits[0]?.provider, "Codex", "Codex rate-limit payload should normalize to provider limits");
-assert(formatProviderLimits(codexLimits, 1_782_659_100_000)?.includes("2/10 left"), "Codex rate-limit payload should format quota");
-const codexWindowLimits = codexLimitsFromRateLimitPayload({ rateLimits: {
-  primary: { usedPercent: 48, windowDurationMins: 300, resetsAt: 1_782_660_000 },
-  secondary: { usedPercent: 60, windowDurationMins: 10_080, resetsAt: 1_782_900_000 },
-} });
-const codexWindowText = formatProviderLimits(codexWindowLimits, 1_782_659_100_000) ?? "";
-assert(codexWindowText.includes("5h limit") && codexWindowText.includes("weekly limit"), "Codex primary/secondary limits should use window labels");
-assert(!/weekly limit 60% used .*resets/.test(codexWindowText), "Codex weekly limit should hide reset time until exhausted");
-const codexWeeklyHitText = formatProviderLimits(codexLimitsFromRateLimitPayload({ rateLimits: {
-  secondary: { usedPercent: 100, windowDurationMins: 10_080, resetsAt: 1_782_900_000 },
-} }), 1_782_659_100_000) ?? "";
-assert(/weekly limit 100% used .*resets/.test(codexWeeklyHitText), "Codex exhausted weekly limit should show reset time");
-assert(localStorage.getItem("milim.sessions")?.includes('"durationMs":3200'), "response metrics should persist in session storage");
-assert(localStorage.getItem("milim.sessions")?.includes('"planMode":true'), "plan mode should persist in session storage");
-const usage = { prompt_tokens: 1_000, completion_tokens: 500, total_tokens: 1_500 };
-const pricedProviders = [{
-  id: "prov-openrouter",
-  name: "OpenRouter",
-  kind: "openai_compatible" as const,
-  base_url: "https://openrouter.ai/api/v1",
-  enabled: true,
-  has_key: true,
-  models: ["openrouter/test"],
-  pricing: { "openrouter/test": { prompt: "0.000001", completion: "0.000002" } },
-}];
-equal(estimateResponseCostUsd("openrouter/test", usage, pricedProviders), 0.002, "OpenRouter pricing should estimate prompt plus completion cost");
-equal(estimateResponseCostUsd("missing-price", usage, pricedProviders), undefined, "unknown pricing should not estimate cost");
+assert(
+  compactedBreakdown.label?.includes("since compact"),
+  "thread usage label should show post-compaction usage",
+);
+assert(
+  compactedBreakdown.label?.includes("est. $0.007"),
+  "thread usage label should include compaction-summary spend in lifetime cost",
+);
+assert(
+  compactedBreakdown.title?.includes("At latest checkpoint"),
+  "thread usage tooltip should show checkpoint baseline",
+);
+assert(
+  compactedBreakdown.title?.includes("Compaction summary"),
+  "thread usage tooltip should show summary generation cost",
+);
+assert(
+  formatProviderLimits(
+    latestProviderLimits(
+      useSessions.getState().sessions.find((session) => session.id === first)
+        ?.messages ?? [],
+    ),
+    1_782_659_100_000,
+  )?.includes("limit hit"),
+  "provider limits should format from latest response metrics",
+);
+const codexLimits = codexLimitsFromRateLimitPayload({
+  rateLimits: {
+    five_hour: { remaining: 2, limit: 10, resetAt: 1_782_660_000 },
+  },
+});
+equal(
+  codexLimits[0]?.provider,
+  "Codex",
+  "Codex rate-limit payload should normalize to provider limits",
+);
+assert(
+  formatProviderLimits(codexLimits, 1_782_659_100_000)?.includes("2/10 left"),
+  "Codex rate-limit payload should format quota",
+);
+const codexWindowLimits = codexLimitsFromRateLimitPayload({
+  rateLimits: {
+    primary: {
+      usedPercent: 48,
+      windowDurationMins: 300,
+      resetsAt: 1_782_660_000,
+    },
+    secondary: {
+      usedPercent: 60,
+      windowDurationMins: 10_080,
+      resetsAt: 1_782_900_000,
+    },
+  },
+});
+const codexWindowText =
+  formatProviderLimits(codexWindowLimits, 1_782_659_100_000) ?? "";
+assert(
+  codexWindowText.includes("5h limit") &&
+    codexWindowText.includes("weekly limit"),
+  "Codex primary/secondary limits should use window labels",
+);
+assert(
+  !/weekly limit 60% used .*resets/.test(codexWindowText),
+  "Codex weekly limit should hide reset time until exhausted",
+);
+const codexWeeklyHitText =
+  formatProviderLimits(
+    codexLimitsFromRateLimitPayload({
+      rateLimits: {
+        secondary: {
+          usedPercent: 100,
+          windowDurationMins: 10_080,
+          resetsAt: 1_782_900_000,
+        },
+      },
+    }),
+    1_782_659_100_000,
+  ) ?? "";
+assert(
+  /weekly limit 100% used .*resets/.test(codexWeeklyHitText),
+  "Codex exhausted weekly limit should show reset time",
+);
+assert(
+  localStorage.getItem("milim.sessions")?.includes('"durationMs":3200'),
+  "response metrics should persist in session storage",
+);
+assert(
+  localStorage.getItem("milim.sessions")?.includes('"planMode":true'),
+  "plan mode should persist in session storage",
+);
+const usage = {
+  prompt_tokens: 1_000,
+  completion_tokens: 500,
+  total_tokens: 1_500,
+};
+const pricedProviders = [
+  {
+    id: "prov-openrouter",
+    name: "OpenRouter",
+    kind: "openai_compatible" as const,
+    base_url: "https://openrouter.ai/api/v1",
+    enabled: true,
+    has_key: true,
+    models: ["openrouter/test"],
+    pricing: {
+      "openrouter/test": { prompt: "0.000001", completion: "0.000002" },
+    },
+  },
+];
+equal(
+  estimateResponseCostUsd("openrouter/test", usage, pricedProviders),
+  0.002,
+  "OpenRouter pricing should estimate prompt plus completion cost",
+);
+equal(
+  estimateResponseCostUsd("missing-price", usage, pricedProviders),
+  undefined,
+  "unknown pricing should not estimate cost",
+);
 deepEqual(
-  responseMetricsForTurn({ startedAt: 10, endedAt: 40, model: "openrouter/test", providers: pricedProviders, usage }),
+  responseMetricsForTurn({
+    startedAt: 10,
+    endedAt: 40,
+    model: "openrouter/test",
+    providers: pricedProviders,
+    usage,
+  }),
   {
     startedAt: 10,
     endedAt: 40,
@@ -443,7 +799,16 @@ deepEqual(
   "turn response metrics should derive duration, provider, and estimated cost",
 );
 deepEqual(
-  responseMetricsForTurn({ startedAt: 10, endedAt: 40, model: "codex:gpt-5", providers: pricedProviders, codexModel: "gpt-5", usage, costUsd: 0.5, limits: [] }),
+  responseMetricsForTurn({
+    startedAt: 10,
+    endedAt: 40,
+    model: "codex:gpt-5",
+    providers: pricedProviders,
+    codexModel: "gpt-5",
+    usage,
+    costUsd: 0.5,
+    limits: [],
+  }),
   {
     startedAt: 10,
     endedAt: 40,
@@ -457,12 +822,37 @@ deepEqual(
 );
 const usageSummary = summarizeMilimUsage(
   [
-    { messages: [{ role: "user", content: "one" }], updatedAt: new Date(2026, 5, 1, 9).getTime(), settings: { folder: "C:\\active-project" } },
-    { messages: [{ role: "user", content: "two" }], updatedAt: new Date(2026, 5, 1, 10).getTime(), settings: { folder: "" } },
-    { messages: [{ role: "user", content: "three" }], updatedAt: new Date(2026, 4, 31, 10).getTime(), settings: { folder: "C:\\active-project" } },
-    { messages: [], updatedAt: new Date(2026, 5, 2, 10).getTime(), settings: { folder: "C:\\active-project" } },
-    { messages: [{ role: "user", content: "archived" }], updatedAt: new Date(2026, 5, 3, 10).getTime(), settings: { folder: "C:\\active-project" }, archivedAt: 1 },
-    { messages: [{ role: "user", content: "archived project" }], updatedAt: new Date(2026, 5, 4, 10).getTime(), settings: { folder: "C:\\archived-project" } },
+    {
+      messages: [{ role: "user", content: "one" }],
+      updatedAt: new Date(2026, 5, 1, 9).getTime(),
+      settings: { folder: "C:\\active-project" },
+    },
+    {
+      messages: [{ role: "user", content: "two" }],
+      updatedAt: new Date(2026, 5, 1, 10).getTime(),
+      settings: { folder: "" },
+    },
+    {
+      messages: [{ role: "user", content: "three" }],
+      updatedAt: new Date(2026, 4, 31, 10).getTime(),
+      settings: { folder: "C:\\active-project" },
+    },
+    {
+      messages: [],
+      updatedAt: new Date(2026, 5, 2, 10).getTime(),
+      settings: { folder: "C:\\active-project" },
+    },
+    {
+      messages: [{ role: "user", content: "archived" }],
+      updatedAt: new Date(2026, 5, 3, 10).getTime(),
+      settings: { folder: "C:\\active-project" },
+      archivedAt: 1,
+    },
+    {
+      messages: [{ role: "user", content: "archived project" }],
+      updatedAt: new Date(2026, 5, 4, 10).getTime(),
+      settings: { folder: "C:\\archived-project" },
+    },
   ],
   [
     { folder: "C:\\active-project" },
@@ -470,11 +860,31 @@ const usageSummary = summarizeMilimUsage(
   ],
   new Date(2026, 5, 28).getTime(),
 );
-equal(usageSummary.threadCount, 3, "Milim usage should count only non-empty visible threads");
-equal(usageSummary.projectCount, 1, "Milim usage should count only active projects");
-equal(usageSummary.activeDayCount, 2, "Milim usage should count active days in the displayed year");
-equal(usageSummary.months.find((month) => month.key === "2026-06")?.days[0], 2, "Milim usage should bucket same-day June activity");
-equal(usageSummary.months.find((month) => month.key === "2026-05")?.days[30], 1, "Milim usage should bucket May activity by day");
+equal(
+  usageSummary.threadCount,
+  3,
+  "Milim usage should count only non-empty visible threads",
+);
+equal(
+  usageSummary.projectCount,
+  1,
+  "Milim usage should count only active projects",
+);
+equal(
+  usageSummary.activeDayCount,
+  2,
+  "Milim usage should count active days in the displayed year",
+);
+equal(
+  usageSummary.months.find((month) => month.key === "2026-06")?.days[0],
+  2,
+  "Milim usage should bucket same-day June activity",
+);
+equal(
+  usageSummary.months.find((month) => month.key === "2026-05")?.days[30],
+  1,
+  "Milim usage should bucket May activity by day",
+);
 deepEqual(
   usageSummary.metrics,
   [
@@ -484,8 +894,16 @@ deepEqual(
   ],
   "Milim usage metrics should format compactly",
 );
-const emptyUsageSummary = summarizeMilimUsage([], [], new Date(2026, 5, 28).getTime());
-equal(emptyUsageSummary.hasUsage, false, "empty Milim usage should report no activity");
+const emptyUsageSummary = summarizeMilimUsage(
+  [],
+  [],
+  new Date(2026, 5, 28).getTime(),
+);
+equal(
+  emptyUsageSummary.hasUsage,
+  false,
+  "empty Milim usage should report no activity",
+);
 deepEqual(
   emptyUsageSummary.metrics,
   [
@@ -505,40 +923,128 @@ useSessions.getState().newChat({
 const second = useSessions.getState().activeId;
 assert(second !== first, "new chat should create a different active session");
 useSessions.getState().setArtifactPanelOpen(first, true);
-equal(useSessions.getState().sessions.find((session) => session.id === first)?.artifactPanelOpen, true, "artifact panel open state should persist per thread");
-equal(useSessions.getState().sessions.find((session) => session.id === second)?.artifactPanelOpen, undefined, "artifact panel state should not bleed into another thread");
-assert(localStorage.getItem("milim.sessions")?.includes('"artifactPanelOpen":true'), "artifact panel open state should persist in session storage");
+equal(
+  useSessions.getState().sessions.find((session) => session.id === first)
+    ?.artifactPanelOpen,
+  true,
+  "artifact panel open state should persist per thread",
+);
+equal(
+  useSessions.getState().sessions.find((session) => session.id === second)
+    ?.artifactPanelOpen,
+  undefined,
+  "artifact panel state should not bleed into another thread",
+);
+assert(
+  localStorage.getItem("milim.sessions")?.includes('"artifactPanelOpen":true'),
+  "artifact panel open state should persist in session storage",
+);
 useSessions.getState().setArtifactPanelOpen(first, false);
-equal(useSessions.getState().sessions.find((session) => session.id === first)?.artifactPanelOpen, undefined, "closing the artifact panel should persist collapsed state");
+equal(
+  useSessions.getState().sessions.find((session) => session.id === first)
+    ?.artifactPanelOpen,
+  undefined,
+  "closing the artifact panel should persist collapsed state",
+);
 useSessions.getState().setSidePanelMode(first, "git");
-equal(useSessions.getState().sessions.find((session) => session.id === first)?.sidePanelMode, "git", "side panel mode should persist per thread");
-equal(useSessions.getState().sessions.find((session) => session.id === first)?.artifactPanelOpen, true, "selecting a side panel mode should open it");
-assert(localStorage.getItem("milim.sessions")?.includes('"sidePanelMode":"git"'), "side panel mode should persist in session storage");
+equal(
+  useSessions.getState().sessions.find((session) => session.id === first)
+    ?.sidePanelMode,
+  "git",
+  "side panel mode should persist per thread",
+);
+equal(
+  useSessions.getState().sessions.find((session) => session.id === first)
+    ?.artifactPanelOpen,
+  true,
+  "selecting a side panel mode should open it",
+);
+assert(
+  localStorage.getItem("milim.sessions")?.includes('"sidePanelMode":"git"'),
+  "side panel mode should persist in session storage",
+);
 useSessions.getState().setSidePanelOpen(first, false);
-equal(useSessions.getState().sessions.find((session) => session.id === first)?.artifactPanelOpen, undefined, "collapsing the side panel should persist closed state");
-equal(useSessions.getState().sessions.find((session) => session.id === first)?.sidePanelMode, "git", "collapsing the side panel should preserve selected mode");
+equal(
+  useSessions.getState().sessions.find((session) => session.id === first)
+    ?.artifactPanelOpen,
+  undefined,
+  "collapsing the side panel should persist closed state",
+);
+equal(
+  useSessions.getState().sessions.find((session) => session.id === first)
+    ?.sidePanelMode,
+  "git",
+  "collapsing the side panel should preserve selected mode",
+);
 useSessions.getState().setSidePanelOpen(first, true);
-equal(useSessions.getState().sessions.find((session) => session.id === first)?.artifactPanelOpen, true, "reopening the side panel should restore open state");
-equal(useSessions.getState().sessions.find((session) => session.id === first)?.sidePanelMode, "git", "reopening the side panel should keep the selected mode");
+equal(
+  useSessions.getState().sessions.find((session) => session.id === first)
+    ?.artifactPanelOpen,
+  true,
+  "reopening the side panel should restore open state",
+);
+equal(
+  useSessions.getState().sessions.find((session) => session.id === first)
+    ?.sidePanelMode,
+  "git",
+  "reopening the side panel should keep the selected mode",
+);
 useSessions.getState().setSidePanelMode(first, null);
-equal(useSessions.getState().sessions.find((session) => session.id === first)?.sidePanelMode, undefined, "closing the side panel should clear the persisted mode");
+equal(
+  useSessions.getState().sessions.find((session) => session.id === first)
+    ?.sidePanelMode,
+  undefined,
+  "closing the side panel should clear the persisted mode",
+);
 useSessions.getState().setSessionUnread(first, true);
-deepEqual(useSessions.getState().unreadSessionIds, [first], "background thread updates should be marked unread");
+deepEqual(
+  useSessions.getState().unreadSessionIds,
+  [first],
+  "background thread updates should be marked unread",
+);
 useSessions.getState().switchTo(first);
-deepEqual(useSessions.getState().unreadSessionIds, [], "opening an unread thread should mark it read");
+deepEqual(
+  useSessions.getState().unreadSessionIds,
+  [],
+  "opening an unread thread should mark it read",
+);
 useSessions.getState().switchTo(second);
 const projectA = projectSectionId("C:\\workspace-a");
 useSessions.getState().toggleSessionPinned(first);
-deepEqual(useSessions.getState().sidebar.pinnedSessionIds, [first], "sidebar should track pinned chats");
+deepEqual(
+  useSessions.getState().sidebar.pinnedSessionIds,
+  [first],
+  "sidebar should track pinned chats",
+);
 useSessions.getState().toggleSidebarSectionCollapsed(projectA);
-deepEqual(useSessions.getState().sidebar.collapsedSectionIds, [projectA], "sidebar should persist collapsed project sections");
+deepEqual(
+  useSessions.getState().sidebar.collapsedSectionIds,
+  [projectA],
+  "sidebar should persist collapsed project sections",
+);
 useSessions.getState().toggleSidebarSectionPinned(projectA);
-deepEqual(useSessions.getState().sidebar.pinnedSectionIds, [projectA], "sidebar should persist pinned project sections");
-equal(useSessions.getState().sidebar.sectionOrder[0], projectA, "pinning a project section should promote it in the sidebar order");
+deepEqual(
+  useSessions.getState().sidebar.pinnedSectionIds,
+  [projectA],
+  "sidebar should persist pinned project sections",
+);
+equal(
+  useSessions.getState().sidebar.sectionOrder[0],
+  projectA,
+  "pinning a project section should promote it in the sidebar order",
+);
 useSessions.getState().moveSessionInSidebar(first, second, projectA);
-deepEqual(useSessions.getState().sidebar.sessionOrder.slice(0, 2), [first, second], "sidebar should persist manual chat ordering");
+deepEqual(
+  useSessions.getState().sidebar.sessionOrder.slice(0, 2),
+  [first, second],
+  "sidebar should persist manual chat ordering",
+);
 useSessions.getState().moveSessionInSidebar(first, second, projectA, "after");
-deepEqual(useSessions.getState().sidebar.sessionOrder.slice(0, 2), [second, first], "sidebar should persist directional chat ordering");
+deepEqual(
+  useSessions.getState().sidebar.sessionOrder.slice(0, 2),
+  [second, first],
+  "sidebar should persist directional chat ordering",
+);
 useSessions.getState().addProjectFolder("C:\\workspace-c");
 const projectC = projectSectionId("C:\\workspace-c");
 assert(
@@ -546,15 +1052,34 @@ assert(
   "sidebar should persist explicitly added project folders",
 );
 deepEqual(
-  useSessions.getState().sidebar.sectionOrder.filter((id: string) => id === SIDEBAR_PINNED_SECTION_ID || id === SIDEBAR_CHATS_SECTION_ID),
+  useSessions
+    .getState()
+    .sidebar.sectionOrder.filter(
+      (id: string) =>
+        id === SIDEBAR_PINNED_SECTION_ID || id === SIDEBAR_CHATS_SECTION_ID,
+    ),
   [],
   "fixed sidebar sections should not persist in manual project section order",
 );
-const sectionOrderBeforeFixedDrop = useSessions.getState().sidebar.sectionOrder.slice();
-useSessions.getState().moveSidebarSection(projectA, SIDEBAR_PINNED_SECTION_ID, "before");
-deepEqual(useSessions.getState().sidebar.sectionOrder, sectionOrderBeforeFixedDrop, "pinned should stay fixed above project section ordering");
-useSessions.getState().moveSidebarSection(projectA, SIDEBAR_CHATS_SECTION_ID, "after");
-deepEqual(useSessions.getState().sidebar.sectionOrder, sectionOrderBeforeFixedDrop, "chats should stay fixed below project section ordering");
+const sectionOrderBeforeFixedDrop = useSessions
+  .getState()
+  .sidebar.sectionOrder.slice();
+useSessions
+  .getState()
+  .moveSidebarSection(projectA, SIDEBAR_PINNED_SECTION_ID, "before");
+deepEqual(
+  useSessions.getState().sidebar.sectionOrder,
+  sectionOrderBeforeFixedDrop,
+  "pinned should stay fixed above project section ordering",
+);
+useSessions
+  .getState()
+  .moveSidebarSection(projectA, SIDEBAR_CHATS_SECTION_ID, "after");
+deepEqual(
+  useSessions.getState().sidebar.sectionOrder,
+  sectionOrderBeforeFixedDrop,
+  "chats should stay fixed below project section ordering",
+);
 useSessions.getState().moveSidebarSection(projectA, projectC, "before");
 equal(
   useSessions.getState().sidebar.sectionOrder.indexOf(projectA),
@@ -567,7 +1092,10 @@ equal(
   useSessions.getState().sidebar.sectionOrder.indexOf(projectC) + 1,
   "sidebar should persist directional project section ordering after a project target",
 );
-assert(localStorage.getItem("milim.sessions")?.includes('"sidebar"'), "sidebar organization should persist in session storage");
+assert(
+  localStorage.getItem("milim.sessions")?.includes('"sidebar"'),
+  "sidebar organization should persist in session storage",
+);
 
 const forkSource = useSessions.getState().activeId;
 useSessions.getState().setMessages(forkSource, [
@@ -577,15 +1105,24 @@ useSessions.getState().setMessages(forkSource, [
 ]);
 const forked = useSessions.getState().forkSession(forkSource, 1);
 assert(forked, "forking a session should return the new session id");
-const forkedSession = useSessions.getState().sessions.find((session) => session.id === forked);
+const forkedSession = useSessions
+  .getState()
+  .sessions.find((session) => session.id === forked);
 assert(forkedSession, "forked session should be stored");
-equal(forkedSession.parentId, forkSource, "forked session should point at its source");
+equal(
+  forkedSession.parentId,
+  forkSource,
+  "forked session should point at its source",
+);
 deepEqual(
   forkedSession.messages.map((message) => message.content),
   ["branch root", "branch answer"],
   "forking at a message should copy the visible prefix only",
 );
-assert(!forkedSession.accountRuntime, "forked sessions should not reuse native runtime thread ids");
+assert(
+  !forkedSession.accountRuntime,
+  "forked sessions should not reuse native runtime thread ids",
+);
 
 const imported = useSessions.getState().importSession({
   id: "foreign-id",
@@ -598,15 +1135,28 @@ const imported = useSessions.getState().importSession({
   settings: { model: "import-model", folder: "C:\\imported" },
 });
 assert(imported, "importing a session should return the new session id");
-assert(imported !== "foreign-id", "imported sessions should get a fresh local id");
-const importedSession = useSessions.getState().sessions.find((session) => session.id === imported);
-equal(importedSession?.title, "Foreign chat", "import should preserve the exported title");
+assert(
+  imported !== "foreign-id",
+  "imported sessions should get a fresh local id",
+);
+const importedSession = useSessions
+  .getState()
+  .sessions.find((session) => session.id === imported);
+equal(
+  importedSession?.title,
+  "Foreign chat",
+  "import should preserve the exported title",
+);
 deepEqual(
   importedSession?.messages.map((message) => message.content),
   ["imported user", "imported assistant"],
   "import should ignore invalid message rows",
 );
-equal(importedSession?.settings?.folder, "C:\\imported", "import should preserve thread settings");
+equal(
+  importedSession?.settings?.folder,
+  "C:\\imported",
+  "import should preserve thread settings",
+);
 
 useSessions.getState().upsertChildThread(first, {
   id: "child-thread-1",
@@ -623,14 +1173,35 @@ useSessions.getState().upsertChildThread(first, {
   updated_at: "2026-06-22 10:00:01",
   finished_at: null,
 });
-let child = useSessions.getState().sessions.find((session) => session.id === "child-thread-1");
+let child = useSessions
+  .getState()
+  .sessions.find((session) => session.id === "child-thread-1");
 assert(child, "child thread should be upserted as a session");
 equal(child.parentId, first, "child session should persist parent id");
-equal(child.worker?.status, "running", "child session should persist worker status");
-equal(child.settings?.model, "model-a", "child session should use its persisted worker model");
-equal(child.settings?.activeAgentId, null, "child session should not inherit the parent agent");
-equal(child.messages[0].content, "Review this thread", "child session should expose its delegated prompt");
-assert(localStorage.getItem("milim.sessions")?.includes(`"parentId":"${first}"`), "child parent id should persist in session storage");
+equal(
+  child.worker?.status,
+  "running",
+  "child session should persist worker status",
+);
+equal(
+  child.settings?.model,
+  "model-a",
+  "child session should use its persisted worker model",
+);
+equal(
+  child.settings?.activeAgentId,
+  null,
+  "child session should not inherit the parent agent",
+);
+equal(
+  child.messages[0].content,
+  "Review this thread",
+  "child session should expose its delegated prompt",
+);
+assert(
+  localStorage.getItem("milim.sessions")?.includes(`"parentId":"${first}"`),
+  "child parent id should persist in session storage",
+);
 
 useSessions.getState().updateChildThread({
   id: "child-thread-1",
@@ -647,64 +1218,111 @@ useSessions.getState().updateChildThread({
   updated_at: "2026-06-22 10:00:02",
   finished_at: "2026-06-22 10:00:02",
 });
-child = useSessions.getState().sessions.find((session) => session.id === "child-thread-1");
+child = useSessions
+  .getState()
+  .sessions.find((session) => session.id === "child-thread-1");
 equal(child?.worker?.status, "done", "child worker status should update");
-equal(child?.messages[1].content, "Looks good.", "child summary should update the child transcript");
+equal(
+  child?.messages[1].content,
+  "Looks good.",
+  "child summary should update the child transcript",
+);
 
-useSessions.getState().updateChildThread({
-  id: "child-thread-1",
-  parent_id: first,
-  root_id: first,
-  title: "Review worker",
-  status: "running",
-  model: "model-a",
-  agent_id: null,
-  prompt: "Review this thread",
-  summary: null,
-  error: null,
-  created_at: "2026-06-22 10:00:00",
-  updated_at: "2026-06-22 10:00:03",
-  finished_at: null,
-}, [
-  { id: "event-1", thread_id: "child-thread-1", kind: "reasoning", payload: { text: "Checking " }, created_at: "2026-06-22 10:00:01" },
-  { id: "event-2", thread_id: "child-thread-1", kind: "tool_call", payload: { name: "read_file", arguments: "{\"path\":\"README.md\"}" }, created_at: "2026-06-22 10:00:02" },
-  { id: "event-3", thread_id: "child-thread-1", kind: "tool_result", payload: { name: "read_file", result: { ok: true } }, created_at: "2026-06-22 10:00:03" },
-  { id: "event-4", thread_id: "child-thread-1", kind: "token", payload: { text: "Live report" }, created_at: "2026-06-22 10:00:04" },
-]);
-child = useSessions.getState().sessions.find((session) => session.id === "child-thread-1");
-equal(child?.messages[1].content, "Live report", "child token events should update visible content");
+useSessions.getState().updateChildThread(
+  {
+    id: "child-thread-1",
+    parent_id: first,
+    root_id: first,
+    title: "Review worker",
+    status: "running",
+    model: "model-a",
+    agent_id: null,
+    prompt: "Review this thread",
+    summary: null,
+    error: null,
+    created_at: "2026-06-22 10:00:00",
+    updated_at: "2026-06-22 10:00:03",
+    finished_at: null,
+  },
+  [
+    {
+      id: "event-1",
+      thread_id: "child-thread-1",
+      kind: "reasoning",
+      payload: { text: "Checking " },
+      created_at: "2026-06-22 10:00:01",
+    },
+    {
+      id: "event-2",
+      thread_id: "child-thread-1",
+      kind: "tool_call",
+      payload: { name: "read_file", arguments: '{"path":"README.md"}' },
+      created_at: "2026-06-22 10:00:02",
+    },
+    {
+      id: "event-3",
+      thread_id: "child-thread-1",
+      kind: "tool_result",
+      payload: { name: "read_file", result: { ok: true } },
+      created_at: "2026-06-22 10:00:03",
+    },
+    {
+      id: "event-4",
+      thread_id: "child-thread-1",
+      kind: "token",
+      payload: { text: "Live report" },
+      created_at: "2026-06-22 10:00:04",
+    },
+  ],
+);
+child = useSessions
+  .getState()
+  .sessions.find((session) => session.id === "child-thread-1");
+equal(
+  child?.messages[1].content,
+  "Live report",
+  "child token events should update visible content",
+);
 deepEqual(
   child?.messages[1].streamParts?.map((part) => part.kind),
   ["thinking", "event", "text"],
   "child events should hydrate stream parts",
 );
 
-deepEqual(useSessions.getState().getSettings(first), {
-  model: "model-a",
-  instructions: "prompt a",
-  activeAgentId: "agent-a",
-  folder: "C:\\workspace-a",
-  sandbox: true,
-  computerUse: true,
-  memory: false,
-  privacy: "redact",
-  toolApproval: "open",
-  planMode: true,
-  goal: DEFAULT_GOAL_SETTINGS,
-}, "first session settings should persist");
-deepEqual(useSessions.getState().getSettings(second), {
-  model: "model-b",
-  instructions: "prompt b",
-  activeAgentId: "agent-b",
-  folder: "",
-  sandbox: false,
-  computerUse: false,
-  memory: true,
-  privacy: "off",
-  toolApproval: "guarded",
-  planMode: false,
-  goal: DEFAULT_GOAL_SETTINGS,
-}, "second session settings should persist");
+deepEqual(
+  useSessions.getState().getSettings(first),
+  {
+    model: "model-a",
+    instructions: "prompt a",
+    activeAgentId: "agent-a",
+    folder: "C:\\workspace-a",
+    sandbox: true,
+    computerUse: true,
+    memory: false,
+    privacy: "redact",
+    toolApproval: "open",
+    planMode: true,
+    goal: DEFAULT_GOAL_SETTINGS,
+  },
+  "first session settings should persist",
+);
+deepEqual(
+  useSessions.getState().getSettings(second),
+  {
+    model: "model-b",
+    instructions: "prompt b",
+    activeAgentId: "agent-b",
+    folder: "",
+    sandbox: false,
+    computerUse: false,
+    memory: true,
+    privacy: "off",
+    toolApproval: "guarded",
+    planMode: false,
+    goal: DEFAULT_GOAL_SETTINGS,
+  },
+  "second session settings should persist",
+);
 
 useSessions.getState().updateSettings(second, {
   model: "model-b2",
@@ -715,9 +1333,14 @@ useSessions.getState().updateSettings(second, {
   privacy: "block",
 });
 useSessions.getState().switchTo(first);
-equal(useSessions.getState().getSettings(useSessions.getState().activeId).model, "model-a", "switching to the first session should restore model-a");
 equal(
-  useSessions.getState().getSettings(useSessions.getState().activeId).computerUse,
+  useSessions.getState().getSettings(useSessions.getState().activeId).model,
+  "model-a",
+  "switching to the first session should restore model-a",
+);
+equal(
+  useSessions.getState().getSettings(useSessions.getState().activeId)
+    .computerUse,
   true,
   "switching to the first session should restore computer-use on",
 );
@@ -728,59 +1351,94 @@ equal(
 );
 
 useSessions.getState().switchTo(second);
-equal(useSessions.getState().getSettings(useSessions.getState().activeId).model, "model-b2", "switching back should restore model-b2");
 equal(
-  useSessions.getState().getSettings(useSessions.getState().activeId).computerUse,
+  useSessions.getState().getSettings(useSessions.getState().activeId).model,
+  "model-b2",
+  "switching back should restore model-b2",
+);
+equal(
+  useSessions.getState().getSettings(useSessions.getState().activeId)
+    .computerUse,
   true,
   "switching back should restore computer-use on for the second session",
 );
-assert(localStorage.getItem("milim.sessions")?.includes('"computerUse":true'), "computer-use state should be persisted in session storage");
+assert(
+  localStorage.getItem("milim.sessions")?.includes('"computerUse":true'),
+  "computer-use state should be persisted in session storage",
+);
 
-useSessions.getState().setMessages(second, [{ role: "user", content: "second thread" }]);
+useSessions
+  .getState()
+  .setMessages(second, [{ role: "user", content: "second thread" }]);
 useSessions.getState().newChat();
 const third = useSessions.getState().activeId;
-assert(third !== second, "new chat without explicit settings should create a new session when active thread has messages");
-deepEqual(useSessions.getState().getSettings(third), {
-  model: "model-b2",
-  instructions: "prompt b",
-  activeAgentId: "agent-b",
-  folder: "C:\\workspace-b",
-  sandbox: true,
-  computerUse: true,
-  memory: false,
-  privacy: "block",
-  toolApproval: "guarded",
-  planMode: false,
-  goal: DEFAULT_GOAL_SETTINGS,
-}, "new chat should inherit active thread settings by default");
+assert(
+  third !== second,
+  "new chat without explicit settings should create a new session when active thread has messages",
+);
+deepEqual(
+  useSessions.getState().getSettings(third),
+  {
+    model: "model-b2",
+    instructions: "prompt b",
+    activeAgentId: "agent-b",
+    folder: "C:\\workspace-b",
+    sandbox: true,
+    computerUse: true,
+    memory: false,
+    privacy: "block",
+    toolApproval: "guarded",
+    planMode: false,
+    goal: DEFAULT_GOAL_SETTINGS,
+  },
+  "new chat should inherit active thread settings by default",
+);
 
 useSessions.getState().updateSettings(third, {
   computerUse: false,
   sandbox: false,
   memory: true,
   privacy: "off",
-  reasoningEffortByModel: { "model-b2": "nope" as never, other: "low", "auto-model": "auto" },
+  reasoningEffortByModel: {
+    "model-b2": "nope" as never,
+    other: "low",
+    "auto-model": "auto",
+  },
 });
-assert(!("reasoningEffortByModel" in useSessions.getState().getSettings(third)), "thread settings should ignore legacy reasoning effort maps");
+assert(
+  !("reasoningEffortByModel" in useSessions.getState().getSettings(third)),
+  "thread settings should ignore legacy reasoning effort maps",
+);
 useSessions.getState().switchTo(second);
-deepEqual(useSessions.getState().getSettings(second), {
-  model: "model-b2",
-  instructions: "prompt b",
-  activeAgentId: "agent-b",
-  folder: "C:\\workspace-b",
-  sandbox: true,
-  computerUse: true,
-  memory: false,
-  privacy: "block",
-  toolApproval: "guarded",
-  planMode: false,
-  goal: DEFAULT_GOAL_SETTINGS,
-}, "changing computer-use in one thread should not change another thread");
+deepEqual(
+  useSessions.getState().getSettings(second),
+  {
+    model: "model-b2",
+    instructions: "prompt b",
+    activeAgentId: "agent-b",
+    folder: "C:\\workspace-b",
+    sandbox: true,
+    computerUse: true,
+    memory: false,
+    privacy: "block",
+    toolApproval: "guarded",
+    planMode: false,
+    goal: DEFAULT_GOAL_SETTINGS,
+  },
+  "changing computer-use in one thread should not change another thread",
+);
 useSessions.getState().switchTo(third);
 
 useSessions.getState().updateSettings(third, { model: "mock-echo" });
-equal(useSessions.getState().getSettings(third).model, "", "legacy mock-echo settings should be cleared");
-assert(!localStorage.getItem("milim.sessions")?.includes('"model":"mock-echo"'), "mock-echo should not persist in session storage");
+equal(
+  useSessions.getState().getSettings(third).model,
+  "",
+  "legacy mock-echo settings should be cleared",
+);
+assert(
+  !localStorage.getItem("milim.sessions")?.includes('"model":"mock-echo"'),
+  "mock-echo should not persist in session storage",
+);
 useSessions.getState().updateSettings(third, { model: "model-b2" });
 
 const artifactSession = useSessions.getState().activeId;
@@ -795,7 +1453,9 @@ useSessions.getState().setMessages(artifactSession, [
   { role: "user", content: "make a file" },
   { role: "assistant", content: artifactContent },
 ]);
-const artifact = useSessions.getState().sessions.find((s) => s.id === artifactSession)?.messages[1].artifacts?.[0];
+const artifact = useSessions
+  .getState()
+  .sessions.find((s) => s.id === artifactSession)?.messages[1].artifacts?.[0];
 assert(artifact, "assistant artifact should be extracted");
 const artifactSavedAt = 1_725_000_000_000;
 const artifactSourceSessionId = "app-session-test";
@@ -808,25 +1468,80 @@ useSessions.getState().markArtifactSaved(artifactSession, 1, artifact.id, {
   sourceMessageIndex: 1,
   sourceRevisionNumber: 1,
 });
-const saved = useSessions.getState().sessions.find((s) => s.id === artifactSession)?.messages[1].artifacts?.[0]?.saved;
-assert(saved, "saved artifact metadata should be stored on the message artifact");
-equal(saved.path, "C:\\workspace\\src\\persisted-artifact.ts", "saved artifact path should persist in session state");
-equal(saved.savedAt, artifactSavedAt, "saved artifact timestamp should persist in session state");
-equal(saved.sourceSessionId, artifactSourceSessionId, "saved artifact source session should persist in session state");
-equal(saved.sourceMessageIndex, 1, "saved artifact source message index should persist in session state");
-equal(saved.sourceRevisionNumber, 1, "saved artifact source revision should persist in session state");
+const saved = useSessions
+  .getState()
+  .sessions.find((s) => s.id === artifactSession)?.messages[1]
+  .artifacts?.[0]?.saved;
+assert(
+  saved,
+  "saved artifact metadata should be stored on the message artifact",
+);
+equal(
+  saved.path,
+  "C:\\workspace\\src\\persisted-artifact.ts",
+  "saved artifact path should persist in session state",
+);
+equal(
+  saved.savedAt,
+  artifactSavedAt,
+  "saved artifact timestamp should persist in session state",
+);
+equal(
+  saved.sourceSessionId,
+  artifactSourceSessionId,
+  "saved artifact source session should persist in session state",
+);
+equal(
+  saved.sourceMessageIndex,
+  1,
+  "saved artifact source message index should persist in session state",
+);
+equal(
+  saved.sourceRevisionNumber,
+  1,
+  "saved artifact source revision should persist in session state",
+);
 
-useSessions.getState().setMessages(artifactSession, [
-  { role: "user", content: "make a file" },
-  useSessions.getState().sessions.find((s) => s.id === artifactSession)!.messages[1],
-]);
-const savedAfterNormalize = useSessions.getState().sessions.find((s) => s.id === artifactSession)?.messages[1].artifacts?.[0]?.saved;
-assert(savedAfterNormalize, "saved artifact metadata should survive artifact normalization");
-equal(savedAfterNormalize.path, "C:\\workspace\\src\\persisted-artifact.ts", "normalization should keep saved artifact path");
-equal(savedAfterNormalize.savedAt, artifactSavedAt, "normalization should keep saved artifact timestamp");
-equal(savedAfterNormalize.sourceSessionId, artifactSourceSessionId, "normalization should keep saved artifact source session");
-equal(savedAfterNormalize.sourceMessageIndex, 1, "normalization should keep saved artifact source message index");
-equal(savedAfterNormalize.sourceRevisionNumber, 1, "normalization should keep saved artifact source revision");
+useSessions
+  .getState()
+  .setMessages(artifactSession, [
+    { role: "user", content: "make a file" },
+    useSessions.getState().sessions.find((s) => s.id === artifactSession)!
+      .messages[1],
+  ]);
+const savedAfterNormalize = useSessions
+  .getState()
+  .sessions.find((s) => s.id === artifactSession)?.messages[1]
+  .artifacts?.[0]?.saved;
+assert(
+  savedAfterNormalize,
+  "saved artifact metadata should survive artifact normalization",
+);
+equal(
+  savedAfterNormalize.path,
+  "C:\\workspace\\src\\persisted-artifact.ts",
+  "normalization should keep saved artifact path",
+);
+equal(
+  savedAfterNormalize.savedAt,
+  artifactSavedAt,
+  "normalization should keep saved artifact timestamp",
+);
+equal(
+  savedAfterNormalize.sourceSessionId,
+  artifactSourceSessionId,
+  "normalization should keep saved artifact source session",
+);
+equal(
+  savedAfterNormalize.sourceMessageIndex,
+  1,
+  "normalization should keep saved artifact source message index",
+);
+equal(
+  savedAfterNormalize.sourceRevisionNumber,
+  1,
+  "normalization should keep saved artifact source revision",
+);
 
 const revisionArtifactContent = [
   "Revised file:",
@@ -835,122 +1550,300 @@ const revisionArtifactContent = [
   "export const persistedArtifact = 'revision two';",
   "```",
 ].join("\n");
-useSessions.getState().setMessages(artifactSession, [
-  { role: "user", content: "make a file" },
-  useSessions.getState().sessions.find((s) => s.id === artifactSession)!.messages[1],
-  { role: "assistant", content: revisionArtifactContent },
-]);
-const revisionArtifact = useSessions.getState().sessions.find((s) => s.id === artifactSession)?.messages[2].artifacts?.[0];
+useSessions
+  .getState()
+  .setMessages(artifactSession, [
+    { role: "user", content: "make a file" },
+    useSessions.getState().sessions.find((s) => s.id === artifactSession)!
+      .messages[1],
+    { role: "assistant", content: revisionArtifactContent },
+  ]);
+const revisionArtifact = useSessions
+  .getState()
+  .sessions.find((s) => s.id === artifactSession)?.messages[2].artifacts?.[0];
 assert(revisionArtifact, "assistant revision artifact should be extracted");
 const revisionSavedAt = artifactSavedAt + 1;
-useSessions.getState().markArtifactSaved(artifactSession, 2, revisionArtifact.id, {
-  path: "C:\\workspace\\src\\persisted-artifact-v2.ts",
-  bytes: 52,
-  overwritten: true,
-  savedAt: revisionSavedAt,
-  sourceSessionId: artifactSourceSessionId,
-  sourceMessageIndex: 2,
-  sourceRevisionNumber: 2,
-});
-const firstSavedAfterRevision = useSessions.getState().sessions.find((s) => s.id === artifactSession)?.messages[1].artifacts?.[0]?.saved;
-const revisionSaved = useSessions.getState().sessions.find((s) => s.id === artifactSession)?.messages[2].artifacts?.[0]?.saved;
-assert(firstSavedAfterRevision, "first artifact revision should keep its saved metadata");
+useSessions
+  .getState()
+  .markArtifactSaved(artifactSession, 2, revisionArtifact.id, {
+    path: "C:\\workspace\\src\\persisted-artifact-v2.ts",
+    bytes: 52,
+    overwritten: true,
+    savedAt: revisionSavedAt,
+    sourceSessionId: artifactSourceSessionId,
+    sourceMessageIndex: 2,
+    sourceRevisionNumber: 2,
+  });
+const firstSavedAfterRevision = useSessions
+  .getState()
+  .sessions.find((s) => s.id === artifactSession)?.messages[1]
+  .artifacts?.[0]?.saved;
+const revisionSaved = useSessions
+  .getState()
+  .sessions.find((s) => s.id === artifactSession)?.messages[2]
+  .artifacts?.[0]?.saved;
+assert(
+  firstSavedAfterRevision,
+  "first artifact revision should keep its saved metadata",
+);
 assert(revisionSaved, "selected artifact revision should store saved metadata");
-equal(firstSavedAfterRevision.path, "C:\\workspace\\src\\persisted-artifact.ts", "saving a later revision should not overwrite the first revision metadata");
-equal(revisionSaved.path, "C:\\workspace\\src\\persisted-artifact-v2.ts", "selected revision should store its own saved path");
-equal(revisionSaved.savedAt, revisionSavedAt, "selected revision should store its own saved timestamp");
-equal(revisionSaved.sourceMessageIndex, 2, "selected revision should store its source message index");
-equal(revisionSaved.sourceRevisionNumber, 2, "selected revision should store its source revision");
+equal(
+  firstSavedAfterRevision.path,
+  "C:\\workspace\\src\\persisted-artifact.ts",
+  "saving a later revision should not overwrite the first revision metadata",
+);
+equal(
+  revisionSaved.path,
+  "C:\\workspace\\src\\persisted-artifact-v2.ts",
+  "selected revision should store its own saved path",
+);
+equal(
+  revisionSaved.savedAt,
+  revisionSavedAt,
+  "selected revision should store its own saved timestamp",
+);
+equal(
+  revisionSaved.sourceMessageIndex,
+  2,
+  "selected revision should store its source message index",
+);
+equal(
+  revisionSaved.sourceRevisionNumber,
+  2,
+  "selected revision should store its source revision",
+);
 
-useSessions.getState().setMessages(artifactSession, [
-  { role: "user", content: "make a file" },
-  useSessions.getState().sessions.find((s) => s.id === artifactSession)!.messages[1],
-  useSessions.getState().sessions.find((s) => s.id === artifactSession)!.messages[2],
-]);
-const revisionSavedAfterNormalize = useSessions.getState().sessions.find((s) => s.id === artifactSession)?.messages[2].artifacts?.[0]?.saved;
-assert(revisionSavedAfterNormalize, "selected revision saved metadata should survive artifact normalization");
-equal(revisionSavedAfterNormalize.path, "C:\\workspace\\src\\persisted-artifact-v2.ts", "normalization should keep selected revision saved path");
-equal(revisionSavedAfterNormalize.savedAt, revisionSavedAt, "normalization should keep selected revision saved timestamp");
-equal(revisionSavedAfterNormalize.sourceMessageIndex, 2, "normalization should keep selected revision source message index");
-equal(revisionSavedAfterNormalize.sourceRevisionNumber, 2, "normalization should keep selected revision source revision");
+useSessions
+  .getState()
+  .setMessages(artifactSession, [
+    { role: "user", content: "make a file" },
+    useSessions.getState().sessions.find((s) => s.id === artifactSession)!
+      .messages[1],
+    useSessions.getState().sessions.find((s) => s.id === artifactSession)!
+      .messages[2],
+  ]);
+const revisionSavedAfterNormalize = useSessions
+  .getState()
+  .sessions.find((s) => s.id === artifactSession)?.messages[2]
+  .artifacts?.[0]?.saved;
+assert(
+  revisionSavedAfterNormalize,
+  "selected revision saved metadata should survive artifact normalization",
+);
+equal(
+  revisionSavedAfterNormalize.path,
+  "C:\\workspace\\src\\persisted-artifact-v2.ts",
+  "normalization should keep selected revision saved path",
+);
+equal(
+  revisionSavedAfterNormalize.savedAt,
+  revisionSavedAt,
+  "normalization should keep selected revision saved timestamp",
+);
+equal(
+  revisionSavedAfterNormalize.sourceMessageIndex,
+  2,
+  "normalization should keep selected revision source message index",
+);
+equal(
+  revisionSavedAfterNormalize.sourceRevisionNumber,
+  2,
+  "normalization should keep selected revision source revision",
+);
 
-equal(normalizeVirtualFilePath(".\\src\\virtual.ts"), "src/virtual.ts", "virtual project paths should normalize to relative slash paths");
-equal(normalizeVirtualFilePath("../secret.ts"), "", "virtual project paths should reject parent traversal");
-useSessions.getState().upsertVirtualFiles(artifactSession, [{ path: ".\\src\\virtual.ts", content: "export const virtual = 1;" }], {
-  sourceMessageIndex: 1,
-  sourceRevisionNumber: 1,
-});
-useSessions.getState().upsertVirtualFiles(artifactSession, [{ path: "src/virtual.ts", content: "export const virtual = 2;" }], {
-  sourceMessageIndex: 2,
-  sourceRevisionNumber: 2,
-});
-const virtualFile = useSessions.getState().sessions.find((s) => s.id === artifactSession)?.virtualFiles?.["src/virtual.ts"];
+equal(
+  normalizeVirtualFilePath(".\\src\\virtual.ts"),
+  "src/virtual.ts",
+  "virtual project paths should normalize to relative slash paths",
+);
+equal(
+  normalizeVirtualFilePath("../secret.ts"),
+  "",
+  "virtual project paths should reject parent traversal",
+);
+useSessions
+  .getState()
+  .upsertVirtualFiles(
+    artifactSession,
+    [{ path: ".\\src\\virtual.ts", content: "export const virtual = 1;" }],
+    {
+      sourceMessageIndex: 1,
+      sourceRevisionNumber: 1,
+    },
+  );
+useSessions
+  .getState()
+  .upsertVirtualFiles(
+    artifactSession,
+    [{ path: "src/virtual.ts", content: "export const virtual = 2;" }],
+    {
+      sourceMessageIndex: 2,
+      sourceRevisionNumber: 2,
+    },
+  );
+const virtualFile = useSessions
+  .getState()
+  .sessions.find((s) => s.id === artifactSession)?.virtualFiles?.[
+  "src/virtual.ts"
+];
 assert(virtualFile, "virtual project file should be persisted on the session");
-equal(virtualFile.version, 2, "virtual project file version should increment when content changes");
-equal(virtualFile.sourceMessageIndex, 2, "virtual project file should track source message");
-equal(sessionVirtualProjectFiles({ virtualFiles: { "src/virtual.ts": virtualFile } })[0].path, "src/virtual.ts", "virtual project files should convert to preview files");
-assert(localStorage.getItem("milim.sessions")?.includes('"virtualFiles"'), "virtual project files should persist in session storage");
+equal(
+  virtualFile.version,
+  2,
+  "virtual project file version should increment when content changes",
+);
+equal(
+  virtualFile.sourceMessageIndex,
+  2,
+  "virtual project file should track source message",
+);
+equal(
+  sessionVirtualProjectFiles({
+    virtualFiles: { "src/virtual.ts": virtualFile },
+  })[0].path,
+  "src/virtual.ts",
+  "virtual project files should convert to preview files",
+);
+assert(
+  localStorage.getItem("milim.sessions")?.includes('"virtualFiles"'),
+  "virtual project files should persist in session storage",
+);
 
 useSessions.getState().newChat({ model: "model-manual-title" });
 const manualTitleSession = useSessions.getState().activeId;
-useSessions.getState().setMessages(manualTitleSession, [{ role: "user", content: "do not derive this title" }], { autoTitle: false });
+useSessions
+  .getState()
+  .setMessages(
+    manualTitleSession,
+    [{ role: "user", content: "do not derive this title" }],
+    { autoTitle: false },
+  );
 equal(
-  useSessions.getState().sessions.find((s) => s.id === manualTitleSession)?.title,
+  useSessions.getState().sessions.find((s) => s.id === manualTitleSession)
+    ?.title,
   "New chat",
   "auto-title opt-out should keep the default title",
 );
-useSessions.getState().setMessages(manualTitleSession, [{ role: "user", content: "derive this title now" }], { autoTitle: true });
+useSessions
+  .getState()
+  .setMessages(
+    manualTitleSession,
+    [{ role: "user", content: "derive this title now" }],
+    { autoTitle: true },
+  );
 equal(
-  useSessions.getState().sessions.find((s) => s.id === manualTitleSession)?.title,
+  useSessions.getState().sessions.find((s) => s.id === manualTitleSession)
+    ?.title,
   "derive this title now",
   "auto-title opt-in should derive the title from the first user message",
 );
 
 useSessions.getState().newChat({ model: "queue-remove-model" });
 const queueRemoveSession = useSessions.getState().activeId;
-useSessions.getState().enqueueQueuedMessage(queueRemoveSession, { content: "remove with session" });
-assert(useSessions.getState().queuedMessagesBySession[queueRemoveSession]?.length === 1, "queue cleanup test should create a queued item");
-useSessions.getState().remove(queueRemoveSession);
-equal(useSessions.getState().queuedMessagesBySession[queueRemoveSession], undefined, "removing a session should remove its queued messages");
-
-useSessions.getState().newChat({ ...useSessions.getState().getSettings(useSessions.getState().activeId), folder: "C:\\composer-project" });
-equal(useSessions.getState().getSettings(useSessions.getState().activeId).folder, "C:\\composer-project", "project selector should start a chat in the selected project");
+useSessions
+  .getState()
+  .enqueueQueuedMessage(queueRemoveSession, { content: "remove with session" });
 assert(
-  useSessions.getState().projects.some((project) => project.folder === "C:\\composer-project"),
+  useSessions.getState().queuedMessagesBySession[queueRemoveSession]?.length ===
+    1,
+  "queue cleanup test should create a queued item",
+);
+useSessions.getState().remove(queueRemoveSession);
+equal(
+  useSessions.getState().queuedMessagesBySession[queueRemoveSession],
+  undefined,
+  "removing a session should remove its queued messages",
+);
+
+useSessions
+  .getState()
+  .newChat({
+    ...useSessions.getState().getSettings(useSessions.getState().activeId),
+    folder: "C:\\composer-project",
+  });
+equal(
+  useSessions.getState().getSettings(useSessions.getState().activeId).folder,
+  "C:\\composer-project",
+  "project selector should start a chat in the selected project",
+);
+assert(
+  useSessions
+    .getState()
+    .projects.some((project) => project.folder === "C:\\composer-project"),
   "project selector should register the selected project",
 );
 const projectCountBeforeNoProject = useSessions.getState().projects.length;
-useSessions.getState().setMessages(useSessions.getState().activeId, [{ role: "user", content: "project chat" }]);
-useSessions.getState().newChat({ ...useSessions.getState().getSettings(useSessions.getState().activeId), folder: "" });
-equal(useSessions.getState().getSettings(useSessions.getState().activeId).folder, "", "no-project selector should start a chat without a folder");
-equal(useSessions.getState().projects.length, projectCountBeforeNoProject, "no-project selector should not create a blank project");
+useSessions
+  .getState()
+  .setMessages(useSessions.getState().activeId, [
+    { role: "user", content: "project chat" },
+  ]);
+useSessions
+  .getState()
+  .newChat({
+    ...useSessions.getState().getSettings(useSessions.getState().activeId),
+    folder: "",
+  });
+equal(
+  useSessions.getState().getSettings(useSessions.getState().activeId).folder,
+  "",
+  "no-project selector should start a chat without a folder",
+);
+equal(
+  useSessions.getState().projects.length,
+  projectCountBeforeNoProject,
+  "no-project selector should not create a blank project",
+);
 
-equal(useSessions.getState().archiveRetentionDays, DEFAULT_ARCHIVE_RETENTION_DAYS, "archive retention should default to 30 days");
+equal(
+  useSessions.getState().archiveRetentionDays,
+  DEFAULT_ARCHIVE_RETENTION_DAYS,
+  "archive retention should default to 30 days",
+);
 useSessions.getState().setArchiveRetentionDays(7);
-equal(useSessions.getState().archiveRetentionDays, 7, "archive retention should support 7 days");
-useSessions.getState().newChat({ model: "archive-model", folder: "C:\\workspace-archive" });
+equal(
+  useSessions.getState().archiveRetentionDays,
+  7,
+  "archive retention should support 7 days",
+);
+useSessions
+  .getState()
+  .newChat({ model: "archive-model", folder: "C:\\workspace-archive" });
 const archiveSession = useSessions.getState().activeId;
-useSessions.getState().setMessages(archiveSession, [{ role: "user", content: "archive me" }]);
+useSessions
+  .getState()
+  .setMessages(archiveSession, [{ role: "user", content: "archive me" }]);
 const archiveProject = projectSectionId("C:\\workspace-archive");
 assert(
-  useSessions.getState().projects.some((project) => project.id === archiveProject),
+  useSessions
+    .getState()
+    .projects.some((project) => project.id === archiveProject),
   "setting a folder should create a project record",
 );
 useSessions.getState().archiveSession(archiveSession);
 assert(
-  useSessions.getState().sessions.find((session) => session.id === archiveSession)?.archivedAt,
+  useSessions
+    .getState()
+    .sessions.find((session) => session.id === archiveSession)?.archivedAt,
   "archiving a chat should mark it archived",
 );
-assert(useSessions.getState().activeId !== archiveSession, "archiving the active chat should switch to a visible chat");
+assert(
+  useSessions.getState().activeId !== archiveSession,
+  "archiving the active chat should switch to a visible chat",
+);
 useSessions.getState().restoreSession(archiveSession);
 equal(
-  useSessions.getState().sessions.find((session) => session.id === archiveSession)?.archivedAt,
+  useSessions
+    .getState()
+    .sessions.find((session) => session.id === archiveSession)?.archivedAt,
   undefined,
   "restoring a chat should clear its archive marker",
 );
 useSessions.getState().archiveProject(archiveProject);
 assert(
-  useSessions.getState().projects.find((project) => project.id === archiveProject)?.archivedAt,
+  useSessions
+    .getState()
+    .projects.find((project) => project.id === archiveProject)?.archivedAt,
   "archiving a project should mark the project archived",
 );
 assert(
@@ -959,25 +1852,35 @@ assert(
 );
 useSessions.getState().restoreProject(archiveProject);
 equal(
-  useSessions.getState().projects.find((project) => project.id === archiveProject)?.archivedAt,
+  useSessions
+    .getState()
+    .projects.find((project) => project.id === archiveProject)?.archivedAt,
   undefined,
   "restoring a project should clear its archive marker",
 );
 useSessions.getState().archiveProject(archiveProject);
-const projectArchivedAt = useSessions.getState().projects.find((project) => project.id === archiveProject)?.archivedAt;
+const projectArchivedAt = useSessions
+  .getState()
+  .projects.find((project) => project.id === archiveProject)?.archivedAt;
 assert(projectArchivedAt, "project archive time should be recorded");
 useSessions.getState().purgeExpiredArchives(projectArchivedAt + 6 * DAY_MS);
 assert(
-  useSessions.getState().projects.some((project) => project.id === archiveProject),
+  useSessions
+    .getState()
+    .projects.some((project) => project.id === archiveProject),
   "project should remain before the retention window expires",
 );
 useSessions.getState().purgeExpiredArchives(projectArchivedAt + 8 * DAY_MS);
 assert(
-  !useSessions.getState().projects.some((project) => project.id === archiveProject),
+  !useSessions
+    .getState()
+    .projects.some((project) => project.id === archiveProject),
   "expired archived project should be deleted",
 );
 assert(
-  !useSessions.getState().sessions.some((session) => session.id === archiveSession),
+  !useSessions
+    .getState()
+    .sessions.some((session) => session.id === archiveSession),
   "deleting an expired project should delete its chats",
 );
 
