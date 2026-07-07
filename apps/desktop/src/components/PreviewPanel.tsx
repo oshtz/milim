@@ -21,12 +21,18 @@ type NativeWebviewHandle = {
   setPosition: (position: unknown) => Promise<void>;
   setSize: (size: unknown) => Promise<void>;
 };
+type NativeOverlayWindowHandle = NativeWebviewHandle & {
+  setIgnoreCursorEvents: (ignore: boolean) => Promise<void>;
+};
+type NativeVisibleHandle = Pick<NativeWebviewHandle, "hide" | "show">;
+type PreviewControlOverlayPoint = { x: number; y: number };
 
 type PreviewControlOverlayPayload = {
   id: string;
   gesture: PreviewControlActivity["gesture"];
   label: string;
   status: PreviewControlActivity["status"];
+  point?: PreviewControlOverlayPoint;
   dark: boolean;
   accent?: string;
   accentLight?: string;
@@ -863,7 +869,7 @@ function PreviewRuntimeStatus({
 function NativeArtifactBrowser({ url, frameKey, title, active, controlActivity }: { url: string; frameKey: number; title: string; active: boolean; controlActivity?: PreviewControlActivity | null }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const webviewRef = useRef<NativeWebviewHandle | null>(null);
-  const overlayWebviewRef = useRef<NativeWebviewHandle | null>(null);
+  const overlayWindowRef = useRef<NativeOverlayWindowHandle | null>(null);
   const labelRef = useRef(`artifact-browser-${Math.random().toString(36).slice(2)}`);
   const overlayLabelRef = useRef(`artifact-overlay-${Math.random().toString(36).slice(2)}`);
   const overlayChannelRef = useRef(`preview-control-overlay-${Math.random().toString(36).slice(2)}`);
@@ -882,7 +888,7 @@ function NativeArtifactBrowser({ url, frameKey, title, active, controlActivity }
     clearOverlayCloseTimer();
     overlayCleanupRef.current?.();
     overlayCleanupRef.current = null;
-    await closeNativeWebview(overlayWebviewRef);
+    await closeNativeWebview(overlayWindowRef);
   }
 
   useEffect(() => {
@@ -947,7 +953,7 @@ function NativeArtifactBrowser({ url, frameKey, title, active, controlActivity }
         nativeHidden = blocked;
         await Promise.all([
           setNativeWebviewHidden(webviewRef.current, blocked),
-          setNativeWebviewHidden(overlayWebviewRef.current, blocked),
+          setNativeWebviewHidden(overlayWindowRef.current, blocked),
         ]);
         if (!blocked) void syncBounds(webviewRef.current);
       }
@@ -1015,7 +1021,7 @@ function NativeArtifactBrowser({ url, frameKey, title, active, controlActivity }
     if (!active || !controlActivity || !IS_TAURI) return;
     let cancelled = false;
     const channel = overlayChannelRef.current;
-    const payload = previewControlOverlayPayload(controlActivity);
+    const payload = previewControlOverlayPayload(controlActivity, hostRef.current ?? undefined);
 
     publishPreviewControlOverlayActivity(channel, payload);
     clearOverlayCloseTimer();
@@ -1025,44 +1031,64 @@ function NativeArtifactBrowser({ url, frameKey, title, active, controlActivity }
       const host = hostRef.current;
       if (!host) return;
       const hostElement = host;
-      const [{ Webview }, { getCurrentWindow }, { LogicalPosition, LogicalSize }] = await Promise.all([
-        import("@tauri-apps/api/webview"),
+      const [{ WebviewWindow }, { getCurrentWindow }, { LogicalPosition, LogicalSize }] = await Promise.all([
+        import("@tauri-apps/api/webviewWindow"),
         import("@tauri-apps/api/window"),
         import("@tauri-apps/api/dpi"),
       ]);
       if (cancelled) return;
+      const mainWindow = getCurrentWindow();
 
       async function syncOverlayBounds() {
-        if (!overlayWebviewRef.current || !hostElement.isConnected) return;
-        const nextRect = nativeBrowserBounds(hostElement);
+        if (!overlayWindowRef.current || !hostElement.isConnected) return;
+        const nextRect = await nativeBrowserWindowBounds(hostElement, mainWindow);
         await Promise.all([
-          overlayWebviewRef.current.setPosition(new LogicalPosition(nextRect.x, nextRect.y)),
-          overlayWebviewRef.current.setSize(new LogicalSize(nextRect.width, nextRect.height)),
+          overlayWindowRef.current.setPosition(new LogicalPosition(nextRect.x, nextRect.y)),
+          overlayWindowRef.current.setSize(new LogicalSize(nextRect.width, nextRect.height)),
         ]).catch(() => undefined);
       }
 
-      if (!overlayWebviewRef.current) {
-        const rect = nativeBrowserBounds(hostElement);
+      if (!overlayWindowRef.current) {
+        const rect = await nativeBrowserWindowBounds(hostElement, mainWindow);
         const overlayLabel = `${overlayLabelRef.current}-${++overlayInstanceRef.current}`;
-        const overlay = new Webview(getCurrentWindow(), overlayLabel, {
+        const overlay = new WebviewWindow(overlayLabel, {
           url: previewControlOverlayUrl(channel),
           x: rect.x,
           y: rect.y,
           width: rect.width,
           height: rect.height,
           transparent: true,
+          decorations: false,
           backgroundColor: [0, 0, 0, 0],
+          visible: false,
           focus: false,
+          focusable: false,
+          resizable: false,
+          shadow: false,
+          skipTaskbar: true,
+          parent: mainWindow,
           dragDropEnabled: false,
-        }) as NativeWebviewHandle;
-        overlayWebviewRef.current = overlay;
-        if (nativePreviewBlockedByAppUi()) await overlay.hide().catch(() => undefined);
+        }) as NativeOverlayWindowHandle;
+        overlayWindowRef.current = overlay;
+        await waitForNativeCreated(overlay);
+        if (cancelled) {
+          await closeNativeWebview(overlayWindowRef);
+          return;
+        }
+        await overlay.setIgnoreCursorEvents(true);
+        await syncOverlayBounds();
+        if (!nativePreviewBlockedByAppUi()) await overlay.show().catch(() => undefined);
 
         const resizeObserver = new ResizeObserver(() => void syncOverlayBounds());
         resizeObserver.observe(hostElement);
         const onWindowLayout = () => void syncOverlayBounds();
         window.addEventListener("resize", onWindowLayout);
         window.addEventListener("scroll", onWindowLayout, true);
+        const windowListeners = await Promise.all([
+          mainWindow.onMoved(onWindowLayout),
+          mainWindow.onResized(onWindowLayout),
+          mainWindow.onScaleChanged(onWindowLayout),
+        ]);
         const publishSoon = [
           window.setTimeout(() => publishPreviewControlOverlayActivity(channel, payload), 80),
           window.setTimeout(() => publishPreviewControlOverlayActivity(channel, payload), 220),
@@ -1071,6 +1097,7 @@ function NativeArtifactBrowser({ url, frameKey, title, active, controlActivity }
           resizeObserver.disconnect();
           window.removeEventListener("resize", onWindowLayout);
           window.removeEventListener("scroll", onWindowLayout, true);
+          for (const unlisten of windowListeners) unlisten();
           for (const timer of publishSoon) window.clearTimeout(timer);
         };
       } else {
@@ -1104,7 +1131,7 @@ function NativeArtifactBrowser({ url, frameKey, title, active, controlActivity }
   );
 }
 
-async function closeNativeWebview(ref: { current: NativeWebviewHandle | null }) {
+async function closeNativeWebview<T extends NativeWebviewHandle>(ref: { current: T | null }) {
   const webview = ref.current;
   ref.current = null;
   if (!webview) return;
@@ -1112,9 +1139,26 @@ async function closeNativeWebview(ref: { current: NativeWebviewHandle | null }) 
   await webview.close().catch(() => undefined);
 }
 
-async function setNativeWebviewHidden(webview: NativeWebviewHandle | null, hidden: boolean) {
+async function setNativeWebviewHidden(webview: NativeVisibleHandle | null, hidden: boolean) {
   if (!webview) return;
   await (hidden ? webview.hide() : webview.show()).catch(() => undefined);
+}
+
+async function waitForNativeCreated(webview: NativeWebviewHandle) {
+  await new Promise<void>((resolve, reject) => {
+    let settled = false;
+    let timer = 0;
+    const finish = (error?: string) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      if (error) reject(new Error(error));
+      else resolve();
+    };
+    timer = window.setTimeout(() => finish(), 600);
+    void webview.once("tauri://created", () => finish()).catch(() => undefined);
+    void webview.once<string>("tauri://error", (event) => finish(event.payload || "Could not create preview overlay.")).catch(() => undefined);
+  });
 }
 
 function nativeBrowserBounds(host: HTMLElement) {
@@ -1127,12 +1171,30 @@ function nativeBrowserBounds(host: HTMLElement) {
   };
 }
 
+async function nativeBrowserWindowBounds(
+  host: HTMLElement,
+  mainWindow: {
+    outerPosition: () => Promise<{ x: number; y: number; toLogical?: (scaleFactor: number) => { x: number; y: number } }>;
+    scaleFactor: () => Promise<number>;
+  },
+) {
+  const rect = nativeBrowserBounds(host);
+  const [position, scaleFactor] = await Promise.all([mainWindow.outerPosition(), mainWindow.scaleFactor()]);
+  const origin = position.toLogical ? position.toLogical(scaleFactor) : { x: position.x / scaleFactor, y: position.y / scaleFactor };
+  return {
+    x: Math.max(0, Math.round(origin.x + rect.x)),
+    y: Math.max(0, Math.round(origin.y + rect.y)),
+    width: rect.width,
+    height: rect.height,
+  };
+}
+
 function previewControlOverlayUrl(channel: string): string {
   const params = new URLSearchParams({ channel });
   return `/preview-control-overlay.html?${params.toString()}`;
 }
 
-function previewControlOverlayPayload(activity: PreviewControlActivity): PreviewControlOverlayPayload {
+function previewControlOverlayPayload(activity: PreviewControlActivity, host?: HTMLElement): PreviewControlOverlayPayload {
   const payload: PreviewControlOverlayPayload = {
     id: activity.id,
     gesture: activity.gesture,
@@ -1140,6 +1202,8 @@ function previewControlOverlayPayload(activity: PreviewControlActivity): Preview
     label: previewControlLabel(activity),
     dark: typeof document !== "undefined" && document.documentElement.getAttribute("data-dark") === "true",
   };
+  const point = previewControlOverlayPoint(activity, host);
+  if (point) payload.point = point;
   const styles = typeof document !== "undefined" ? getComputedStyle(document.documentElement) : null;
   const accent = styles?.getPropertyValue("--accent").trim();
   const accentLight = styles?.getPropertyValue("--accent-light").trim();
@@ -1150,6 +1214,20 @@ function previewControlOverlayPayload(activity: PreviewControlActivity): Preview
   if (accentGlow) payload.accentGlow = accentGlow;
   if (focusBorder) payload.focusBorder = focusBorder;
   return payload;
+}
+
+function previewControlOverlayPoint(activity: PreviewControlActivity, host?: HTMLElement): PreviewControlOverlayPoint | undefined {
+  if (!activity.point) return undefined;
+  const { x, y, unit } = activity.point;
+  if (unit === "ratio") return { x: clampPercent(x * 100), y: clampPercent(y * 100) };
+  if (unit === "percent") return { x: clampPercent(x), y: clampPercent(y) };
+  const rect = host?.getBoundingClientRect();
+  if (!rect?.width || !rect.height) return undefined;
+  return { x: clampPercent((x / rect.width) * 100), y: clampPercent((y / rect.height) * 100) };
+}
+
+function clampPercent(value: number): number {
+  return Math.min(100, Math.max(0, Math.round(value * 100) / 100));
 }
 
 function publishPreviewControlOverlayActivity(channel: string, payload: PreviewControlOverlayPayload) {

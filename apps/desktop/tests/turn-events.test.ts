@@ -52,6 +52,27 @@ const scroll = toolStartedPart({
 equal(scroll.icon, "screen", "scroll should use the screen icon");
 equal(scroll.label, "Using computer", "scroll should be grouped with computer-use tools");
 
+const previewClick = toolStartedPart({
+  type: "tool_call",
+  name: "preview_click",
+  call_id: "call-4",
+  arguments: JSON.stringify({ x: 0.25, y: 0.5 }),
+} as never);
+equal(previewClick.previewPoint?.unit, "ratio", "relative preview coordinates should be marked as ratios");
+equal(previewClick.previewPoint?.x, 0.25, "preview click should preserve x");
+equal(previewClick.previewPoint?.y, 0.5, "preview click should preserve y");
+
+const previewTargetResult = toolCompletedPart({
+  type: "tool_result",
+  name: "preview_type_text",
+  call_id: "call-5",
+  arguments: JSON.stringify({ selector: "#search", text: "query" }),
+  result: { ok: true, target: { rect: { x: 10, y: 20, width: 30, height: 10 } } },
+} as never);
+equal(previewTargetResult.previewPoint?.unit, "pixel", "selector-target preview result should use pixel coordinates");
+equal(previewTargetResult.previewPoint?.x, 25, "selector-target preview result should use rect center x");
+equal(previewTargetResult.previewPoint?.y, 25, "selector-target preview result should use rect center y");
+
 const runtime = accountRuntimeToolPart({
   type: "tool",
   id: "tool-1",

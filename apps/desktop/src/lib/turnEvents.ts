@@ -2,6 +2,7 @@ import type {
   AgentEvent,
   ChatMessage,
   ChatStreamEventIcon,
+  ChatStreamPreviewPoint,
   ChatStreamPart,
   ClaudeRunEvent,
   CodexRunEvent,
@@ -44,6 +45,32 @@ function numericToolField(record: Record<string, unknown> | null, keys: string[]
     if (typeof value === "number" && Number.isFinite(value)) return value;
   }
   return undefined;
+}
+
+function previewToolPointFromArgs(name: string | undefined, args: Record<string, unknown> | null): ChatStreamPreviewPoint | undefined {
+  if (name !== "preview_click" && name !== "preview_type_text") return undefined;
+  const x = numericToolField(args, ["x"]);
+  const y = numericToolField(args, ["y"]);
+  if (x == null || y == null) return undefined;
+  const unit = x >= 0 && x <= 1 && y >= 0 && y <= 1 ? "ratio" : "pixel";
+  return { x, y, unit };
+}
+
+function previewToolPointFromResult(name: string | undefined, args: Record<string, unknown> | null, result: unknown): ChatStreamPreviewPoint | undefined {
+  if (!name?.startsWith("preview_") || (!args?.selector && !args?.text)) return undefined;
+  const record = asRecord(result);
+  const target = asRecord(name === "preview_click" ? record?.clicked : record?.target);
+  const rect = asRecord(target?.rect);
+  const x = numericToolField(rect, ["x"]);
+  const y = numericToolField(rect, ["y"]);
+  const width = numericToolField(rect, ["width"]) ?? 0;
+  const height = numericToolField(rect, ["height"]) ?? 0;
+  if (x == null || y == null) return undefined;
+  return { x: x + width / 2, y: y + height / 2, unit: "pixel" };
+}
+
+function previewToolPoint(name: string | undefined, args: Record<string, unknown> | null, result?: unknown): ChatStreamPreviewPoint | undefined {
+  return previewToolPointFromArgs(name, args) ?? previewToolPointFromResult(name, args, result);
 }
 
 function toolDiffStats(record: Record<string, unknown> | null): string | undefined {
@@ -205,6 +232,7 @@ export function toolStartedPart(ev: AgentEvent): ChatStreamEventPart {
     name: ev.name ?? "tool",
     callId: ev.call_id,
     status: "running",
+    previewPoint: previewToolPoint(ev.name, args),
   };
 }
 
@@ -220,6 +248,7 @@ export function toolCompletedPart(ev: AgentEvent): ChatStreamEventPart {
     name: ev.name ?? "tool",
     callId: ev.call_id,
     status: error ? "error" : "done",
+    previewPoint: previewToolPoint(ev.name, args, ev.result),
   };
 }
 

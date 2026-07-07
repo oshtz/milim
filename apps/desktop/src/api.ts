@@ -185,6 +185,12 @@ export type ChatStreamEventIcon =
 
 export type ChatStreamEventStatus = "running" | "done" | "error";
 
+export type ChatStreamPreviewPoint = {
+  x: number;
+  y: number;
+  unit: "pixel" | "ratio" | "percent";
+};
+
 export type ChatStreamPart =
   | { kind: "text"; content: string }
   | { kind: "thinking"; content: string }
@@ -197,6 +203,7 @@ export type ChatStreamPart =
       callId?: string;
       icon?: ChatStreamEventIcon;
       status?: ChatStreamEventStatus;
+      previewPoint?: ChatStreamPreviewPoint;
     };
 
 export type RunStatus = "running" | "done" | "stopped" | "aborted" | "error";

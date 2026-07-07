@@ -96,7 +96,7 @@ try {
   assert(activeMarkup.includes('aria-hidden="true"'), "Preview overlay should be hidden from assistive tech");
 
   const activeUrlMarkup = renderPreviewPanel({ artifact: urlArtifact, onClose: () => {}, controlActivity });
-  assert(!activeUrlMarkup.includes('data-testid="preview-control-overlay"'), "URL previews should leave preview control cues to the native overlay webview");
+  assert(!activeUrlMarkup.includes('data-testid="preview-control-overlay"'), "URL previews should leave preview control cues to the native overlay window");
 } finally {
   await server.close();
 }

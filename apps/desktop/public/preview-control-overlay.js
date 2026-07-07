@@ -28,7 +28,7 @@ let broadcast = null;
 
 function readPoint() {
   try {
-    const value = JSON.parse(sessionStorage.getItem(pointKey) || "null");
+    const value = JSON.parse(localStorage.getItem(pointKey) || "null");
     if (Number.isFinite(value?.x) && Number.isFinite(value?.y)) return value;
   } catch {}
   return { x: 16, y: 68 };
@@ -36,7 +36,7 @@ function readPoint() {
 
 function writePoint(point) {
   try {
-    sessionStorage.setItem(pointKey, JSON.stringify(point));
+    localStorage.setItem(pointKey, JSON.stringify(point));
   } catch {}
 }
 
@@ -47,6 +47,7 @@ function hash(value) {
 }
 
 function targetPoint(activity) {
+  if (activity.point) return activity.point;
   const candidates = points[activity.gesture] || points.inspect;
   return candidates[hash(activity.id || activity.label || activity.gesture) % candidates.length];
 }
@@ -65,11 +66,24 @@ function normalizeActivity(value) {
     accentLight: stringOrNull(value.accentLight),
     accentGlow: stringOrNull(value.accentGlow),
     focusBorder: stringOrNull(value.focusBorder),
+    point: normalizePoint(value.point),
   };
 }
 
 function stringOrNull(value) {
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function normalizePoint(value) {
+  if (!value || typeof value !== "object") return null;
+  const x = Number(value.x);
+  const y = Number(value.y);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  return { x: clampPercent(x), y: clampPercent(y) };
+}
+
+function clampPercent(value) {
+  return Math.min(100, Math.max(0, value));
 }
 
 function applyTheme(activity) {

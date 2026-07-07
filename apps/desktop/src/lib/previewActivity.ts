@@ -1,4 +1,4 @@
-import type { ChatStreamPart, ChatStreamEventStatus } from "../api.js";
+import type { ChatStreamPart, ChatStreamEventStatus, ChatStreamPreviewPoint } from "../api.js";
 
 export type PreviewControlGesture = "move" | "click" | "scroll" | "type" | "inspect";
 
@@ -8,6 +8,7 @@ export type PreviewControlActivity = {
   label: string;
   detail?: string;
   status: ChatStreamEventStatus;
+  point?: ChatStreamPreviewPoint;
 };
 
 const TOOL_GESTURES: Record<string, PreviewControlGesture> = {
@@ -36,12 +37,14 @@ export function previewControlActivityFromDebugUrl(href: string): PreviewControl
   if (!isPreviewControlGesture(gesture)) return null;
   const label = url.searchParams.get("previewActivityLabel")?.trim() || "Preview activity";
   const detail = url.searchParams.get("previewActivityDetail")?.trim() || undefined;
+  const point = previewPointFromDebugUrl(url);
   return {
     id: `debug:${gesture}:${label}:${detail ?? ""}`,
     gesture,
     label,
     detail,
     status: "running",
+    point,
   };
 }
 
@@ -58,9 +61,30 @@ export function previewControlActivityFromStreamParts(parts: readonly ChatStream
       label: part.label,
       detail: part.detail,
       status: part.status ?? "done",
+      point: part.previewPoint,
     };
   }
   return null;
+}
+
+function previewPointFromDebugUrl(url: URL): ChatStreamPreviewPoint | undefined {
+  const x = numberParam(url, "previewActivityX");
+  const y = numberParam(url, "previewActivityY");
+  if (x == null || y == null) return undefined;
+  const requestedUnit = url.searchParams.get("previewActivityPointUnit");
+  const unit = requestedUnit === "pixel" || requestedUnit === "percent"
+    ? requestedUnit
+    : x >= 0 && x <= 1 && y >= 0 && y <= 1
+      ? "ratio"
+      : "percent";
+  return { x, y, unit };
+}
+
+function numberParam(url: URL, key: string): number | undefined {
+  const raw = url.searchParams.get(key);
+  if (raw == null || !raw.trim()) return undefined;
+  const value = Number(raw);
+  return Number.isFinite(value) ? value : undefined;
 }
 
 function isPreviewControlGesture(value: string | null): value is PreviewControlGesture {
