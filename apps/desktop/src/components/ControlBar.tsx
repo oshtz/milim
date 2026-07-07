@@ -6,6 +6,7 @@ import {
   type ToolApprovalMode,
 } from "../api";
 import { goalChipVisible, type GoalSettings } from "../lib/goals";
+import { modelDisplayName } from "../lib/modelPicker";
 import { featureVisibleInMode } from "../ui/features";
 import { useUiPreferences } from "../ui/store";
 import { ChevronDown, Cube, Folder, Lightbulb, Pin } from "./icons";
@@ -146,6 +147,8 @@ export function ControlBar({
     activeContextCount === 0 ? "None active" : `${activeContextCount} active`;
   const showGoalChip = goalChipVisible(goal);
   const goalDetail = goal.status[0].toUpperCase() + goal.status.slice(1);
+  const activeModel = models.find((item) => item.id === model);
+  const activeModelLabel = activeModel ? modelDisplayName(activeModel) : model;
 
   return (
     <div className="control-bar">
@@ -158,12 +161,12 @@ export function ControlBar({
             data-testid="model-picker-trigger"
             onClick={() => setMenu((m) => (m === "model" ? null : "model"))}
             title="Choose model"
-            aria-label={`Choose model${model ? `, current model ${model}` : ""}`}
+            aria-label={`Choose model${activeModelLabel ? `, current model ${activeModelLabel}` : ""}`}
             aria-haspopup="dialog"
             aria-expanded={menu === "model"}
           >
             <span className="dot dot-green" />
-            <span className="chip-label">{model || "Choose model"}</span>
+            <span className="chip-label">{activeModelLabel || "Choose model"}</span>
             <ChevronDown size={12} className="chip-chev" />
           </button>
           {menu === "model" && (

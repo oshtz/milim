@@ -676,6 +676,17 @@ pub struct ProviderRouter {
     privacy: Arc<PrivacyGate>,
 }
 
+const PROVIDER_MODEL_PREFIX: &str = "provider:";
+
+fn provider_model_route(model: &str) -> Option<(String, String)> {
+    let rest = model.trim().strip_prefix(PROVIDER_MODEL_PREFIX)?;
+    let (provider_id, model_id) = rest.split_once(':')?;
+    if provider_id.is_empty() || model_id.is_empty() {
+        return None;
+    }
+    Some((provider_id.to_string(), model_id.to_string()))
+}
+
 #[async_trait]
 impl ModelService for ProviderRouter {
     fn name(&self) -> &str {
@@ -700,6 +711,7 @@ impl ModelService for ProviderRouter {
                     object: "model".to_string(),
                     created: 0,
                     owned_by: r.cfg.name.clone(),
+                    provider_id: Some(r.cfg.id.clone()),
                     context_length: context.context_length,
                     max_prompt_tokens: context.max_prompt_tokens,
                     max_completion_tokens: context.max_completion_tokens,
@@ -719,17 +731,34 @@ impl ModelService for ProviderRouter {
     }
 
     async fn stream(&self, mut req: CompletionRequest) -> Result<EventStream> {
+        let routed = provider_model_route(&req.model);
+        let provider_qualified = routed.is_some();
         let backend = {
             let guard = self.inner.read().await;
             guard
                 .iter()
                 .find(|r| {
-                    r.cfg.enabled && r.cfg.kind.is_chat() && r.cfg.models.contains(&req.model)
+                    r.cfg.enabled
+                        && r.cfg.kind.is_chat()
+                        && match &routed {
+                            Some((provider_id, model_id)) => {
+                                r.cfg.id == *provider_id && r.cfg.models.contains(model_id)
+                            }
+                            None => r.cfg.models.contains(&req.model),
+                        }
                 })
                 .map(|r| r.backend.clone())
         };
+        if let Some((_, model_id)) = routed {
+            req.model = model_id;
+        }
         // Local backends never leave the machine, so they bypass the gate.
         let Some(remote) = backend else {
+            if provider_qualified {
+                return Err(Error::InvalidRequest(
+                    "selected provider model is not available".to_string(),
+                ));
+            }
             return self.local.stream(req).await;
         };
         // Remote: enforce the outbound privacy gate before sending.
@@ -764,43 +793,79 @@ impl ModelService for ProviderRouter {
         model: &str,
         keep_alive: Option<serde_json::Value>,
     ) -> Result<bool> {
+        let routed = provider_model_route(model);
+        let provider_qualified = routed.is_some();
+        let model_id = routed
+            .as_ref()
+            .map(|(_, model_id)| model_id.as_str())
+            .unwrap_or(model);
         let backend = {
             let guard = self.inner.read().await;
             guard
                 .iter()
                 .find(|r| {
-                    r.cfg.enabled && r.cfg.kind.is_chat() && r.cfg.models.iter().any(|m| m == model)
+                    r.cfg.enabled
+                        && r.cfg.kind.is_chat()
+                        && match &routed {
+                            Some((provider_id, _)) => {
+                                r.cfg.id == *provider_id
+                                    && r.cfg.models.iter().any(|m| m == model_id)
+                            }
+                            None => r.cfg.models.iter().any(|m| m == model_id),
+                        }
                 })
                 .map(|r| r.backend.clone())
         };
         match backend {
-            Some(remote) => remote.ollama_keep_alive(model, keep_alive).await,
-            None => self.local.ollama_keep_alive(model, keep_alive).await,
+            Some(remote) => remote.ollama_keep_alive(model_id, keep_alive).await,
+            None if provider_qualified => Err(Error::InvalidRequest(
+                "selected provider model is not available".to_string(),
+            )),
+            None => self.local.ollama_keep_alive(model_id, keep_alive).await,
         }
     }
 
     async fn embed(&self, model: &str, inputs: Vec<String>) -> Result<Vec<Vec<f32>>> {
+        let routed = provider_model_route(model);
+        let provider_qualified = routed.is_some();
+        let model_id = routed
+            .as_ref()
+            .map(|(_, model_id)| model_id.as_str())
+            .unwrap_or(model);
         let backend = {
             let guard = self.inner.read().await;
             guard
                 .iter()
                 .find(|r| {
-                    r.cfg.enabled && r.cfg.kind.is_chat() && r.cfg.models.iter().any(|m| m == model)
+                    r.cfg.enabled
+                        && r.cfg.kind.is_chat()
+                        && match &routed {
+                            Some((provider_id, _)) => {
+                                r.cfg.id == *provider_id
+                                    && r.cfg.models.iter().any(|m| m == model_id)
+                            }
+                            None => r.cfg.models.iter().any(|m| m == model_id),
+                        }
                 })
                 .map(|r| r.backend.clone())
         };
         let Some(remote) = backend else {
-            return self.local.embed(model, inputs).await;
+            if provider_qualified {
+                return Err(Error::InvalidRequest(
+                    "selected provider model is not available".to_string(),
+                ));
+            }
+            return self.local.embed(model_id, inputs).await;
         };
         match self.privacy.mode() {
-            PrivacyMode::Off => remote.embed(model, inputs).await,
+            PrivacyMode::Off => remote.embed(model_id, inputs).await,
             PrivacyMode::Block => {
                 let detections = inputs
                     .iter()
                     .flat_map(|input| self.privacy.scan_text(input))
                     .collect::<Vec<_>>();
                 if detections.is_empty() {
-                    remote.embed(model, inputs).await
+                    remote.embed(model_id, inputs).await
                 } else {
                     Err(Error::InvalidRequest(format!(
                         "blocked by the privacy gate: embedding input contains {} ({} item(s)). Switch the gate to Redact or Off to send this to a remote provider.",
@@ -814,7 +879,7 @@ impl ModelService for ProviderRouter {
                     .into_iter()
                     .map(|input| self.privacy.redact_text(&input).text)
                     .collect();
-                remote.embed(model, inputs).await
+                remote.embed(model_id, inputs).await
             }
         }
     }
@@ -828,6 +893,7 @@ mod tests {
     #[derive(Clone)]
     struct RecordingBackend {
         inputs: Arc<Mutex<Vec<Vec<String>>>>,
+        models: Arc<Mutex<Vec<String>>>,
     }
 
     #[async_trait]
@@ -840,7 +906,8 @@ mod tests {
             Ok(vec![Model::local("text-embedding-3-small", 0)])
         }
 
-        async fn stream(&self, _req: CompletionRequest) -> Result<EventStream> {
+        async fn stream(&self, req: CompletionRequest) -> Result<EventStream> {
+            self.models.lock().unwrap().push(req.model);
             Ok(Box::pin(futures::stream::empty()))
         }
 
@@ -938,6 +1005,7 @@ mod tests {
     #[tokio::test]
     async fn router_routes_embeddings_to_provider_and_redacts_inputs() {
         let inputs = Arc::new(Mutex::new(Vec::new()));
+        let models = Arc::new(Mutex::new(Vec::new()));
         let mut cfg = provider(
             "OpenAI",
             ProviderKind::OpenAiCompatible,
@@ -951,6 +1019,7 @@ mod tests {
                 cfg,
                 backend: Arc::new(RecordingBackend {
                     inputs: inputs.clone(),
+                    models,
                 }),
             }])),
             local: Arc::new(milim_inference::unavailable::UnavailableBackend::new()),
@@ -970,5 +1039,64 @@ mod tests {
         assert_eq!(inputs.len(), 1);
         assert!(inputs[0][0].contains("[EMAIL_1]"));
         assert!(!inputs[0][0].contains("person@example.com"));
+    }
+
+    #[tokio::test]
+    async fn router_uses_provider_qualified_model_id_for_duplicates() {
+        let first_models = Arc::new(Mutex::new(Vec::new()));
+        let second_models = Arc::new(Mutex::new(Vec::new()));
+        let mut first = provider(
+            "prov-first",
+            ProviderKind::OpenAiCompatible,
+            "https://first.test/v1",
+        );
+        let mut second = provider(
+            "prov-second",
+            ProviderKind::OpenAiCompatible,
+            "https://second.test/v1",
+        );
+        first.models = vec!["same-model".to_string()];
+        second.models = vec!["same-model".to_string()];
+        let router = ProviderRouter {
+            inner: Arc::new(RwLock::new(vec![
+                Runtime {
+                    cfg: first,
+                    backend: Arc::new(RecordingBackend {
+                        inputs: Arc::new(Mutex::new(Vec::new())),
+                        models: first_models.clone(),
+                    }),
+                },
+                Runtime {
+                    cfg: second,
+                    backend: Arc::new(RecordingBackend {
+                        inputs: Arc::new(Mutex::new(Vec::new())),
+                        models: second_models.clone(),
+                    }),
+                },
+            ])),
+            local: Arc::new(milim_inference::unavailable::UnavailableBackend::new()),
+            privacy: Arc::new(PrivacyGate::default()),
+        };
+
+        let _stream = router
+            .stream(CompletionRequest {
+                model: "provider:prov-second:same-model".to_string(),
+                messages: Vec::new(),
+                tools: Vec::new(),
+                tool_choice: None,
+                response_format: None,
+                prompt: None,
+                suffix: None,
+                sampling: Default::default(),
+                reasoning_effort: None,
+            })
+            .await
+            .unwrap();
+
+        assert!(first_models.lock().unwrap().is_empty());
+        assert_eq!(
+            *second_models.lock().unwrap(),
+            vec!["same-model".to_string()]
+        );
     }
 }

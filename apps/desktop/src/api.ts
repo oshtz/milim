@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { KokoroPreset, VoiceSettings } from "./settings/store";
 import type { PiperPreset } from "./settings/store";
 import type { VadPreset } from "./settings/store";
+import { qualifyDuplicateProviderModels } from "./lib/modelPicker";
 import { createSilentWav } from "./lib/recordWav";
 
 export const MAX_ATTACHMENT_BYTES = 128 * 1024;
@@ -1033,6 +1034,8 @@ export async function listModels(): Promise<string[]> {
 export interface ModelInfo {
   id: string;
   owned_by: string;
+  provider_id?: string;
+  display_id?: string;
   context_length?: number;
   max_prompt_tokens?: number;
   max_completion_tokens?: number;
@@ -1111,6 +1114,7 @@ export async function listModelsDetailed(): Promise<ModelInfo[]> {
         (m: {
           id: string;
           owned_by?: string;
+          provider_id?: string;
           context_length?: number;
           max_prompt_tokens?: number;
           max_completion_tokens?: number;
@@ -1119,6 +1123,7 @@ export async function listModelsDetailed(): Promise<ModelInfo[]> {
         }) => ({
           id: m.id,
           owned_by: m.owned_by ?? "local",
+          provider_id: m.provider_id?.trim() || undefined,
           context_length: numberOrUndefined(m.context_length),
           max_prompt_tokens: numberOrUndefined(m.max_prompt_tokens),
           max_completion_tokens: numberOrUndefined(m.max_completion_tokens),
@@ -1131,7 +1136,7 @@ export async function listModelsDetailed(): Promise<ModelInfo[]> {
       listCodexModelsForPicker(),
       listClaudeModelsForPicker(),
     ]);
-    return [...localModels, ...codexModels, ...claudeModels];
+    return [...qualifyDuplicateProviderModels(localModels), ...codexModels, ...claudeModels];
   } catch {
     return [];
   }

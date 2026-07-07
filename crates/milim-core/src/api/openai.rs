@@ -382,6 +382,8 @@ pub struct Model {
     pub created: u64,
     #[serde(default)]
     pub owned_by: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_id: Option<String>,
     #[serde(
         default,
         alias = "contextLength",
@@ -458,6 +460,7 @@ impl Model {
             object: "model".to_string(),
             created,
             owned_by: "milim".to_string(),
+            provider_id: None,
             context_length: Some(4096),
             max_prompt_tokens: None,
             max_completion_tokens: None,

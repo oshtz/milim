@@ -147,6 +147,7 @@ impl ModelService for AnthropicBackend {
                 object: "model".to_string(),
                 created: 0,
                 owned_by: self.label.clone(),
+                provider_id: None,
                 context_length: None,
                 max_prompt_tokens: None,
                 max_completion_tokens: None,

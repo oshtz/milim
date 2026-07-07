@@ -6,10 +6,10 @@ title: Models and providers
 summary: Provider-agnostic routing across OpenAI-compatible APIs, Anthropic, Gemini, Replicate, fal, Ollama, LM Studio, Codex, and Claude runtime bridges.
 group: Workbench
 order: 40
-updated: 2026-07-02
+updated: 2026-07-07
 ---
 
-Model routing is provider-agnostic. The provider registry stores enabled remotes and their model metadata, then the desktop model picker merges local API runtime models, provider models, account runtime models, and media-capable models.
+Model routing is provider-agnostic. The provider registry stores enabled remotes and their model metadata, then the desktop model picker merges local API runtime models, provider models, account runtime models, and media-capable models. Duplicate provider model ids stay provider-scoped in the picker and route back to the selected provider; provider sections with fewer visible models appear first.
 
 ## Provider kinds
 

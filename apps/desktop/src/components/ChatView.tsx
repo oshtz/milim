@@ -188,6 +188,7 @@ import {
   schemaDefaults,
   shouldPollMediaStatus,
 } from "../lib/media";
+import { mergeModelListsForPicker, providerOwnsModel } from "../lib/modelPicker";
 import {
   estimateResponseCostUsd,
   formatResponseMetrics,
@@ -2057,31 +2058,6 @@ function mediaModelsForPicker(
   );
 }
 
-function mergeModelLists(
-  chatModels: ModelInfo[],
-  mediaModels: ModelInfo[],
-): ModelInfo[] {
-  const byId = new Map<string, ModelInfo>();
-  for (const model of chatModels) byId.set(model.id, model);
-  for (const model of mediaModels) {
-    const existing = byId.get(model.id);
-    byId.set(
-      model.id,
-      existing
-        ? {
-            ...existing,
-            owned_by: existing.owned_by || model.owned_by,
-            capabilities: {
-              ...existing.capabilities,
-              ...model.capabilities,
-            },
-          }
-        : model,
-    );
-  }
-  return Array.from(byId.values());
-}
-
 function executePlanPrompt(plan: string): string {
   return [
     "Execute the approved implementation plan below.",
@@ -2583,7 +2559,7 @@ export function ChatView({
     setSessionPreviewRuntime,
   ]);
   const pickerModels = useMemo(
-    () => mergeModelLists(models, mediaModelEntries),
+    () => mergeModelListsForPicker(models, mediaModelEntries),
     [models, mediaModelEntries],
   );
   const activeMediaTarget = useMemo(
@@ -3664,7 +3640,7 @@ export function ChatView({
     const claudeModel = claudeRuntimeModel(model);
     const summaryStartedAt = Date.now();
     const selectedProvider = providers.find(
-      (item) => item.enabled && item.models.includes(model),
+      (item) => providerOwnsModel(item, model),
     );
     const provider = codexModel
       ? "Codex"

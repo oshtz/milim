@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import type { ModelInfo } from "../api";
+import { modelDisplayName, modelPickerGroups, modelPickerKey } from "../lib/modelPicker";
 import { hasReasoningEffortChoices, normalizeReasoningEffortForModel, REASONING_EFFORT_LABEL, reasoningEffortDisplay, reasoningEffortOptions } from "../lib/reasoningEffort";
 import { useSettings } from "../settings/store";
 import { featureVisibleInMode } from "../ui/features";
@@ -100,22 +101,7 @@ export function ModelPicker({
   const showMemoryManager = featureVisibleInMode("memoryManager", interfaceMode);
 
   const groups = useMemo<Array<[string, ModelInfo[]]>>(() => {
-    const query = q.trim().toLowerCase();
-    let list = models;
-    if (query) list = list.filter((m) => m.id.toLowerCase().includes(query));
-    if (favoritesOnly) list = list.filter((m) => favorites.includes(m.id));
-    const favs = list.filter((m) => favorites.includes(m.id));
-    const rest = list.filter((m) => !favorites.includes(m.id));
-    const byProvider = new Map<string, ModelInfo[]>();
-    for (const m of rest) {
-      const g = byProvider.get(m.owned_by) ?? [];
-      g.push(m);
-      byProvider.set(m.owned_by, g);
-    }
-    const out: Array<[string, ModelInfo[]]> = [];
-    if (favs.length) out.push(["Favorites", favs]);
-    for (const [prov, ms] of byProvider) out.push([prov, ms]);
-    return out;
+    return modelPickerGroups(models, favorites, favoritesOnly, q);
   }, [models, q, favorites, favoritesOnly]);
 
   return (
@@ -140,7 +126,7 @@ export function ModelPicker({
               const effortOpen = effortMenu?.modelId === m.id;
               const modelCaps = caps(m).filter((cap) => cap !== "reasoning" || !hasEffortChoices);
               return (
-                <div key={m.id} className={"mp-item" + (m.id === model ? " active" : "") + (effortOpen ? " effort-open" : "")}>
+                <div key={modelPickerKey(m)} className={"mp-item" + (m.id === model ? " active" : "") + (effortOpen ? " effort-open" : "")}>
                   <button
                     type="button"
                     className={"mp-star" + (favorites.includes(m.id) ? " on" : "")}
@@ -160,7 +146,7 @@ export function ModelPicker({
                     }}
                   >
                     <span className="mp-title">
-                      <span className="mp-name">{m.id}</span>
+                      <span className="mp-name">{modelDisplayName(m)}</span>
                       {effort !== "auto" && <span className="mp-effort-label">{REASONING_EFFORT_LABEL[effort]}</span>}
                     </span>
                   </button>

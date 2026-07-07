@@ -5,6 +5,7 @@ import type {
   ResponseMetrics,
   TokenUsage,
 } from "../api";
+import { providerOwnsModel, rawModelId } from "./modelPicker.js";
 
 const USAGE_MONTH_COUNT = 12;
 const MONTH_LABELS = [
@@ -85,7 +86,7 @@ export function estimateResponseCostUsd(
   providers: ProviderInfo[],
 ): number | undefined {
   if (!usage) return undefined;
-  const pricing = providerForModel(model, providers)?.pricing?.[model];
+  const pricing = providerForModel(model, providers)?.pricing?.[rawModelId(model)];
   const promptRate = usdPerToken(pricing?.prompt);
   const completionRate = usdPerToken(pricing?.completion);
   if (promptRate == null || completionRate == null) return undefined;
@@ -412,9 +413,7 @@ function providerForModel(
   model: string,
   providers: ProviderInfo[],
 ): ProviderInfo | undefined {
-  return providers.find(
-    (provider) => provider.enabled && provider.models.includes(model),
-  );
+  return providers.find((provider) => providerOwnsModel(provider, model));
 }
 
 function collectLimitCandidates(

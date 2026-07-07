@@ -20,6 +20,7 @@ import {
   type PrivacyMode,
   type ProviderDiscovery,
 } from "../api";
+import { modelDisplayName } from "../lib/modelPicker";
 import { useOnboarding, type OnboardingSetupPath, type OnboardingStepId } from "../onboarding/store";
 import { DEFAULT_THREAD_SETTINGS, useSessions } from "../sessions/store";
 import { useUiPreferences, type InterfaceMode } from "../ui/store";
@@ -675,7 +676,7 @@ export function OnboardingFlow({ onModelsChanged }: { onModelsChanged?: () => Pr
                         className={"onboarding-model-row" + (modelInfo.id === selectedModel ? " active" : "")}
                         onClick={() => selectModel(modelInfo.id)}
                       >
-                        <span>{modelInfo.id}</span>
+                        <span>{modelDisplayName(modelInfo)}</span>
                         <small>{modelInfo.owned_by}</small>
                       </button>
                     ))}

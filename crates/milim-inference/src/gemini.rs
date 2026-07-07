@@ -134,6 +134,7 @@ impl ModelService for GeminiBackend {
                 object: "model".to_string(),
                 created: 0,
                 owned_by: self.label.clone(),
+                provider_id: None,
                 context_length: m.input_token_limit,
                 max_prompt_tokens: m.input_token_limit,
                 max_completion_tokens: m.output_token_limit,

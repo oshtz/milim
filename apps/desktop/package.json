@@ -15,7 +15,7 @@
     "test:settings": "node tests/run-ts-test.mjs tests/settings-store.test.ts",
     "test:assistant-stream": "node tests/run-ts-test.mjs tests/assistant-stream-grouping.test.ts tests/assistant-stream-summary.test.ts tests/preview-activity.test.ts tests/turn-events.test.ts tests/turn-queue.test.ts tests/turn-prompt.test.ts tests/turn-runtime.test.ts tests/turn-stream.test.ts",
     "test:context-compaction": "node tests/run-ts-test.mjs tests/context-compaction.test.ts tests/turn-context.test.ts",
-    "test:reasoning": "node tests/run-ts-test.mjs tests/reasoning-effort.test.ts",
+    "test:reasoning": "node tests/run-ts-test.mjs tests/reasoning-effort.test.ts tests/model-picker.test.ts",
     "test:ui-preferences": "node tests/run-ts-test.mjs tests/ui-preferences-store.test.ts tests/shortcuts.test.ts tests/chat-search.test.ts tests/context-menu.test.ts",
     "test:onboarding": "node tests/run-ts-test.mjs tests/onboarding-store.test.ts",
     "test:user-state-storage": "node tests/run-ts-test.mjs tests/user-state-storage.test.ts tests/theme-store.test.ts",
