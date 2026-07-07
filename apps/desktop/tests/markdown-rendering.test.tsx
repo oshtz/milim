@@ -9,6 +9,7 @@ type MarkdownProps = {
   onOpenPreview?: (artifact: ChatArtifact) => void;
   highlight?: boolean;
   previewArtifactsStreaming?: boolean;
+  collapseArtifacts?: boolean;
 };
 
 function assert(condition: unknown, message: string): asserts condition {
@@ -60,13 +61,19 @@ try {
     isHttpHref: (href: string | undefined) => boolean;
   };
 
-  function renderMarkdown(content: string, previewArtifacts?: ChatArtifact[], previewArtifactsStreaming = false): string {
+  function renderMarkdown(
+    content: string,
+    previewArtifacts?: ChatArtifact[],
+    previewArtifactsStreaming = false,
+    collapseArtifacts = true,
+  ): string {
     return renderToStaticMarkup(createElement(Markdown, {
       content,
       previewArtifacts,
       onOpenPreview: () => {},
       highlight: false,
       previewArtifactsStreaming,
+      collapseArtifacts,
     }));
   }
 
@@ -104,6 +111,20 @@ try {
   ].join("\n"), [indexHtml]);
   equal(count(matchingFence, "code-block-collapsed"), 1, "matching html block should collapse to an artifact card");
   assert(!matchingFence.includes("<pre>"), "collapsed artifact should not render a raw pre block");
+
+  const userFence = renderMarkdown([
+    "```html",
+    indexHtml.content,
+    "```",
+  ].join("\n"), [indexHtml], false, false);
+  equal(
+    count(userFence, "code-block-collapsed"),
+    0,
+    "user markdown should not collapse matching code into an artifact card",
+  );
+  assert(userFence.includes("<pre>"), "user markdown should render matching code as a normal code block");
+  assert(!userFence.includes("Open preview"), "user markdown should not render preview actions");
+  assert(!userFence.includes("Open code"), "user markdown should not render code panel actions");
 
   const matchingFileFence = renderMarkdown([
     "```python file=tools/report.py",

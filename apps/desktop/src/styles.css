@@ -3589,6 +3589,25 @@ html[data-dark="true"] .preview-control-cursor {
   white-space: pre-wrap;
   backdrop-filter: blur(var(--blur));
 }
+.msg.user .md {
+  color: inherit;
+  white-space: normal;
+}
+.msg.user .md p {
+  margin-bottom: 6px;
+  white-space: pre-wrap;
+}
+.msg.user .md ul,
+.msg.user .md ol,
+.msg.user .md blockquote,
+.msg.user .md table,
+.msg.user .md .code-block {
+  margin-bottom: 6px;
+}
+.msg.user .md table,
+.msg.user .md .code-block {
+  max-width: 100%;
+}
 .msg.assistant { align-items: flex-start; }
 .msg.assistant .msg-content {
   max-width: 100%;

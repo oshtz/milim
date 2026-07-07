@@ -25,6 +25,7 @@ type MarkdownProps = {
   onOpenPreview?: (artifact: ChatArtifact) => void;
   highlight?: boolean;
   previewArtifactsStreaming?: boolean;
+  collapseArtifacts?: boolean;
 };
 
 type MarkdownRehypePlugin = MarkdownRehypePlugins[number];
@@ -139,13 +140,25 @@ function openMarkdownLink(event: MouseEvent<HTMLAnchorElement>, href: string | u
   void openExternalUrl(href).catch((error) => console.warn("failed to open link", error));
 }
 
-/** Render assistant text as GitHub-flavored markdown with syntax-highlighted
+/** Render chat text as GitHub-flavored markdown with syntax-highlighted
  *  code blocks. Memoized so re-renders during streaming stay cheap. */
-export const Markdown = memo(function Markdown({ content, previewArtifacts, onOpenPreview, highlight = true, previewArtifactsStreaming = false }: MarkdownProps) {
+export const Markdown = memo(function Markdown({
+  content,
+  previewArtifacts,
+  onOpenPreview,
+  highlight = true,
+  previewArtifactsStreaming = false,
+  collapseArtifacts = true,
+}: MarkdownProps) {
   markPerfRender("Markdown");
   const effectivePreviewArtifacts = useMemo(
-    () => (previewArtifacts?.length ? previewArtifacts : extractArtifactsFromContent(content).filter(isPreviewableArtifact)),
-    [content, previewArtifacts],
+    () =>
+      collapseArtifacts
+        ? previewArtifacts?.length
+          ? previewArtifacts
+          : extractArtifactsFromContent(content).filter(isPreviewableArtifact)
+        : [],
+    [collapseArtifacts, content, previewArtifacts],
   );
 
   return (

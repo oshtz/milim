@@ -297,6 +297,9 @@ const McpManager = lazy(() =>
 const MemoryManager = lazy(() =>
   import("./MemoryManager").then((mod) => ({ default: mod.MemoryManager })),
 );
+const Markdown = lazy(() =>
+  import("./Markdown").then((mod) => ({ default: mod.Markdown })),
+);
 
 const TOOL_APPROVAL_ORDER: ToolApprovalMode[] = ["review", "guarded", "open"];
 
@@ -1062,7 +1065,15 @@ function MessageRowView({
           </>
         ) : (
           <>
-            {m.content && <span>{m.content}</span>}
+            {m.content && (
+              <Suspense fallback={<span>{m.content}</span>}>
+                <Markdown
+                  content={m.content}
+                  highlight={false}
+                  collapseArtifacts={false}
+                />
+              </Suspense>
+            )}
             {renderMessageAttachments(m.attachments)}
           </>
         )}
