@@ -175,7 +175,7 @@ export function ThemeEditor({ base, isNew, onClose }: { base: Theme; isNew: bool
               onChange={(v) => patch((d) => { d.background.overlayOpacity = v; })} />
           </section>
 
-          <section className="editor-section">
+          <section className="editor-section editor-typography">
             <h3>Typography</h3>
             <label className="text-row">
               <span>Font</span>

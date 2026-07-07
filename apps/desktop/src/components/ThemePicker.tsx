@@ -500,6 +500,13 @@ export function ThemePicker({ onClose }: { onClose: () => void }) {
     setSetupCheck((current) => ({ ...current, tts: null }));
   }, [ttsConfigKey]);
 
+  useEffect(() => {
+    if (!recordingShortcut) return;
+    const onKeyDown = (event: globalThis.KeyboardEvent) => recordAppShortcut(recordingShortcut, event);
+    document.addEventListener("keydown", onKeyDown, true);
+    return () => document.removeEventListener("keydown", onKeyDown, true);
+  }, [appShortcuts, recordingShortcut]);
+
   if (editing) {
     return <ThemeEditor base={editing.base} isNew={editing.isNew} onClose={() => setEditing(null)} />;
   }
@@ -874,13 +881,6 @@ export function ThemePicker({ onClose }: { onClose: () => void }) {
     setRecordingShortcut(null);
     setShortcutError(null);
   }
-
-  useEffect(() => {
-    if (!recordingShortcut) return;
-    const onKeyDown = (event: globalThis.KeyboardEvent) => recordAppShortcut(recordingShortcut, event);
-    document.addEventListener("keydown", onKeyDown, true);
-    return () => document.removeEventListener("keydown", onKeyDown, true);
-  }, [appShortcuts, recordingShortcut]);
 
   function startRecordingShortcut(action: AppShortcutAction) {
     setRecordingShortcut((current) => current === action ? null : action);
