@@ -5450,7 +5450,8 @@ html[data-dark="true"] .preview-control-cursor {
 .composer.compact {
   padding: 5px 8px 5px;
 }
-.composer.compact .composer-input {
+.composer.compact .composer-input,
+.composer.compact .composer-input-highlight {
   line-height: 1.35;
   max-height: 112px;
 }
@@ -5519,19 +5520,93 @@ html[data-dark="true"] .preview-control-cursor {
   cursor: pointer;
 }
 .attachment-remove:hover { background: var(--chip-hover); color: var(--primary-text); }
-.composer-input {
+.composer-input-wrap {
+  position: relative;
+  display: grid;
+  min-width: 0;
+}
+.composer-input,
+.composer-input-highlight {
+  grid-area: 1 / 1;
   width: 100%;
+  min-width: 0;
+  font: inherit;
+  line-height: 1.5;
+  max-height: 160px;
+}
+.composer-input-highlight {
+  z-index: 0;
+  width: calc(100% + 8px);
+  padding-inline: 4px;
+  transform: translateX(-4px);
+  overflow: hidden;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--primary-text);
+  pointer-events: none;
+  user-select: none;
+}
+.composer-input {
+  position: relative;
+  z-index: 1;
   resize: none;
   border: none;
   outline: none;
   background: transparent;
   color: var(--primary-text);
-  font: inherit;
-  line-height: 1.5;
-  max-height: 160px;
   user-select: text;
 }
+.composer-input.has-token-layer {
+  color: transparent;
+  caret-color: var(--primary-text);
+}
+.composer-input.has-token-layer::selection {
+  background: var(--accent-soft);
+  color: transparent;
+}
 .composer-input::placeholder { color: var(--placeholder-text); }
+.composer-token {
+  color: color-mix(in srgb, var(--accent-light) 78%, var(--primary-text));
+  text-decoration-line: underline;
+  text-decoration-thickness: 1px;
+  text-decoration-color: color-mix(in srgb, currentColor 66%, transparent);
+  text-underline-offset: 2px;
+}
+.composer-token-link {
+  display: inline-block;
+  text-decoration-thickness: 1.5px;
+  text-shadow: 0.35px 0 0 currentColor, -0.35px 0 0 currentColor;
+}
+.composer-token-skill,
+.composer-token-mcp {
+  display: inline-block;
+  border-radius: 999px;
+  font-weight: 600;
+  line-height: 1.18;
+  text-decoration-line: none;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+.composer-token-skill {
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  box-shadow:
+    -3px 0 0 color-mix(in srgb, var(--accent) 15%, transparent),
+    3px 0 0 color-mix(in srgb, var(--accent) 15%, transparent);
+  color: color-mix(in srgb, var(--accent-light) 84%, var(--primary-text));
+}
+.composer-token-mcp {
+  background: color-mix(in srgb, var(--success) 13%, transparent);
+  box-shadow:
+    -3px 0 0 color-mix(in srgb, var(--success) 13%, transparent),
+    3px 0 0 color-mix(in srgb, var(--success) 13%, transparent);
+  color: color-mix(in srgb, var(--success) 70%, var(--primary-text));
+}
+.composer-token-file {
+  color: color-mix(in srgb, var(--accent) 72%, var(--primary-text));
+}
+.composer-highlight-sentinel {
+  opacity: 0;
+}
 
 .slash-menu {
   position: absolute;

@@ -22,3 +22,11 @@ export function replaceComposerAutocompleteTrigger(
 ): string {
   return value.slice(0, trigger.start) + replacement + value.slice(trigger.end);
 }
+
+export function skillTagCompletion(prefix: "/" | "@", skillName: string): string {
+  return `${prefix}${skillName} `;
+}
+
+export function mcpToolTagCompletion(toolName: string): string {
+  return `/${toolName} `;
+}

@@ -1,8 +1,9 @@
 import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
-import { agentAvatarText, transcribe, type Agent, type ChatAttachment, type MediaKind, type SkillInfo, typeDictationText } from "../api";
+import { agentAvatarText, transcribe, type Agent, type ChatAttachment, type MediaKind, type SkillInfo, type ToolInfo, typeDictationText } from "../api";
 import type { WorkspaceFileSuggestion } from "../api";
-import { composerAutocompleteTriggerAt, replaceComposerAutocompleteTrigger } from "../lib/composerAutocomplete";
+import { composerAutocompleteTriggerAt, mcpToolTagCompletion, replaceComposerAutocompleteTrigger, skillTagCompletion } from "../lib/composerAutocomplete";
 import { canNavigateComposerHistory, moveComposerHistory, type ComposerHistoryDirection } from "../lib/composerHistory";
+import { composerTokenParts, composerTokensForText } from "../lib/composerTokens";
 import { recordWav, type Recorder } from "../lib/recordWav";
 import { useSettings, voiceVadConfigIssue } from "../settings/store";
 import { featureVisibleInMode } from "../ui/features";
@@ -61,6 +62,7 @@ type Suggestion =
   | { kind: "action"; group: "Add"; key: string; name: string; label: string; hint: string }
   | { kind: "command"; group: SlashCommand["group"]; command: SlashCommand }
   | { kind: "file"; group: "Files"; file: WorkspaceFileSuggestion }
+  | { kind: "mcp"; group: "MCP"; tool: ToolInfo }
   | { kind: "skill"; group: "Skills"; skill: SkillInfo };
 
 type WorkspaceProject = {
@@ -126,6 +128,7 @@ export function Composer({
   instructions,
   onInstructions,
   skills = [],
+  tools = [],
   workspaceFolder = "",
   workspaceProjects = [],
   onWorkspaceFolder,
@@ -155,6 +158,7 @@ export function Composer({
   instructions: string;
   onInstructions: (v: string) => void;
   skills?: SkillInfo[];
+  tools?: ToolInfo[];
   workspaceFolder?: string;
   workspaceProjects?: WorkspaceProject[];
   onWorkspaceFolder: (folder: string) => void;
@@ -169,6 +173,7 @@ export function Composer({
   busy: boolean;
 }) {
   const ref = useRef<HTMLTextAreaElement>(null);
+  const highlightRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const personaRef = useRef<HTMLDivElement>(null);
   const projectRef = useRef<HTMLDivElement>(null);
@@ -281,16 +286,22 @@ export function Composer({
           .map((command) => ({ kind: "command" as const, group: command.group, command })),
       );
     }
-    if (suggestionPrefix !== "/") {
+    if (suggestionPrefix === "/") {
       items.push(
-        ...skills
-          .filter((skill) => skill.enabled && match(`${skill.name} ${skill.description}`))
+        ...tools
+          .filter((tool) => tool.name.includes("__") && match(`${tool.name} ${tool.description}`))
           .slice(0, 8)
-          .map((skill) => ({ kind: "skill" as const, group: "Skills" as const, skill })),
+          .map((tool) => ({ kind: "mcp" as const, group: "MCP" as const, tool })),
       );
     }
+    items.push(
+      ...skills
+        .filter((skill) => skill.enabled && match(`${skill.name} ${skill.description}`))
+        .slice(0, 8)
+        .map((skill) => ({ kind: "skill" as const, group: "Skills" as const, skill })),
+    );
     return items;
-  }, [availableSlashCommands, skills, suggestionPrefix, suggestionQuery, workspaceFiles]);
+  }, [availableSlashCommands, skills, suggestionPrefix, suggestionQuery, tools, workspaceFiles]);
   const suggestionGroups = useMemo(() => {
     const groups: Array<{ label: Suggestion["group"]; items: Suggestion[] }> = [];
     for (const item of suggestions) {
@@ -309,13 +320,25 @@ export function Composer({
   const placeholder = mediaActive
     ? `Describe the ${mediaKind} to generate...`
     : "Message or attach files...";
+  const composerTokens = useMemo(
+    () => composerTokensForText(value, { skills, tools, workspaceFiles }),
+    [skills, tools, value, workspaceFiles],
+  );
+  const composerHighlightParts = useMemo(() => composerTokenParts(value, composerTokens), [composerTokens, value]);
+  const hasTokenLayer = composerTokens.length > 0;
 
   // Auto-grow the textarea up to a cap.
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
     el.style.height = "0px";
-    el.style.height = Math.min(el.scrollHeight, 160) + "px";
+    const nextHeight = Math.min(el.scrollHeight, 160) + "px";
+    el.style.height = nextHeight;
+    if (highlightRef.current) {
+      highlightRef.current.style.height = nextHeight;
+      highlightRef.current.scrollTop = el.scrollTop;
+      highlightRef.current.scrollLeft = el.scrollLeft;
+    }
   }, [value]);
 
   useEffect(() => {
@@ -536,6 +559,12 @@ export function Composer({
     setCursor(target.selectionStart);
   }
 
+  function syncHighlightScroll(target: HTMLTextAreaElement) {
+    if (!highlightRef.current) return;
+    highlightRef.current.scrollTop = target.scrollTop;
+    highlightRef.current.scrollLeft = target.scrollLeft;
+  }
+
   function runSlash(id: string, argument = "") {
     const handled = onSlashCommand(id, argument);
     if (handled) {
@@ -546,7 +575,8 @@ export function Composer({
   }
 
   function insertSkill(skill: SkillInfo) {
-    insertCompletion(`@${skill.name} `);
+    const prefix = activeTrigger?.prefix === "/" ? "/" : "@";
+    insertCompletion(skillTagCompletion(prefix, skill.name));
   }
 
   function insertCompletion(completion: string) {
@@ -580,6 +610,10 @@ export function Composer({
     }
     if (item.kind === "skill") {
       insertSkill(item.skill);
+      return;
+    }
+    if (item.kind === "mcp") {
+      insertCompletion(mcpToolTagCompletion(item.tool.name));
       return;
     }
     insertCompletion(`/${item.command.id} `);
@@ -716,58 +750,80 @@ export function Composer({
           ))}
         </div>
       )}
-      <textarea
-        ref={ref}
-        className="composer-input"
-        data-testid="composer-input"
-        rows={1}
-        value={value}
-        placeholder={placeholder}
-        onChange={(e) => {
-          syncCursor(e.currentTarget);
-          onChange(e.target.value);
-        }}
-        onClick={(e) => syncCursor(e.currentTarget)}
-        onKeyUp={(e) => syncCursor(e.currentTarget)}
-        onSelect={(e) => syncCursor(e.currentTarget)}
-        onKeyDown={(e) => {
-          if (e.key === "Escape" && showSlashMenu) {
+      <div className="composer-input-wrap">
+        {hasTokenLayer && (
+          <div ref={highlightRef} className="composer-input-highlight" aria-hidden="true" data-testid="composer-token-layer">
+            {composerHighlightParts.map((part, index) =>
+              part.kind === "token" ? (
+                <span
+                  key={`${part.token.kind}-${part.token.start}-${index}`}
+                  className={`composer-token composer-token-${part.token.kind}`}
+                  data-testid={`composer-token-${part.token.kind}`}
+                >
+                  {part.text}
+                </span>
+              ) : (
+                <span key={`text-${index}`}>{part.text}</span>
+              ),
+            )}
+            <span className="composer-highlight-sentinel">{"\u200b"}</span>
+          </div>
+        )}
+        <textarea
+          ref={ref}
+          className={"composer-input" + (hasTokenLayer ? " has-token-layer" : "")}
+          data-testid="composer-input"
+          rows={1}
+          value={value}
+          placeholder={placeholder}
+          onChange={(e) => {
+            syncCursor(e.currentTarget);
+            syncHighlightScroll(e.currentTarget);
+            onChange(e.target.value);
+          }}
+          onClick={(e) => syncCursor(e.currentTarget)}
+          onKeyUp={(e) => syncCursor(e.currentTarget)}
+          onSelect={(e) => syncCursor(e.currentTarget)}
+          onScroll={(e) => syncHighlightScroll(e.currentTarget)}
+          onKeyDown={(e) => {
+            if (e.key === "Escape" && showSlashMenu) {
+              e.preventDefault();
+              setSlashDismissedValue(value);
+              setSlashOpen(false);
+              return;
+            }
+            if (showSlashMenu && orderedSuggestions.length > 0) {
+              if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+                e.preventDefault();
+                moveSlashFocus(e.key === "ArrowDown" ? 1 : -1);
+                return;
+              }
+              if (e.key === "Enter" || e.key === "Tab") {
+                e.preventDefault();
+                const item = selectedSuggestion();
+                if (item) void completeSuggestion(item);
+                return;
+              }
+            }
+            if ((e.key === "ArrowUp" || e.key === "ArrowDown") && !e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
+              if (recallHistory(e.key === "ArrowUp" ? "previous" : "next", e.currentTarget)) {
+                e.preventDefault();
+                return;
+              }
+            }
+            if (shouldSubmitFromEnter(e)) {
+              e.preventDefault();
+              submitComposer();
+            }
+          }}
+          onPaste={(e) => {
+            const files = clipboardFiles(e.clipboardData);
+            if (!files.length) return;
             e.preventDefault();
-            setSlashDismissedValue(value);
-            setSlashOpen(false);
-            return;
-          }
-          if (showSlashMenu && orderedSuggestions.length > 0) {
-            if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-              e.preventDefault();
-              moveSlashFocus(e.key === "ArrowDown" ? 1 : -1);
-              return;
-            }
-            if (e.key === "Enter" || e.key === "Tab") {
-              e.preventDefault();
-              const item = selectedSuggestion();
-              if (item) void completeSuggestion(item);
-              return;
-            }
-          }
-          if ((e.key === "ArrowUp" || e.key === "ArrowDown") && !e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
-            if (recallHistory(e.key === "ArrowUp" ? "previous" : "next", e.currentTarget)) {
-              e.preventDefault();
-              return;
-            }
-          }
-          if (shouldSubmitFromEnter(e)) {
-            e.preventDefault();
-            submitComposer();
-          }
-        }}
-        onPaste={(e) => {
-          const files = clipboardFiles(e.clipboardData);
-          if (!files.length) return;
-          e.preventDefault();
-          onAttachFiles(files);
-        }}
-      />
+            onAttachFiles(files);
+          }}
+        />
+      </div>
       {showSlashMenu && (
         <div className="slash-menu" data-testid="slash-menu">
           {(() => {
@@ -805,9 +861,24 @@ export function Composer({
                       data-testid={`skill-suggestion-${item.skill.id}`}
                       onClick={() => void completeSuggestion(item)}
                     >
-                      <span className="slash-name">@{item.skill.name}</span>
+                      <span className="slash-name">{suggestionPrefix === "/" ? "/" : "@"}{item.skill.name}</span>
                       <span className="slash-label">{item.skill.name}</span>
                       <span className="slash-hint">{item.skill.description || "Use this skill"}</span>
+                    </button>
+                  );
+                }
+                if (item.kind === "mcp") {
+                  return (
+                    <button
+                      key={item.tool.name}
+                      type="button"
+                      className={"slash-item" + (index === slashFocusIndex ? " active" : "")}
+                      data-testid={`mcp-suggestion-${item.tool.name}`}
+                      onClick={() => void completeSuggestion(item)}
+                    >
+                      <span className="slash-name">/{item.tool.name}</span>
+                      <span className="slash-label">{item.tool.name}</span>
+                      <span className="slash-hint">{item.tool.description || "Use this MCP tool"}</span>
                     </button>
                   );
                 }

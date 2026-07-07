@@ -1,4 +1,4 @@
-import { composerAutocompleteTriggerAt, replaceComposerAutocompleteTrigger } from "../src/lib/composerAutocomplete.js";
+import { composerAutocompleteTriggerAt, mcpToolTagCompletion, replaceComposerAutocompleteTrigger, skillTagCompletion } from "../src/lib/composerAutocomplete.js";
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -21,6 +21,17 @@ assert(mention, "mention trigger should be detected away from the first characte
 equal(mention.prefix, "@", "mention trigger prefix");
 equal(mention.query, "src/app", "mention query is lowercase");
 equal(replaceComposerAutocompleteTrigger(midMention, mention, "@src/App.tsx "), "Check @src/App.tsx ", "mention replacement");
+
+const slashSkill = "Use /des";
+const skill = composerAutocompleteTriggerAt(slashSkill, slashSkill.length);
+assert(skill, "slash trigger should support skill tags");
+equal(replaceComposerAutocompleteTrigger(slashSkill, skill, skillTagCompletion("/", "Design-Polish")), "Use /Design-Polish ", "slash skill replacement");
+equal(skillTagCompletion("@", "Code Review"), "@Code Review ", "mention skill completion");
+
+const slashMcp = "Use /github";
+const mcp = composerAutocompleteTriggerAt(slashMcp, slashMcp.length);
+assert(mcp, "slash trigger should support MCP tool tags");
+equal(replaceComposerAutocompleteTrigger(slashMcp, mcp, mcpToolTagCompletion("github__search")), "Use /github__search ", "MCP slash replacement");
 
 equal(composerAutocompleteTriggerAt("email ada@example.com", "email ada@example.com".length), null, "email should not trigger mention");
 equal(composerAutocompleteTriggerAt("run/path", "run/path".length), null, "slash inside a token should not trigger commands");

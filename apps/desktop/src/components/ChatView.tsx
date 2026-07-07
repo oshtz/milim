@@ -36,6 +36,7 @@ import {
   listMediaModels,
   listProviders,
   listSkills,
+  listTools,
   MAX_ATTACHMENT_BYTES,
   openArtifactLocation,
   openExternalUrl,
@@ -100,6 +101,7 @@ import {
   type ScheduleRunEvent,
   type SkillInfo,
   type TokenUsage,
+  type ToolInfo,
   type ToolApprovalMode,
   type ThreadEvent,
   type WorkspaceFileSuggestion,
@@ -2281,6 +2283,7 @@ export function ChatView({
   const [mcpOpen, setMcpOpen] = useState(false);
   const [memoryOpen, setMemoryOpen] = useState(false);
   const [skills, setSkills] = useState<SkillInfo[]>([]);
+  const [composerTools, setComposerTools] = useState<ToolInfo[]>([]);
   const [editing, setEditing] = useState<number | null>(null);
   const [modelsLoaded, setModelsLoaded] = useState(false);
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
@@ -2769,6 +2772,20 @@ export function ChatView({
   useEffect(() => {
     listSkills().then(setSkills);
   }, [skillsRevision]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void listTools()
+      .then((tools) => {
+        if (!cancelled) setComposerTools(tools);
+      })
+      .catch(() => {
+        if (!cancelled) setComposerTools([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (!showMedia || enabledMediaProviders.length === 0) {
@@ -6557,6 +6574,7 @@ export function ChatView({
                   updateThreadSettings(activeId, { instructions: v })
                 }
                 skills={skills}
+                tools={composerTools}
                 workspaceFolder={folder}
                 workspaceProjects={workspaceProjects}
                 onWorkspaceFolder={startChatInFolder}
@@ -6674,7 +6692,14 @@ export function ChatView({
           />
         )}
 
-        {mcpOpen && showMcp && <McpManager onClose={() => setMcpOpen(false)} />}
+        {mcpOpen && showMcp && (
+          <McpManager
+            onClose={() => {
+              setMcpOpen(false);
+              void listTools().then(setComposerTools).catch(() => setComposerTools([]));
+            }}
+          />
+        )}
 
         {memoryOpen && showMemoryManager && (
           <MemoryManager onClose={() => setMemoryOpen(false)} />

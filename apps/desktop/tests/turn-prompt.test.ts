@@ -224,6 +224,91 @@ assert.match(prepared.memoryMessages[0].content, /Memory body/);
 assert.match(prepared.skillMessages[0].content, /Custom/);
 assert.equal(prepared.useTools, true);
 
+const tagSkills = [
+  { id: "code-review", name: "Code Review", description: "", instructions: "Review carefully.", enabled: true, source_kind: "local" },
+  { id: "code", name: "Code", description: "", instructions: "Shorter match.", enabled: true, source_kind: "local" },
+  { id: "design", name: "Design-Polish", description: "", instructions: "Polish UI.", enabled: true, source_kind: "local" },
+  { id: "disabled-skill", name: "Disabled Skill", description: "", instructions: "Skip disabled.", enabled: false, source_kind: "local" },
+];
+const noneTagged = await prepareTurnPromptContext({
+  sessionId: "s-tags-none",
+  threadTitle: "Tags",
+  folder: "",
+  instructions: "",
+  planMode: false,
+  memory: false,
+  conversation: [user("Use @Code Review and /Design-Polish, not @Disabled Skill or @Missing Skill.")],
+  activeAgent: { skill_mode: "none", enabled_skills: [] },
+  skills: tagSkills,
+  turnId: "turn-tags-none",
+  model: "local-model",
+  sandbox: false,
+  computerUse: false,
+  activeAgentId: "agent-tags",
+  toolApproval: "guarded",
+  toolApprovalGrant: false,
+  experimentalHashlinePatch: false,
+  messageContent: (message) => message.content,
+  searchMemory: async () => [],
+  selectSkills: async () => {
+    throw new Error("none mode should not auto-select skills");
+  },
+});
+assert.match(noneTagged.skillMessages[0].content, /Code Review/);
+assert.match(noneTagged.skillMessages[0].content, /Design-Polish/);
+assert.doesNotMatch(noneTagged.skillMessages[0].content, /Shorter match/);
+assert.doesNotMatch(noneTagged.skillMessages[0].content, /Disabled Skill/);
+assert.doesNotMatch(noneTagged.skillMessages[0].content, /Missing Skill/);
+
+const customTagged = await prepareTurnPromptContext({
+  sessionId: "s-tags-custom",
+  threadTitle: "Tags",
+  folder: "",
+  instructions: "",
+  planMode: false,
+  memory: false,
+  conversation: [user("Use @Code Review.")],
+  activeAgent: { skill_mode: "custom", enabled_skills: ["code-review"] },
+  skills: tagSkills,
+  turnId: "turn-tags-custom",
+  model: "local-model",
+  sandbox: false,
+  computerUse: false,
+  activeAgentId: "agent-tags",
+  toolApproval: "guarded",
+  toolApprovalGrant: false,
+  experimentalHashlinePatch: false,
+  messageContent: (message) => message.content,
+  searchMemory: async () => [],
+  selectSkills: async () => [],
+});
+assert.equal(customTagged.skillMessages[0].content.match(/Code Review/g)?.length, 1, "tagged custom skill should dedupe");
+
+const autoTagged = await prepareTurnPromptContext({
+  sessionId: "s-tags-auto",
+  threadTitle: "Tags",
+  folder: "",
+  instructions: "",
+  planMode: false,
+  memory: false,
+  conversation: [user("Use /Code Review.")],
+  activeAgent: null,
+  skills: tagSkills,
+  turnId: "turn-tags-auto",
+  model: "local-model",
+  sandbox: false,
+  computerUse: false,
+  activeAgentId: null,
+  toolApproval: "guarded",
+  toolApprovalGrant: false,
+  experimentalHashlinePatch: false,
+  messageContent: (message) => message.content,
+  searchMemory: async () => [],
+  selectSkills: async () => [tagSkills[0], tagSkills[2]],
+});
+assert.equal(autoTagged.skillMessages[0].content.match(/Code Review/g)?.length, 1, "tagged auto skill should dedupe");
+assert.match(autoTagged.skillMessages[0].content, /Design-Polish/);
+
 const accountPrepared = await prepareTurnPromptContext({
   sessionId: "s6",
   threadTitle: "Account",

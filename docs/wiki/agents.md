@@ -6,7 +6,7 @@ title: Agents, tools, skills, and schedules
 summary: Reusable agent profiles, tool modes, skill modes, run timelines, child threads, schedules, and approval policies.
 group: Workbench
 order: 50
-updated: 2026-07-06
+updated: 2026-07-07
 ---
 
 Agents are for repeatable behavior, tool access, and longer work. Keep one-off questions in plain chat; save an agent when the same instructions or tool policy should survive across threads.
@@ -17,7 +17,7 @@ Agents are for repeatable behavior, tool access, and longer work. Keep one-off q
 |---|---|
 | Named agents | Saved profiles with name, avatar text, system prompt, model override, tool mode, and skill mode. |
 | Tool modes | `all`, `custom`, or `none`. |
-| Skill modes | `auto`, `custom`, or `none`; auto selects enabled skills by keyword. |
+| Skill modes | `auto`, `custom`, or `none`; auto selects enabled skills by keyword, while explicit `@Skill Name` and `/Skill Name` prompt tags inject matching enabled skills for that turn. |
 | Run timeline | Start, token, reasoning, tool call, tool result, memory, child-thread, per-request usage deltas, final usage, and error events render as structured stream parts. Full tool results stay visible in the timeline, while replay back into later model iterations and old compaction summary prompts are capped to keep agent loops efficient. Child-thread events carry monotonic `seq` cursors; event reads keep the newest tail when limited, and `/threads/{id}` plus child-thread SSE support `after_seq` backfill. Runs stop at 100 model turns by default (`stopped_at_limit: true`), and stream-open failures are retried once before surfacing an error. |
 | Schedules | Cron schedules can run prompts with optional agent profiles and attached file context; due schedules fire in the background loop and land completed results as desktop threads. |
 | Tool approval | The UI sends approval policy and grants to the server-side agent loop. |

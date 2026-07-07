@@ -285,12 +285,80 @@ async function skillsForTurn(
   selectSkills: (query: string, limit: number) => Promise<SkillInfo[]>,
 ): Promise<SkillInfo[]> {
   if (!lastUserText) return [];
-  if (agent?.skill_mode === "none") return [];
+  const tagged = taggedSkillsForText(lastUserText, skills);
+  if (agent?.skill_mode === "none") return tagged;
   if (agent?.skill_mode === "custom") {
     const wanted = new Set(agent.enabled_skills ?? []);
-    return skills.filter((skill) => skill.enabled && wanted.has(skill.id));
+    return mergeSkills(tagged, skills.filter((skill) => skill.enabled && wanted.has(skill.id)));
   }
-  return selectSkills(lastUserText, 3);
+  return mergeSkills(tagged, await selectSkills(lastUserText, 3));
+}
+
+function taggedSkillsForText(text: string, skills: SkillInfo[]): SkillInfo[] {
+  const candidates = skills
+    .filter((skill) => skill.enabled && skill.name.trim())
+    .slice()
+    .sort((a, b) => b.name.trim().length - a.name.trim().length);
+  const found: SkillInfo[] = [];
+  const seen = new Set<string>();
+  for (let i = 0; i < text.length; i += 1) {
+    const prefix = text[i];
+    if ((prefix !== "@" && prefix !== "/") || !isSkillTagStartBoundary(text, i)) continue;
+    let start = i + 1;
+    while (start < text.length && /\s/.test(text[start])) start += 1;
+    for (const skill of candidates) {
+      const end = matchSkillNameAt(text, start, skill.name);
+      if (end == null) continue;
+      if (!seen.has(skill.id)) {
+        found.push(skill);
+        seen.add(skill.id);
+      }
+      break;
+    }
+  }
+  return found;
+}
+
+function mergeSkills(...groups: SkillInfo[][]): SkillInfo[] {
+  const merged: SkillInfo[] = [];
+  const seen = new Set<string>();
+  for (const group of groups) {
+    for (const skill of group) {
+      if (!skill.enabled || seen.has(skill.id)) continue;
+      merged.push(skill);
+      seen.add(skill.id);
+    }
+  }
+  return merged;
+}
+
+function matchSkillNameAt(text: string, start: number, name: string): number | null {
+  const lowerText = text.toLowerCase();
+  const lowerName = name.trim().toLowerCase();
+  let i = start;
+  let j = 0;
+  while (j < lowerName.length) {
+    if (/\s/.test(lowerName[j])) {
+      while (j < lowerName.length && /\s/.test(lowerName[j])) j += 1;
+      if (i >= lowerText.length || !/\s/.test(lowerText[i])) return null;
+      while (i < lowerText.length && /\s/.test(lowerText[i])) i += 1;
+      continue;
+    }
+    if (lowerText[i] !== lowerName[j]) return null;
+    i += 1;
+    j += 1;
+  }
+  return isSkillTagEndBoundary(text, i) ? i : null;
+}
+
+function isSkillTagStartBoundary(text: string, index: number): boolean {
+  if (index === 0) return true;
+  return /[\s([{]/.test(text[index - 1]);
+}
+
+function isSkillTagEndBoundary(text: string, index: number): boolean {
+  if (index >= text.length) return true;
+  return /[\s,.;:!?()[\]{}"'`]/.test(text[index]);
 }
 
 function memoryContextBlock(items: MemoryHit[]): string {

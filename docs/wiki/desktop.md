@@ -6,7 +6,7 @@ title: Desktop app
 summary: Simple and Workbench modes, threads, projects, composer controls, artifacts, plan mode, goals, search, rendering, settings, and slash commands.
 group: Workbench
 order: 30
-updated: 2026-07-05
+updated: 2026-07-07
 ---
 
 The first run can open as Simple or Workbench. Simple keeps the chat core visible with model switching, themes, memory, and voice basics; Workbench exposes project, agent, MCP, media, sandbox, schedule, and computer-use controls. In both modes, the Tauri process starts the embedded backend, connects persisted MCP servers, refreshes provider models, and runs schedules in the background. Closing the desktop window hides it to the system tray so those background services keep running; use the tray menu to reopen or quit.
@@ -25,13 +25,15 @@ The first run can open as Simple or Workbench. Simple keeps the chat core visibl
 | Top bar | Theme, update, provider, and global app controls. |
 | Sidebar | Projects, threads, pinned groups, archives, unread state, child threads, per-section ellipsis toggles, and quick switching. |
 | Thread header | Current model, workspace folder, agent, approval, privacy, memory, sandbox, and computer-use state. |
-| Composer | Prompt text, per-thread unsent drafts, thread-local sent-history recall, slash commands, file attachments, voice input, queued sends, and send controls. |
+| Composer | Prompt text, visually highlighted plain-text skill/MCP/file/link tokens, per-thread unsent drafts, thread-local sent-history recall, slash commands, file attachments, voice input, queued sends, and send controls. |
 | Run timeline | Reasoning, compact live tool activity with expandable details, workspace checkpoint notices, memory notices, child-thread activity, and usage metrics. Built-in tool-agent usage updates after each model request completes; account runtimes remain terminal-only unless their CLIs report more. |
 | Side panel | Switches between detected artifacts, a browser/URL preview, and Git status/actions; artifact revisions and the selected mode persist per thread. |
 
 ## Context menus
 
 The desktop app replaces the default right-click menu on Milim-owned surfaces with app actions for threads, project sections, chat messages, artifacts, preview panels, Git panels, and empty app chrome. Text inputs, textareas, selected text, and links keep the native browser menu for edit, copy, paste, select-all, and link actions. External pages inside the native preview child webview keep their own native context menu; the Milim preview toolbar and panel chrome use the app menu.
+
+The composer keeps prompt storage plain text. Recognized `@Skill Name`, `/Skill Name`, and `/server__tool` tags render as compact pills, while workspace `@file` references and bare HTTP(S) URLs render with link-like highlighting in the editor mirror layer; MCP slash suggestions insert the visible tag only and do not force a tool call or bypass approval/exposure policy.
 
 ## Session controls
 
