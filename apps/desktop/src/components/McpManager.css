@@ -394,6 +394,27 @@
   min-height: 118px;
 }
 
+.mcp-env-list {
+  display: grid;
+  gap: 8px;
+}
+
+.mcp-env-empty {
+  color: var(--tertiary-text);
+  font-size: 12px;
+}
+
+.mcp-env-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) minmax(150px, 1.4fr) auto auto 32px;
+  gap: 8px;
+  align-items: center;
+}
+
+.mcp-env-row .css-input {
+  min-width: 0;
+}
+
 .mcp-status-grid {
   display: grid;
   grid-template-columns: max-content minmax(0, 1fr);
@@ -550,6 +571,10 @@
   .mcp-manager-header-actions,
   .mcp-action-footer {
     flex-wrap: wrap;
+  }
+
+  .mcp-env-row {
+    grid-template-columns: 1fr;
   }
 
   .mcp-status-grid {

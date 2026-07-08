@@ -314,6 +314,9 @@ export interface HarnessMcpCandidate {
   name: string;
   command: string;
   args: string[];
+  cwd?: string | null;
+  env?: McpEnvVar[];
+  warnings?: string[];
   source_path: string;
 }
 
@@ -1964,6 +1967,7 @@ export interface AgentToolContext {
   preview_surface?: PreviewSurfaceTarget | null;
   experimental_hashline_patch?: boolean;
   plan_mode?: boolean;
+  journal_id?: string;
 }
 
 export type ChildThreadStatus =
@@ -3453,6 +3457,94 @@ export async function deleteSchedule(id: string): Promise<boolean> {
   }
 }
 
+// ----- Run journal -----
+
+export interface RunJournalEntry {
+  id: string;
+  created_at_ms: number;
+  updated_at_ms: number;
+  status: "running" | "done" | "error" | "aborted" | "skipped" | "interrupted" | string;
+  kind: string;
+  title: string;
+  goal: string;
+  session_id?: string | null;
+  user_message_id?: string | null;
+  assistant_message_id?: string | null;
+  model: string;
+  provider?: string | null;
+  workspace?: string | null;
+  duration_ms?: number | null;
+  prompt_tokens?: number | null;
+  completion_tokens?: number | null;
+  total_tokens?: number | null;
+  cost_usd?: number | null;
+  input_excerpt: string;
+  output_excerpt: string;
+  error?: string | null;
+  files?: string[];
+  tools?: string[];
+  artifacts?: string[];
+  tags?: string[];
+}
+
+export async function listRunJournalEntries(params: {
+  q?: string;
+  status?: string;
+  kind?: string;
+  workspace?: string;
+  limit?: number;
+  offset?: number;
+} = {}): Promise<RunJournalEntry[]> {
+  try {
+    const url = new URL(`${BASE}/runs`);
+    for (const [key, value] of Object.entries(params)) {
+      if (value == null || value === "") continue;
+      url.searchParams.set(key, String(value));
+    }
+    const r = await authFetch(url.toString());
+    if (!r.ok) return [];
+    const j = await r.json();
+    return (j.runs ?? []) as RunJournalEntry[];
+  } catch {
+    return [];
+  }
+}
+
+export async function getRunJournalEntry(id: string): Promise<RunJournalEntry | null> {
+  try {
+    const r = await authFetch(`${BASE}/runs/${encodeURIComponent(id)}`);
+    if (!r.ok) return null;
+    const j = await r.json();
+    return (j.run ?? null) as RunJournalEntry | null;
+  } catch {
+    return null;
+  }
+}
+
+export async function saveRunJournalEntry(entry: RunJournalEntry): Promise<RunJournalEntry | null> {
+  try {
+    const r = await authFetch(entry.id ? `${BASE}/runs/${encodeURIComponent(entry.id)}` : `${BASE}/runs`, {
+      method: entry.id ? "PUT" : "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(entry),
+    });
+    if (!r.ok) return null;
+    const j = await r.json();
+    return (j.run ?? null) as RunJournalEntry | null;
+  } catch {
+    return null;
+  }
+}
+
+export async function deleteRunJournalEntry(id: string): Promise<boolean> {
+  try {
+    const r = await authFetch(`${BASE}/runs/${encodeURIComponent(id)}`, { method: "DELETE" });
+    return r.ok;
+  } catch {
+    return false;
+  }
+}
+
 // ----- MCP client (external MCP servers whose tools we consume) -----
 
 export interface McpServerInfo {
@@ -3460,11 +3552,31 @@ export interface McpServerInfo {
   name: string;
   command: string;
   args: string[];
+  cwd?: string | null;
+  env?: McpEnvVar[];
   enabled: boolean;
   connected: boolean;
   tool_count: number;
   capabilities?: { tools: boolean; resources: boolean; prompts: boolean };
+  missing_env?: string[];
   error: string | null;
+}
+
+export interface McpEnvVar {
+  key: string;
+  value?: string | null;
+  secret?: boolean;
+  required?: boolean;
+  has_value?: boolean;
+}
+
+export interface McpTestResult {
+  ok: boolean;
+  connected: boolean;
+  tool_count: number;
+  capabilities?: { tools: boolean; resources: boolean; prompts: boolean };
+  missing_env?: string[];
+  error?: string | null;
 }
 
 /** Suggested MCP servers (command + args) for quick setup. */
@@ -3519,6 +3631,8 @@ export async function saveMcpServer(s: {
   name: string;
   command: string;
   args: string[];
+  cwd?: string | null;
+  env?: McpEnvVar[];
   enabled: boolean;
 }): Promise<McpServerInfo | null> {
   try {
@@ -3530,6 +3644,40 @@ export async function saveMcpServer(s: {
     if (!r.ok) return null;
     const j = await r.json();
     return (j.server ?? null) as McpServerInfo | null;
+  } catch {
+    return null;
+  }
+}
+
+export async function testMcpServer(s: {
+  id?: string;
+  name: string;
+  command: string;
+  args: string[];
+  cwd?: string | null;
+  env?: McpEnvVar[];
+  enabled: boolean;
+}): Promise<McpTestResult | null> {
+  try {
+    const r = await authFetch(`${BASE}/mcp/servers/test`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(s),
+    });
+    if (!r.ok) return null;
+    return (await r.json()) as McpTestResult;
+  } catch {
+    return null;
+  }
+}
+
+export async function testSavedMcpServer(id: string): Promise<McpTestResult | null> {
+  try {
+    const r = await authFetch(`${BASE}/mcp/servers/${encodeURIComponent(id)}/test`, {
+      method: "POST",
+    });
+    if (!r.ok) return null;
+    return (await r.json()) as McpTestResult;
   } catch {
     return null;
   }
@@ -3576,6 +3724,8 @@ export async function createSkill(input: {
   name?: string;
   description?: string;
   instructions?: string;
+  source_kind?: string;
+  source_url?: string | null;
   enabled?: boolean;
 }): Promise<SkillInfo | null> {
   try {

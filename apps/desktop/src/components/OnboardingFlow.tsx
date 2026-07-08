@@ -395,7 +395,14 @@ export function OnboardingFlow({ onModelsChanged }: { onModelsChanged?: () => Pr
 
       for (const mcp of preview.mcps) {
         const name = uniqueImportName(mcp.name, mcp.harness, mcpNames);
-        const saved = await saveMcpServer({ name, command: mcp.command, args: mcp.args, enabled: false });
+        const saved = await saveMcpServer({
+          name,
+          command: mcp.command,
+          args: mcp.args,
+          cwd: mcp.cwd ?? null,
+          env: mcp.env ?? [],
+          enabled: false,
+        });
         if (saved) {
           mcpNames.add(saved.name.toLowerCase());
           mcpCount++;
@@ -403,7 +410,12 @@ export function OnboardingFlow({ onModelsChanged }: { onModelsChanged?: () => Pr
       }
       for (const skill of preview.skills) {
         if (skillNames.has(skill.name.toLowerCase())) continue;
-        const saved = await createSkill({ skill_md: skill.skill_md, enabled: false });
+        const saved = await createSkill({
+          skill_md: skill.skill_md,
+          enabled: false,
+          source_kind: `imported:${skill.harness.toLowerCase().replace(/\s+/g, "-")}`,
+          source_url: skill.path,
+        });
         if (saved) {
           skillNames.add(saved.name.toLowerCase());
           skillCount++;

@@ -52,6 +52,7 @@ import {
   restartPreviewApp,
   runWorkspaceGitAction,
   saveArtifactFile,
+  saveRunJournalEntry,
   searchGraphMemory,
   selectSkills,
   setComputerUse,
@@ -101,6 +102,7 @@ import {
   type ProviderInfo,
   type ReasoningEffort,
   type RunStep,
+  type RunJournalEntry,
   type RunTrace,
   type SavedArtifactFile,
   type ScheduleRunEvent,
@@ -310,6 +312,9 @@ const McpManager = lazy(() =>
 const MemoryManager = lazy(() =>
   import("./MemoryManager").then((mod) => ({ default: mod.MemoryManager })),
 );
+const RunJournalManager = lazy(() =>
+  import("./RunJournalManager").then((mod) => ({ default: mod.RunJournalManager })),
+);
 const Markdown = lazy(() =>
   import("./Markdown").then((mod) => ({ default: mod.Markdown })),
 );
@@ -493,6 +498,61 @@ function attachmentId(): string {
       "att-" + Math.random().toString(36).slice(2) + Date.now().toString(36)
     );
   }
+}
+
+const RUN_JOURNAL_EXCERPT_LIMIT = 4000;
+
+function runJournalExcerpt(text: string, limit = RUN_JOURNAL_EXCERPT_LIMIT): string {
+  const trimmed = text.trim();
+  if (trimmed.length <= limit) return trimmed;
+  return `${trimmed.slice(0, limit)}\n[truncated]`;
+}
+
+function runJournalTitle(text: string): string {
+  return runJournalExcerpt(text, 160).split(/\r?\n/)[0]?.trim() || "Untitled run";
+}
+
+function lastUserMessage(messages: ChatMessage[]): ChatMessage | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === "user") return messages[i];
+  }
+  return null;
+}
+
+function parseRunStepArgs(step: RunStep): Record<string, unknown> | null {
+  if (!step.arguments) return null;
+  try {
+    const parsed = JSON.parse(step.arguments);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
+  } catch {
+    return null;
+  }
+}
+
+function journalFilesFromRun(run: RunTrace | null): string[] {
+  const files = new Set<string>();
+  for (const step of run?.steps ?? []) {
+    if (!["write_file", "edit_file", "patch_file"].includes(step.name)) continue;
+    const args = parseRunStepArgs(step);
+    const path = args?.path ?? args?.file_path;
+    if (typeof path === "string" && path.trim()) files.add(path.trim());
+  }
+  return [...files];
+}
+
+function journalToolsFromMessage(message: ChatMessage | undefined, run: RunTrace | null): string[] {
+  const tools = new Set<string>();
+  for (const step of run?.steps ?? []) tools.add(step.name);
+  for (const part of message?.streamParts ?? []) {
+    if (part.kind === "event" && part.eventType === "tool" && part.name) tools.add(part.name);
+  }
+  return [...tools];
+}
+
+function journalArtifactsFromMessage(message: ChatMessage | undefined): string[] {
+  return (message?.artifacts ?? [])
+    .map((artifact) => artifact.saved?.path || artifact.filename || artifact.title || artifact.id)
+    .filter((value): value is string => Boolean(value));
 }
 
 async function browserFileAttachment(file: File): Promise<ChatAttachment> {
@@ -2454,6 +2514,8 @@ export function ChatView({
   onOpenSchedules,
   composerDraft,
   gitPanelRequest = 0,
+  mcpManagerRequest = 0,
+  runJournalRequest = 0,
   onComposerDraftConsumed,
   skillsRevision = 0,
 }: {
@@ -2461,6 +2523,8 @@ export function ChatView({
   onOpenSchedules: () => void;
   composerDraft?: { id: number; text: string } | null;
   gitPanelRequest?: number;
+  mcpManagerRequest?: number;
+  runJournalRequest?: number;
   onComposerDraftConsumed?: (id: number) => void;
   skillsRevision?: number;
 }) {
@@ -2474,6 +2538,7 @@ export function ChatView({
   const [providersOpen, setProvidersOpen] = useState(false);
   const [mcpOpen, setMcpOpen] = useState(false);
   const [memoryOpen, setMemoryOpen] = useState(false);
+  const [runJournalOpen, setRunJournalOpen] = useState(false);
   const [skills, setSkills] = useState<SkillInfo[]>([]);
   const [composerTools, setComposerTools] = useState<ToolInfo[]>([]);
   const [editing, setEditing] = useState<number | null>(null);
@@ -3169,6 +3234,16 @@ export function ChatView({
   }, [gitPanelRequest]);
 
   useEffect(() => {
+    if (!mcpManagerRequest) return;
+    setMcpOpen(true);
+  }, [mcpManagerRequest]);
+
+  useEffect(() => {
+    if (!runJournalRequest) return;
+    setRunJournalOpen(true);
+  }, [runJournalRequest]);
+
+  useEffect(() => {
     return () => {
       if (previewCloseTimeoutRef.current != null) {
         window.clearTimeout(previewCloseTimeoutRef.current);
@@ -3480,6 +3555,19 @@ export function ChatView({
       tone: "info",
       message: "Git action loaded into composer.",
     });
+    window.requestAnimationFrame(() => {
+      document
+        .querySelector<HTMLTextAreaElement>('[data-testid="composer-input"]')
+        ?.focus();
+    });
+  }
+
+  function attachRunJournalContext(text: string) {
+    setInput((current) =>
+      current.trimEnd() ? `${current.trimEnd()}\n\n${text}` : text,
+    );
+    setRunJournalOpen(false);
+    setChatNotice({ tone: "info", message: "Run context attached to composer." });
     window.requestAnimationFrame(() => {
       document
         .querySelector<HTMLTextAreaElement>('[data-testid="composer-input"]')
@@ -5672,9 +5760,39 @@ export function ChatView({
       };
     }
     const toolApprovalGrant = toolApprovalDecision.grant;
+    const latestUser = lastUserMessage(convo);
+    const journalKind = codexModel
+      ? "account/codex"
+      : claudeModel
+        ? "account/claude"
+        : useTools
+          ? (turnActiveAgentId ? "agent" : "tools")
+          : "chat";
+    const journalEntry: RunJournalEntry = {
+      id: `run-${turnId}`,
+      created_at_ms: startedAt,
+      updated_at_ms: startedAt,
+      status: "running",
+      kind: journalKind,
+      title: runJournalTitle(latestUser?.content || turnTitle),
+      goal: latestUser?.content || turnTitle,
+      session_id: id,
+      user_message_id: latestUser?.id ?? null,
+      assistant_message_id: assistantMessageId,
+      model: turnModel,
+      workspace: turnFolder.trim() || null,
+      input_excerpt: runJournalExcerpt(latestUser?.content || ""),
+      output_excerpt: "",
+      files: [],
+      tools: [],
+      artifacts: [],
+      tags: [],
+    };
+    const journalStart = saveRunJournalEntry(journalEntry).catch(() => null);
     const toolContext = {
       ...promptContext.toolContext,
       tool_approval_grant: toolApprovalGrant,
+      journal_id: journalEntry.id,
     };
     const createWorkspaceCheckpoint = () =>
       checkpointWorkspaceBeforeTurn({
@@ -5880,24 +5998,25 @@ export function ChatView({
       resultError = errorResult.error;
     } finally {
       const endedAt = Date.now();
+      const finalMetrics = assistantStart.state.started
+        ? responseMetricsForTurn({
+            startedAt,
+            endedAt,
+            model: turnModel,
+            providers,
+            codexModel,
+            claudeModel,
+            usage: metricsCapture.state.usage,
+            costUsd: metricsCapture.state.costUsd,
+            limits: metricsCapture.state.limits,
+          })
+        : undefined;
       finalizeTurnRuntime({
         sessionId: id,
         model: turnModel,
         status: resultStatus,
         flush: () => streamBatcher.flush(),
-        metrics: assistantStart.state.started
-          ? responseMetricsForTurn({
-              startedAt,
-              endedAt,
-              model: turnModel,
-              providers,
-              codexModel,
-              claudeModel,
-              usage: metricsCapture.state.usage,
-              costUsd: metricsCapture.state.costUsd,
-              limits: metricsCapture.state.limits,
-            })
-          : undefined,
+        metrics: finalMetrics,
         commitResponseMetrics: (targetId, metrics) =>
           commitResponseMetrics(targetId, assistantMessageId, metrics),
         finalizeMessageArtifacts: (targetId) =>
@@ -5911,6 +6030,25 @@ export function ChatView({
         maybeGenerateAiThreadTitle,
         flushUserState: () => flushDeferredUserStateWrites("milim.sessions"),
         signal: controller.signal,
+      });
+      const finalMessages = sessionMessages(id, assistantStart.state.activeConversation);
+      const assistantMessage = finalMessages.find((message) => message.id === assistantMessageId);
+      await journalStart;
+      void saveRunJournalEntry({
+        ...journalEntry,
+        updated_at_ms: endedAt,
+        status: resultStatus,
+        provider: finalMetrics?.provider ?? null,
+        duration_ms: finalMetrics?.durationMs ?? endedAt - startedAt,
+        prompt_tokens: finalMetrics?.usage?.prompt_tokens ?? null,
+        completion_tokens: finalMetrics?.usage?.completion_tokens ?? null,
+        total_tokens: finalMetrics?.usage?.total_tokens ?? null,
+        cost_usd: finalMetrics?.costUsd ?? null,
+        output_excerpt: runJournalExcerpt(assistantMessage?.content ?? ""),
+        error: resultError ?? null,
+        files: journalFilesFromRun(runRef.current),
+        tools: journalToolsFromMessage(assistantMessage, runRef.current),
+        artifacts: journalArtifactsFromMessage(assistantMessage),
       });
     }
     return {
@@ -7072,6 +7210,17 @@ export function ChatView({
 
         {memoryOpen && showMemoryManager && (
           <MemoryManager onClose={() => setMemoryOpen(false)} />
+        )}
+
+        {runJournalOpen && (
+          <RunJournalManager
+            onClose={() => setRunJournalOpen(false)}
+            onAttach={attachRunJournalContext}
+            onOpenSession={(sessionId) => {
+              switchToSession(sessionId);
+              setRunJournalOpen(false);
+            }}
+          />
         )}
 
         {goalPanelOpen && (

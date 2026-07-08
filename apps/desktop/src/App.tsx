@@ -219,6 +219,8 @@ function AppContent() {
   const [skillsOpen, setSkillsOpen] = useState(false);
   const [skillsRevision, setSkillsRevision] = useState(0);
   const [schedulesOpen, setSchedulesOpen] = useState(false);
+  const [mcpManagerRequest, setMcpManagerRequest] = useState(0);
+  const [runJournalRequest, setRunJournalRequest] = useState(0);
   const [composerDraft, setComposerDraft] = useState<{
     id: number;
     text: string;
@@ -326,6 +328,8 @@ function AppContent() {
           onOpenSettings={() => setSettingsOpen(true)}
           onManageSkills={() => setSkillsOpen(true)}
           onManageSchedules={() => setSchedulesOpen(true)}
+          onManageMcp={() => setMcpManagerRequest((value) => value + 1)}
+          onOpenRunJournal={() => setRunJournalRequest((value) => value + 1)}
           onGitAction={(text) => setComposerDraft({ id: Date.now(), text })}
           onOpenGitPanel={() => setGitPanelRequest((value) => value + 1)}
         />
@@ -336,6 +340,8 @@ function AppContent() {
             onOpenSchedules={() => setSchedulesOpen(true)}
             composerDraft={composerDraft}
             gitPanelRequest={gitPanelRequest}
+            mcpManagerRequest={mcpManagerRequest}
+            runJournalRequest={runJournalRequest}
             skillsRevision={skillsRevision}
             onComposerDraftConsumed={(id) =>
               setComposerDraft((current) =>

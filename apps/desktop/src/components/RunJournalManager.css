@@ -1,0 +1,116 @@
+.run-journal-body {
+  grid-template-columns: minmax(248px, 306px) minmax(0, 1fr);
+}
+
+.run-journal-search {
+  flex: none;
+}
+
+.run-journal-filter-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.run-journal-filter-row .ui-select,
+.run-journal-filter-row .ui-select-btn {
+  width: 100%;
+}
+
+.run-journal-row {
+  grid-template-columns: 14px minmax(0, 1fr);
+  align-items: start;
+}
+
+.run-journal-dot {
+  width: 9px;
+  height: 9px;
+  margin-top: 4px;
+  border-radius: 999px;
+  background: var(--warning);
+  box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 12%, transparent);
+}
+
+.run-journal-dot.ready {
+  background: var(--success);
+}
+
+.run-journal-dot.error {
+  background: var(--error);
+}
+
+.run-journal-detail-head p,
+.run-journal-detail p {
+  margin: 4px 0 0;
+  color: var(--secondary-text);
+  font-size: 12.5px;
+  line-height: 1.4;
+  white-space: pre-wrap;
+}
+
+.run-journal-detail h4 {
+  margin: 0 0 6px;
+  color: var(--secondary-text);
+  font-size: 12px;
+}
+
+.run-journal-status {
+  flex: none;
+  padding: 2px 7px;
+  border: 1px solid color-mix(in srgb, var(--accent-soft) 60%, var(--border-primary));
+  border-radius: 999px;
+  background: var(--accent-15);
+  color: var(--warning);
+  font-size: 10.5px;
+  font-weight: 700;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+
+.run-journal-status.ready {
+  color: var(--success);
+}
+
+.run-journal-status.error {
+  color: var(--error);
+}
+
+.run-journal-detail ul {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--secondary-text);
+  font-size: 12px;
+}
+
+.run-journal-actions {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: auto;
+  padding: 12px 0 14px;
+  background: color-mix(in srgb, var(--bg-secondary) 94%, var(--bg-primary));
+}
+
+.run-journal-note {
+  margin: 0;
+}
+
+@media (max-width: 860px) {
+  .run-journal-body {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(190px, 31vh) minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 560px) {
+  .run-journal-filter-row,
+  .run-journal-meta {
+    grid-template-columns: 1fr;
+  }
+
+  .run-journal-actions {
+    flex-wrap: wrap;
+  }
+}

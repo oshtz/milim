@@ -10,6 +10,7 @@ use std::sync::Mutex;
 
 use milim_core::{Error, Result};
 use rusqlite::{params, Connection, OptionalExtension};
+use serde::{Deserialize, Serialize};
 
 use crate::crypto::EncryptedStore;
 
@@ -474,6 +475,310 @@ impl UserDataStore {
         Ok(())
     }
 }
+
+const RUN_JOURNAL_MIGRATIONS: &[Migration] = &[Migration {
+    version: 1,
+    name: "run_journal_entries",
+    sql: "CREATE TABLE IF NOT EXISTS run_journal_entries (
+        id TEXT PRIMARY KEY,
+        created_at_ms INTEGER NOT NULL,
+        updated_at_ms INTEGER NOT NULL,
+        status TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        title TEXT NOT NULL,
+        goal TEXT NOT NULL,
+        session_id TEXT,
+        user_message_id TEXT,
+        assistant_message_id TEXT,
+        model TEXT NOT NULL,
+        provider TEXT,
+        workspace TEXT,
+        duration_ms INTEGER,
+        prompt_tokens INTEGER,
+        completion_tokens INTEGER,
+        total_tokens INTEGER,
+        cost_usd REAL,
+        input_excerpt TEXT NOT NULL,
+        output_excerpt TEXT NOT NULL,
+        error TEXT,
+        files_json TEXT NOT NULL DEFAULT '[]',
+        tools_json TEXT NOT NULL DEFAULT '[]',
+        artifacts_json TEXT NOT NULL DEFAULT '[]',
+        tags_json TEXT NOT NULL DEFAULT '[]'
+    );
+    CREATE INDEX IF NOT EXISTS idx_run_journal_created ON run_journal_entries(created_at_ms DESC);
+    CREATE INDEX IF NOT EXISTS idx_run_journal_status ON run_journal_entries(status);
+    CREATE INDEX IF NOT EXISTS idx_run_journal_kind ON run_journal_entries(kind);
+    CREATE INDEX IF NOT EXISTS idx_run_journal_workspace ON run_journal_entries(workspace);",
+}];
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RunJournalEntry {
+    pub id: String,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+    pub status: String,
+    pub kind: String,
+    pub title: String,
+    pub goal: String,
+    pub session_id: Option<String>,
+    pub user_message_id: Option<String>,
+    pub assistant_message_id: Option<String>,
+    pub model: String,
+    pub provider: Option<String>,
+    pub workspace: Option<String>,
+    pub duration_ms: Option<i64>,
+    pub prompt_tokens: Option<i64>,
+    pub completion_tokens: Option<i64>,
+    pub total_tokens: Option<i64>,
+    pub cost_usd: Option<f64>,
+    pub input_excerpt: String,
+    pub output_excerpt: String,
+    pub error: Option<String>,
+    #[serde(default)]
+    pub files: Vec<String>,
+    #[serde(default)]
+    pub tools: Vec<String>,
+    #[serde(default)]
+    pub artifacts: Vec<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct RunJournalQuery {
+    pub q: Option<String>,
+    pub status: Option<String>,
+    pub kind: Option<String>,
+    pub workspace: Option<String>,
+    pub limit: usize,
+    pub offset: usize,
+}
+
+pub struct RunJournalStore {
+    db: Mutex<Database>,
+}
+
+impl RunJournalStore {
+    pub fn new(db: Database) -> Result<Self> {
+        db.migrate_scoped("run_journal", RUN_JOURNAL_MIGRATIONS)?;
+        Ok(Self { db: Mutex::new(db) })
+    }
+
+    pub fn upsert(&self, entry: &RunJournalEntry) -> Result<RunJournalEntry> {
+        let mut entry = entry.clone();
+        if entry.id.trim().is_empty() {
+            entry.id = format!("run-{}", now_ms());
+        }
+        if entry.created_at_ms <= 0 {
+            entry.created_at_ms = now_ms();
+        }
+        if entry.updated_at_ms <= 0 {
+            entry.updated_at_ms = now_ms();
+        }
+        let db = self
+            .db
+            .lock()
+            .map_err(|_| Error::Other("run journal DB lock poisoned".into()))?;
+        let files_json = json_vec(&entry.files)?;
+        let tools_json = json_vec(&entry.tools)?;
+        let artifacts_json = json_vec(&entry.artifacts)?;
+        let tags_json = json_vec(&entry.tags)?;
+        db.conn()
+            .execute(
+                "INSERT INTO run_journal_entries (
+                    id, created_at_ms, updated_at_ms, status, kind, title, goal,
+                    session_id, user_message_id, assistant_message_id, model, provider, workspace,
+                    duration_ms, prompt_tokens, completion_tokens, total_tokens, cost_usd,
+                    input_excerpt, output_excerpt, error, files_json, tools_json, artifacts_json, tags_json
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)
+                ON CONFLICT(id) DO UPDATE SET
+                    updated_at_ms=excluded.updated_at_ms,
+                    status=excluded.status,
+                    kind=excluded.kind,
+                    title=excluded.title,
+                    goal=excluded.goal,
+                    session_id=excluded.session_id,
+                    user_message_id=excluded.user_message_id,
+                    assistant_message_id=excluded.assistant_message_id,
+                    model=excluded.model,
+                    provider=excluded.provider,
+                    workspace=excluded.workspace,
+                    duration_ms=excluded.duration_ms,
+                    prompt_tokens=excluded.prompt_tokens,
+                    completion_tokens=excluded.completion_tokens,
+                    total_tokens=excluded.total_tokens,
+                    cost_usd=excluded.cost_usd,
+                    input_excerpt=excluded.input_excerpt,
+                    output_excerpt=excluded.output_excerpt,
+                    error=excluded.error,
+                    files_json=excluded.files_json,
+                    tools_json=excluded.tools_json,
+                    artifacts_json=excluded.artifacts_json,
+                    tags_json=excluded.tags_json",
+                params![
+                    entry.id,
+                    entry.created_at_ms,
+                    entry.updated_at_ms,
+                    entry.status,
+                    entry.kind,
+                    entry.title,
+                    entry.goal,
+                    entry.session_id,
+                    entry.user_message_id,
+                    entry.assistant_message_id,
+                    entry.model,
+                    entry.provider,
+                    entry.workspace,
+                    entry.duration_ms,
+                    entry.prompt_tokens,
+                    entry.completion_tokens,
+                    entry.total_tokens,
+                    entry.cost_usd,
+                    entry.input_excerpt,
+                    entry.output_excerpt,
+                    entry.error,
+                    files_json,
+                    tools_json,
+                    artifacts_json,
+                    tags_json,
+                ],
+            )
+            .map_err(sqlite)?;
+        Ok(entry)
+    }
+
+    pub fn get(&self, id: &str) -> Result<Option<RunJournalEntry>> {
+        let db = self
+            .db
+            .lock()
+            .map_err(|_| Error::Other("run journal DB lock poisoned".into()))?;
+        db.conn()
+            .query_row(
+                "SELECT * FROM run_journal_entries WHERE id = ?1",
+                params![id],
+                row_to_run_journal_entry,
+            )
+            .optional()
+            .map_err(sqlite)
+    }
+
+    pub fn list(&self, query: RunJournalQuery) -> Result<Vec<RunJournalEntry>> {
+        let db = self
+            .db
+            .lock()
+            .map_err(|_| Error::Other("run journal DB lock poisoned".into()))?;
+        let mut stmt = db
+            .conn()
+            .prepare("SELECT * FROM run_journal_entries ORDER BY created_at_ms DESC")
+            .map_err(sqlite)?;
+        let rows = stmt
+            .query_map([], row_to_run_journal_entry)
+            .map_err(sqlite)?;
+        let q = query.q.as_deref().map(str::to_ascii_lowercase);
+        let limit = query.limit.clamp(1, 200);
+        // ponytail: local O(n) filter; switch to FTS only if journals get large.
+        Ok(rows.filter_map(|row| row.ok())
+            .filter(|entry| query.status.as_ref().map(|v| &entry.status == v).unwrap_or(true))
+            .filter(|entry| query.kind.as_ref().map(|v| &entry.kind == v).unwrap_or(true))
+            .filter(|entry| {
+                query
+                    .workspace
+                    .as_ref()
+                    .map(|v| entry.workspace.as_deref() == Some(v.as_str()))
+                    .unwrap_or(true)
+            })
+            .filter(|entry| {
+                let Some(q) = &q else {
+                    return true;
+                };
+                [
+                    entry.title.as_str(),
+                    entry.goal.as_str(),
+                    entry.model.as_str(),
+                    entry.provider.as_deref().unwrap_or(""),
+                    entry.workspace.as_deref().unwrap_or(""),
+                    entry.input_excerpt.as_str(),
+                    entry.output_excerpt.as_str(),
+                    entry.error.as_deref().unwrap_or(""),
+                ]
+                .iter()
+                .any(|value| value.to_ascii_lowercase().contains(q))
+                    || entry.files.iter().any(|value| value.to_ascii_lowercase().contains(q))
+                    || entry.tools.iter().any(|value| value.to_ascii_lowercase().contains(q))
+                    || entry.artifacts.iter().any(|value| value.to_ascii_lowercase().contains(q))
+            })
+            .skip(query.offset)
+            .take(limit)
+            .collect::<Vec<_>>())
+    }
+
+    pub fn delete(&self, id: &str) -> Result<bool> {
+        let db = self
+            .db
+            .lock()
+            .map_err(|_| Error::Other("run journal DB lock poisoned".into()))?;
+        let n = db
+            .conn()
+            .execute("DELETE FROM run_journal_entries WHERE id = ?1", params![id])
+            .map_err(sqlite)?;
+        Ok(n > 0)
+    }
+
+    pub fn mark_stale_running(&self, message: &str) -> Result<usize> {
+        let db = self
+            .db
+            .lock()
+            .map_err(|_| Error::Other("run journal DB lock poisoned".into()))?;
+        db.conn()
+            .execute(
+                "UPDATE run_journal_entries
+                 SET status = 'interrupted', error = ?1, updated_at_ms = ?2
+                 WHERE status = 'running'",
+                params![message, now_ms()],
+            )
+            .map_err(sqlite)
+    }
+}
+
+fn json_vec(values: &[String]) -> Result<String> {
+    serde_json::to_string(values).map_err(Into::into)
+}
+
+fn parse_json_vec(value: String) -> Vec<String> {
+    serde_json::from_str(&value).unwrap_or_default()
+}
+
+fn row_to_run_journal_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<RunJournalEntry> {
+    Ok(RunJournalEntry {
+        id: row.get("id")?,
+        created_at_ms: row.get("created_at_ms")?,
+        updated_at_ms: row.get("updated_at_ms")?,
+        status: row.get("status")?,
+        kind: row.get("kind")?,
+        title: row.get("title")?,
+        goal: row.get("goal")?,
+        session_id: row.get("session_id")?,
+        user_message_id: row.get("user_message_id")?,
+        assistant_message_id: row.get("assistant_message_id")?,
+        model: row.get("model")?,
+        provider: row.get("provider")?,
+        workspace: row.get("workspace")?,
+        duration_ms: row.get("duration_ms")?,
+        prompt_tokens: row.get("prompt_tokens")?,
+        completion_tokens: row.get("completion_tokens")?,
+        total_tokens: row.get("total_tokens")?,
+        cost_usd: row.get("cost_usd")?,
+        input_excerpt: row.get("input_excerpt")?,
+        output_excerpt: row.get("output_excerpt")?,
+        error: row.get("error")?,
+        files: parse_json_vec(row.get("files_json")?),
+        tools: parse_json_vec(row.get("tools_json")?),
+        artifacts: parse_json_vec(row.get("artifacts_json")?),
+        tags: parse_json_vec(row.get("tags_json")?),
+    })
+}
+
 
 fn get_json_locked(conn: &Connection, key: &str) -> Result<Option<String>> {
     conn.query_row(
@@ -1193,5 +1498,38 @@ mod tests {
             store.get_json("milim.settings").unwrap().as_deref(),
             Some(r#"{"state":{"theme":"db"},"version":0}"#)
         );
+    }
+
+    #[test]
+    fn run_journal_store_round_trips_and_searches() {
+        let store = RunJournalStore::new(Database::open_in_memory().unwrap()).unwrap();
+        store
+            .upsert(&RunJournalEntry {
+                id: "run-1".to_string(),
+                created_at_ms: 1,
+                updated_at_ms: 1,
+                status: "done".to_string(),
+                kind: "chat".to_string(),
+                title: "Fix importer".to_string(),
+                goal: "Fix MCP importer".to_string(),
+                model: "test".to_string(),
+                input_excerpt: "Fix MCP importer".to_string(),
+                output_excerpt: "Done".to_string(),
+                files: vec!["src/importer.rs".to_string()],
+                ..Default::default()
+            })
+            .unwrap();
+
+        let found = store
+            .list(RunJournalQuery {
+                q: Some("importer.rs".to_string()),
+                limit: 10,
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].id, "run-1");
+        assert!(store.delete("run-1").unwrap());
+        assert!(store.get("run-1").unwrap().is_none());
     }
 }

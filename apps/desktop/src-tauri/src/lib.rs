@@ -136,7 +136,18 @@ struct HarnessMcpCandidate {
     name: String,
     command: String,
     args: Vec<String>,
+    cwd: Option<String>,
+    env: Vec<HarnessMcpEnvCandidate>,
+    warnings: Vec<String>,
     source_path: String,
+}
+
+#[derive(serde::Serialize, Debug)]
+struct HarnessMcpEnvCandidate {
+    key: String,
+    value: Option<String>,
+    secret: bool,
+    required: bool,
 }
 
 #[derive(serde::Serialize, Debug)]
@@ -380,15 +391,79 @@ fn read_json_mcp_config(path: &Path, harness: &str, out: &mut Vec<HarnessMcpCand
             })
             .unwrap_or_default();
         if !command.trim().is_empty() {
+            let (env, warnings) = json_mcp_env(cfg);
             out.push(HarnessMcpCandidate {
                 harness: harness.to_string(),
                 name: name.to_string(),
                 command: command.to_string(),
                 args,
+                cwd: cfg
+                    .get("cwd")
+                    .or_else(|| cfg.get("working_directory"))
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(ToOwned::to_owned),
+                env,
+                warnings,
                 source_path: path.to_string_lossy().to_string(),
             });
         }
     }
+}
+
+fn json_mcp_env(cfg: &Value) -> (Vec<HarnessMcpEnvCandidate>, Vec<String>) {
+    let mut warnings = Vec::new();
+    let env = cfg
+        .get("env")
+        .and_then(Value::as_object)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|(key, value)| {
+                    let key = key.trim();
+                    if key.is_empty() {
+                        return None;
+                    }
+                    let Some(value) = value.as_str() else {
+                        warnings.push(format!("env.{key} is not a string and was skipped"));
+                        return None;
+                    };
+                    Some(harness_env_candidate(key, value))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    (env, warnings)
+}
+
+fn harness_env_candidate(key: &str, value: &str) -> HarnessMcpEnvCandidate {
+    let secret = secret_env_key(key);
+    HarnessMcpEnvCandidate {
+        key: key.to_string(),
+        value: (!secret).then(|| value.to_string()),
+        secret,
+        required: secret,
+    }
+}
+
+fn secret_env_key(key: &str) -> bool {
+    let upper = key.to_ascii_uppercase();
+    [
+        "KEY",
+        "TOKEN",
+        "SECRET",
+        "PASSWORD",
+        "PASS",
+        "AUTH",
+        "CREDENTIAL",
+        "PRIVATE",
+        "BEARER",
+        "COOKIE",
+        "SESSION",
+    ]
+    .iter()
+    .any(|needle| upper.contains(needle))
 }
 
 #[cfg(test)]
@@ -496,14 +571,51 @@ fn read_codex_mcp_config(path: &Path, out: &mut Vec<HarnessMcpCandidate>) {
                     .collect()
             })
             .unwrap_or_default();
+        let (env, warnings) = toml_mcp_env(table);
         out.push(HarnessMcpCandidate {
             harness: "Codex".to_string(),
             name: name.to_string(),
             command: command.to_string(),
             args,
+            cwd: table
+                .get("cwd")
+                .or_else(|| table.get("working_directory"))
+                .and_then(TomlValue::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned),
+            env,
+            warnings,
             source_path: path.to_string_lossy().to_string(),
         });
     }
+}
+
+fn toml_mcp_env(
+    table: &toml::map::Map<String, TomlValue>,
+) -> (Vec<HarnessMcpEnvCandidate>, Vec<String>) {
+    let mut warnings = Vec::new();
+    let env = table
+        .get("env")
+        .and_then(TomlValue::as_table)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|(key, value)| {
+                    let key = key.trim();
+                    if key.is_empty() {
+                        return None;
+                    }
+                    let Some(value) = value.as_str() else {
+                        warnings.push(format!("env.{key} is not a string and was skipped"));
+                        return None;
+                    };
+                    Some(harness_env_candidate(key, value))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    (env, warnings)
 }
 
 fn collect_skill_candidates(root: &Path, harness: &str, out: &mut Vec<HarnessSkillCandidate>) {
@@ -2364,6 +2476,23 @@ fn build_state(
         Err(e) => eprintln!("memory store unavailable: {e}"),
     }
 
+    match milim_storage::Database::open_with_options(
+        &paths.user_db_file(),
+        DatabaseOptions {
+            journal_mode: JournalMode::Delete,
+        },
+    )
+    .and_then(milim_storage::RunJournalStore::new)
+    {
+        Ok(run_journal) => {
+            if let Err(e) = run_journal.mark_stale_running("App exited before this run completed.") {
+                eprintln!("run journal stale cleanup failed: {e}");
+            }
+            state = state.with_run_journal(run_journal);
+        }
+        Err(e) => eprintln!("run journal unavailable: {e}"),
+    }
+
     // Persisted cron schedules, shared by the Schedules sheet and the agent
     // schedule tools used for chat-created automations.
     let schedules_db = paths.root().join("schedules.db");
@@ -2937,9 +3066,11 @@ mod artifact_save_tests {
 [mcp_servers.filesystem]
 command = "npx"
 args = ["-y", "@modelcontextprotocol/server-filesystem", "."]
+cwd = "C:\\Users\\USER\\Documents\\DEV\\milim"
 
 [mcp_servers.filesystem.env]
 SECRET = "ignored"
+CONFIG_PATH = "config.json"
 
 [mcp_servers.filesystem.tools.read_file]
 approval_mode = "approve"
@@ -2961,6 +3092,22 @@ args=['mcp-obsidian']
         assert_eq!(out[0].name, "filesystem");
         assert_eq!(out[0].command, "npx");
         assert_eq!(out[0].args[1], "@modelcontextprotocol/server-filesystem");
+        assert_eq!(
+            out[0].cwd.as_deref(),
+            Some(r"C:\Users\USER\Documents\DEV\milim")
+        );
+        assert_eq!(out[0].env.len(), 2);
+        let secret = out[0].env.iter().find(|item| item.key == "SECRET").unwrap();
+        assert!(secret.secret);
+        assert!(secret.required);
+        assert!(secret.value.is_none());
+        let config_path = out[0]
+            .env
+            .iter()
+            .find(|item| item.key == "CONFIG_PATH")
+            .unwrap();
+        assert!(!config_path.secret);
+        assert_eq!(config_path.value.as_deref(), Some("config.json"));
         assert_eq!(out[1].name, "local");
         assert_eq!(out[1].command, "uvx");
 

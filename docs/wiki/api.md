@@ -38,8 +38,9 @@ Root aliases are also mounted for OpenAI chat, completions, models, and embeddin
 | Media | `GET /media/models`, `GET /media/model-schema`, `GET /media/status`, `POST /media/generate` |
 | Workspace | `GET/POST /workspace`, `GET /workspace/git`, `POST /workspace/git/action` (`diff`, sync, commit, checkpoint, restore checkpoint) |
 | Managed preview apps | `GET /preview-apps/{runtime_id}`, `POST /preview-apps/{runtime_id}/stage`, `POST /preview-apps/{runtime_id}/start`, `POST /preview-apps/{runtime_id}/stop`, `POST /preview-apps/{runtime_id}/restart`, `GET /preview-apps/{runtime_id}/logs` |
-| MCP | `GET /mcp/tools`, `POST /mcp/call`, `GET/POST /mcp/servers`, `DELETE /mcp/servers/{id}` |
+| MCP | `GET /mcp/tools`, `POST /mcp/call`, `GET/POST /mcp/servers`, `POST /mcp/servers/test`, `POST /mcp/servers/{id}/test`, `DELETE /mcp/servers/{id}` |
 | Agents | `POST /agents/run`, `GET/POST /agents`, `GET/PUT/DELETE /agents/{id}`, `POST /agents/{id}/run` |
+| Run journal | `GET/POST /runs`, `GET/PUT/DELETE /runs/{id}` |
 | Threads | `GET /threads/{id}` (`include_events=true&event_limit=N` returns `event_count` and `events_truncated`), `DELETE /threads/{id}`, `GET /threads/{id}/children`, `GET /threads/{id}/events`, `POST /threads/{id}/stop` |
 | Memory | `POST /memory/ingest`, `POST /memory/search`, `POST /memory/register`, `POST /memory/graph/search`, `GET /memory/scopes`, `GET /memory/nodes` |
 | Privacy | `POST /privacy/scan`, `GET/POST /privacy/mode` |

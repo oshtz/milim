@@ -53,6 +53,7 @@ interface UiPreferencesState {
   backgroundFit: BackgroundFit;
   backgroundTreatment: BackgroundTreatment;
   gitPanelExpanded: boolean;
+  workbenchExpanded: boolean;
   notices: AppNotice[];
   appShortcuts: AppShortcuts;
   setSidebarOpen: (sidebarOpen: boolean) => void;
@@ -76,6 +77,7 @@ interface UiPreferencesState {
   setBackgroundFit: (backgroundFit: BackgroundFit) => void;
   setBackgroundTreatment: (backgroundTreatment: BackgroundTreatment) => void;
   setGitPanelExpanded: (gitPanelExpanded: boolean) => void;
+  setWorkbenchExpanded: (workbenchExpanded: boolean) => void;
   pushNotice: (notice: { tone: AppNoticeTone; message: string }) => string;
   dismissNotice: (id: string) => void;
   setAppShortcut: (action: AppShortcutAction, shortcut: string) => boolean;
@@ -179,6 +181,7 @@ export const useUiPreferences = create<UiPreferencesState>()(
       backgroundFit: "cover",
       backgroundTreatment: "clear",
       gitPanelExpanded: false,
+      workbenchExpanded: false,
       notices: [],
       appShortcuts: { ...DEFAULT_APP_SHORTCUTS },
       setSidebarOpen: (sidebarOpen) => set({ sidebarOpen }),
@@ -206,6 +209,7 @@ export const useUiPreferences = create<UiPreferencesState>()(
       setBackgroundFit: (backgroundFit) => set({ backgroundFit: normalizeBackgroundFit(backgroundFit) }),
       setBackgroundTreatment: (backgroundTreatment) => set({ backgroundTreatment: normalizeBackgroundTreatment(backgroundTreatment) }),
       setGitPanelExpanded: (gitPanelExpanded) => set({ gitPanelExpanded }),
+      setWorkbenchExpanded: (workbenchExpanded) => set({ workbenchExpanded }),
       pushNotice: (notice) => {
         const id = `notice-${Date.now()}-${Math.random().toString(36).slice(2)}`;
         set((state) => ({
@@ -276,6 +280,7 @@ export const useUiPreferences = create<UiPreferencesState>()(
           backgroundFit: normalizeBackgroundFit(saved?.backgroundFit),
           backgroundTreatment: normalizeBackgroundTreatment(saved?.backgroundTreatment),
           gitPanelExpanded: typeof saved?.gitPanelExpanded === "boolean" ? saved.gitPanelExpanded : current.gitPanelExpanded,
+          workbenchExpanded: typeof saved?.workbenchExpanded === "boolean" ? saved.workbenchExpanded : current.workbenchExpanded,
           notices: [],
           appShortcuts: normalizeAppShortcuts(saved?.appShortcuts),
         };
@@ -302,6 +307,7 @@ export const useUiPreferences = create<UiPreferencesState>()(
         backgroundFit: normalizeBackgroundFit(state.backgroundFit),
         backgroundTreatment: normalizeBackgroundTreatment(state.backgroundTreatment),
         gitPanelExpanded: state.gitPanelExpanded,
+        workbenchExpanded: state.workbenchExpanded,
         appShortcuts: normalizeAppShortcuts(state.appShortcuts),
       }),
     },

@@ -12,6 +12,7 @@ use milim_identity::AccessKeyValidator;
 use milim_inference::SharedService;
 use milim_memory::MemoryStore;
 use milim_skills::SkillStore;
+use milim_storage::RunJournalStore;
 use milim_tools::ToolRegistry;
 use serde::Serialize;
 
@@ -86,6 +87,8 @@ pub struct AppState {
     pub schedules: Option<Arc<ScheduleStore>>,
     /// Completed background schedule runs waiting for the desktop to surface.
     pub schedule_runs: Arc<ScheduleRunQueue>,
+    /// Local-first goal-attempt journal exposed via `/runs`.
+    pub run_journal: Option<Arc<RunJournalStore>>,
     /// Optional skills store exposed via `/skills`.
     pub skills: Option<Arc<SkillStore>>,
     /// Optional multi-provider registry exposed via `/providers`.
@@ -143,6 +146,7 @@ impl AppState {
             threads: None,
             schedules: None,
             schedule_runs: Arc::new(ScheduleRunQueue::default()),
+            run_journal: None,
             skills: None,
             providers: None,
             workspace: Arc::new(RwLock::new(None)),
@@ -248,6 +252,12 @@ impl AppState {
     /// Attach a cron schedule store.
     pub fn with_schedules(mut self, schedules: ScheduleStore) -> Self {
         self.schedules = Some(Arc::new(schedules));
+        self
+    }
+
+    /// Attach the local run journal store.
+    pub fn with_run_journal(mut self, run_journal: RunJournalStore) -> Self {
+        self.run_journal = Some(Arc::new(run_journal));
         self
     }
 

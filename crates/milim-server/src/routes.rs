@@ -7997,6 +7997,103 @@ fn media_mime_from_url(url: &str) -> Option<&'static str> {
     }
 }
 
+// ----- Run journal -----
+
+#[derive(Deserialize)]
+pub(crate) struct RunJournalListParams {
+    #[serde(default)]
+    q: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    kind: Option<String>,
+    #[serde(default)]
+    workspace: Option<String>,
+    #[serde(default)]
+    limit: Option<usize>,
+    #[serde(default)]
+    offset: Option<usize>,
+}
+
+fn run_journal_store(st: &AppState) -> Result<&milim_storage::RunJournalStore, ApiError> {
+    st.run_journal
+        .as_deref()
+        .ok_or_else(|| ApiError(Error::InvalidRequest("run journal is not enabled".to_string())))
+}
+
+/// `GET /runs` — list local goal-attempt journal entries.
+pub(crate) async fn runs_list(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    peer: Peer,
+    Query(params): Query<RunJournalListParams>,
+) -> Result<Response, ApiError> {
+    authorize(&st, &headers, peer_addr(peer))?;
+    let runs = run_journal_store(&st)?
+        .list(milim_storage::RunJournalQuery {
+            q: params.q.filter(|value| !value.trim().is_empty()),
+            status: params.status.filter(|value| !value.trim().is_empty()),
+            kind: params.kind.filter(|value| !value.trim().is_empty()),
+            workspace: params.workspace.filter(|value| !value.trim().is_empty()),
+            limit: params.limit.unwrap_or(50),
+            offset: params.offset.unwrap_or(0),
+        })
+        .map_err(ApiError)?;
+    Ok(Json(json!({ "runs": runs })).into_response())
+}
+
+/// `GET /runs/{id}` — fetch one journal entry.
+pub(crate) async fn run_get(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    peer: Peer,
+) -> Result<Response, ApiError> {
+    authorize(&st, &headers, peer_addr(peer))?;
+    let run = run_journal_store(&st)?
+        .get(&id)
+        .map_err(ApiError)?
+        .ok_or_else(|| ApiError(Error::ModelNotFound(format!("run {id}"))))?;
+    Ok(Json(json!({ "run": run })).into_response())
+}
+
+/// `POST /runs` — create a journal entry.
+pub(crate) async fn run_create(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    peer: Peer,
+    Json(entry): Json<milim_storage::RunJournalEntry>,
+) -> Result<Response, ApiError> {
+    authorize(&st, &headers, peer_addr(peer))?;
+    let run = run_journal_store(&st)?.upsert(&entry).map_err(ApiError)?;
+    Ok(Json(json!({ "run": run })).into_response())
+}
+
+/// `PUT /runs/{id}` — update/finalize a journal entry.
+pub(crate) async fn run_update(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    peer: Peer,
+    Json(mut entry): Json<milim_storage::RunJournalEntry>,
+) -> Result<Response, ApiError> {
+    authorize(&st, &headers, peer_addr(peer))?;
+    entry.id = id;
+    let run = run_journal_store(&st)?.upsert(&entry).map_err(ApiError)?;
+    Ok(Json(json!({ "run": run })).into_response())
+}
+
+/// `DELETE /runs/{id}` — delete one journal entry.
+pub(crate) async fn run_delete(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    peer: Peer,
+) -> Result<Response, ApiError> {
+    authorize(&st, &headers, peer_addr(peer))?;
+    Ok(Json(json!({ "deleted": run_journal_store(&st)?.delete(&id).map_err(ApiError)? })).into_response())
+}
+
 // ----- MCP servers (external MCP client connections) -----
 
 #[derive(Deserialize)]
@@ -8007,6 +8104,10 @@ pub(crate) struct McpServerUpsert {
     command: String,
     #[serde(default)]
     args: Vec<String>,
+    #[serde(default)]
+    cwd: Option<String>,
+    #[serde(default)]
+    env: Vec<milim_mcp_client::McpEnvVar>,
     #[serde(default = "default_enabled")]
     enabled: bool,
 }
@@ -8042,11 +8143,55 @@ pub(crate) async fn mcp_server_upsert(
         name: req.name,
         command: req.command,
         args: req.args,
+        cwd: req.cwd,
+        env: req.env,
         enabled: req.enabled,
     };
     let saved = hub.upsert(cfg).await.map_err(ApiError)?;
     let info = hub.list().into_iter().find(|s| s.id == saved.id);
     Ok(Json(json!({ "server": info })).into_response())
+}
+
+/// `POST /mcp/servers/test` — test a draft MCP server without saving/enabling it.
+pub(crate) async fn mcp_server_test_draft(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    peer: Peer,
+    Json(req): Json<McpServerUpsert>,
+) -> Result<Response, ApiError> {
+    authorize(&st, &headers, peer_addr(peer))?;
+    let hub = st
+        .mcp
+        .as_ref()
+        .ok_or_else(|| ApiError(Error::InvalidRequest("MCP client is not enabled".into())))?;
+    let cfg = milim_mcp_client::McpServerConfig {
+        id: req.id.unwrap_or_default(),
+        name: req.name,
+        command: req.command,
+        args: req.args,
+        cwd: req.cwd,
+        env: req.env,
+        enabled: req.enabled,
+    };
+    Ok(Json(hub.test_config(cfg).await).into_response())
+}
+
+/// `POST /mcp/servers/{id}/test` — test a saved MCP server without enabling it.
+pub(crate) async fn mcp_server_test_saved(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    peer: Peer,
+) -> Result<Response, ApiError> {
+    authorize(&st, &headers, peer_addr(peer))?;
+    let hub = st
+        .mcp
+        .as_ref()
+        .ok_or_else(|| ApiError(Error::InvalidRequest("MCP client is not enabled".into())))?;
+    let cfg = hub
+        .config(&id)
+        .ok_or_else(|| ApiError(Error::ModelNotFound(format!("mcp server {id}"))))?;
+    Ok(Json(hub.test_config(cfg).await).into_response())
 }
 
 /// `DELETE /mcp/servers/{id}` — remove an MCP server (disconnects it).
@@ -8075,6 +8220,75 @@ struct AgentRunResponse {
     steps: Vec<milim_agents::ToolStep>,
     iterations: usize,
     stopped_at_limit: bool,
+}
+
+fn journal_now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as i64)
+        .unwrap_or_default()
+}
+
+fn run_journal_excerpt(text: &str) -> String {
+    const MAX: usize = 4000;
+    let mut out: String = text.chars().take(MAX).collect();
+    if text.chars().count() > MAX {
+        out.push_str("\n[truncated]");
+    }
+    out
+}
+
+fn run_journal_goal(messages: &[ChatMessage]) -> String {
+    messages
+        .iter()
+        .rev()
+        .find(|message| message.role == "user")
+        .map(ChatMessage::text_content)
+        .unwrap_or_else(|| "Agent run".to_string())
+}
+
+fn write_agent_journal(
+    st: &AppState,
+    journal_id: Option<String>,
+    status: &str,
+    kind: &str,
+    goal: String,
+    model: String,
+    started_at_ms: i64,
+    duration_ms: i64,
+    output: String,
+    error: Option<String>,
+    steps: Vec<milim_agents::ToolStep>,
+) {
+    if journal_id.is_some() {
+        return;
+    }
+    let Some(journal) = &st.run_journal else {
+        return;
+    };
+    let title = run_journal_excerpt(&goal)
+        .lines()
+        .next()
+        .unwrap_or("Agent run")
+        .chars()
+        .take(160)
+        .collect::<String>();
+    let _ = journal.upsert(&milim_storage::RunJournalEntry {
+        id: format!("run-agent-{}", uuid::Uuid::new_v4().simple()),
+        created_at_ms: started_at_ms,
+        updated_at_ms: journal_now_ms(),
+        status: status.to_string(),
+        kind: kind.to_string(),
+        title,
+        goal: goal.clone(),
+        model,
+        duration_ms: Some(duration_ms),
+        input_excerpt: run_journal_excerpt(&goal),
+        output_excerpt: run_journal_excerpt(&output),
+        error,
+        tools: steps.into_iter().map(|step| step.name).collect(),
+        ..Default::default()
+    });
 }
 
 #[derive(Debug, Clone, Default)]
@@ -9366,12 +9580,16 @@ pub(crate) async fn agents_run(
     let model = req.model.clone();
     let want_stream = req.wants_stream();
     let reasoning_effort = req.reasoning_effort;
+    let journal_id = string_extra(&req, "journal_id");
     let agent_config = agent_run_config_from_request(&req);
     let tool_policy = tool_run_policy_from_request(&req);
     let memory = memory_context_from_request(&req, model.clone());
     let workspace_unavailable = desktop_workspace_unavailable(&st);
     let mut messages = req.messages;
     add_workspace_notice_if_needed(&mut messages, workspace_unavailable);
+    let journal_goal = run_journal_goal(&messages);
+    let started_at_ms = journal_now_ms();
+    let started = Instant::now();
 
     if want_stream {
         let tools =
@@ -9390,7 +9608,7 @@ pub(crate) async fn agents_run(
     }
 
     let tools = agent_registry_with_memory(&st, Some(memory), &tool_policy);
-    let outcome = milim_agents::run_agent_with_config(
+    let outcome = match milim_agents::run_agent_with_config(
         st.service.as_ref(),
         &tools,
         &model,
@@ -9399,7 +9617,39 @@ pub(crate) async fn agents_run(
         agent_config,
     )
     .await
-    .map_err(ApiError)?;
+    {
+        Ok(outcome) => outcome,
+        Err(e) => {
+            write_agent_journal(
+                &st,
+                journal_id,
+                "error",
+                "agent",
+                journal_goal,
+                model,
+                started_at_ms,
+                started.elapsed().as_millis() as i64,
+                String::new(),
+                Some(e.to_string()),
+                Vec::new(),
+            );
+            return Err(ApiError(e));
+        }
+    };
+
+    write_agent_journal(
+        &st,
+        journal_id,
+        "done",
+        "agent",
+        journal_goal,
+        model.clone(),
+        started_at_ms,
+        started.elapsed().as_millis() as i64,
+        outcome.message.text_content(),
+        None,
+        outcome.steps.clone(),
+    );
 
     Ok(Json(AgentRunResponse {
         id: gen_id("agentrun"),
@@ -9503,6 +9753,7 @@ pub(crate) async fn agent_run_by_id(
     let want_stream = req.wants_stream();
     let requested_model = req.model.clone();
     let reasoning_effort = req.reasoning_effort;
+    let journal_id = string_extra(&req, "journal_id");
     let agent_config = agent_run_config_from_request(&req);
     let tool_policy = tool_run_policy_from_request(&req);
     let memory = memory_context_from_request(&req, requested_model.clone());
@@ -9529,6 +9780,9 @@ pub(crate) async fn agent_run_by_id(
         ..memory
     };
     add_workspace_notice_if_needed(&mut messages, desktop_workspace_unavailable(&st));
+    let journal_goal = run_journal_goal(&messages);
+    let started_at_ms = journal_now_ms();
+    let started = Instant::now();
 
     if want_stream {
         let tools = std::sync::Arc::new(agent_registry_for_mode(
@@ -9558,7 +9812,7 @@ pub(crate) async fn agent_run_by_id(
         Some(memory),
         &tool_policy,
     );
-    let outcome = milim_agents::run_agent_with_config(
+    let outcome = match milim_agents::run_agent_with_config(
         st.service.as_ref(),
         &tools,
         &model,
@@ -9567,7 +9821,39 @@ pub(crate) async fn agent_run_by_id(
         agent_config,
     )
     .await
-    .map_err(ApiError)?;
+    {
+        Ok(outcome) => outcome,
+        Err(e) => {
+            write_agent_journal(
+                &st,
+                journal_id,
+                "error",
+                "agent",
+                journal_goal,
+                model,
+                started_at_ms,
+                started.elapsed().as_millis() as i64,
+                String::new(),
+                Some(e.to_string()),
+                Vec::new(),
+            );
+            return Err(ApiError(e));
+        }
+    };
+
+    write_agent_journal(
+        &st,
+        journal_id,
+        "done",
+        "agent",
+        journal_goal,
+        model.clone(),
+        started_at_ms,
+        started.elapsed().as_millis() as i64,
+        outcome.message.text_content(),
+        None,
+        outcome.steps.clone(),
+    );
 
     Ok(Json(AgentRunResponse {
         id: gen_id("agentrun"),
@@ -9968,6 +10254,10 @@ pub(crate) struct CreateSkillRequest {
     description: Option<String>,
     #[serde(default)]
     instructions: Option<String>,
+    #[serde(default)]
+    source_kind: Option<String>,
+    #[serde(default)]
+    source_url: Option<String>,
     #[serde(default = "default_true")]
     enabled: bool,
 }
@@ -10012,7 +10302,12 @@ pub(crate) async fn skill_create(
         .ok_or_else(|| ApiError(Error::InvalidRequest("skills are not enabled".to_string())))?;
     let skill = if let Some(md) = req.skill_md {
         store
-            .create_from_md_with_source(&md, req.enabled, "pasted", None)
+            .create_from_md_with_source(
+                &md,
+                req.enabled,
+                req.source_kind.as_deref().unwrap_or("pasted"),
+                req.source_url,
+            )
             .map_err(ApiError)?
     } else if let Some(url) = req.skill_url {
         let raw_url = github_skill_raw_url(&url).map_err(ApiError)?;
@@ -10032,8 +10327,8 @@ pub(crate) async fn skill_create(
                 req.description.as_deref().unwrap_or(""),
                 req.instructions.as_deref().unwrap_or(""),
                 req.enabled,
-                "manual",
-                None,
+                req.source_kind.as_deref().unwrap_or("manual"),
+                req.source_url,
             )
             .map_err(ApiError)?
     };

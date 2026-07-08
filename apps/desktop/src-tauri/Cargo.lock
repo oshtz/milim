@@ -3259,6 +3259,7 @@ version = "0.1.17"
 dependencies = [
  "async-trait",
  "milim-core",
+ "milim-storage",
  "milim-tools",
  "serde",
  "serde_json",
@@ -3353,6 +3354,7 @@ dependencies = [
  "milim-core",
  "rand 0.8.6",
  "rusqlite",
+ "serde",
  "serde_json",
 ]
 

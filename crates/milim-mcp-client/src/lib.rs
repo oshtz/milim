@@ -8,10 +8,10 @@
 //! Transport: newline-delimited JSON-RPC 2.0 over the child's stdin/stdout
 //! (the MCP stdio transport). A background reader task demuxes responses by id.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex as StdMutex, RwLock};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -22,6 +22,7 @@ use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::{oneshot, Mutex};
 
 use milim_core::{Error, Result};
+use milim_storage::EncryptedStore;
 use milim_tools::Tool;
 
 const PROTOCOL_VERSION: &str = "2025-06-18";
@@ -39,8 +40,25 @@ pub struct McpServerConfig {
     pub command: String,
     #[serde(default)]
     pub args: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    #[serde(default)]
+    pub env: Vec<McpEnvVar>,
     #[serde(default = "default_true")]
     pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpEnvVar {
+    pub key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
+    #[serde(default)]
+    pub secret: bool,
+    #[serde(default)]
+    pub required: bool,
+    #[serde(default, skip_serializing)]
+    pub has_value: bool,
 }
 
 fn default_true() -> bool {
@@ -54,10 +72,13 @@ pub struct McpServerInfo {
     pub name: String,
     pub command: String,
     pub args: Vec<String>,
+    pub cwd: Option<String>,
+    pub env: Vec<McpEnvVar>,
     pub enabled: bool,
     pub connected: bool,
     pub tool_count: usize,
     pub capabilities: McpCapabilities,
+    pub missing_env: Vec<String>,
     pub error: Option<String>,
 }
 
@@ -77,6 +98,114 @@ fn capabilities_from_initialize(result: &Value) -> McpCapabilities {
     }
 }
 
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct McpTestResult {
+    pub ok: bool,
+    pub connected: bool,
+    pub tool_count: usize,
+    pub capabilities: McpCapabilities,
+    pub missing_env: Vec<String>,
+    pub error: Option<String>,
+}
+
+struct McpSecretStore {
+    data_path: PathBuf,
+    enc: EncryptedStore,
+    lock: StdMutex<()>,
+}
+
+impl McpSecretStore {
+    fn open(dir: &Path) -> Result<Self> {
+        let key_path = dir.join("mcp-secrets.key");
+        let data_path = dir.join("mcp-secrets.enc");
+        let key = read_or_make_key(&key_path)?;
+        Ok(Self {
+            data_path,
+            enc: EncryptedStore::from_key(&key),
+            lock: StdMutex::new(()),
+        })
+    }
+
+    fn get(&self, server_id: &str, key: &str) -> Result<Option<String>> {
+        let _guard = self.lock.lock().map_err(|_| Error::Other("MCP secret lock poisoned".into()))?;
+        let all = self.read_all()?;
+        Ok(all
+            .get(server_id)
+            .and_then(|server| server.get(key))
+            .cloned())
+    }
+
+    fn has(&self, server_id: &str, key: &str) -> bool {
+        self.get(server_id, key)
+            .ok()
+            .flatten()
+            .map(|value| !value.is_empty())
+            .unwrap_or(false)
+    }
+
+    fn put(&self, server_id: &str, key: &str, value: &str) -> Result<()> {
+        let _guard = self.lock.lock().map_err(|_| Error::Other("MCP secret lock poisoned".into()))?;
+        let mut all = self.read_all()?;
+        all.entry(server_id.to_string())
+            .or_default()
+            .insert(key.to_string(), value.to_string());
+        self.write_all(&all)
+    }
+
+    fn delete(&self, server_id: &str, key: &str) -> Result<()> {
+        let _guard = self.lock.lock().map_err(|_| Error::Other("MCP secret lock poisoned".into()))?;
+        let mut all = self.read_all()?;
+        if let Some(server) = all.get_mut(server_id) {
+            server.remove(key);
+            if server.is_empty() {
+                all.remove(server_id);
+            }
+        }
+        self.write_all(&all)
+    }
+
+    fn delete_server(&self, server_id: &str) -> Result<()> {
+        let _guard = self.lock.lock().map_err(|_| Error::Other("MCP secret lock poisoned".into()))?;
+        let mut all = self.read_all()?;
+        all.remove(server_id);
+        self.write_all(&all)
+    }
+
+    fn read_all(&self) -> Result<BTreeMap<String, BTreeMap<String, String>>> {
+        if !self.data_path.exists() {
+            return Ok(BTreeMap::new());
+        }
+        let encrypted = std::fs::read(&self.data_path)?;
+        let decrypted = self.enc.decrypt(&encrypted)?;
+        serde_json::from_slice(&decrypted).map_err(Into::into)
+    }
+
+    fn write_all(&self, all: &BTreeMap<String, BTreeMap<String, String>>) -> Result<()> {
+        if let Some(parent) = self.data_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let data = serde_json::to_vec(all)?;
+        std::fs::write(&self.data_path, self.enc.encrypt(&data)?)?;
+        Ok(())
+    }
+}
+
+fn read_or_make_key(path: &Path) -> Result<[u8; 32]> {
+    if let Ok(bytes) = std::fs::read(path) {
+        if bytes.len() == 32 {
+            let mut key = [0u8; 32];
+            key.copy_from_slice(&bytes);
+            return Ok(key);
+        }
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let key = EncryptedStore::random_key();
+    std::fs::write(path, key)?;
+    Ok(key)
+}
+
 // ----- Client -----
 
 /// A live stdio connection to one MCP server.
@@ -92,6 +221,15 @@ pub struct McpClient {
 impl McpClient {
     /// Spawn `command args…` and complete the MCP `initialize` handshake.
     pub async fn connect(command: &str, args: &[String]) -> Result<Arc<McpClient>> {
+        Self::connect_with_env(command, args, None, &HashMap::new()).await
+    }
+
+    async fn connect_with_env(
+        command: &str,
+        args: &[String],
+        cwd: Option<&str>,
+        env: &HashMap<String, String>,
+    ) -> Result<Arc<McpClient>> {
         // On Windows, route through `cmd /C` so PATHEXT shims (npx.cmd, uvx.cmd)
         // resolve; elsewhere spawn the executable directly.
         let mut cmd = if cfg!(windows) {
@@ -106,6 +244,10 @@ impl McpClient {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
             .kill_on_drop(true);
+        if let Some(cwd) = cwd.map(str::trim).filter(|value| !value.is_empty()) {
+            cmd.current_dir(cwd);
+        }
+        cmd.envs(env);
         // Don't flash a console window when spawning the server on Windows.
         #[cfg(windows)]
         cmd.creation_flags(milim_core::proc::CREATE_NO_WINDOW);
@@ -573,6 +715,90 @@ fn exposed_name(prefix: &str, name: &str) -> String {
     }
 }
 
+fn env_key(key: &str) -> String {
+    key.trim().to_string()
+}
+
+fn normalized_env(mut env: Vec<McpEnvVar>) -> Vec<McpEnvVar> {
+    env.drain(..)
+        .filter_map(|mut item| {
+            item.key = env_key(&item.key);
+            if item.key.is_empty() {
+                return None;
+            }
+            if item.secret {
+                item.value = None;
+            }
+            item.has_value = item
+                .value
+                .as_ref()
+                .map(|value| !value.is_empty())
+                .unwrap_or(false);
+            Some(item)
+        })
+        .collect()
+}
+
+fn missing_env(cfg: &McpServerConfig, secrets: Option<&McpSecretStore>) -> Vec<String> {
+    cfg.env
+        .iter()
+        .filter(|item| item.required)
+        .filter_map(|item| {
+            let key = env_key(&item.key);
+            if key.is_empty() {
+                return None;
+            }
+            let has_value = if item.secret {
+                item.value
+                    .as_ref()
+                    .map(|value| !value.is_empty())
+                    .unwrap_or(false)
+                    || secrets.map(|store| store.has(&cfg.id, &key)).unwrap_or(false)
+            } else {
+                item.value
+                    .as_ref()
+                    .map(|value| !value.is_empty())
+                    .unwrap_or(false)
+            };
+            (!has_value).then_some(key)
+        })
+        .collect()
+}
+
+fn resolved_env(
+    cfg: &McpServerConfig,
+    secrets: Option<&McpSecretStore>,
+) -> Result<HashMap<String, String>> {
+    let missing = missing_env(cfg, secrets);
+    if !missing.is_empty() {
+        return Err(Error::InvalidRequest(format!(
+            "missing required env: {}",
+            missing.join(", ")
+        )));
+    }
+    let mut out = HashMap::new();
+    for item in &cfg.env {
+        let key = env_key(&item.key);
+        if key.is_empty() {
+            continue;
+        }
+        if item.secret {
+            let value = item
+                .value
+                .as_ref()
+                .filter(|value| !value.is_empty())
+                .cloned()
+                .or_else(|| secrets.and_then(|store| store.get(&cfg.id, &key).ok().flatten()));
+            if let Some(value) = value {
+                out.insert(key, value);
+            }
+        } else if let Some(value) = item.value.as_ref().filter(|value| !value.is_empty()) {
+            out.insert(key, value.clone());
+        }
+    }
+    Ok(out)
+}
+
 // ----- Hub -----
 
 struct HubState {
@@ -586,22 +812,38 @@ struct HubState {
 /// merged set of proxy tools. Persists configs to `<dir>/mcp.json`.
 pub struct McpHub {
     path: PathBuf,
+    secrets: Option<McpSecretStore>,
     inner: RwLock<HubState>,
 }
 
 impl McpHub {
     /// Open the hub, loading any persisted server configs (does not connect).
     pub fn open(dir: impl AsRef<Path>) -> Self {
-        let path = dir.as_ref().join("mcp.json");
+        let dir = dir.as_ref();
+        let path = dir.join("mcp.json");
         let configs = std::fs::read_to_string(&path)
             .ok()
             .and_then(|s| serde_json::from_str::<Value>(&s).ok())
             .and_then(|v| {
                 serde_json::from_value::<Vec<McpServerConfig>>(v.get("servers")?.clone()).ok()
             })
-            .unwrap_or_default();
+            .unwrap_or_default()
+            .into_iter()
+            .map(|mut cfg| {
+                cfg.env = normalized_env(cfg.env);
+                cfg
+            })
+            .collect();
+        let secrets = match McpSecretStore::open(dir) {
+            Ok(store) => Some(store),
+            Err(e) => {
+                tracing::warn!("MCP secret store unavailable: {e}");
+                None
+            }
+        };
         Self {
             path,
+            secrets,
             inner: RwLock::new(HubState {
                 configs,
                 clients: HashMap::new(),
@@ -625,7 +867,7 @@ impl McpHub {
 
     /// Connect one config and store the client+tools (or its error) in state.
     async fn connect_into_state(&self, cfg: &McpServerConfig) {
-        match connect_one(cfg).await {
+        match connect_one(cfg, self.secrets.as_ref()).await {
             Ok((client, tools)) => {
                 let mut st = self.inner.write().expect("mcp hub poisoned");
                 st.clients.insert(cfg.id.clone(), client);
@@ -647,6 +889,8 @@ impl McpHub {
         if cfg.id.trim().is_empty() {
             cfg.id = format!("mcp-{}", uuid::Uuid::new_v4().simple());
         }
+        self.persist_secret_env(&mut cfg)?;
+        cfg.env = normalized_env(cfg.env);
         let mut configs = {
             let st = self.inner.read().expect("mcp hub poisoned");
             st.configs
@@ -670,6 +914,30 @@ impl McpHub {
             self.connect_into_state(&cfg).await;
         }
         Ok(cfg)
+    }
+
+    fn persist_secret_env(&self, cfg: &mut McpServerConfig) -> Result<()> {
+        for env in &mut cfg.env {
+            if !env.secret {
+                continue;
+            }
+            env.key = env_key(&env.key);
+            if env.key.is_empty() {
+                continue;
+            }
+            let Some(value) = env.value.take() else {
+                continue;
+            };
+            let store = self.secrets.as_ref().ok_or_else(|| {
+                Error::Other("MCP secret store is not available".to_string())
+            })?;
+            if value.is_empty() {
+                store.delete(&cfg.id, &env.key)?;
+            } else {
+                store.put(&cfg.id, &env.key, &value)?;
+            }
+        }
+        Ok(())
     }
 
     /// Remove a server (dropping its connection, which kills the child).
@@ -697,7 +965,55 @@ impl McpHub {
             st.errors.remove(id);
             had
         };
+        if let Some(secrets) = &self.secrets {
+            let _ = secrets.delete_server(id);
+        }
         Ok(had)
+    }
+
+    pub fn config(&self, id: &str) -> Option<McpServerConfig> {
+        self.inner
+            .read()
+            .expect("mcp hub poisoned")
+            .configs
+            .iter()
+            .find(|cfg| cfg.id == id)
+            .cloned()
+    }
+
+    pub async fn test_config(&self, mut cfg: McpServerConfig) -> McpTestResult {
+        if cfg.id.trim().is_empty() {
+            cfg.id = format!("mcp-test-{}", uuid::Uuid::new_v4().simple());
+        }
+        let missing = missing_env(&cfg, self.secrets.as_ref());
+        if !missing.is_empty() {
+            return McpTestResult {
+                ok: false,
+                connected: false,
+                tool_count: 0,
+                capabilities: McpCapabilities::default(),
+                missing_env: missing.clone(),
+                error: Some(format!("missing required env: {}", missing.join(", "))),
+            };
+        }
+        match connect_one(&cfg, self.secrets.as_ref()).await {
+            Ok((client, tools)) => McpTestResult {
+                ok: true,
+                connected: true,
+                tool_count: tools.len(),
+                capabilities: client.capabilities(),
+                missing_env: Vec::new(),
+                error: None,
+            },
+            Err(e) => McpTestResult {
+                ok: false,
+                connected: false,
+                tool_count: 0,
+                capabilities: McpCapabilities::default(),
+                missing_env: Vec::new(),
+                error: Some(e.to_string()),
+            },
+        }
     }
 
     /// All currently-available proxy tools across connected servers.
@@ -724,11 +1040,41 @@ impl McpHub {
                     name: c.name.clone(),
                     command: c.command.clone(),
                     args: c.args.clone(),
+                    cwd: c.cwd.clone(),
+                    env: self.env_info(c),
                     enabled: c.enabled,
                     connected: client.is_some(),
                     tool_count: st.tools.get(&c.id).map(Vec::len).unwrap_or(0),
                     capabilities: client.map(|c| c.capabilities()).unwrap_or_default(),
+                    missing_env: missing_env(c, self.secrets.as_ref()),
                     error: st.errors.get(&c.id).cloned(),
+                }
+            })
+            .collect()
+    }
+
+    fn env_info(&self, cfg: &McpServerConfig) -> Vec<McpEnvVar> {
+        cfg.env
+            .iter()
+            .map(|item| {
+                let key = env_key(&item.key);
+                let has_value = if item.secret {
+                    self.secrets
+                        .as_ref()
+                        .map(|store| store.has(&cfg.id, &key))
+                        .unwrap_or(false)
+                } else {
+                    item.value
+                        .as_ref()
+                        .map(|value| !value.is_empty())
+                        .unwrap_or(false)
+                };
+                McpEnvVar {
+                    key,
+                    value: if item.secret { None } else { item.value.clone() },
+                    secret: item.secret,
+                    required: item.required,
+                    has_value,
                 }
             })
             .collect()
@@ -745,8 +1091,13 @@ impl McpHub {
 }
 
 /// Connect a config and build its prefixed proxy tools.
-async fn connect_one(cfg: &McpServerConfig) -> Result<(Arc<McpClient>, Vec<Arc<dyn Tool>>)> {
-    let client = McpClient::connect(&cfg.command, &cfg.args).await?;
+async fn connect_one(
+    cfg: &McpServerConfig,
+    secrets: Option<&McpSecretStore>,
+) -> Result<(Arc<McpClient>, Vec<Arc<dyn Tool>>)> {
+    let env = resolved_env(cfg, secrets)?;
+    let client =
+        McpClient::connect_with_env(&cfg.command, &cfg.args, cfg.cwd.as_deref(), &env).await?;
     let defs = client.list_tools().await?;
     let prefix = prefix_for(cfg);
     let tools: Vec<Arc<dyn Tool>> = defs
@@ -798,6 +1149,8 @@ mod tests {
             name: "GitHub MCP!".into(),
             command: "npx".into(),
             args: vec![],
+            cwd: None,
+            env: Vec::new(),
             enabled: true,
         };
         assert_eq!(prefix_for(&cfg), "github_mcp");
@@ -916,6 +1269,8 @@ mod tests {
                 name: "Broken".into(),
                 command: "node".into(),
                 args: Vec::new(),
+                cwd: None,
+                env: Vec::new(),
                 enabled: false,
             })
             .await
@@ -937,6 +1292,8 @@ mod tests {
             name: "Keep".into(),
             command: "node".into(),
             args: Vec::new(),
+            cwd: None,
+            env: Vec::new(),
             enabled: false,
         })
         .await
@@ -949,6 +1306,34 @@ mod tests {
 
         assert_eq!(err.code(), "io_error");
         assert!(hub.list().iter().any(|server| server.id == "keep"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_config_reports_missing_required_env() {
+        let dir =
+            std::env::temp_dir().join(format!("milim-mcp-env-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let hub = McpHub::open(&dir);
+        let result = hub
+            .test_config(McpServerConfig {
+                id: "secret-server".into(),
+                name: "Secret".into(),
+                command: "node".into(),
+                args: Vec::new(),
+                cwd: None,
+                env: vec![McpEnvVar {
+                    key: "API_KEY".into(),
+                    value: None,
+                    secret: true,
+                    required: true,
+                    has_value: false,
+                }],
+                enabled: false,
+            })
+            .await;
+        assert!(!result.ok);
+        assert_eq!(result.missing_env, vec!["API_KEY"]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -31,7 +31,7 @@ Start with the current base URL and selected model. Most local issues are either
 | Guarded approval cannot run shell | Switch to Open approval or use the Docker sandbox when command execution is appropriate. |
 | Sandbox run fails | Start Docker, check `MILIM_DOCKER_BIN`, and verify the daemon can run containers. |
 | Computer use is unavailable | Build with the `computer-use` feature and enable the `/computer` gate. |
-| MCP tools disappeared | Check `/mcp/servers`; a removed or disconnected server no longer contributes tools. |
+| MCP tools disappeared | Check `/mcp/servers` or the MCP Servers sheet. Imported servers stay disabled and secret-looking env values become required placeholders; fill them and use Test connection before enabling. |
 | Privacy block error | The server detected PII before a remote send. Use Redact, Off, or a local runtime. |
 | Voice setup fails | Confirm native feature flags, model files, and runtime preset installs. |
 | Desktop port is busy | The embedded server falls back to a free loopback port and the UI asks Tauri for the actual API base URL. |

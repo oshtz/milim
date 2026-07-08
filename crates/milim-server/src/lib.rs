@@ -21,7 +21,7 @@ mod translate;
 
 use std::future::Future;
 use std::net::SocketAddr;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use axum::routing::{delete, get, post, put};
 use axum::Router;
@@ -161,6 +161,14 @@ pub fn build_router(state: AppState) -> Router {
         .route("/anthropic/v1/messages", post(routes::anthropic_messages))
         .route("/anthropic/messages", post(routes::anthropic_messages))
         .route("/v1/messages", post(routes::anthropic_messages))
+        // Local run journal
+        .route("/runs", get(routes::runs_list).post(routes::run_create))
+        .route(
+            "/runs/{id}",
+            get(routes::run_get)
+                .put(routes::run_update)
+                .delete(routes::run_delete),
+        )
         // Codex app-server bridge (separate from OpenAI-compatible providers)
         .route("/codex/account", get(routes::codex_account))
         .route("/codex/login/device", post(routes::codex_login_device))
@@ -183,6 +191,11 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/mcp/servers",
             get(routes::mcp_servers_list).post(routes::mcp_server_upsert),
+        )
+        .route("/mcp/servers/test", post(routes::mcp_server_test_draft))
+        .route(
+            "/mcp/servers/{id}/test",
+            post(routes::mcp_server_test_saved),
         )
         .route("/mcp/servers/{id}", delete(routes::mcp_server_delete))
         // Agents (server-side tool-use loop + named agents)
@@ -460,6 +473,7 @@ pub async fn fire_due(state: &AppState, now_unix: i64) -> Result<usize> {
     let mut fired = 0;
     for s in due {
         schedules.mark_ran(&s.id, now_unix)?;
+        let started = Instant::now();
         let mut messages = Vec::new();
         let mut model = "default".to_string();
         let prompt = milim_automation::prompt_with_attachments(&s.prompt, &s.attachments);
@@ -482,6 +496,23 @@ pub async fn fire_due(state: &AppState, now_unix: i64) -> Result<usize> {
         match milim_agents::run_agent(state.service.as_ref(), &tools, &model, messages, None).await
         {
             Ok(outcome) => {
+                if let Some(journal) = &state.run_journal {
+                    let _ = journal.upsert(&milim_storage::RunJournalEntry {
+                        id: format!("run-schedule-{}-{now_unix}-{fired}", s.id),
+                        created_at_ms: now_unix * 1000,
+                        updated_at_ms: now_unix * 1000 + started.elapsed().as_millis() as i64,
+                        status: "done".to_string(),
+                        kind: "schedule".to_string(),
+                        title: s.name.clone(),
+                        goal: s.prompt.clone(),
+                        model: model.clone(),
+                        duration_ms: Some(started.elapsed().as_millis() as i64),
+                        input_excerpt: journal_excerpt(&s.prompt),
+                        output_excerpt: journal_excerpt(&outcome.message.text_content()),
+                        tools: outcome.steps.iter().map(|step| step.name.clone()).collect(),
+                        ..Default::default()
+                    });
+                }
                 state.schedule_runs.push(state::ScheduleRunEvent {
                     id: format!("{}-{now_unix}-{fired}", s.id),
                     schedule_id: s.id.clone(),
@@ -493,10 +524,37 @@ pub async fn fire_due(state: &AppState, now_unix: i64) -> Result<usize> {
                 });
                 fired += 1;
             }
-            Err(e) => tracing::warn!("schedule {} failed: {e}", s.id),
+            Err(e) => {
+                if let Some(journal) = &state.run_journal {
+                    let _ = journal.upsert(&milim_storage::RunJournalEntry {
+                        id: format!("run-schedule-{}-{now_unix}-{fired}", s.id),
+                        created_at_ms: now_unix * 1000,
+                        updated_at_ms: now_unix * 1000 + started.elapsed().as_millis() as i64,
+                        status: "error".to_string(),
+                        kind: "schedule".to_string(),
+                        title: s.name.clone(),
+                        goal: s.prompt.clone(),
+                        model: model.clone(),
+                        duration_ms: Some(started.elapsed().as_millis() as i64),
+                        input_excerpt: journal_excerpt(&s.prompt),
+                        error: Some(e.to_string()),
+                        ..Default::default()
+                    });
+                }
+                tracing::warn!("schedule {} failed: {e}", s.id)
+            }
         }
     }
     Ok(fired)
+}
+
+fn journal_excerpt(text: &str) -> String {
+    const MAX: usize = 4000;
+    let mut out: String = text.chars().take(MAX).collect();
+    if text.chars().count() > MAX {
+        out.push_str("\n[truncated]");
+    }
+    out
 }
 
 /// Run the background scheduler loop (checks for due schedules every 30s).

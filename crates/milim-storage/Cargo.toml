@@ -10,6 +10,7 @@ description = "SQLite persistence + at-rest AES-GCM encryption for milim."
 [dependencies]
 milim-core.workspace = true
 rusqlite.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 aes-gcm.workspace = true
 rand.workspace = true

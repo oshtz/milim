@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { deleteMcpServer, listMcpServers, MCP_PRESETS, saveMcpServer, type McpServerInfo } from "../api";
+import { deleteMcpServer, listMcpServers, MCP_PRESETS, saveMcpServer, testMcpServer, type McpEnvVar, type McpServerInfo } from "../api";
 import { Cube, Plus, Trash, X } from "./icons";
 import { SheetDialog } from "./SheetDialog";
 import { Select, Toggle } from "./ui";
@@ -7,6 +7,7 @@ import "./McpManager.css";
 
 type Selection = McpServerInfo | "new" | null;
 type McpStatusTone = "ready" | "warning" | "error" | "off" | "draft";
+type EnvDraft = McpEnvVar & { id: string };
 
 function capabilitySummary(server: McpServerInfo): string {
   const caps = server.capabilities;
@@ -20,6 +21,7 @@ function capabilitySummary(server: McpServerInfo): string {
 }
 
 function serverStatus(server: McpServerInfo): { tone: McpStatusTone; label: string; detail: string } {
+  if (server.missing_env?.length) return { tone: "warning", label: "Missing env", detail: `Missing required env: ${server.missing_env.join(", ")}` };
   if (!server.enabled) return { tone: "off", label: "Disabled", detail: "Saved but not exposed to agent runs." };
   if (server.error) return { tone: "error", label: "Error", detail: server.error };
   if (server.connected) {
@@ -30,6 +32,28 @@ function serverStatus(server: McpServerInfo): { tone: McpStatusTone; label: stri
     };
   }
   return { tone: "warning", label: "Not connected", detail: "Saved, but no live stdio connection is active." };
+}
+
+function envDrafts(env?: McpEnvVar[]): EnvDraft[] {
+  return (env ?? []).map((item, index) => ({
+    id: `${item.key || "env"}-${index}`,
+    key: item.key,
+    value: item.secret ? "" : (item.value ?? ""),
+    secret: Boolean(item.secret),
+    required: Boolean(item.required),
+    has_value: Boolean(item.has_value),
+  }));
+}
+
+function apiEnv(env: EnvDraft[]): McpEnvVar[] {
+  return env
+    .map((item) => ({
+      key: item.key.trim(),
+      value: item.secret ? (item.value?.trim() ? item.value : undefined) : (item.value ?? ""),
+      secret: Boolean(item.secret),
+      required: Boolean(item.required),
+    }))
+    .filter((item) => item.key);
 }
 
 function argsSummary(args: string[]): string {
@@ -59,6 +83,8 @@ export function McpManager({ onClose }: { onClose: () => void }) {
   const [name, setName] = useState("");
   const [command, setCommand] = useState("");
   const [argsText, setArgsText] = useState("");
+  const [cwd, setCwd] = useState("");
+  const [env, setEnv] = useState<EnvDraft[]>([]);
   const [enabled, setEnabled] = useState(true);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
@@ -77,11 +103,15 @@ export function McpManager({ onClose }: { onClose: () => void }) {
       setName("");
       setCommand("");
       setArgsText("");
+      setCwd("");
+      setEnv([]);
       setEnabled(true);
     } else {
       setName(s.name);
       setCommand(s.command);
       setArgsText(s.args.join("\n"));
+      setCwd(s.cwd ?? "");
+      setEnv(envDrafts(s.env));
       setEnabled(s.enabled);
     }
   }
@@ -100,13 +130,13 @@ export function McpManager({ onClose }: { onClose: () => void }) {
     if (!name.trim() || !command.trim()) return;
     setBusy(true);
     setConfirmDeleteId(null);
-    setNote("Connecting... (first run may fetch the server package)");
+    setNote(enabled ? "Connecting... (first run may fetch the server package)" : "Saving disabled server...");
     const id = sel && sel !== "new" ? sel.id : undefined;
     const args = argsText
       .split("\n")
       .map((a) => a.trim())
       .filter(Boolean);
-    const saved = await saveMcpServer({ id, name: name.trim(), command: command.trim(), args, enabled });
+    const saved = await saveMcpServer({ id, name: name.trim(), command: command.trim(), args, cwd: cwd.trim() || null, env: apiEnv(env), enabled });
     setBusy(false);
     if (!saved) {
       setNote("Error: Failed to save MCP server.");
@@ -123,6 +153,27 @@ export function McpManager({ onClose }: { onClose: () => void }) {
             ? "Saved, but not connected."
             : "Saved (disabled).",
     );
+  }
+
+  async function testConnection() {
+    if (!name.trim() || !command.trim()) return;
+    setBusy(true);
+    setConfirmDeleteId(null);
+    setNote("Testing connection...");
+    const id = sel && sel !== "new" ? sel.id : undefined;
+    const args = argsText
+      .split("\n")
+      .map((a) => a.trim())
+      .filter(Boolean);
+    const result = await testMcpServer({ id, name: name.trim(), command: command.trim(), args, cwd: cwd.trim() || null, env: apiEnv(env), enabled });
+    setBusy(false);
+    if (!result) {
+      setNote("Error: Failed to test MCP server.");
+      return;
+    }
+    setNote(result.ok
+      ? `Connection OK - ${result.tool_count} tool${result.tool_count === 1 ? "" : "s"} advertised`
+      : `Error: ${result.error || (result.missing_env?.length ? `Missing env: ${result.missing_env.join(", ")}` : "Connection failed")}`);
   }
 
   async function remove() {
@@ -148,7 +199,12 @@ export function McpManager({ onClose }: { onClose: () => void }) {
     .map((a) => a.trim())
     .filter(Boolean);
   const canSave = Boolean(name.trim() && command.trim() && !busy);
+  const canTest = Boolean(name.trim() && command.trim() && !busy);
   const editorTitle = sel === "new" ? "New MCP server" : name.trim() || selectedServer?.name || "Select an MCP server";
+  const updateEnv = (id: string, patch: Partial<EnvDraft>) =>
+    setEnv((rows) => rows.map((row) => row.id === id ? { ...row, ...patch } : row));
+  const addEnv = () =>
+    setEnv((rows) => [...rows, { id: `env-${Date.now()}`, key: "", value: "", secret: false, required: false, has_value: false }]);
 
   return (
     <SheetDialog title="MCP Servers" className="sheet agents-sheet mcp-manager-sheet" onClose={onClose}>
@@ -238,6 +294,11 @@ export function McpManager({ onClose }: { onClose: () => void }) {
                     <em>{args.length ? "Sent one per line" : "No process arguments"}</em>
                   </div>
                   <div className="mcp-impact-item">
+                    <span>Environment</span>
+                    <strong>{env.length ? `${env.length} var${env.length === 1 ? "" : "s"}` : "None"}</strong>
+                    <em>{cwd.trim() ? `cwd: ${cwd.trim()}` : "Default working directory"}</em>
+                  </div>
+                  <div className="mcp-impact-item">
                     <span>Tools</span>
                     <strong>{selectedServer ? `${selectedServer.tool_count} tool${selectedServer.tool_count === 1 ? "" : "s"}` : "After connect"}</strong>
                     <em>{selectedServer ? capabilitySummary(selectedServer) : "Available after save"}</em>
@@ -291,6 +352,50 @@ export function McpManager({ onClose }: { onClose: () => void }) {
                       placeholder={"-y\n@modelcontextprotocol/server-filesystem\nC:\\Users\\me\\project"}
                     />
                   </label>
+                  <label className="field mcp-field">
+                    <span>Working directory</span>
+                    <input
+                      className="css-input"
+                      value={cwd}
+                      onChange={(e) => setCwd(e.target.value)}
+                      placeholder="Optional cwd for the MCP process"
+                    />
+                  </label>
+                </section>
+
+                <section className="mcp-editor-section">
+                  <div className="mcp-section-head">
+                    <h4>Environment</h4>
+                    <button className="section-icon-btn" type="button" title="Add env var" onClick={addEnv}>
+                      <Plus size={12} />
+                    </button>
+                  </div>
+                  <div className="mcp-env-list">
+                    {env.length === 0 ? (
+                      <span className="mcp-env-empty">No env vars</span>
+                    ) : env.map((item) => (
+                      <div className="mcp-env-row" key={item.id}>
+                        <input
+                          className="css-input"
+                          value={item.key}
+                          onChange={(e) => updateEnv(item.id, { key: e.target.value })}
+                          placeholder="ENV_KEY"
+                        />
+                        <input
+                          className="css-input"
+                          type={item.secret ? "password" : "text"}
+                          value={item.value ?? ""}
+                          onChange={(e) => updateEnv(item.id, { value: e.target.value })}
+                          placeholder={item.secret && item.has_value ? "Saved secret - enter to replace" : "Value"}
+                        />
+                        <Toggle checked={Boolean(item.secret)} onChange={(checked) => updateEnv(item.id, { secret: checked, required: checked ? true : item.required })} label="Secret" />
+                        <Toggle checked={Boolean(item.required)} onChange={(checked) => updateEnv(item.id, { required: checked })} label="Required" />
+                        <button className="icon-btn" type="button" title="Remove env var" onClick={() => setEnv((rows) => rows.filter((row) => row.id !== item.id))}>
+                          <Trash size={13} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
                 </section>
 
                 <section className="mcp-editor-section">
@@ -313,6 +418,9 @@ export function McpManager({ onClose }: { onClose: () => void }) {
                     </button>
                   )}
                   <span className="spacer" />
+                  <button className="btn-ghost" type="button" disabled={!canTest} onClick={testConnection}>
+                    Test connection
+                  </button>
                   <button className="btn-accent" type="button" disabled={!canSave} onClick={save}>
                     {busy ? "Connecting..." : "Save & connect"}
                   </button>

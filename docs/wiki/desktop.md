@@ -9,7 +9,7 @@ order: 30
 updated: 2026-07-08
 ---
 
-The first run can open as Simple or Workbench. Simple keeps the chat core visible with model switching, themes, memory, and voice basics; Workbench exposes project, agent, MCP, media, sandbox, schedule, and computer-use controls. In both modes, the Tauri process starts the embedded backend, connects persisted MCP servers, refreshes provider models, and runs schedules in the background. Background schedule completions and mobile relay events use shared app notices so they remain visible outside their settings panels. Closing the desktop window hides it to the system tray so those background services keep running; use the tray menu to reopen or quit.
+The first run can open as Simple or Workbench. Simple keeps the chat core visible with model switching, themes, memory, and voice basics; Workbench exposes project, agent, MCP, media, sandbox, schedule, and computer-use controls. The sidebar Workbench launcher opens Runs, MCP servers, Skills, and Schedules from one persistent place. In both modes, the Tauri process starts the embedded backend, connects persisted MCP servers, refreshes provider models, and runs schedules in the background. Background schedule completions and mobile relay events use shared app notices so they remain visible outside their settings panels. Closing the desktop window hides it to the system tray so those background services keep running; use the tray menu to reopen or quit.
 
 ## Interface modes
 
@@ -23,10 +23,11 @@ The first run can open as Simple or Workbench. Simple keeps the chat core visibl
 | Area | Role |
 |---|---|
 | Top bar | Theme, update, provider, and global app controls. |
-| Sidebar | Projects, threads, pinned groups, archives, unread state, child threads, five-at-a-time per-section ellipsis toggles, and quick switching. |
+| Sidebar | Projects, threads, pinned groups, archives, unread state, child threads, five-at-a-time per-section ellipsis toggles, quick switching, and the Workbench launcher for Runs, MCP servers, Skills, and Schedules. |
 | Thread header | Current model, workspace folder, agent, approval, privacy, memory, sandbox, and computer-use state. |
 | Composer | Prompt text, visually highlighted plain-text skill/MCP/file/link tokens, persisted per-thread unsent drafts, thread-local sent-history recall, slash commands, file attachments, voice input, queued sends, and send controls. |
 | Run timeline | Reasoning, compact live tool activity with expandable details, workspace checkpoint notices, memory notices, child-thread activity, and usage metrics. Built-in tool-agent usage updates after each model request completes; account runtimes remain terminal-only unless their CLIs report more. |
+| Run Journal | Searchable goal-attempt history with model/provider, status, excerpts, files, tools, artifacts, and an explicit Attach to composer action. |
 | Side panel | Switches between detected artifacts, a browser/URL preview, and Git status/actions; artifact revisions and the selected mode persist per thread. |
 
 ## Context menus
@@ -84,7 +85,7 @@ Goals are thread-level autonomous runs, not saved agent profiles. A goal stores 
 | Context compaction | Long chats use tokenizer-backed visible checkpoint messages. Future model calls replay the latest checkpoint summary plus newer turns while the full transcript stays visible. `/compact` creates a checkpoint manually, and auto-compaction uses the same path before long sends. Compaction keeps a bounded recent tail verbatim and caps old attachment/tool bodies in summary prompts. Codex and Claude chats with an existing native thread/session skip Milim auto-compaction and send only per-turn context plus the latest user message. Summary generation rejects truncated or oversized outputs instead of saving incomplete checkpoints. Checkpoints record the usage/cost total at compaction time, the summary-generation cost when available, and the top bar separates lifetime usage from usage since the latest checkpoint. |
 | Search operators | Chat search accepts plain text plus `from:user`, `from:assistant`, `in:all`, and `is:archived` filters. |
 | Auto thread titles | New chats get first-message titles by default. Optional AI names run after the first reply and need a compatible provider chat model when the chat uses Codex, Claude, or media models. |
-| Onboarding | First-run setup chooses Simple or Workbench, connects local/hosted/Codex model sources, and can import Claude/Codex MCP servers and skills as disabled Workbench entries. |
+| Onboarding | First-run setup chooses Simple or Workbench, connects local/hosted/Codex model sources, and can import Claude/Codex MCP servers and skills as disabled Workbench entries. MCP imports preserve `cwd`, non-secret env, and secret placeholders; use Test connection after filling required secrets. |
 | Settings | Settings search returns individual controls, jumps to the matched row, and section navigation shows warning status for incomplete setup. |
 | Theme editor | Themes and custom style settings are persisted with the desktop state. Custom palettes must pass core text contrast checks before saving, low-contrast preset/custom themes are marked in the theme grid, and custom theme cards expose an edit button. |
 | Keyboard shortcuts | App-window shortcuts are configurable; Previous thread defaults to `Ctrl+Tab` on Windows and macOS, switches to the last viewed thread immediately, and shows a compact recent-thread switcher for repeated presses. Voice push-to-talk uses the same press-to-record flow. |
