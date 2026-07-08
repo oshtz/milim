@@ -6,11 +6,11 @@ export function AutoUpdater() {
   const checkNow = useUpdateStore((s) => s.checkNow);
 
   useEffect(() => {
-    async function run() {
+    async function run(startup = false) {
       if (runningRef.current) return;
       runningRef.current = true;
       try {
-        await checkNow({ automatic: true });
+        await checkNow({ automatic: true, startup });
       } catch (error) {
         console.warn("Auto-update check failed:", error);
       } finally {
@@ -18,7 +18,7 @@ export function AutoUpdater() {
       }
     }
 
-    void run();
+    void run(true);
     const timer = window.setInterval(() => void run(), 60 * 60 * 1000);
     return () => {
       window.clearInterval(timer);

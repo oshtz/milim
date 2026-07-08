@@ -27,6 +27,7 @@ type AssetConfig = {
 };
 
 export const AUTO_UPDATE_INTERVAL_MS = 12 * 60 * 60 * 1000;
+export const STARTUP_UPDATE_INTERVAL_MS = 120 * 60 * 1000;
 const GITHUB_REPO = "oshtz/milim";
 
 function isTauriRuntime(): boolean {
@@ -56,8 +57,12 @@ export function compareVersions(left: string, right: string): number {
   return 0;
 }
 
-export function shouldRunAutoUpdateCheck(lastCheckedAt: number | null, now = Date.now()): boolean {
-  return !lastCheckedAt || now - lastCheckedAt >= AUTO_UPDATE_INTERVAL_MS;
+export function shouldRunAutoUpdateCheck(
+  lastCheckedAt: number | null,
+  now = Date.now(),
+  intervalMs = AUTO_UPDATE_INTERVAL_MS,
+): boolean {
+  return !lastCheckedAt || now - lastCheckedAt >= intervalMs;
 }
 
 export function getAssetConfigForPlatform(os: string): AssetConfig {

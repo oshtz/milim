@@ -2,6 +2,7 @@ import { deepEqual, equal, throws } from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
   AUTO_UPDATE_INTERVAL_MS,
+  STARTUP_UPDATE_INTERVAL_MS,
   compareVersions,
   downloadUpdateWithServices,
   getAssetConfigForPlatform,
@@ -71,9 +72,13 @@ equal(compareVersions("v0.1.30", "0.1.29"), 1);
 equal(compareVersions("0.1.29-beta.1", "0.1.29"), 0);
 equal(compareVersions("0.1.28", "0.1.29"), -1);
 
+equal(AUTO_UPDATE_INTERVAL_MS, 12 * 60 * 60 * 1000);
+equal(STARTUP_UPDATE_INTERVAL_MS, 120 * 60 * 1000);
 equal(shouldRunAutoUpdateCheck(null, 10), true);
 equal(shouldRunAutoUpdateCheck(10, 10 + AUTO_UPDATE_INTERVAL_MS - 1), false);
 equal(shouldRunAutoUpdateCheck(10, 10 + AUTO_UPDATE_INTERVAL_MS), true);
+equal(shouldRunAutoUpdateCheck(10, 10 + STARTUP_UPDATE_INTERVAL_MS - 1, STARTUP_UPDATE_INTERVAL_MS), false);
+equal(shouldRunAutoUpdateCheck(10, 10 + STARTUP_UPDATE_INTERVAL_MS, STARTUP_UPDATE_INTERVAL_MS), true);
 equal(updateStoreSource.includes("if (get().currentVersion) return;"), false, "current app version should refresh from Tauri on launch");
 equal(updateStoreSource.includes("currentVersion: state.currentVersion"), false, "current app version should not persist across installed binaries");
 equal(
@@ -90,6 +95,8 @@ equal(autoUpdaterSource.includes("window.confirm"), false, "automatic update che
 equal(autoUpdaterSource.includes("downloadNow"), false, "automatic update checks should not download before the user clicks update");
 equal(autoUpdaterSource.includes("installNow"), false, "automatic update checks should not install before the user clicks update");
 equal(autoUpdaterSource.includes("ignoreVersion"), false, "canceling the top-bar update prompt should not hide the update");
+equal(autoUpdaterSource.includes("void run(true)"), true, "startup should use the shorter startup update guard");
+equal(autoUpdaterSource.includes("window.setInterval(() => void run()"), true, "background checks should keep the default automatic guard");
 equal(topBarSource.includes('data-testid="topbar-update"'), true, "available updates should render a top-bar update button");
 equal(topBarSource.includes("window.confirm"), false, "top-bar update flow should use the themed app dialog");
 equal(topBarSource.includes('role="dialog"'), true, "top-bar update flow should render an in-app confirmation dialog");

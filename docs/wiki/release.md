@@ -23,7 +23,7 @@ Release builds run desktop verification on both macOS and Windows. macOS release
 
 ## Updater behavior
 
-The desktop app checks GitHub Releases for the latest platform artifact in the background. When an update is available, the top bar shows an Update button; confirming it downloads the selected package and checksum through a native Tauri command, verifies SHA-256, stages the package in the local update directory, and hands it to the existing Windows portable EXE or macOS app replacement flow.
+The desktop app checks GitHub Releases for the latest platform artifact on startup unless it checked within the last 120 minutes, then keeps the existing 12-hour background check cadence. When an update is available, the top bar shows an Update button; confirming it downloads the selected package and checksum through a native Tauri command, verifies SHA-256, stages the package in the local update directory, and hands it to the existing Windows portable EXE or macOS app replacement flow.
 
 ## Checks
 

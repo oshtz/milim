@@ -6,6 +6,7 @@ import {
   downloadUpdate,
   installUpdate,
   shouldRunAutoUpdateCheck,
+  STARTUP_UPDATE_INTERVAL_MS,
   type UpdateInfo,
 } from "./service";
 
@@ -30,7 +31,7 @@ interface UpdateState {
   ignoredVersion: string | null;
   recoveryChecked: boolean;
   loadCurrentVersion: () => Promise<void>;
-  checkNow: (options?: { automatic?: boolean }) => Promise<UpdateInfo | null>;
+  checkNow: (options?: { automatic?: boolean; startup?: boolean }) => Promise<UpdateInfo | null>;
   downloadNow: (info?: UpdateInfo | null) => Promise<string | null>;
   installNow: () => Promise<void>;
   ignoreVersion: (version: string) => void;
@@ -125,7 +126,15 @@ export const useUpdateStore = create<UpdateState>()(
 
       checkNow: async (options) => {
         await get().loadCurrentVersion();
-        if (options?.automatic && !shouldRunAutoUpdateCheck(get().lastCheckedAt)) return null;
+        if (
+          options?.automatic &&
+          !shouldRunAutoUpdateCheck(
+            get().lastCheckedAt,
+            Date.now(),
+            options.startup ? STARTUP_UPDATE_INTERVAL_MS : undefined,
+          )
+        )
+          return null;
         if (!isTauriRuntime()) {
           set({ status: "disabled", error: "Updates are only available in the desktop app.", lastCheckedAt: Date.now() });
           return null;
