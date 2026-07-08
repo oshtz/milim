@@ -4229,6 +4229,31 @@ async fn openai_responses_non_streaming() {
 }
 
 #[tokio::test]
+async fn openai_responses_rejects_malformed_function_tool() {
+    let base = spawn(test_state()).await;
+    let client = reqwest::Client::new();
+    let response = client
+        .post(format!("{base}/v1/responses"))
+        .json(&json!({
+            "model": "test-echo",
+            "input": "hello responses",
+            "tools": [{
+                "type": "function",
+                "function": {
+                    "description": "missing name"
+                }
+            }]
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+    let body: Value = response.json().await.unwrap();
+    assert_eq!(body["error"]["type"], "invalid_request_error");
+}
+
+#[tokio::test]
 async fn ollama_chat_non_streaming() {
     let base = spawn(test_state()).await;
     let client = reqwest::Client::new();
@@ -6161,7 +6186,7 @@ async fn schedules_crud_and_fire_due() {
         .with_schedules(store);
 
     // fire_due runs the due schedule and marks it ran (deterministic).
-    let fired = milim_server::fire_due(&state, 10_000).await;
+    let fired = milim_server::fire_due(&state, 10_000).await.unwrap();
     assert_eq!(fired, 1);
     {
         let captured = seen_messages.read().unwrap();

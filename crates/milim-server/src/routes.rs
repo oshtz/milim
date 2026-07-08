@@ -2464,7 +2464,7 @@ fn responses_to_completion(req: ResponsesRequest) -> Result<CompletionRequest, E
     Ok(CompletionRequest {
         model: req.model,
         messages,
-        tools: response_tools(req.tools),
+        tools: response_tools(req.tools)?,
         tool_choice: req.tool_choice,
         response_format: response_format_from_responses_text(&text),
         prompt: None,
@@ -2602,29 +2602,34 @@ fn response_content(value: &Value) -> Result<Content, Error> {
     Ok(Content::Parts(out))
 }
 
-fn response_tools(tools: Vec<Value>) -> Vec<OpenAiTool> {
-    tools
-        .into_iter()
-        .filter_map(|tool| {
-            if tool.get("type").and_then(Value::as_str) != Some("function") {
-                return None;
-            }
-            if tool.get("function").is_some() {
-                return serde_json::from_value(tool).ok();
-            }
-            Some(OpenAiTool {
-                kind: "function".to_string(),
-                function: ToolFunction {
-                    name: tool.get("name")?.as_str()?.to_string(),
-                    description: tool
-                        .get("description")
-                        .and_then(Value::as_str)
-                        .map(ToString::to_string),
-                    parameters: tool.get("parameters").cloned(),
-                },
-            })
-        })
-        .collect()
+fn response_tools(tools: Vec<Value>) -> Result<Vec<OpenAiTool>, Error> {
+    let mut out = Vec::new();
+    for tool in tools {
+        if tool.get("type").and_then(Value::as_str) != Some("function") {
+            continue;
+        }
+        if tool.get("function").is_some() {
+            out.push(serde_json::from_value(tool).map_err(|e| {
+                Error::InvalidRequest(format!("invalid Responses function tool: {e}"))
+            })?);
+            continue;
+        }
+        let name = tool.get("name").and_then(Value::as_str).ok_or_else(|| {
+            Error::InvalidRequest("Responses function tool is missing name".to_string())
+        })?;
+        out.push(OpenAiTool {
+            kind: "function".to_string(),
+            function: ToolFunction {
+                name: name.to_string(),
+                description: tool
+                    .get("description")
+                    .and_then(Value::as_str)
+                    .map(ToString::to_string),
+                parameters: tool.get("parameters").cloned(),
+            },
+        });
+    }
+    Ok(out)
 }
 
 fn response_reasoning_effort(reasoning: Option<&Value>) -> Option<ReasoningEffort> {
@@ -8039,7 +8044,7 @@ pub(crate) async fn mcp_server_upsert(
         args: req.args,
         enabled: req.enabled,
     };
-    let saved = hub.upsert(cfg).await;
+    let saved = hub.upsert(cfg).await.map_err(ApiError)?;
     let info = hub.list().into_iter().find(|s| s.id == saved.id);
     Ok(Json(json!({ "server": info })).into_response())
 }
@@ -8056,7 +8061,7 @@ pub(crate) async fn mcp_server_delete(
         .mcp
         .as_ref()
         .ok_or_else(|| ApiError(Error::InvalidRequest("MCP client is not enabled".into())))?;
-    Ok(Json(json!({ "deleted": hub.remove(&id) })).into_response())
+    Ok(Json(json!({ "deleted": hub.remove(&id).map_err(ApiError)? })).into_response())
 }
 
 // ----- Agents -----

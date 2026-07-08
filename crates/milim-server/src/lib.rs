@@ -26,7 +26,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use axum::routing::{delete, get, post, put};
 use axum::Router;
 
-use milim_core::api::openai::ChatMessage;
+use milim_core::{api::openai::ChatMessage, Result};
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::trace::TraceLayer;
@@ -451,17 +451,11 @@ fn skill_instruction_message(skills: &[milim_skills::SkillDef]) -> Option<ChatMe
 /// Run any schedules due at `now_unix` once, returning how many fired. Each
 /// schedule runs its (optional) agent's tool-use loop with its prompt, then is
 /// marked as run. Factored out from the loop so it's deterministically testable.
-pub async fn fire_due(state: &AppState, now_unix: i64) -> usize {
+pub async fn fire_due(state: &AppState, now_unix: i64) -> Result<usize> {
     let Some(schedules) = state.schedules.as_ref() else {
-        return 0;
+        return Ok(0);
     };
-    let due = match schedules.due(now_unix) {
-        Ok(d) => d,
-        Err(e) => {
-            tracing::warn!("schedule due() failed: {e}");
-            return 0;
-        }
-    };
+    let due = schedules.due(now_unix)?;
 
     let mut fired = 0;
     for s in due {
@@ -496,13 +490,13 @@ pub async fn fire_due(state: &AppState, now_unix: i64) -> usize {
                     model: model.clone(),
                     ran_at: now_unix,
                 });
-                let _ = schedules.mark_ran(&s.id, now_unix);
+                schedules.mark_ran(&s.id, now_unix)?;
                 fired += 1;
             }
             Err(e) => tracing::warn!("schedule {} failed: {e}", s.id),
         }
     }
-    fired
+    Ok(fired)
 }
 
 /// Run the background scheduler loop (checks for due schedules every 30s).
@@ -510,9 +504,10 @@ pub async fn scheduler_loop(state: AppState) {
     let mut ticker = tokio::time::interval(std::time::Duration::from_secs(30));
     loop {
         ticker.tick().await;
-        let n = fire_due(&state, now_unix() as i64).await;
-        if n > 0 {
-            tracing::info!("scheduler fired {n} run(s)");
+        match fire_due(&state, now_unix() as i64).await {
+            Ok(n) if n > 0 => tracing::info!("scheduler fired {n} run(s)"),
+            Ok(_) => {}
+            Err(e) => tracing::warn!("schedule fire_due failed: {e}"),
         }
     }
 }

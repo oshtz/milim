@@ -615,7 +615,7 @@ impl McpHub {
     /// failures are recorded (not fatal) so one bad server can't block startup.
     pub async fn connect_all(&self) {
         let configs: Vec<McpServerConfig> = {
-            let st = self.inner.read().unwrap();
+            let st = self.inner.read().expect("mcp hub poisoned");
             st.configs.iter().filter(|c| c.enabled).cloned().collect()
         };
         for cfg in configs {
@@ -627,14 +627,14 @@ impl McpHub {
     async fn connect_into_state(&self, cfg: &McpServerConfig) {
         match connect_one(cfg).await {
             Ok((client, tools)) => {
-                let mut st = self.inner.write().unwrap();
+                let mut st = self.inner.write().expect("mcp hub poisoned");
                 st.clients.insert(cfg.id.clone(), client);
                 st.tools.insert(cfg.id.clone(), tools);
                 st.errors.remove(&cfg.id);
             }
             Err(e) => {
                 tracing::warn!("MCP server '{}' failed to connect: {e}", cfg.name);
-                let mut st = self.inner.write().unwrap();
+                let mut st = self.inner.write().expect("mcp hub poisoned");
                 st.clients.remove(&cfg.id);
                 st.tools.remove(&cfg.id);
                 st.errors.insert(cfg.id.clone(), e.to_string());
@@ -643,15 +643,25 @@ impl McpHub {
     }
 
     /// Add or update a server (by id), reconnecting it, then persist.
-    pub async fn upsert(&self, mut cfg: McpServerConfig) -> McpServerConfig {
+    pub async fn upsert(&self, mut cfg: McpServerConfig) -> Result<McpServerConfig> {
         if cfg.id.trim().is_empty() {
             cfg.id = format!("mcp-{}", uuid::Uuid::new_v4().simple());
         }
+        let mut configs = {
+            let st = self.inner.read().expect("mcp hub poisoned");
+            st.configs
+                .iter()
+                .filter(|c| c.id != cfg.id)
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        configs.push(cfg.clone());
+        self.save_configs(&configs)?;
+
         // Drop any prior connection/tools for this id first.
         {
-            let mut st = self.inner.write().unwrap();
-            st.configs.retain(|c| c.id != cfg.id);
-            st.configs.push(cfg.clone());
+            let mut st = self.inner.write().expect("mcp hub poisoned");
+            st.configs = configs;
             st.clients.remove(&cfg.id);
             st.tools.remove(&cfg.id);
             st.errors.remove(&cfg.id);
@@ -659,30 +669,42 @@ impl McpHub {
         if cfg.enabled {
             self.connect_into_state(&cfg).await;
         }
-        self.save();
-        cfg
+        Ok(cfg)
     }
 
     /// Remove a server (dropping its connection, which kills the child).
-    pub fn remove(&self, id: &str) -> bool {
-        let had = {
-            let mut st = self.inner.write().unwrap();
+    pub fn remove(&self, id: &str) -> Result<bool> {
+        let (had, configs) = {
+            let st = self.inner.read().expect("mcp hub poisoned");
             let had = st.configs.iter().any(|c| c.id == id);
-            st.configs.retain(|c| c.id != id);
+            if !had {
+                return Ok(false);
+            }
+            let configs = st
+                .configs
+                .iter()
+                .filter(|c| c.id != id)
+                .cloned()
+                .collect::<Vec<_>>();
+            (had, configs)
+        };
+        self.save_configs(&configs)?;
+        let had = {
+            let mut st = self.inner.write().expect("mcp hub poisoned");
+            st.configs = configs;
             st.clients.remove(id);
             st.tools.remove(id);
             st.errors.remove(id);
             had
         };
-        self.save();
-        had
+        Ok(had)
     }
 
     /// All currently-available proxy tools across connected servers.
     pub fn tools(&self) -> Vec<Arc<dyn Tool>> {
         self.inner
             .read()
-            .unwrap()
+            .expect("mcp hub poisoned")
             .tools
             .values()
             .flatten()
@@ -692,7 +714,7 @@ impl McpHub {
 
     /// UI view of every configured server.
     pub fn list(&self) -> Vec<McpServerInfo> {
-        let st = self.inner.read().unwrap();
+        let st = self.inner.read().expect("mcp hub poisoned");
         st.configs
             .iter()
             .map(|c| {
@@ -712,11 +734,13 @@ impl McpHub {
             .collect()
     }
 
-    fn save(&self) {
-        let configs = self.inner.read().unwrap().configs.clone();
-        if let Ok(s) = serde_json::to_string_pretty(&json!({ "servers": configs })) {
-            let _ = std::fs::write(&self.path, s);
+    fn save_configs(&self, configs: &[McpServerConfig]) -> Result<()> {
+        if let Some(parent) = self.path.parent() {
+            std::fs::create_dir_all(parent)?;
         }
+        let data = serde_json::to_vec_pretty(&json!({ "servers": configs }))?;
+        std::fs::write(&self.path, data)?;
+        Ok(())
     }
 }
 
@@ -878,5 +902,53 @@ mod tests {
         let hub = McpHub::open(&dir);
         assert!(hub.list().is_empty());
         assert!(hub.tools().is_empty());
+    }
+
+    #[tokio::test]
+    async fn upsert_reports_save_failure_without_mutating_state() {
+        let blocker =
+            std::env::temp_dir().join(format!("milim-mcp-blocker-{}", uuid::Uuid::new_v4()));
+        std::fs::write(&blocker, b"not a directory").unwrap();
+        let hub = McpHub::open(&blocker);
+        let err = hub
+            .upsert(McpServerConfig {
+                id: "broken".into(),
+                name: "Broken".into(),
+                command: "node".into(),
+                args: Vec::new(),
+                enabled: false,
+            })
+            .await
+            .unwrap_err();
+
+        assert_eq!(err.code(), "io_error");
+        assert!(hub.list().is_empty());
+        let _ = std::fs::remove_file(&blocker);
+    }
+
+    #[tokio::test]
+    async fn remove_reports_save_failure_without_mutating_state() {
+        let dir =
+            std::env::temp_dir().join(format!("milim-mcp-remove-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let hub = McpHub::open(&dir);
+        hub.upsert(McpServerConfig {
+            id: "keep".into(),
+            name: "Keep".into(),
+            command: "node".into(),
+            args: Vec::new(),
+            enabled: false,
+        })
+        .await
+        .unwrap();
+        let path = dir.join("mcp.json");
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+
+        let err = hub.remove("keep").unwrap_err();
+
+        assert_eq!(err.code(), "io_error");
+        assert!(hub.list().iter().any(|server| server.id == "keep"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
