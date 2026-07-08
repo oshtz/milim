@@ -1667,6 +1667,7 @@ fn validate_update_archive_name(file_name: &str) -> std::result::Result<(), Stri
     Ok(())
 }
 
+#[cfg_attr(not(any(target_os = "windows", target_os = "macos")), allow(dead_code))]
 fn validate_install_source_name(file_name: &str) -> std::result::Result<(), String> {
     if file_name.trim().is_empty()
         || file_name.contains('/')
@@ -1694,6 +1695,7 @@ fn validate_install_source_name(file_name: &str) -> std::result::Result<(), Stri
     Err("Unsupported update source type.".to_string())
 }
 
+#[cfg_attr(not(any(target_os = "windows", target_os = "macos")), allow(dead_code))]
 fn canonical_update_source(
     app: &tauri::AppHandle,
     update_path: &str,
@@ -2082,7 +2084,7 @@ fn apply_update(app: tauri::AppHandle, update_path: String) -> std::result::Resu
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
         let _ = (app, update_path);
-        return Err("Auto-update is not supported on this platform.".to_string());
+        Err("Auto-update is not supported on this platform.".to_string())
     }
 
     #[cfg(any(target_os = "windows", target_os = "macos"))]
