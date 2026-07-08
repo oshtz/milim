@@ -161,6 +161,7 @@ import {
   validateCompactionCheckpointSummary,
 } from "../lib/contextCompaction";
 import { reasoningEffortForModel } from "../lib/reasoningEffort";
+import { buildQuickSummary } from "../lib/quickSummary";
 import {
   nextRecentThreadSwitcherIndex,
   recentThreadSwitcherItems,
@@ -299,6 +300,7 @@ import { ChatSearchPopover } from "./ChatSearchPopover";
 import { useContextMenu, type ContextMenuItem } from "./ContextMenu";
 import { GitWorkspacePanel } from "./GitPanel";
 import { PreviewPanel } from "./PreviewPanel";
+import { QuickSummaryPanel } from "./QuickSummaryPanel";
 import { RunTimeline } from "./RunTimeline";
 
 const ProvidersManager = lazy(() =>
@@ -2574,6 +2576,7 @@ export function ChatView({
   const [chatNotice, setChatNotice] = useState<ChatNotice | null>(null);
   const [goalPanelOpen, setGoalPanelOpen] = useState(false);
   const [goalPrefill, setGoalPrefill] = useState<string | null>(null);
+  const [quickSummaryOpen, setQuickSummaryOpen] = useState(false);
   const [chatSearchOpen, setChatSearchOpen] = useState(false);
   const [sessionsHydrated, setSessionsHydrated] = useState(() =>
     useSessions.persist.hasHydrated(),
@@ -2721,6 +2724,35 @@ export function ChatView({
     [projects, sessionSummaries],
   );
   const effectiveModel = activeWorker?.model || activeAgent?.model || model;
+  const quickSummary = useMemo(
+    () =>
+      buildQuickSummary({
+        folder,
+        model: effectiveModel,
+        privacy,
+        memory,
+        planMode,
+        goal,
+        gitStatus,
+        messages,
+        pendingAttachments,
+        composerText: input,
+        previewUrl: activePreviewRuntime?.url ?? null,
+      }),
+    [
+      activePreviewRuntime?.url,
+      effectiveModel,
+      folder,
+      gitStatus,
+      goal,
+      input,
+      memory,
+      messages,
+      pendingAttachments,
+      planMode,
+      privacy,
+    ],
+  );
   const enabledMediaProviders = useMemo(
     () => mediaProviders(providers),
     [providers],
@@ -3555,6 +3587,10 @@ export function ChatView({
       tone: "info",
       message: "Git action loaded into composer.",
     });
+    focusComposerInput();
+  }
+
+  function focusComposerInput() {
     window.requestAnimationFrame(() => {
       document
         .querySelector<HTMLTextAreaElement>('[data-testid="composer-input"]')
@@ -3568,11 +3604,7 @@ export function ChatView({
     );
     setRunJournalOpen(false);
     setChatNotice({ tone: "info", message: "Run context attached to composer." });
-    window.requestAnimationFrame(() => {
-      document
-        .querySelector<HTMLTextAreaElement>('[data-testid="composer-input"]')
-        ?.focus();
-    });
+    focusComposerInput();
   }
 
   function closePreview() {
@@ -6914,6 +6946,25 @@ export function ChatView({
               <PanelIcon size={16} />
             </button>
           )}
+          <QuickSummaryPanel
+            summary={quickSummary}
+            open={quickSummaryOpen}
+            canOpenGit={canOpenGitPanel}
+            reserveSidePanelButtonSpace={!sidePanelVisible}
+            onOpenChange={setQuickSummaryOpen}
+            onOpenGit={() => {
+              setQuickSummaryOpen(false);
+              openGitPanel();
+            }}
+            onOpenGoal={() => {
+              setQuickSummaryOpen(false);
+              openGoalPanel();
+            }}
+            onFocusComposer={() => {
+              setQuickSummaryOpen(false);
+              focusComposerInput();
+            }}
+          />
           <div
             className="chat-scroll"
             ref={chatScrollRef}

@@ -1,12 +1,15 @@
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import {
+  Component,
   lazy,
   Suspense,
   useCallback,
   useEffect,
   useRef,
   useState,
+  type ErrorInfo,
   type MouseEvent,
+  type ReactNode,
 } from "react";
 import { useAgents } from "./agents/store";
 import { deleteThreadTree, listModelsDetailed } from "./api";
@@ -159,11 +162,47 @@ function AppNoticeHost() {
   );
 }
 
+class AppErrorBoundary extends Component<
+  { children: ReactNode },
+  { error: Error | null }
+> {
+  state: { error: Error | null } = { error: null };
+
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error("Milim UI error", error, info);
+  }
+
+  render() {
+    if (!this.state.error) return this.props.children;
+    return (
+      <div className="app-error-state" role="alert">
+        <div className="app-error-card">
+          <h1>Milim hit a UI error</h1>
+          <p>{this.state.error.message || "Unknown render error."}</p>
+          <button
+            className="btn-accent"
+            type="button"
+            onClick={() => window.location.reload()}
+          >
+            Reload
+          </button>
+        </div>
+      </div>
+    );
+  }
+}
+
 export function App() {
   return (
-    <ContextMenuProvider>
-      <AppContent />
-    </ContextMenuProvider>
+    <AppErrorBoundary>
+      <ContextMenuProvider>
+        <AppContent />
+      </ContextMenuProvider>
+    </AppErrorBoundary>
   );
 }
 

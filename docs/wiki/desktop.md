@@ -28,6 +28,8 @@ The first run can open as Simple or Workbench. Simple keeps the chat core visibl
 | Composer | Prompt text, visually highlighted plain-text skill/MCP/file/link tokens, persisted per-thread unsent drafts, thread-local sent-history recall, slash commands, file attachments, voice input, queued sends, and send controls. |
 | Run timeline | Reasoning, compact live tool activity with expandable details, workspace checkpoint notices, memory notices, child-thread activity, and usage metrics. Built-in tool-agent usage updates after each model request completes; account runtimes remain terminal-only unless their CLIs report more. |
 | Run Journal | Searchable goal-attempt history with model/provider, status, excerpts, files, tools, artifacts, and an explicit Attach to composer action. |
+| Error fallback | Root UI render crashes show a reloadable error screen instead of a blank app window. |
+| Context pull tab | Collapsible chat-edge drawer showing compact workspace, active plan/goal, browser, model, and source state for the current thread. |
 | Side panel | Switches between detected artifacts, a browser/URL preview, and Git status/actions; artifact revisions and the selected mode persist per thread. |
 
 ## Context menus
