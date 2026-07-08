@@ -116,6 +116,18 @@ pub fn scan_request(req: &CompletionRequest) -> Vec<Detection> {
         .collect()
 }
 
+pub fn request_has_image_parts(req: &CompletionRequest) -> bool {
+    req.messages.iter().any(|m| {
+        matches!(
+            &m.content,
+            Some(Content::Parts(parts))
+                if parts
+                    .iter()
+                    .any(|p| matches!(p, ContentPart::ImageUrl { .. }))
+        )
+    })
+}
+
 /// A short, de-duplicated human summary of detected kinds, e.g. `email, ip`.
 pub fn kinds_summary(dets: &[Detection]) -> String {
     let mut kinds: Vec<String> = dets

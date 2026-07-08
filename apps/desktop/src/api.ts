@@ -5,7 +5,17 @@ import type { KokoroPreset, VoiceSettings } from "./settings/store";
 import type { PiperPreset } from "./settings/store";
 import type { VadPreset } from "./settings/store";
 import { qualifyDuplicateProviderModels } from "./lib/modelPicker";
+import { wireMessages } from "./lib/attachmentWire.js";
 import { createSilentWav } from "./lib/recordWav";
+export {
+  attachmentsToPromptContext,
+  wireMessageContent,
+  wireMessages,
+} from "./lib/attachmentWire.js";
+export type {
+  WireChatMessage,
+  WireMessageContent,
+} from "./lib/attachmentWire.js";
 
 export const MAX_ATTACHMENT_BYTES = 128 * 1024;
 
@@ -231,53 +241,6 @@ export interface RunTrace {
   iterations?: number;
   status: RunStatus;
   error?: string;
-}
-
-export function attachmentsToPromptContext(
-  attachments?: ChatAttachment[],
-): string {
-  if (!attachments?.length) return "";
-  const blocks = attachments.map((attachment) => {
-    const meta = [
-      `name=${attachment.name}`,
-      `mime=${attachment.mime || "application/octet-stream"}`,
-      `size=${attachment.size}`,
-      attachment.truncated ? `truncated_at=${MAX_ATTACHMENT_BYTES}` : null,
-      attachment.sourcePath ? `path=${attachment.sourcePath}` : null,
-    ]
-      .filter(Boolean)
-      .join(" ");
-    const content = attachment.content?.trimEnd();
-    const imageNote = attachment.dataUrl
-      ? "[Image preview is available in the desktop UI. No OCR text was extracted.]"
-      : "";
-    return [
-      `--- attachment ${meta} ---`,
-      content
-        ? content
-        : imageNote || "[No text content available for this attachment.]",
-      "--- end attachment ---",
-    ].join("\n");
-  });
-  return ["[Attached files]", ...blocks, "[/Attached files]"].join("\n");
-}
-
-export function wireMessageContent(message: ChatMessage): string {
-  if (message.approval) return "";
-  const attachmentContext = attachmentsToPromptContext(message.attachments);
-  if (!attachmentContext) return message.content;
-  return message.content
-    ? `${message.content}\n\n${attachmentContext}`
-    : attachmentContext;
-}
-
-/** Strip UI-only fields so only the wire contract (`role`, `content`) is sent. */
-function wireMessages(
-  messages: ChatMessage[],
-): Array<{ role: string; content: string }> {
-  return messages
-    .filter((m) => !m.approval)
-    .map((m) => ({ role: m.role, content: wireMessageContent(m) }));
 }
 
 const DEFAULT_BASE = "http://127.0.0.1:7377";

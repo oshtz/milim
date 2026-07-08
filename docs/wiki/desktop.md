@@ -6,7 +6,7 @@ title: Desktop app
 summary: Simple and Workbench modes, threads, projects, composer controls, artifacts, plan mode, goals, search, rendering, settings, and slash commands.
 group: Workbench
 order: 30
-updated: 2026-07-07
+updated: 2026-07-08
 ---
 
 The first run can open as Simple or Workbench. Simple keeps the chat core visible with model switching, themes, memory, and voice basics; Workbench exposes project, agent, MCP, media, sandbox, schedule, and computer-use controls. In both modes, the Tauri process starts the embedded backend, connects persisted MCP servers, refreshes provider models, and runs schedules in the background. Background schedule completions and mobile relay events use shared app notices so they remain visible outside their settings panels. Closing the desktop window hides it to the system tray so those background services keep running; use the tray menu to reopen or quit.
@@ -36,6 +36,8 @@ The desktop app replaces the default right-click menu on Milim-owned surfaces wi
 User and assistant message bodies render Markdown in the transcript, and message bodies plus the composer use automatic text direction so Hebrew and other RTL text read naturally. While an assistant response is still streaming, the live tail uses a lightweight preserved-text renderer and switches to full Markdown when the turn finalizes. Long transcripts virtualize offscreen rows so old messages stay in history without keeping every row mounted. Message actions, edit/resend, search, model context, and thread export keep using the raw stored source.
 
 The composer keeps prompt storage plain text. Recognized `@Skill Name`, `/Skill Name`, and `/server__tool` tags render as compact pills, while workspace `@file` references and bare HTTP(S) URLs render with link-like highlighting in the editor mirror layer; MCP slash suggestions insert the visible tag only and do not force a tool call or bypass approval/exposure policy.
+
+Image attachments are preserved as image content parts for provider chat and server-side agent runs when the backend supports vision. Codex and Claude account runtimes still receive prompt text plus attachment metadata because their bridge APIs are prompt-string only.
 
 ## Session controls
 

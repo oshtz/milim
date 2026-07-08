@@ -6,7 +6,7 @@ title: Privacy and security
 summary: Remote-provider privacy modes, redaction, blocking, deterministic scanning, bearer auth, and CORS boundaries.
 group: Local data
 order: 70
-updated: 2026-07-03
+updated: 2026-07-08
 ---
 
 Privacy settings are easiest to reason about as a routing question: what stays local, what goes to a provider, and which gate runs before a remote send.
@@ -20,6 +20,8 @@ Privacy settings are easiest to reason about as a routing question: what stays l
 | `block` | Remote sends containing detected PII fail closed before the provider call. |
 
 The scanner is deterministic regex-based detection for common email, phone, token-like, IP, URL, and secret-looking strings. It does not infer names or sensitive meaning from natural language.
+
+Because image content cannot be scanned or redacted by the text privacy gate, remote chat requests with image parts are blocked in `redact` and `block` modes. Switch to `off` only when sending that image to the selected remote provider is intended.
 
 ## What is enforced server-side
 

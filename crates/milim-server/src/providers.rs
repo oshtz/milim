@@ -765,6 +765,11 @@ impl ModelService for ProviderRouter {
         match self.privacy.mode() {
             PrivacyMode::Off => remote.stream(req).await,
             PrivacyMode::Block => {
+                if privacy::request_has_image_parts(&req) {
+                    return Err(Error::InvalidRequest(
+                        "blocked by the privacy gate: outbound message contains image data, which the privacy gate cannot scan. Switch the gate to Off to send images to a remote provider.".to_string(),
+                    ));
+                }
                 let dets = self.privacy.scan_request(&req);
                 if dets.is_empty() {
                     remote.stream(req).await
@@ -777,6 +782,11 @@ impl ModelService for ProviderRouter {
                 }
             }
             PrivacyMode::Redact => {
+                if privacy::request_has_image_parts(&req) {
+                    return Err(Error::InvalidRequest(
+                        "blocked by the privacy gate: outbound message contains image data, which the privacy gate cannot redact. Switch the gate to Off to send images to a remote provider.".to_string(),
+                    ));
+                }
                 let map = self.privacy.redact_request(&mut req);
                 let inner = remote.stream(req).await?;
                 Ok(if map.is_empty() {
@@ -888,6 +898,7 @@ impl ModelService for ProviderRouter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use milim_core::api::openai::{ChatMessage, Content, ContentPart, ImageUrl};
     use std::sync::Mutex;
 
     #[derive(Clone)]
@@ -1039,6 +1050,74 @@ mod tests {
         assert_eq!(inputs.len(), 1);
         assert!(inputs[0][0].contains("[EMAIL_1]"));
         assert!(!inputs[0][0].contains("person@example.com"));
+    }
+
+    fn image_completion_request(model: &str) -> CompletionRequest {
+        CompletionRequest {
+            model: model.to_string(),
+            messages: vec![ChatMessage {
+                role: "user".to_string(),
+                content: Some(Content::Parts(vec![
+                    ContentPart::Text {
+                        text: "what is in this image?".to_string(),
+                    },
+                    ContentPart::ImageUrl {
+                        image_url: ImageUrl {
+                            url: "data:image/png;base64,AAAA".to_string(),
+                            detail: None,
+                        },
+                    },
+                ])),
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
+                reasoning_content: None,
+            }],
+            tools: Vec::new(),
+            tool_choice: None,
+            response_format: None,
+            prompt: None,
+            suffix: None,
+            sampling: Default::default(),
+            reasoning_effort: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn router_blocks_remote_image_parts_when_privacy_gate_scans() {
+        let models = Arc::new(Mutex::new(Vec::new()));
+        let mut cfg = provider(
+            "OpenAI",
+            ProviderKind::OpenAiCompatible,
+            "https://api.openai.com/v1",
+        );
+        cfg.models = vec!["vision-model".to_string()];
+        let privacy = Arc::new(PrivacyGate::default());
+        let router = ProviderRouter {
+            inner: Arc::new(RwLock::new(vec![Runtime {
+                cfg,
+                backend: Arc::new(RecordingBackend {
+                    inputs: Arc::new(Mutex::new(Vec::new())),
+                    models: models.clone(),
+                }),
+            }])),
+            local: Arc::new(milim_inference::unavailable::UnavailableBackend::new()),
+            privacy: privacy.clone(),
+        };
+
+        for mode in [PrivacyMode::Redact, PrivacyMode::Block] {
+            privacy.set(mode);
+            let result = router
+                .stream(image_completion_request("vision-model"))
+                .await;
+            let err = match result {
+                Ok(_) => panic!("image parts should be blocked when privacy scans"),
+                Err(err) => err,
+            };
+            assert!(err.to_string().contains("image data"));
+        }
+
+        assert!(models.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
