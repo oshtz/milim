@@ -32,9 +32,22 @@ Object.defineProperty(globalThis, "localStorage", {
 });
 
 const {
+  SETTINGS_SEARCH_ENTRIES,
+  matchingSettingsEntries,
+} = await import("../src/settings/search.js");
+
+const {
   DEFAULT_MEDIA_SETTINGS,
   DEFAULT_VOICE_SETTINGS,
   STT_OPTIONS,
+  VOICE_RECORDING_MAX_SECONDS,
+  VOICE_RECORDING_MIN_SECONDS,
+  VOICE_SERVER_VAD_THRESHOLD_MAX,
+  VOICE_SERVER_VAD_THRESHOLD_MIN,
+  VOICE_TTS_SPEED_MAX,
+  VOICE_TTS_SPEED_MIN,
+  VOICE_VAD_SILENCE_MAX_MS,
+  VOICE_VAD_SILENCE_MIN_MS,
   useSettings,
 } = await import("../src/settings/store.js");
 
@@ -70,6 +83,20 @@ const optionIds = STT_OPTIONS.map((option: { id: string }) => option.id);
 assert(optionIds.includes("whisper"), "Whisper STT option should be shown");
 assert(optionIds.includes("parakeet"), "Parakeet STT option should be shown");
 assert(optionIds.includes("remote"), "remote/cloud STT option should be shown");
+assert(
+  SETTINGS_SEARCH_ENTRIES.some((entry: { id: string }) => entry.id === "audio-hotkey"),
+  "settings search should include the voice hotkey row",
+);
+equal(
+  matchingSettingsEntries("hotkey")[0]?.id,
+  "audio-hotkey",
+  "settings search should return individual hotkey setting",
+);
+equal(
+  matchingSettingsEntries("kokoro").some((entry: { id: string }) => entry.id === "audio-tts-native"),
+  true,
+  "settings search should match provider-specific TTS settings",
+);
 
 useSettings.getState().setVoiceSettings({
   enabled: true,
@@ -95,6 +122,27 @@ assert(!localStorage.getItem("milim.settings")?.includes("stt-secret"), "STT API
 assert(!localStorage.getItem("milim.settings")?.includes("tts-secret"), "TTS API key should not be written to synced settings");
 assert(localStorage.getItem("milim.local.voiceSecrets")?.includes("stt-secret"), "STT API key should be stored in machine-local settings");
 assert(localStorage.getItem("milim.local.voiceSecrets")?.includes("tts-secret"), "TTS API key should be stored in machine-local settings");
+
+useSettings.getState().setVoiceSettings({
+  vadSilenceMs: 100,
+  maxRecordingSeconds: 0,
+  serverVadThreshold: 0,
+  ttsSpeed: 0.1,
+});
+equal(useSettings.getState().voice.vadSilenceMs, VOICE_VAD_SILENCE_MIN_MS, "silence window should clamp to UI min");
+equal(useSettings.getState().voice.maxRecordingSeconds, VOICE_RECORDING_MIN_SECONDS, "max recording should clamp to UI min");
+equal(useSettings.getState().voice.serverVadThreshold, VOICE_SERVER_VAD_THRESHOLD_MIN, "VAD threshold should clamp to UI min");
+equal(useSettings.getState().voice.ttsSpeed, VOICE_TTS_SPEED_MIN, "TTS speed should clamp to UI min");
+useSettings.getState().setVoiceSettings({
+  vadSilenceMs: 99999,
+  maxRecordingSeconds: 99999,
+  serverVadThreshold: 99999,
+  ttsSpeed: 99999,
+});
+equal(useSettings.getState().voice.vadSilenceMs, VOICE_VAD_SILENCE_MAX_MS, "silence window should clamp to UI max");
+equal(useSettings.getState().voice.maxRecordingSeconds, VOICE_RECORDING_MAX_SECONDS, "max recording should clamp to UI max");
+equal(useSettings.getState().voice.serverVadThreshold, VOICE_SERVER_VAD_THRESHOLD_MAX, "VAD threshold should clamp to UI max");
+equal(useSettings.getState().voice.ttsSpeed, VOICE_TTS_SPEED_MAX, "TTS speed should clamp to UI max");
 
 useSettings.getState().setMediaSettings({
   providerId: "prov-openrouter",

@@ -138,11 +138,15 @@ export function Toggle({
   checked,
   onChange,
   label,
+  ariaLabel,
+  disabled = false,
   testId,
 }: {
   checked: boolean;
   onChange: (v: boolean) => void;
   label?: ReactNode;
+  ariaLabel?: string;
+  disabled?: boolean;
   testId?: string;
 }) {
   const sw = (
@@ -150,8 +154,10 @@ export function Toggle({
       type="button"
       role="switch"
       aria-checked={checked}
+      aria-label={ariaLabel}
       data-testid={testId}
       className={"ui-switch" + (checked ? " on" : "")}
+      disabled={disabled}
       onClick={() => onChange(!checked)}
     >
       <span className="ui-switch-knob" />

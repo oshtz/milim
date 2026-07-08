@@ -127,6 +127,16 @@ export function normalizeShortcut(shortcut: unknown): string | null {
   return parsed ? serializeShortcut(parsed) : null;
 }
 
+export function shortcutToGlobalAccelerator(shortcut: unknown): string | null {
+  const normalized = normalizeShortcut(shortcut);
+  return normalized ? normalized.replace(/^Mod(?=\+)/, "CommandOrControl") : null;
+}
+
+export function globalAcceleratorToShortcut(shortcut: unknown): string | null {
+  if (typeof shortcut !== "string") return null;
+  return normalizeShortcut(shortcut.replace(/^CommandOrControl(?=\+)/i, "Mod"));
+}
+
 export function shortcutValidationIssue(shortcut: unknown): string | null {
   const parsed = parseShortcut(shortcut);
   if (!parsed) return "Press a key combination.";

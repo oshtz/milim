@@ -21,6 +21,8 @@ These features are optional extensions around the same desktop session. Voice wr
 | Media generation | Add Replicate, fal, or OpenRouter media-capable provider credentials. |
 | Mobile companion | Enable the companion bridge, use Tailscale setup or a manual phone URL, pair the phone, then use the phone view to read, switch, and send prompts through desktop threads. |
 
+Voice settings use bounded sliders for recording, VAD threshold, and TTS speed. STT/TTS API keys entered in the voice settings panel are stored machine-local and are not written to synced settings; reveal buttons only affect the current settings view. Global push-to-talk shortcuts are recorded by pressing the desired key combination.
+
 ## Media route
 
 ```bash Generate media

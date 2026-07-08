@@ -678,10 +678,16 @@ async function runProviderAndVoiceSetup(page) {
   await openSettings(page);
   await page.getByTestId("settings-section-audio").click();
   await setSwitch(page.getByTestId("voice-enabled-toggle"), true, "voice enabled");
+  await page.getByTestId("settings-section-audio").getByText("Needs model").waitFor();
   await setSwitch(page.getByTestId("voice-hotkey-toggle"), true, "voice hotkey");
-  await page.getByTestId("voice-hotkey-shortcut").fill("CommandOrControl+Alt+Space");
+  await page.getByTestId("voice-hotkey-shortcut").click();
+  await page.keyboard.press("Control+Alt+Space");
   await setSwitch(page.getByTestId("voice-dictation-toggle"), true, "voice dictation");
-  await assertFieldContains(page.getByTestId("voice-hotkey-shortcut"), "CommandOrControl+Alt+Space");
+  await page.locator(".shortcut-recorder-row", { has: page.getByTestId("voice-hotkey-shortcut") }).getByText("Ctrl+Alt+Space").waitFor();
+  await page.getByTestId("settings-search").fill("hotkey");
+  await page.locator(".settings-search-result", { hasText: "Global push-to-talk" }).click();
+  await page.locator('[data-setting-id="audio-hotkey"].setting-highlight').waitFor();
+  await page.getByTestId("settings-search").fill("");
   await runVoiceAndTtsSettingsCheck(page);
   await runAppShortcutSettingsCheck(page);
 
@@ -750,7 +756,7 @@ async function assertVoiceSettingsPersisted(page) {
   await assertSwitch(page.getByTestId("voice-enabled-toggle"), true, "voice enabled");
   await assertSwitch(page.getByTestId("voice-hotkey-toggle"), true, "voice hotkey");
   await assertSwitch(page.getByTestId("voice-dictation-toggle"), true, "voice dictation");
-  await assertFieldContains(page.getByTestId("voice-hotkey-shortcut"), "CommandOrControl+Alt+Space");
+  await page.locator(".shortcut-recorder-row", { has: page.getByTestId("voice-hotkey-shortcut") }).getByText("Ctrl+Alt+Space").waitFor();
   await assertAppShortcutsPersisted(page);
   await closeSettings(page);
 }

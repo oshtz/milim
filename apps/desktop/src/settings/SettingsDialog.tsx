@@ -1,4 +1,4 @@
-import { type KeyboardEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
   checkVoiceSetup,
   listModelsDetailed,
@@ -23,6 +23,14 @@ import {
   STT_OPTIONS,
   TTS_OPTIONS,
   VAD_PRESETS,
+  VOICE_RECORDING_MAX_SECONDS,
+  VOICE_RECORDING_MIN_SECONDS,
+  VOICE_SERVER_VAD_THRESHOLD_MAX,
+  VOICE_SERVER_VAD_THRESHOLD_MIN,
+  VOICE_TTS_SPEED_MAX,
+  VOICE_TTS_SPEED_MIN,
+  VOICE_VAD_SILENCE_MAX_MS,
+  VOICE_VAD_SILENCE_MIN_MS,
   useSettings,
   voiceProviderConfigIssue,
   voiceTtsConfigIssue,
@@ -30,7 +38,21 @@ import {
   type ServerVadProvider,
   type TtsProvider,
   type VoiceSttProvider,
-} from "../settings/store";
+} from "./store";
+import {
+  SETTINGS_SEARCH_ENTRIES,
+  matchingSettingsEntries,
+  type AudioTab,
+  type SettingSearchEntry,
+  type SettingsSectionId,
+} from "./search";
+import {
+  FieldIssue,
+  PresetInstallProgress,
+  SettingsBlock,
+  SettingsChoiceGroup,
+  SettingsPanel,
+} from "./SettingsPrimitives";
 import { useTheme } from "../theme/store";
 import { themeContrastIssues } from "../theme/contrast";
 import type { Theme } from "../theme/types";
@@ -40,9 +62,11 @@ import { useUpdateStore, type UpdateStatus } from "../update/store";
 import {
   APP_SHORTCUT_ACTIONS,
   APP_SHORTCUT_LABELS,
+  globalAcceleratorToShortcut,
   shortcutConflict,
   shortcutFromKeyboardEvent,
   shortcutLabel,
+  shortcutToGlobalAccelerator,
   shortcutValidationIssue,
   type AppShortcutAction,
 } from "../ui/shortcuts";
@@ -65,13 +89,11 @@ import {
   type MessageWidth,
 } from "../ui/store";
 import { featureVisibleInMode } from "../ui/features";
-import { Archive, Check, Code, Download, Gear, GitLogo, Pencil, PlusSquare, Refresh, Search, Sidebar, Smartphone, Sun, Trash, Volume2, X } from "./icons";
-import { MobileCompanionSettings } from "./MobileCompanionSettings";
-import { SheetDialog } from "./SheetDialog";
-import { ThemeEditor } from "./ThemeEditor";
-import { Select, Slider, Toggle } from "./ui";
-
-type SettingsSectionId = "app" | "chat" | "audio" | "appearance" | "history" | "mobile" | "system" | "about" | "developer";
+import { Archive, Check, Code, Download, Eye, Gear, GitLogo, Pencil, PlusSquare, Refresh, Search, Sidebar, Smartphone, Sun, Trash, Volume2, X } from "../components/icons";
+import { MobileCompanionSettings } from "../components/MobileCompanionSettings";
+import { SheetDialog } from "../components/SheetDialog";
+import { ThemeEditor } from "../components/ThemeEditor";
+import { Select, Slider, Toggle } from "../components/ui";
 
 type SettingsSection = {
   id: SettingsSectionId;
@@ -82,8 +104,25 @@ type SettingsSection = {
 };
 type SettingsStatusTone = "ready" | "warn" | "muted";
 type SettingsSectionActivation = { focusTab?: boolean; remember?: boolean };
+type ShortcutRecordingTarget = AppShortcutAction | "voiceHotkey";
 
 let lastSettingsSection: SettingsSectionId = "app";
+
+const OPENAI_TTS_VOICES = [
+  "alloy",
+  "ash",
+  "ballad",
+  "coral",
+  "echo",
+  "fable",
+  "nova",
+  "onyx",
+  "sage",
+  "shimmer",
+  "verse",
+  "marin",
+  "cedar",
+];
 
 const SETTINGS_SECTIONS: SettingsSection[] = [
   {
@@ -198,65 +237,7 @@ function updateStatusTone(status: UpdateStatus): SettingsStatusTone {
   return "ready";
 }
 
-function SettingsPanel({ children }: { children: ReactNode }) {
-  return <div className="settings-panel">{children}</div>;
-}
-
-function SettingsBlock({ title, className = "", children }: { title: string; className?: string; children: ReactNode }) {
-  return (
-    <div className={`settings-block${className ? ` ${className}` : ""}`}>
-      <div className="settings-block-title">{title}</div>
-      {children}
-    </div>
-  );
-}
-
-function SettingsChoiceGroup<T extends string>({
-  value,
-  options,
-  onChange,
-  testIdPrefix,
-}: {
-  value: T;
-  options: Array<{ value: T; label: string; detail: string }>;
-  onChange: (value: T) => void;
-  testIdPrefix: string;
-}) {
-  return (
-    <div className="settings-choice-grid">
-      {options.map((option) => {
-        const selected = option.value === value;
-        return (
-          <button
-            key={option.value}
-            className={"settings-choice-button" + (selected ? " active" : "")}
-            type="button"
-            data-testid={`${testIdPrefix}-${option.value}`}
-            aria-pressed={selected}
-            onClick={() => onChange(option.value)}
-          >
-            <span>{option.label}</span>
-            <small>{option.detail}</small>
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
-function fmtBytes(n: number): string {
-  if (n < 1024) return `${n} B`;
-  const u = ["KB", "MB", "GB"];
-  let v = n / 1024;
-  let i = 0;
-  while (v >= 1024 && i < u.length - 1) {
-    v /= 1024;
-    i++;
-  }
-  return `${v.toFixed(1)} ${u[i]}`;
-}
-
-export function ThemePicker({ onClose }: { onClose: () => void }) {
+export function SettingsDialog({ onClose }: { onClose: () => void }) {
   const themes = useTheme((s) => s.themes);
   const custom = useTheme((s) => s.custom);
   const themeId = useTheme((s) => s.themeId);
@@ -337,9 +318,12 @@ export function ThemePicker({ onClose }: { onClose: () => void }) {
 
   const [editing, setEditing] = useState<{ base: Theme; isNew: boolean } | null>(null);
   const [activeSection, setActiveSection] = useState<SettingsSectionId>(lastSettingsSection);
-  const [audioTab, setAudioTab] = useState<"input" | "output">("input");
+  const [audioTab, setAudioTab] = useState<AudioTab>("input");
   const [settingsQuery, setSettingsQuery] = useState("");
+  const [highlightedSettingId, setHighlightedSettingId] = useState<string | null>(null);
   const [confirmArchiveDelete, setConfirmArchiveDelete] = useState<string | null>(null);
+  const [showSttApiKey, setShowSttApiKey] = useState(false);
+  const [showTtsApiKey, setShowTtsApiKey] = useState(false);
   const [voiceTest, setVoiceTest] = useState<{ kind: "running" | "success" | "error"; message: string } | null>(null);
   const [vadTest, setVadTest] = useState<{ kind: "running" | "success" | "error"; message: string } | null>(null);
   const [ttsTest, setTtsTest] = useState<{ kind: "running" | "success" | "error"; message: string } | null>(null);
@@ -357,7 +341,7 @@ export function ThemePicker({ onClose }: { onClose: () => void }) {
     useState<PiperExecutableInstallProgress | null>(null);
   const executableInstallAbortRef = useRef<AbortController | null>(null);
   const [threadNameModels, setThreadNameModels] = useState<ModelInfo[]>([]);
-  const [recordingShortcut, setRecordingShortcut] = useState<AppShortcutAction | null>(null);
+  const [recordingShortcut, setRecordingShortcut] = useState<ShortcutRecordingTarget | null>(null);
   const [shortcutError, setShortcutError] = useState<string | null>(null);
   const [setupCheck, setSetupCheck] = useState<Record<VoiceSetupTarget, { kind: "running" | "success" | "error"; message: string } | null>>({
     stt: null,
@@ -366,6 +350,7 @@ export function ThemePicker({ onClose }: { onClose: () => void }) {
   });
   const voiceConfigIssue = voiceProviderConfigIssue(voice);
   const vadConfigIssue = voiceVadConfigIssue(voice);
+  const ttsSetupIssue = voiceTtsConfigIssue({ ...voice, ttsEnabled: true });
   const ttsConfigIssue = voiceTtsConfigIssue(voice);
   const showVoiceAdvanced = featureVisibleInMode("voiceAdvanced", interfaceMode);
   const voiceStatus =
@@ -423,16 +408,25 @@ export function ThemePicker({ onClose }: { onClose: () => void }) {
   const visibleSettingsSections = SETTINGS_SECTIONS;
   const sectionStatusKey = `${interfaceMode}\n${windowAlwaysOnTop}\n${uiSize}\n${composerSendShortcut}\n${Object.values(appShortcuts).join("\n")}\n${aiThreadNames}\n${aiThreadNameModel}\n${developerMode}\n${experimentalHashlinePatch}\n${onboardingStatus}\n${onboardingDeveloperShow}\n${audioStatus.label}\n${audioStatus.tone}\n${systemStatus.label}\n${systemStatus.tone}\n${archivedCount}\n${archiveRetentionDays}\n${current.name}\n${updateStatus}\n${chatLayoutStyle}\n${messageWidth}\n${avatarStyle}\n${codeBlockTheme}\n${backgroundFit}\n${backgroundTreatment}`;
   const normalizedSettingsQuery = settingsQuery.trim().toLowerCase();
+  const settingsSearchResults = useMemo(
+    () => matchingSettingsEntries(settingsQuery),
+    [settingsQuery],
+  );
   const filteredSettingsSections = useMemo(() => {
     if (!normalizedSettingsQuery) return visibleSettingsSections;
+    const resultSections = new Set(settingsSearchResults.map((entry) => entry.section));
     return visibleSettingsSections.filter((section) => {
       const status = sectionStatus[section.id];
-      return [section.id, section.label, section.detail, status.label, ...section.search]
+      const settingText = SETTINGS_SEARCH_ENTRIES
+        .filter((entry) => entry.section === section.id)
+        .map((entry) => [entry.label, ...(entry.aliases ?? [])].join(" "))
+        .join(" ");
+      return resultSections.has(section.id) || [section.id, section.label, section.detail, status.label, settingText, ...section.search]
         .join(" ")
         .toLowerCase()
         .includes(normalizedSettingsQuery);
     });
-  }, [normalizedSettingsQuery, sectionStatusKey, visibleSettingsSections]);
+  }, [normalizedSettingsQuery, sectionStatusKey, settingsSearchResults, visibleSettingsSections]);
   const voiceConfigKey = [
     voice.provider,
     voice.whisperModelPath,
@@ -508,6 +502,18 @@ export function ThemePicker({ onClose }: { onClose: () => void }) {
     return () => document.removeEventListener("keydown", onKeyDown, true);
   }, [appShortcuts, recordingShortcut]);
 
+  useEffect(() => {
+    if (!confirmArchiveDelete) return;
+    const timer = window.setTimeout(() => setConfirmArchiveDelete(null), 3000);
+    return () => window.clearTimeout(timer);
+  }, [confirmArchiveDelete]);
+
+  useEffect(() => {
+    if (!highlightedSettingId) return;
+    const timer = window.setTimeout(() => setHighlightedSettingId(null), 1600);
+    return () => window.clearTimeout(timer);
+  }, [highlightedSettingId]);
+
   if (editing) {
     return <ThemeEditor base={editing.base} isNew={editing.isNew} onClose={() => setEditing(null)} />;
   }
@@ -553,6 +559,7 @@ export function ThemePicker({ onClose }: { onClose: () => void }) {
   const archiveRetentionValue = String(archiveRetentionDays) as "7" | "14" | "30";
   const projectNameByFolder = new Map(projects.map((project) => [project.folder, project.name]));
   const activeSettingsSection = SETTINGS_SECTIONS.find((section) => section.id === activeSection) ?? SETTINGS_SECTIONS[0];
+  const voiceHotkeyShortcut = globalAcceleratorToShortcut(voice.hotkeyShortcut) ?? voice.hotkeyShortcut;
 
   function setArchiveRetentionFromSettings(value: "7" | "14" | "30") {
     setArchiveRetentionDays(Number(value) as ArchiveRetentionDays);
@@ -857,7 +864,7 @@ export function ThemePicker({ onClose }: { onClose: () => void }) {
     executableInstallAbortRef.current?.abort();
   }
 
-  function recordAppShortcut(action: AppShortcutAction, event: globalThis.KeyboardEvent) {
+  function recordAppShortcut(target: ShortcutRecordingTarget, event: globalThis.KeyboardEvent) {
     event.preventDefault();
     event.stopPropagation();
     const shortcut = shortcutFromKeyboardEvent(event);
@@ -870,12 +877,25 @@ export function ThemePicker({ onClose }: { onClose: () => void }) {
       setShortcutError(issue);
       return;
     }
-    const conflict = shortcutConflict(appShortcuts, action, shortcut);
+    const conflict = target === "voiceHotkey"
+      ? APP_SHORTCUT_ACTIONS.find((action) => appShortcuts[action] === shortcut) ?? null
+      : shortcutConflict(appShortcuts, target, shortcut);
     if (conflict) {
       setShortcutError(`${shortcutLabel(shortcut)} is already used by ${APP_SHORTCUT_LABELS[conflict]}.`);
       return;
     }
-    if (!setAppShortcut(action, shortcut)) {
+    if (target === "voiceHotkey") {
+      const globalShortcut = shortcutToGlobalAccelerator(shortcut);
+      if (!globalShortcut) {
+        setShortcutError("Shortcut could not be saved.");
+        return;
+      }
+      setVoiceSettings({ hotkeyShortcut: globalShortcut });
+      setRecordingShortcut(null);
+      setShortcutError(null);
+      return;
+    }
+    if (!setAppShortcut(target, shortcut)) {
       setShortcutError("Shortcut could not be saved.");
       return;
     }
@@ -883,8 +903,8 @@ export function ThemePicker({ onClose }: { onClose: () => void }) {
     setShortcutError(null);
   }
 
-  function startRecordingShortcut(action: AppShortcutAction) {
-    setRecordingShortcut((current) => current === action ? null : action);
+  function startRecordingShortcut(target: ShortcutRecordingTarget) {
+    setRecordingShortcut((current) => current === target ? null : target);
     setShortcutError(null);
   }
 
@@ -899,6 +919,20 @@ export function ThemePicker({ onClose }: { onClose: () => void }) {
         document.getElementById(`settings-tab-${sectionId}`)?.focus({ preventScroll: true });
       });
     }
+  }
+
+  function openSettingSearchResult(entry: SettingSearchEntry) {
+    activateSettingsSection(entry.section);
+    if (entry.section === "audio" && entry.tab) setAudioTab(entry.tab);
+    setHighlightedSettingId(entry.id);
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        const target = document.querySelector<HTMLElement>(`[data-setting-id="${entry.id}"]`);
+        target?.scrollIntoView({ block: "center", behavior: "smooth" });
+        const focusable = target?.querySelector<HTMLElement>("button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex='-1'])");
+        (focusable ?? target)?.focus({ preventScroll: true });
+      });
+    });
   }
 
   function selectSettingsSection(sectionId: SettingsSectionId, options: SettingsSectionActivation = {}) {
@@ -924,6 +958,8 @@ export function ThemePicker({ onClose }: { onClose: () => void }) {
     event.preventDefault();
     selectSettingsSection(filteredSettingsSections[nextIndex].id, { focusTab: true });
   }
+
+  const settingHighlightClass = (id: string) => highlightedSettingId === id ? " setting-highlight" : "";
 
   return (
     <SheetDialog title="Settings" className="sheet" testId="settings-dialog" onClose={onClose}>
@@ -969,6 +1005,7 @@ export function ThemePicker({ onClose }: { onClose: () => void }) {
               {filteredSettingsSections.map((section) => {
                 const Icon = section.icon;
                 const selected = activeSection === section.id;
+                const status = sectionStatus[section.id];
                 return (
                   <button
                     key={section.id}
@@ -979,7 +1016,7 @@ export function ThemePicker({ onClose }: { onClose: () => void }) {
                     data-testid={`settings-section-${section.id}`}
                     aria-selected={selected}
                     aria-controls={`settings-panel-${section.id}`}
-                    aria-current={selected ? "page" : undefined}
+                    tabIndex={selected ? 0 : -1}
                     onClick={() => selectSettingsSection(section.id)}
                     onKeyDown={onSettingsNavKeyDown}
                   >
@@ -989,6 +1026,15 @@ export function ThemePicker({ onClose }: { onClose: () => void }) {
                     <span className="settings-nav-copy">
                       <span className="settings-nav-label">{section.label}</span>
                     </span>
+                    {status.tone === "warn" ? (
+                      <span
+                        className="settings-nav-status warn"
+                        aria-label={`${section.label}: ${status.label}`}
+                        title={status.label}
+                      >
+                        {status.label}
+                      </span>
+                    ) : null}
                   </button>
                 );
               })}
@@ -996,6 +1042,24 @@ export function ThemePicker({ onClose }: { onClose: () => void }) {
                 <div className="settings-nav-empty">No settings match.</div>
               ) : null}
             </div>
+              {settingsSearchResults.length > 0 ? (
+                <div className="settings-search-results" aria-label="Matching settings">
+                  {settingsSearchResults.slice(0, 8).map((entry) => {
+                    const section = SETTINGS_SECTIONS.find((item) => item.id === entry.section);
+                    return (
+                      <button
+                        key={entry.id}
+                        className="settings-search-result"
+                        type="button"
+                        onClick={() => openSettingSearchResult(entry)}
+                      >
+                        <span>{entry.label}</span>
+                        <small>{section?.label ?? entry.section}</small>
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : null}
           </nav>
 
           <div className="settings-detail">
@@ -1007,10 +1071,26 @@ export function ThemePicker({ onClose }: { onClose: () => void }) {
               <div className="settings-section-actions">
                 {activeSection === "audio" ? (
                   <>
-                    <span className={`settings-status-pill ${voiceStatus.tone}`}>Input {voiceStatus.label.toLowerCase()}</span>
-                    <span className={`settings-status-pill ${speechStatus.tone}`}>Output {speechStatus.label.toLowerCase()}</span>
-                    <Toggle checked={voice.enabled} onChange={(enabled) => setVoiceSettings({ enabled })} testId="voice-enabled-toggle" />
-                    <Toggle checked={voice.ttsEnabled} onChange={(ttsEnabled) => setVoiceSettings({ ttsEnabled })} testId="tts-enabled-toggle" />
+                    <div className={`settings-master-toggle${settingHighlightClass("audio-input-master")}`} data-setting-id="audio-input-master" title={voiceConfigIssue ?? undefined}>
+                      <span>Voice input</span>
+                      <span className={`settings-status-pill ${voiceStatus.tone}`}>{voiceStatus.label}</span>
+                      <Toggle
+                        checked={voice.enabled}
+                        onChange={(enabled) => setVoiceSettings({ enabled })}
+                        ariaLabel="Voice input"
+                        testId="voice-enabled-toggle"
+                      />
+                    </div>
+                    <div className={`settings-master-toggle${settingHighlightClass("audio-output-master")}`} data-setting-id="audio-output-master" title={ttsSetupIssue ?? undefined}>
+                      <span>Speech output</span>
+                      <span className={`settings-status-pill ${speechStatus.tone}`}>{speechStatus.label}</span>
+                      <Toggle
+                        checked={voice.ttsEnabled}
+                        onChange={(ttsEnabled) => setVoiceSettings({ ttsEnabled })}
+                        ariaLabel="Speech output"
+                        testId="tts-enabled-toggle"
+                      />
+                    </div>
                   </>
                 ) : (
                   <span className={`settings-status-pill ${sectionStatus[activeSection].tone}`}>{sectionStatus[activeSection].label}</span>
@@ -1022,7 +1102,7 @@ export function ThemePicker({ onClose }: { onClose: () => void }) {
             {activeSection === "app" && (
         <section className="settings-section" id="settings-panel-app" role="tabpanel" aria-labelledby="settings-tab-app" tabIndex={-1}>
           <SettingsPanel>
-            <SettingsBlock title="Interface">
+            <SettingsBlock title="Interface" data-setting-id="app-mode" className={settingHighlightClass("app-mode").trim()}>
               <div className="setting-stack">
                 <div className="setting-field">
                   <span className="setting-mini-title">Mode</span>
@@ -1047,7 +1127,7 @@ export function ThemePicker({ onClose }: { onClose: () => void }) {
               </div>
             </SettingsBlock>
 
-            <SettingsBlock title="Window and layout">
+            <SettingsBlock title="Window and layout" data-setting-id="app-window-layout" className={settingHighlightClass("app-window-layout").trim()}>
               <div className="setting-stack">
                 <div className="setting-toggle-row">
                   <div>
@@ -1110,7 +1190,7 @@ export function ThemePicker({ onClose }: { onClose: () => void }) {
             {activeSection === "chat" && (
         <section className="settings-section" id="settings-panel-chat" role="tabpanel" aria-labelledby="settings-tab-chat" tabIndex={-1}>
           <SettingsPanel>
-            <SettingsBlock title="Composer">
+            <SettingsBlock title="Composer" data-setting-id="chat-composer" className={settingHighlightClass("chat-composer").trim()}>
               <div className="setting-stack">
                 <div className="setting-field">
                   <span className="setting-mini-title">Send shortcut</span>
@@ -1139,7 +1219,7 @@ export function ThemePicker({ onClose }: { onClose: () => void }) {
               </div>
             </SettingsBlock>
 
-            <SettingsBlock title="Threads">
+            <SettingsBlock title="Threads" data-setting-id="chat-threads" className={settingHighlightClass("chat-threads").trim()}>
               <div className="setting-stack">
                 <div className="setting-toggle-row">
                   <div>
@@ -1179,7 +1259,7 @@ export function ThemePicker({ onClose }: { onClose: () => void }) {
             {activeSection === "history" && (
         <section className="settings-section" id="settings-panel-history" role="tabpanel" aria-labelledby="settings-tab-history" tabIndex={-1}>
           <SettingsPanel>
-            <SettingsBlock title="Retention">
+            <SettingsBlock title="Retention" data-setting-id="history-retention" className={settingHighlightClass("history-retention").trim()}>
               <div className="setting-stack">
                 <div className="setting-field">
                   <span className="setting-mini-title">Delete archived items after</span>
@@ -1207,7 +1287,7 @@ export function ThemePicker({ onClose }: { onClose: () => void }) {
               </div>
             </SettingsBlock>
 
-            <SettingsBlock title="Projects">
+            <SettingsBlock title="Projects" data-setting-id="history-projects" className={settingHighlightClass("history-projects").trim()}>
               {archivedProjects.length === 0 ? (
                 <p className="sheet-hint">No archived projects.</p>
               ) : (
@@ -1238,7 +1318,7 @@ export function ThemePicker({ onClose }: { onClose: () => void }) {
                             aria-label={confirmArchiveDelete === deleteKey ? `Confirm delete ${project.name}` : `Delete ${project.name}`}
                             onClick={() => deleteArchivedProject(project.id)}
                           >
-                            <Trash size={13} />
+                            {confirmArchiveDelete === deleteKey ? "Confirm?" : <Trash size={13} />}
                           </button>
                         </div>
                       </div>
@@ -1248,7 +1328,7 @@ export function ThemePicker({ onClose }: { onClose: () => void }) {
               )}
             </SettingsBlock>
 
-            <SettingsBlock title="Chats">
+            <SettingsBlock title="Chats" data-setting-id="history-chats" className={settingHighlightClass("history-chats").trim()}>
               {archivedSessions.length === 0 ? (
                 <p className="sheet-hint">No archived chats.</p>
               ) : (
@@ -1279,7 +1359,7 @@ export function ThemePicker({ onClose }: { onClose: () => void }) {
                             aria-label={confirmArchiveDelete === deleteKey ? `Confirm delete ${session.title}` : `Delete ${session.title}`}
                             onClick={() => deleteArchivedSession(session.id)}
                           >
-                            <Trash size={13} />
+                            {confirmArchiveDelete === deleteKey ? "Confirm?" : <Trash size={13} />}
                           </button>
                         </div>
                       </div>
@@ -1296,20 +1376,26 @@ export function ThemePicker({ onClose }: { onClose: () => void }) {
         <section className="settings-section" id="settings-panel-audio" role="tabpanel" aria-labelledby="settings-tab-audio" tabIndex={-1}>
           <div className="settings-subtabs" role="tablist" aria-label="Audio settings">
             <button
+              id="audio-tab-input"
               className={"settings-subtab" + (audioTab === "input" ? " active" : "")}
               type="button"
               role="tab"
               aria-selected={audioTab === "input"}
+              aria-controls="audio-panel-input"
+              tabIndex={audioTab === "input" ? 0 : -1}
               onClick={() => setAudioTab("input")}
             >
               Input
             </button>
             <button
+              id="audio-tab-output"
               className={"settings-subtab" + (audioTab === "output" ? " active" : "")}
               type="button"
               role="tab"
               data-testid="audio-output-tab"
               aria-selected={audioTab === "output"}
+              aria-controls="audio-panel-output"
+              tabIndex={audioTab === "output" ? 0 : -1}
               onClick={() => setAudioTab("output")}
             >
               Output
@@ -1317,8 +1403,8 @@ export function ThemePicker({ onClose }: { onClose: () => void }) {
           </div>
 
           {audioTab === "input" && (
-          <SettingsPanel>
-            <SettingsBlock title="Provider">
+          <SettingsPanel id="audio-panel-input" role="tabpanel" aria-labelledby="audio-tab-input">
+            <SettingsBlock title="Provider" data-setting-id="audio-input-provider" className={settingHighlightClass("audio-input-provider").trim()}>
               <div className="stt-grid">
                 {STT_OPTIONS.map((option) => (
                   <button
@@ -1326,6 +1412,7 @@ export function ThemePicker({ onClose }: { onClose: () => void }) {
                     className={"stt-card" + (voice.provider === option.id ? " active" : "")}
                     onClick={() => setVoiceSettings({ provider: option.id as VoiceSttProvider })}
                     type="button"
+                    aria-pressed={voice.provider === option.id}
                   >
                     <span className="stt-card-top">
                       <span>{option.label}</span>
@@ -1340,7 +1427,7 @@ export function ThemePicker({ onClose }: { onClose: () => void }) {
             <SettingsBlock title="Setup">
 
           {voice.provider === "whisper" && (
-            <label className="setting-field">
+            <label className={`setting-field${settingHighlightClass("audio-whisper-model")}`} data-setting-id="audio-whisper-model">
               <span>Whisper model path</span>
               <span className="setting-field-row">
                 <input
@@ -1352,22 +1439,24 @@ export function ThemePicker({ onClose }: { onClose: () => void }) {
                   Choose model
                 </button>
               </span>
+              <FieldIssue message={voiceConfigIssue} />
             </label>
           )}
 
           {voice.provider === "remote" && (
-            <label className="setting-field">
+            <label className={`setting-field${settingHighlightClass("audio-stt-remote")}`} data-setting-id="audio-stt-remote">
               <span>Remote STT endpoint</span>
               <input
                 value={voice.remoteEndpoint}
                 onChange={(e) => setVoiceSettings({ remoteEndpoint: e.target.value })}
                 placeholder="https://api.example.com/v1/audio/transcriptions"
               />
+              <FieldIssue message={voiceConfigIssue} />
             </label>
           )}
 
           {voice.provider === "openai" && (
-            <div className="setting-stack">
+            <div className={`setting-stack${settingHighlightClass("audio-stt-openai")}`} data-setting-id="audio-stt-openai">
               <label className="setting-field">
                 <span>OpenAI-compatible STT endpoint</span>
                 <input
@@ -1375,6 +1464,7 @@ export function ThemePicker({ onClose }: { onClose: () => void }) {
                   onChange={(e) => setVoiceSettings({ openAiEndpoint: e.target.value })}
                   placeholder="https://api.openai.com/v1/audio/transcriptions"
                 />
+                <FieldIssue message={voiceConfigIssue?.includes("endpoint") ? voiceConfigIssue : null} />
               </label>
               <label className="setting-field">
                 <span>Model</span>
@@ -1383,21 +1473,33 @@ export function ThemePicker({ onClose }: { onClose: () => void }) {
                   onChange={(e) => setVoiceSettings({ openAiModel: e.target.value })}
                   placeholder="gpt-4o-mini-transcribe"
                 />
+                <FieldIssue message={voiceConfigIssue?.includes("model") ? voiceConfigIssue : null} />
               </label>
               <label className="setting-field">
                 <span>API key</span>
-                <input
-                  value={voice.openAiApiKey}
-                  onChange={(e) => setVoiceSettings({ openAiApiKey: e.target.value })}
-                  placeholder="Optional for local compatible endpoints"
-                  type="password"
-                />
+                <span className="setting-secret-row">
+                  <input
+                    value={voice.openAiApiKey}
+                    onChange={(e) => setVoiceSettings({ openAiApiKey: e.target.value })}
+                    placeholder="Optional for local compatible endpoints"
+                    type={showSttApiKey ? "text" : "password"}
+                  />
+                  <button
+                    className="btn-ghost"
+                    type="button"
+                    onClick={() => setShowSttApiKey((value) => !value)}
+                    aria-label={showSttApiKey ? "Hide STT API key" : "Reveal STT API key"}
+                  >
+                    <Eye size={13} />
+                  </button>
+                </span>
+                <span className="setting-field-note">Stored machine-local and never synced.</span>
               </label>
             </div>
           )}
 
           {voice.provider === "parakeet" && (
-            <div className="setting-stack">
+            <div className={`setting-stack${settingHighlightClass("audio-stt-parakeet")}`} data-setting-id="audio-stt-parakeet">
               <label className="setting-field">
                 <span>Parakeet command</span>
                 <input
@@ -1405,6 +1507,7 @@ export function ThemePicker({ onClose }: { onClose: () => void }) {
                   onChange={(e) => setVoiceSettings({ parakeetCommand: e.target.value })}
                   placeholder="parakeet-transcribe"
                 />
+                <FieldIssue message={voiceConfigIssue} />
               </label>
               <label className="setting-field">
                 <span>Model</span>
@@ -1425,7 +1528,7 @@ export function ThemePicker({ onClose }: { onClose: () => void }) {
 
             </SettingsBlock>
 
-            <SettingsBlock title="Recording">
+            <SettingsBlock title="Recording" data-setting-id="audio-recording" className={settingHighlightClass("audio-recording").trim()}>
           <div className="setting-stack">
             <div className="setting-toggle-row">
               <div>
@@ -1436,29 +1539,30 @@ export function ThemePicker({ onClose }: { onClose: () => void }) {
             </div>
             <div className="setting-field-row setting-field-pair">
               <label className="setting-field">
-                <span>Silence window (ms)</span>
-                <input
-                  type="number"
-                  min={300}
+                <span>Silence window: {voice.vadSilenceMs} ms</span>
+                <Slider
+                  min={VOICE_VAD_SILENCE_MIN_MS}
+                  max={VOICE_VAD_SILENCE_MAX_MS}
                   step={100}
                   value={voice.vadSilenceMs}
-                  onChange={(e) => setVoiceSettings({ vadSilenceMs: Number(e.target.value) })}
+                  onChange={(vadSilenceMs) => setVoiceSettings({ vadSilenceMs })}
+                  ariaLabel="Silence window"
                 />
               </label>
               <label className="setting-field">
-                <span>Max recording (sec)</span>
-                <input
-                  type="number"
-                  min={1}
+                <span>Max recording: {voice.maxRecordingSeconds} sec</span>
+                <Slider
+                  min={VOICE_RECORDING_MIN_SECONDS}
+                  max={VOICE_RECORDING_MAX_SECONDS}
                   step={1}
                   value={voice.maxRecordingSeconds}
-                  onChange={(e) => setVoiceSettings({ maxRecordingSeconds: Number(e.target.value) })}
+                  onChange={(maxRecordingSeconds) => setVoiceSettings({ maxRecordingSeconds })}
+                  ariaLabel="Max recording"
                 />
               </label>
             </div>
-            {showVoiceAdvanced && (
-              <>
-                <div className="setting-toggle-row">
+            <>
+                <div className={`setting-toggle-row${settingHighlightClass("audio-hotkey")}`} data-setting-id="audio-hotkey">
                   <div>
                     <strong>Global push-to-talk</strong>
                     <span>Hold a system-wide shortcut to record; release to transcribe.</span>
@@ -1469,16 +1573,23 @@ export function ThemePicker({ onClose }: { onClose: () => void }) {
                     testId="voice-hotkey-toggle"
                   />
                 </div>
-                <label className="setting-field">
-                  <span>Shortcut</span>
-                  <input
+                <div className="shortcut-recorder-row">
+                  <div>
+                    <strong>Shortcut</strong>
+                    <span>{recordingShortcut === "voiceHotkey" ? "Press a key combination..." : shortcutLabel(voiceHotkeyShortcut)}</span>
+                  </div>
+                  <button
+                    className={"btn-ghost shortcut-recorder-button" + (recordingShortcut === "voiceHotkey" ? " active" : "")}
+                    type="button"
+                    data-shortcut-recorder="true"
                     data-testid="voice-hotkey-shortcut"
-                    value={voice.hotkeyShortcut}
-                    onChange={(e) => setVoiceSettings({ hotkeyShortcut: e.target.value })}
-                    placeholder="CommandOrControl+Shift+Space"
+                    aria-pressed={recordingShortcut === "voiceHotkey"}
                     disabled={!voice.hotkeyEnabled}
-                  />
-                </label>
+                    onClick={() => startRecordingShortcut("voiceHotkey")}
+                  >
+                    {recordingShortcut === "voiceHotkey" ? "Recording" : "Change"}
+                  </button>
+                </div>
                 <div className="setting-toggle-row">
                   <div>
                     <strong>Type into active app</strong>
@@ -1490,14 +1601,13 @@ export function ThemePicker({ onClose }: { onClose: () => void }) {
                     testId="voice-dictation-toggle"
                   />
                 </div>
-              </>
-            )}
+            </>
           </div>
 
             </SettingsBlock>
 
             {showVoiceAdvanced && (
-            <SettingsBlock title="Preflight">
+            <SettingsBlock title="Preflight" data-setting-id="audio-preflight" className={settingHighlightClass("audio-preflight").trim()}>
           <div className="setting-stack">
             <div className="setting-toggle-row">
               <div>
@@ -1514,6 +1624,7 @@ export function ThemePicker({ onClose }: { onClose: () => void }) {
                     <button
                       className={"btn-ghost" + (voice.serverVadProvider === "energy" ? " active" : "")}
                       type="button"
+                      aria-pressed={voice.serverVadProvider === "energy"}
                       onClick={() => setVoiceSettings({ serverVadProvider: "energy" as ServerVadProvider })}
                     >
                       Energy
@@ -1521,6 +1632,7 @@ export function ThemePicker({ onClose }: { onClose: () => void }) {
                     <button
                       className={"btn-ghost" + (voice.serverVadProvider === "native" ? " active" : "")}
                       type="button"
+                      aria-pressed={voice.serverVadProvider === "native"}
                       onClick={() => setVoiceSettings({ serverVadProvider: "native" as ServerVadProvider })}
                     >
                       Native ONNX
@@ -1529,15 +1641,16 @@ export function ThemePicker({ onClose }: { onClose: () => void }) {
                 </div>
                 <div className="setting-field-row setting-field-pair">
                   <label className="setting-field">
-                    <span>Energy threshold</span>
-                    <input
-                      type="number"
-                      min={0.001}
+                    <span>Energy threshold: {voice.serverVadThreshold.toFixed(3)}</span>
+                    <Slider
+                      min={VOICE_SERVER_VAD_THRESHOLD_MIN}
+                      max={VOICE_SERVER_VAD_THRESHOLD_MAX}
                       step={0.001}
                       value={voice.serverVadThreshold}
-                      onChange={(e) => setVoiceSettings({ serverVadThreshold: Number(e.target.value) })}
-                      disabled={voice.serverVadProvider !== "energy"}
+                      onChange={(serverVadThreshold) => setVoiceSettings({ serverVadThreshold })}
+                      ariaLabel="Energy threshold"
                     />
+                    <FieldIssue message={voice.serverVadProvider === "energy" ? vadConfigIssue : null} />
                   </label>
                   <label className="setting-field">
                     <span>Native VAD model path</span>
@@ -1547,6 +1660,7 @@ export function ThemePicker({ onClose }: { onClose: () => void }) {
                       placeholder="C:/models/silero_vad.onnx"
                       disabled={voice.serverVadProvider !== "native"}
                     />
+                    <FieldIssue message={voice.serverVadProvider === "native" ? vadConfigIssue : null} />
                   </label>
                 </div>
                 {voice.serverVadProvider === "native" && (
@@ -1573,52 +1687,34 @@ export function ThemePicker({ onClose }: { onClose: () => void }) {
                       ))}
                     </div>
                     {(vadInstallProgress || installingVadPreset) && (
-                      <div className="model-progress piper-install-progress vad-install-progress">
-                        {vadInstallProgress?.done ? (
-                          <span className="model-ok">Installed {vadInstallProgress.id}</span>
-                        ) : (
-                          <>
-                            <div className="progress-track">
-                              <div
-                                className={"progress-fill" + (vadInstallPct == null ? " indeterminate" : "")}
-                                style={{ width: vadInstallPct != null ? `${vadInstallPct}%` : "40%" }}
-                              />
-                            </div>
-                            <span className="progress-label">
-                              Model
-                              {vadInstallProgress?.downloaded != null ? ` ${fmtBytes(vadInstallProgress.downloaded)}` : ""}
-                              {vadInstallProgress?.total ? ` / ${fmtBytes(vadInstallProgress.total)}` : ""}
-                              {vadInstallPct != null ? ` (${vadInstallPct}%)` : " ..."}
-                            </span>
-                            {installingVadPreset && (
-                              <button className="btn-ghost" type="button" onClick={cancelVadInstall}>
-                                Cancel
-                              </button>
-                            )}
-                          </>
-                        )}
-                      </div>
+                      <PresetInstallProgress
+                        doneLabel={`Installed ${vadInstallProgress?.id ?? "VAD"}`}
+                        progress={vadInstallProgress}
+                        percent={vadInstallPct}
+                        phaseLabel="Model"
+                        onCancel={installingVadPreset ? cancelVadInstall : undefined}
+                      />
                     )}
                   </div>
                 )}
                 <div className="voice-test-row">
                   {voice.serverVadProvider === "native" && (
                     <button
-                      className="btn-ghost"
+                      className={"btn-ghost" + (setupCheck.vad?.kind === "running" ? " running" : "")}
                       type="button"
                       onClick={() => void runSetupCheck("vad")}
                       disabled={setupCheck.vad?.kind === "running"}
                     >
-                      Check VAD
+                      {setupCheck.vad?.kind === "running" ? "Checking..." : "Check VAD"}
                     </button>
                   )}
                   <button
-                    className="btn-ghost"
+                    className={"btn-ghost" + (vadTest?.kind === "running" ? " running" : "")}
                     type="button"
                     onClick={testVadProvider}
                     disabled={Boolean(vadConfigIssue) || vadTest?.kind === "running"}
                   >
-                    Test VAD
+                    {vadTest?.kind === "running" ? "Testing..." : "Test VAD"}
                   </button>
                   {vadConfigIssue && <span className="voice-test-status error">{vadConfigIssue}</span>}
                   {setupCheck.vad && !vadConfigIssue && (
@@ -1644,21 +1740,21 @@ export function ThemePicker({ onClose }: { onClose: () => void }) {
           <div className="voice-test-row">
             {(voice.provider === "whisper" || voice.provider === "parakeet") && (
               <button
-                className="btn-ghost"
+                className={"btn-ghost" + (setupCheck.stt?.kind === "running" ? " running" : "")}
                 type="button"
                 onClick={() => void runSetupCheck("stt")}
                 disabled={setupCheck.stt?.kind === "running"}
               >
-                Check setup
+                {setupCheck.stt?.kind === "running" ? "Checking..." : "Check setup"}
               </button>
             )}
             <button
-              className="btn-ghost"
+              className={"btn-ghost" + (voiceTest?.kind === "running" ? " running" : "")}
               type="button"
               onClick={testVoiceProvider}
               disabled={Boolean(voiceConfigIssue) || voiceTest?.kind === "running"}
             >
-              Test transcription
+              {voiceTest?.kind === "running" ? "Testing..." : "Test transcription"}
             </button>
             {voiceConfigIssue && <span className="voice-test-status error">{voiceConfigIssue}</span>}
             {setupCheck.stt && !voiceConfigIssue && (
@@ -1678,8 +1774,8 @@ export function ThemePicker({ onClose }: { onClose: () => void }) {
           )}
 
           {audioTab === "output" && (
-          <SettingsPanel>
-            <SettingsBlock title="Provider">
+          <SettingsPanel id="audio-panel-output" role="tabpanel" aria-labelledby="audio-tab-output">
+            <SettingsBlock title="Provider" data-setting-id="audio-output-provider" className={settingHighlightClass("audio-output-provider").trim()}>
               <div className="setting-stack">
                 <div className="stt-grid tts-provider-grid">
                   {visibleTtsOptions.map((option) => (
@@ -1688,6 +1784,7 @@ export function ThemePicker({ onClose }: { onClose: () => void }) {
                       className={"stt-card" + (voice.ttsProvider === option.id ? " active" : "")}
                       onClick={() => setVoiceSettings({ ttsProvider: option.id as TtsProvider })}
                       type="button"
+                      aria-pressed={voice.ttsProvider === option.id}
                     >
                       <span className="stt-card-top">
                         <span>{option.label}</span>
@@ -1710,10 +1807,11 @@ export function ThemePicker({ onClose }: { onClose: () => void }) {
                   onChange={(e) => setVoiceSettings({ ttsCommand: e.target.value })}
                   placeholder="tts-speak"
                 />
+                <FieldIssue message={ttsConfigIssue} />
               </label>
             )}
             {voice.ttsProvider === "openai" && (
-              <div className="setting-stack">
+              <div className={`setting-stack${settingHighlightClass("audio-tts-openai")}`} data-setting-id="audio-tts-openai">
                 <label className="setting-field">
                   <span>OpenAI-compatible TTS endpoint</span>
                   <input
@@ -1721,6 +1819,7 @@ export function ThemePicker({ onClose }: { onClose: () => void }) {
                     onChange={(e) => setVoiceSettings({ ttsOpenAiEndpoint: e.target.value })}
                     placeholder="https://api.openai.com/v1/audio/speech"
                   />
+                  <FieldIssue message={ttsConfigIssue?.includes("endpoint") ? ttsConfigIssue : null} />
                 </label>
                 <label className="setting-field">
                   <span>Model</span>
@@ -1729,20 +1828,32 @@ export function ThemePicker({ onClose }: { onClose: () => void }) {
                     onChange={(e) => setVoiceSettings({ ttsOpenAiModel: e.target.value })}
                     placeholder="gpt-4o-mini-tts"
                   />
+                  <FieldIssue message={ttsConfigIssue?.includes("model") ? ttsConfigIssue : null} />
                 </label>
                 <label className="setting-field">
                   <span>API key</span>
-                  <input
-                    value={voice.ttsOpenAiApiKey}
-                    onChange={(e) => setVoiceSettings({ ttsOpenAiApiKey: e.target.value })}
-                    placeholder="Optional for local compatible endpoints"
-                    type="password"
-                  />
+                  <span className="setting-secret-row">
+                    <input
+                      value={voice.ttsOpenAiApiKey}
+                      onChange={(e) => setVoiceSettings({ ttsOpenAiApiKey: e.target.value })}
+                      placeholder="Optional for local compatible endpoints"
+                      type={showTtsApiKey ? "text" : "password"}
+                    />
+                    <button
+                      className="btn-ghost"
+                      type="button"
+                      onClick={() => setShowTtsApiKey((value) => !value)}
+                      aria-label={showTtsApiKey ? "Hide TTS API key" : "Reveal TTS API key"}
+                    >
+                      <Eye size={13} />
+                    </button>
+                  </span>
+                  <span className="setting-field-note">Stored machine-local and never synced.</span>
                 </label>
               </div>
             )}
             {voice.ttsProvider === "piper" && (
-              <div className="setting-stack">
+              <div className={`setting-stack${settingHighlightClass("audio-tts-piper")}`} data-setting-id="audio-tts-piper">
                 <div className="setting-field">
                   <span>Piper command</span>
                   <div className="setting-field-action">
@@ -1762,34 +1873,15 @@ export function ThemePicker({ onClose }: { onClose: () => void }) {
                       </button>
                     )}
                   </div>
+                  <FieldIssue message={ttsConfigIssue?.includes("Piper command") ? ttsConfigIssue : null} />
                   {showVoiceAdvanced && (executableInstallProgress || installingPiperExecutable) && (
-                    <div className="model-progress piper-install-progress piper-executable-progress">
-                      {executableInstallProgress?.done ? (
-                        <span className="model-ok">Installed Piper</span>
-                      ) : (
-                        <>
-                          <div className="progress-track">
-                            <div
-                              className={"progress-fill" + (executableInstallPct == null ? " indeterminate" : "")}
-                              style={{ width: executableInstallPct != null ? `${executableInstallPct}%` : "40%" }}
-                            />
-                          </div>
-                          <span className="progress-label">
-                            {executableInstallPhaseLabel}
-                            {executableInstallProgress?.downloaded != null
-                              ? ` ${fmtBytes(executableInstallProgress.downloaded)}`
-                              : ""}
-                            {executableInstallProgress?.total ? ` / ${fmtBytes(executableInstallProgress.total)}` : ""}
-                            {executableInstallPct != null ? ` (${executableInstallPct}%)` : " ..."}
-                          </span>
-                          {installingPiperExecutable && (
-                            <button className="btn-ghost" type="button" onClick={cancelPiperExecutableInstall}>
-                              Cancel
-                            </button>
-                          )}
-                        </>
-                      )}
-                    </div>
+                    <PresetInstallProgress
+                      doneLabel="Installed Piper"
+                      progress={executableInstallProgress}
+                      percent={executableInstallPct}
+                      phaseLabel={executableInstallPhaseLabel}
+                      onCancel={installingPiperExecutable ? cancelPiperExecutableInstall : undefined}
+                    />
                   )}
                 </div>
                 <label className="setting-field">
@@ -1799,6 +1891,7 @@ export function ThemePicker({ onClose }: { onClose: () => void }) {
                     onChange={(e) => setVoiceSettings({ piperModelPath: e.target.value })}
                     placeholder="C:/models/piper/en_US-lessac-medium.onnx"
                   />
+                  <FieldIssue message={ttsConfigIssue?.includes("Piper model") ? ttsConfigIssue : null} />
                 </label>
                 {showVoiceAdvanced && (
                 <div className="settings-presets piper-presets">
@@ -1824,44 +1917,27 @@ export function ThemePicker({ onClose }: { onClose: () => void }) {
                     ))}
                   </div>
                   {(installProgress || installingPreset) && (
-                    <div className="model-progress piper-install-progress">
-                      {installProgress?.done ? (
-                        <span className="model-ok">Installed {installProgress.id}</span>
-                      ) : (
-                        <>
-                          <div className="progress-track">
-                            <div
-                              className={"progress-fill" + (installPct == null ? " indeterminate" : "")}
-                              style={{ width: installPct != null ? `${installPct}%` : "40%" }}
-                            />
-                          </div>
-                          <span className="progress-label">
-                            {installPhaseLabel}
-                            {installProgress?.downloaded != null ? ` ${fmtBytes(installProgress.downloaded)}` : ""}
-                            {installProgress?.total ? ` / ${fmtBytes(installProgress.total)}` : ""}
-                            {installPct != null ? ` (${installPct}%)` : " ..."}
-                          </span>
-                          {installingPreset && (
-                            <button className="btn-ghost" type="button" onClick={cancelPresetInstall}>
-                              Cancel
-                            </button>
-                          )}
-                        </>
-                      )}
-                    </div>
+                    <PresetInstallProgress
+                      doneLabel={`Installed ${installProgress?.id ?? "Piper model"}`}
+                      progress={installProgress}
+                      percent={installPct}
+                      phaseLabel={installPhaseLabel}
+                      onCancel={installingPreset ? cancelPresetInstall : undefined}
+                    />
                   )}
                 </div>
                 )}
               </div>
             )}
             {voice.ttsProvider === "native" && (
-              <div className="setting-stack">
+              <div className={`setting-stack${settingHighlightClass("audio-tts-native")}`} data-setting-id="audio-tts-native">
                 <div className="setting-field">
                   <span>Native engine</span>
                   <div className="native-engine-row">
                     <button
                       className={"btn-ghost" + (voice.nativeTtsEngine === "piper" ? " active" : "")}
                       type="button"
+                      aria-pressed={voice.nativeTtsEngine === "piper"}
                       onClick={() => setVoiceSettings({ nativeTtsEngine: "piper" })}
                     >
                       Piper ONNX
@@ -1869,6 +1945,7 @@ export function ThemePicker({ onClose }: { onClose: () => void }) {
                     <button
                       className={"btn-ghost" + (voice.nativeTtsEngine === "kokoro" ? " active" : "")}
                       type="button"
+                      aria-pressed={voice.nativeTtsEngine === "kokoro"}
                       onClick={() => setVoiceSettings({ nativeTtsEngine: "kokoro" })}
                     >
                       Kokoro
@@ -1882,6 +1959,7 @@ export function ThemePicker({ onClose }: { onClose: () => void }) {
                     onChange={(e) => setVoiceSettings({ nativeTtsModelPath: e.target.value })}
                     placeholder="C:/models/tts/model.onnx"
                   />
+                  <FieldIssue message={ttsConfigIssue?.includes("Native TTS model") ? ttsConfigIssue : null} />
                 </label>
                 <label className="setting-field">
                   <span>Native TTS config path</span>
@@ -1915,54 +1993,44 @@ export function ThemePicker({ onClose }: { onClose: () => void }) {
                       ))}
                     </div>
                     {(kokoroInstallProgress || installingKokoroPreset) && (
-                      <div className="model-progress piper-install-progress kokoro-install-progress">
-                        {kokoroInstallProgress?.done ? (
-                          <span className="model-ok">Installed {kokoroInstallProgress.id}</span>
-                        ) : (
-                          <>
-                            <div className="progress-track">
-                              <div
-                                className={"progress-fill" + (kokoroInstallPct == null ? " indeterminate" : "")}
-                                style={{ width: kokoroInstallPct != null ? `${kokoroInstallPct}%` : "40%" }}
-                              />
-                            </div>
-                            <span className="progress-label">
-                              {kokoroInstallPhaseLabel}
-                              {kokoroInstallProgress?.downloaded != null ? ` ${fmtBytes(kokoroInstallProgress.downloaded)}` : ""}
-                              {kokoroInstallProgress?.total ? ` / ${fmtBytes(kokoroInstallProgress.total)}` : ""}
-                              {kokoroInstallPct != null ? ` (${kokoroInstallPct}%)` : " ..."}
-                            </span>
-                            {installingKokoroPreset && (
-                              <button className="btn-ghost" type="button" onClick={cancelKokoroInstall}>
-                                Cancel
-                              </button>
-                            )}
-                          </>
-                        )}
-                      </div>
+                      <PresetInstallProgress
+                        doneLabel={`Installed ${kokoroInstallProgress?.id ?? "Kokoro"}`}
+                        progress={kokoroInstallProgress}
+                        percent={kokoroInstallPct}
+                        phaseLabel={kokoroInstallPhaseLabel}
+                        onCancel={installingKokoroPreset ? cancelKokoroInstall : undefined}
+                      />
                     )}
                   </div>
                 )}
               </div>
             )}
-            <div className="setting-field-row setting-field-pair">
+            <div className={`setting-field-row setting-field-pair${settingHighlightClass("audio-tts-voice-speed")}`} data-setting-id="audio-tts-voice-speed">
               <label className="setting-field">
                 <span>Voice</span>
                 <input
                   value={voice.ttsVoice}
                   onChange={(e) => setVoiceSettings({ ttsVoice: e.target.value })}
                   placeholder="alloy"
+                  list={voice.ttsProvider === "openai" ? "openai-tts-voices" : undefined}
                 />
+                {voice.ttsProvider === "openai" && (
+                  <datalist id="openai-tts-voices">
+                    {OPENAI_TTS_VOICES.map((voiceName) => <option key={voiceName} value={voiceName} />)}
+                  </datalist>
+                )}
               </label>
               <label className="setting-field">
-                <span>Speed</span>
-                <input
-                  type="number"
-                  min={0.1}
+                <span>Speed: {voice.ttsSpeed.toFixed(1)}x</span>
+                <Slider
+                  min={VOICE_TTS_SPEED_MIN}
+                  max={VOICE_TTS_SPEED_MAX}
                   step={0.1}
                   value={voice.ttsSpeed}
-                  onChange={(e) => setVoiceSettings({ ttsSpeed: Number(e.target.value) })}
+                  onChange={(ttsSpeed) => setVoiceSettings({ ttsSpeed })}
+                  ariaLabel="TTS speed"
                 />
+                <FieldIssue message={ttsConfigIssue?.includes("speed") ? ttsConfigIssue : null} />
               </label>
             </div>
           </div>
@@ -1994,20 +2062,20 @@ export function ThemePicker({ onClose }: { onClose: () => void }) {
           <div className="settings-diagnostics">
           <div className="voice-test-row">
             <button
-              className="btn-ghost"
+              className={"btn-ghost" + (setupCheck.tts?.kind === "running" ? " running" : "")}
               type="button"
               onClick={() => void runSetupCheck("tts")}
               disabled={!voice.ttsEnabled || setupCheck.tts?.kind === "running"}
             >
-              Check setup
+              {setupCheck.tts?.kind === "running" ? "Checking..." : "Check setup"}
             </button>
             <button
-              className="btn-ghost"
+              className={"btn-ghost" + (ttsTest?.kind === "running" ? " running" : "")}
               type="button"
               onClick={testTtsPlayback}
               disabled={!voice.ttsEnabled || Boolean(ttsConfigIssue) || ttsTest?.kind === "running"}
             >
-              Test voice
+              {ttsTest?.kind === "running" ? "Testing..." : "Test voice"}
             </button>
             {ttsConfigIssue && <span className="tts-test-status voice-test-status error">{ttsConfigIssue}</span>}
             {setupCheck.tts && !ttsConfigIssue && (
@@ -2031,17 +2099,19 @@ export function ThemePicker({ onClose }: { onClose: () => void }) {
             {activeSection === "appearance" && (
         <section className="settings-section" id="settings-panel-appearance" role="tabpanel" aria-labelledby="settings-tab-appearance" tabIndex={-1}>
           <SettingsPanel>
-            <SettingsBlock title="Theme">
+            <SettingsBlock title="Theme" data-setting-id="appearance-theme" className={settingHighlightClass("appearance-theme").trim()}>
               <div className="theme-grid">
                 {themes.map((t) => {
                   const contrastIssues = themeContrastIssues(t);
+                  const isCustomTheme = customIds.has(t.id);
                   return (
+                    <div className="theme-card-wrap" key={t.id}>
                     <button
                       key={t.id}
                       className={"theme-card" + (t.id === themeId ? " active" : "") + (contrastIssues.length ? " low-contrast" : "")}
                       onClick={() => setTheme(t.id)}
-                      onDoubleClick={() => customIds.has(t.id) && setEditing({ base: t, isNew: false })}
-                      title={contrastIssues[0] ?? (customIds.has(t.id) ? "Double-click to edit" : undefined)}
+                      onDoubleClick={() => isCustomTheme && setEditing({ base: t, isNew: false })}
+                      title={contrastIssues[0]}
                     >
                       <span
                         className="theme-preview"
@@ -2064,6 +2134,18 @@ export function ThemePicker({ onClose }: { onClose: () => void }) {
                         {t.id === themeId && <Check size={13} />}
                       </span>
                     </button>
+                    {isCustomTheme && (
+                      <button
+                        className="theme-edit-button"
+                        type="button"
+                        onClick={() => setEditing({ base: t, isNew: false })}
+                        aria-label={`Edit ${t.name}`}
+                        title={`Edit ${t.name}`}
+                      >
+                        <Pencil size={12} />
+                      </button>
+                    )}
+                    </div>
                   );
                 })}
 
@@ -2077,7 +2159,7 @@ export function ThemePicker({ onClose }: { onClose: () => void }) {
 
               {custom.length > 0 && <p className="sheet-hint">Double-click a custom theme to edit or delete it.</p>}
             </SettingsBlock>
-            <SettingsBlock title="Chat surface">
+            <SettingsBlock title="Chat surface" data-setting-id="appearance-chat-surface" className={settingHighlightClass("appearance-chat-surface").trim()}>
               <div className="setting-stack">
                 <div className="setting-field">
                   <span className="setting-mini-title">Layout</span>
@@ -2121,7 +2203,7 @@ export function ThemePicker({ onClose }: { onClose: () => void }) {
                 </div>
               </div>
             </SettingsBlock>
-            <SettingsBlock title="Code blocks">
+            <SettingsBlock title="Code blocks" data-setting-id="appearance-code-blocks" className={settingHighlightClass("appearance-code-blocks").trim()}>
               <SettingsChoiceGroup<CodeBlockTheme>
                 value={codeBlockTheme}
                 onChange={setCodeBlockTheme}
@@ -2134,7 +2216,7 @@ export function ThemePicker({ onClose }: { onClose: () => void }) {
                 ]}
               />
             </SettingsBlock>
-            <SettingsBlock title="Background image">
+            <SettingsBlock title="Background image" data-setting-id="appearance-background" className={settingHighlightClass("appearance-background").trim()}>
               <div className="setting-stack">
                 <div className="setting-field">
                   <span className="setting-mini-title">Fit</span>
@@ -2173,7 +2255,7 @@ export function ThemePicker({ onClose }: { onClose: () => void }) {
             {activeSection === "system" && (
         <section className="settings-section" id="settings-panel-system" role="tabpanel" aria-labelledby="settings-tab-system" tabIndex={-1}>
           <SettingsPanel>
-            <SettingsBlock title="Keyboard shortcuts">
+            <SettingsBlock title="Keyboard shortcuts" data-setting-id="system-shortcuts" className={settingHighlightClass("system-shortcuts").trim()}>
               <div className="setting-stack">
                 {APP_SHORTCUT_ACTIONS.map((action) => (
                   <div className="shortcut-recorder-row" key={action}>
@@ -2221,7 +2303,7 @@ export function ThemePicker({ onClose }: { onClose: () => void }) {
             {activeSection === "mobile" && (
         <section className="settings-section" id="settings-panel-mobile" role="tabpanel" aria-labelledby="settings-tab-mobile" tabIndex={-1}>
           <SettingsPanel>
-            <SettingsBlock title="Mobile companion">
+            <SettingsBlock title="Mobile companion" data-setting-id="mobile-companion" className={settingHighlightClass("mobile-companion").trim()}>
               <MobileCompanionSettings />
             </SettingsBlock>
           </SettingsPanel>
@@ -2231,7 +2313,7 @@ export function ThemePicker({ onClose }: { onClose: () => void }) {
             {activeSection === "about" && (
         <section className="settings-section" id="settings-panel-about" role="tabpanel" aria-labelledby="settings-tab-about" tabIndex={-1}>
           <SettingsPanel>
-            <SettingsBlock title="Version">
+            <SettingsBlock title="Version" data-setting-id="about-version" className={settingHighlightClass("about-version").trim()}>
               <div className="settings-action-row">
                 <div>
                   <strong>Current version</strong>
@@ -2252,7 +2334,7 @@ export function ThemePicker({ onClose }: { onClose: () => void }) {
               </div>
             </SettingsBlock>
 
-            <SettingsBlock title="Updates">
+            <SettingsBlock title="Updates" data-setting-id="about-updates" className={settingHighlightClass("about-updates").trim()}>
               <div className="settings-action-row">
                 <div>
                   <strong>{updateStatusLabel(updateStatus)}</strong>
@@ -2301,7 +2383,7 @@ export function ThemePicker({ onClose }: { onClose: () => void }) {
             {activeSection === "developer" && (
         <section className="settings-section" id="settings-panel-developer" role="tabpanel" aria-labelledby="settings-tab-developer" tabIndex={-1}>
           <SettingsPanel>
-            <SettingsBlock title="Mode">
+            <SettingsBlock title="Mode" data-setting-id="developer-mode" className={settingHighlightClass("developer-mode").trim()}>
               <div className="setting-toggle-row">
                 <div>
                   <strong>Developer mode</strong>

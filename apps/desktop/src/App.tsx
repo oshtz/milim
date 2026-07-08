@@ -36,9 +36,9 @@ import { featureVisibleInMode } from "./ui/features";
 import { uiSizeShortcutDelta } from "./ui/shortcuts";
 import { UI_SIZE_STEP, useUiPreferences } from "./ui/store";
 
-const ThemePicker = lazy(() =>
-  import("./components/ThemePicker").then((mod) => ({
-    default: mod.ThemePicker,
+const SettingsDialog = lazy(() =>
+  import("./settings/SettingsDialog").then((mod) => ({
+    default: mod.SettingsDialog,
   })),
 );
 const AgentsManager = lazy(() =>
@@ -347,7 +347,7 @@ function AppContent() {
       </div>
       <Suspense fallback={null}>
         <OnboardingGate />
-        {settingsOpen && <ThemePicker onClose={() => setSettingsOpen(false)} />}
+        {settingsOpen && <SettingsDialog onClose={() => setSettingsOpen(false)} />}
         {agentsOpen && <AgentsManager onClose={() => setAgentsOpen(false)} />}
         {skillsOpen && (
           <SkillsManager

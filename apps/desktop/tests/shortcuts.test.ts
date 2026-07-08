@@ -1,11 +1,13 @@
 import {
   DEFAULT_APP_SHORTCUTS,
+  globalAcceleratorToShortcut,
   normalizeAppShortcuts,
   normalizeShortcut,
   shortcutConflict,
   shortcutFromKeyboardEvent,
   shortcutLabel,
   shortcutMatchesEvent,
+  shortcutToGlobalAccelerator,
   shortcutValidationIssue,
   uiSizeShortcutDelta,
 } from "../src/ui/shortcuts.js";
@@ -33,6 +35,9 @@ function withNavigator(platform: string, userAgent: string, run: () => void): vo
 equal(normalizeShortcut("ctrl+k"), "Ctrl+K", "ctrl should normalize to literal Ctrl");
 equal(normalizeShortcut("ctrl+tab"), "Ctrl+Tab", "ctrl tab should normalize to literal Ctrl+Tab");
 equal(normalizeShortcut("CommandOrControl+Shift+Space"), "Mod+Shift+Space", "CommandOrControl should normalize");
+equal(shortcutToGlobalAccelerator("Mod+Shift+Space"), "CommandOrControl+Shift+Space", "Mod shortcut should convert to Tauri accelerator");
+equal(shortcutToGlobalAccelerator("Ctrl+Tab"), "Ctrl+Tab", "literal Ctrl shortcut should stay literal for Tauri accelerator");
+equal(globalAcceleratorToShortcut("CommandOrControl+Shift+Space"), "Mod+Shift+Space", "Tauri accelerator should convert back to normalized shortcut");
 equal(shortcutLabel("Mod+K", false), "Ctrl+K", "Windows labels should show Ctrl");
 equal(shortcutLabel("Mod+K", true), "Cmd+K", "Mac labels should show Cmd");
 equal(shortcutLabel("Ctrl+K", true), "Ctrl+K", "Mac labels should keep literal Ctrl");

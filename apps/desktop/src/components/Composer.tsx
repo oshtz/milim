@@ -7,7 +7,7 @@ import { composerTokenParts, composerTokensForText } from "../lib/composerTokens
 import { recordWav, type Recorder } from "../lib/recordWav";
 import { useSettings, voiceVadConfigIssue } from "../settings/store";
 import { featureVisibleInMode } from "../ui/features";
-import { shortcutLabel, shortcutMatchesEvent } from "../ui/shortcuts";
+import { shortcutLabel, shortcutMatchesEvent, shortcutToGlobalAccelerator } from "../ui/shortcuts";
 import { useUiPreferences } from "../ui/store";
 import { ArrowUp, ChevronDown, Folder, FolderOpen, Mic, Paperclip, PlusSquare, Slash, Square, UserRound, X } from "./icons";
 
@@ -675,7 +675,7 @@ export function Composer({
   }
 
   useEffect(() => {
-    const shortcut = voice.hotkeyShortcut.trim();
+    const shortcut = shortcutToGlobalAccelerator(voice.hotkeyShortcut) ?? voice.hotkeyShortcut.trim();
     if (!voice.hotkeyEnabled || !shortcut || !isTauriRuntime()) return;
 
     let disposed = false;

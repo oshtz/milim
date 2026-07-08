@@ -27,6 +27,15 @@ export const DEFAULT_MEDIA_SETTINGS: MediaSettings = {
   modelSearchByProvider: {},
 };
 
+export const VOICE_VAD_SILENCE_MIN_MS = 300;
+export const VOICE_VAD_SILENCE_MAX_MS = 5000;
+export const VOICE_RECORDING_MIN_SECONDS = 1;
+export const VOICE_RECORDING_MAX_SECONDS = 300;
+export const VOICE_SERVER_VAD_THRESHOLD_MIN = 0.001;
+export const VOICE_SERVER_VAD_THRESHOLD_MAX = 0.1;
+export const VOICE_TTS_SPEED_MIN = 0.5;
+export const VOICE_TTS_SPEED_MAX = 2;
+
 export interface SttOption {
   id: VoiceSttProvider;
   label: string;
@@ -485,17 +494,17 @@ function normalizeVoiceSettings(settings?: Partial<VoiceSettings>): VoiceSetting
     serverVadProvider,
     nativeTtsEngine,
     vadSilenceMs: Number.isFinite(merged.vadSilenceMs)
-      ? Math.max(300, Math.round(merged.vadSilenceMs))
+      ? Math.min(VOICE_VAD_SILENCE_MAX_MS, Math.max(VOICE_VAD_SILENCE_MIN_MS, Math.round(merged.vadSilenceMs)))
       : DEFAULT_VOICE_SETTINGS.vadSilenceMs,
     maxRecordingSeconds: Number.isFinite(merged.maxRecordingSeconds)
-      ? Math.max(1, Math.round(merged.maxRecordingSeconds))
+      ? Math.min(VOICE_RECORDING_MAX_SECONDS, Math.max(VOICE_RECORDING_MIN_SECONDS, Math.round(merged.maxRecordingSeconds)))
       : DEFAULT_VOICE_SETTINGS.maxRecordingSeconds,
     hotkeyShortcut: merged.hotkeyShortcut.trim() || DEFAULT_VOICE_SETTINGS.hotkeyShortcut,
     serverVadThreshold: Number.isFinite(merged.serverVadThreshold)
-      ? Math.max(0.001, Number(merged.serverVadThreshold))
+      ? Math.min(VOICE_SERVER_VAD_THRESHOLD_MAX, Math.max(VOICE_SERVER_VAD_THRESHOLD_MIN, Number(merged.serverVadThreshold)))
       : DEFAULT_VOICE_SETTINGS.serverVadThreshold,
     ttsSpeed: Number.isFinite(merged.ttsSpeed)
-      ? Math.max(0.1, Number(merged.ttsSpeed))
+      ? Math.min(VOICE_TTS_SPEED_MAX, Math.max(VOICE_TTS_SPEED_MIN, Number(merged.ttsSpeed)))
       : DEFAULT_VOICE_SETTINGS.ttsSpeed,
   };
 }

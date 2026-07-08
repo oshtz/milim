@@ -85,8 +85,9 @@ Goals are thread-level autonomous runs, not saved agent profiles. A goal stores 
 | Search operators | Chat search accepts plain text plus `from:user`, `from:assistant`, `in:all`, and `is:archived` filters. |
 | Auto thread titles | New chats get first-message titles by default. Optional AI names run after the first reply and need a compatible provider chat model when the chat uses Codex, Claude, or media models. |
 | Onboarding | First-run setup chooses Simple or Workbench, connects local/hosted/Codex model sources, and can import Claude/Codex MCP servers and skills as disabled Workbench entries. |
-| Theme editor | Themes and custom style settings are persisted with the desktop state. Custom palettes must pass core text contrast checks before saving, and low-contrast preset/custom themes are marked in the theme grid. |
-| Keyboard shortcuts | App-window shortcuts are configurable; Previous thread defaults to `Ctrl+Tab` on Windows and macOS. |
+| Settings | Settings search returns individual controls, jumps to the matched row, and section navigation shows warning status for incomplete setup. |
+| Theme editor | Themes and custom style settings are persisted with the desktop state. Custom palettes must pass core text contrast checks before saving, low-contrast preset/custom themes are marked in the theme grid, and custom theme cards expose an edit button. |
+| Keyboard shortcuts | App-window shortcuts are configurable; Previous thread defaults to `Ctrl+Tab` on Windows and macOS. Voice push-to-talk uses the same press-to-record flow. |
 | Window close | Closing hides Milim to the system tray; minimize keeps normal taskbar behavior. |
 
 ## Slash commands
