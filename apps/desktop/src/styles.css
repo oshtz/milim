@@ -3654,6 +3654,9 @@ html[data-dark="true"] .preview-control-cursor {
   margin-bottom: 6px;
   white-space: pre-wrap;
 }
+.msg.user .md > :last-child {
+  margin-bottom: 0;
+}
 .msg.user .md ul,
 .msg.user .md ol,
 .msg.user .md blockquote,
