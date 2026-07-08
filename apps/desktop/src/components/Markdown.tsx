@@ -130,6 +130,27 @@ function selectedHighlightPlugin() {
 
 const highlightRehypePlugins = [selectedHighlightPlugin as MarkdownRehypePlugin] satisfies MarkdownRehypePlugins;
 
+export function parseMarkdownIntoBlocks(content: string): string[] {
+  const lines = content.match(/[^\n]*(?:\n|$)/g)?.filter(Boolean) ?? [];
+  const blocks: string[] = [];
+  let current: string[] = [];
+  let inFence = false;
+
+  const push = () => {
+    const block = current.join("").trimEnd();
+    if (block.trim()) blocks.push(block);
+    current = [];
+  };
+
+  for (const line of lines) {
+    current.push(line);
+    if (/^\s*(```|~~~)/.test(line)) inFence = !inFence;
+    if (!inFence && line.trim() === "") push();
+  }
+  push();
+  return blocks;
+}
+
 export function isHttpHref(href: string | undefined): href is string {
   return Boolean(href && /^https?:\/\//i.test(href));
 }
@@ -140,9 +161,7 @@ function openMarkdownLink(event: MouseEvent<HTMLAnchorElement>, href: string | u
   void openExternalUrl(href).catch((error) => console.warn("failed to open link", error));
 }
 
-/** Render chat text as GitHub-flavored markdown with syntax-highlighted
- *  code blocks. Memoized so re-renders during streaming stay cheap. */
-export const Markdown = memo(function Markdown({
+function MarkdownBody({
   content,
   previewArtifacts,
   onOpenPreview,
@@ -150,7 +169,6 @@ export const Markdown = memo(function Markdown({
   previewArtifactsStreaming = false,
   collapseArtifacts = true,
 }: MarkdownProps) {
-  markPerfRender("Markdown");
   const effectivePreviewArtifacts = useMemo(
     () =>
       collapseArtifacts
@@ -162,30 +180,56 @@ export const Markdown = memo(function Markdown({
   );
 
   return (
-    <div className="md">
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        rehypePlugins={highlight ? highlightRehypePlugins : undefined}
-        components={{
-          pre: ({ children }) => {
-            const text = normalizedCodeText(codeBlockText(children));
-            const previewArtifact = previewArtifactForCodeText(text, effectivePreviewArtifacts);
-            if (!previewArtifact && !text.trim()) return null;
-            return (
-              <CodeBlock previewArtifact={previewArtifact} previewStreaming={Boolean(previewArtifact && previewArtifactsStreaming)} onOpenPreview={onOpenPreview}>
-                {children}
-              </CodeBlock>
-            );
-          },
-          a: ({ children, href }) => (
-            <a href={href} target="_blank" rel="noreferrer" onClick={(event) => openMarkdownLink(event, href)}>
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      rehypePlugins={highlight ? highlightRehypePlugins : undefined}
+      components={{
+        pre: ({ children }) => {
+          const text = normalizedCodeText(codeBlockText(children));
+          const previewArtifact = previewArtifactForCodeText(text, effectivePreviewArtifacts);
+          if (!previewArtifact && !text.trim()) return null;
+          return (
+            <CodeBlock previewArtifact={previewArtifact} previewStreaming={Boolean(previewArtifact && previewArtifactsStreaming)} onOpenPreview={onOpenPreview}>
               {children}
-            </a>
-          ),
-        }}
-      >
-        {content}
-      </ReactMarkdown>
+            </CodeBlock>
+          );
+        },
+        a: ({ children, href }) => (
+          <a href={href} target="_blank" rel="noreferrer" onClick={(event) => openMarkdownLink(event, href)}>
+            {children}
+          </a>
+        ),
+      }}
+    >
+      {content}
+    </ReactMarkdown>
+  );
+}
+
+/** Render chat text as GitHub-flavored markdown with syntax-highlighted
+ *  code blocks. Memoized so re-renders during streaming stay cheap. */
+export const Markdown = memo(function Markdown(props: MarkdownProps) {
+  markPerfRender("Markdown");
+  return (
+    <div className="md">
+      <MarkdownBody {...props} />
+    </div>
+  );
+});
+
+const MemoizedMarkdownBlock = memo(function MemoizedMarkdownBlock(props: MarkdownProps) {
+  markPerfRender("MarkdownBlock");
+  return <MarkdownBody {...props} />;
+});
+
+export const MemoizedMarkdown = memo(function MemoizedMarkdown(props: MarkdownProps) {
+  markPerfRender("MemoizedMarkdown");
+  const blocks = useMemo(() => parseMarkdownIntoBlocks(props.content), [props.content]);
+  return (
+    <div className="md">
+      {blocks.map((block, index) => (
+        <MemoizedMarkdownBlock {...props} content={block} key={index} />
+      ))}
     </div>
   );
 });

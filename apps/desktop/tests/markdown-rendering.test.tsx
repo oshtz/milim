@@ -56,9 +56,11 @@ const server = await createServer({
 });
 
 try {
-  const { Markdown, isHttpHref } = await server.ssrLoadModule("/src/components/Markdown.tsx") as {
+  const { Markdown, MemoizedMarkdown, isHttpHref, parseMarkdownIntoBlocks } = await server.ssrLoadModule("/src/components/Markdown.tsx") as {
     Markdown: ComponentType<MarkdownProps>;
+    MemoizedMarkdown: ComponentType<MarkdownProps>;
     isHttpHref: (href: string | undefined) => boolean;
+    parseMarkdownIntoBlocks: (content: string) => string[];
   };
 
   function renderMarkdown(
@@ -74,6 +76,19 @@ try {
       highlight: false,
       previewArtifactsStreaming,
       collapseArtifacts,
+    }));
+  }
+
+  function renderMemoizedMarkdown(
+    content: string,
+    previewArtifacts?: ChatArtifact[],
+  ): string {
+    return renderToStaticMarkup(createElement(MemoizedMarkdown, {
+      content,
+      previewArtifacts,
+      onOpenPreview: () => {},
+      highlight: false,
+      collapseArtifacts: false,
     }));
   }
 
@@ -144,6 +159,62 @@ try {
   assert(!streamingFence.includes("<pre>"), "streaming preview artifact should not render a raw pre block");
   assert(streamingFence.includes("Streaming..."), "streaming preview artifact should show streaming status");
   assert(!streamingFence.includes("15 B"), "streaming preview artifact should hide final byte size");
+
+  const streamingMarkdown = renderMemoizedMarkdown([
+    "**Ready** for [docs](https://milim.ai/docs)",
+    "",
+    "- first",
+    "- second",
+    "",
+    "| name | value |",
+    "|---|---:|",
+    "| alpha | 1 |",
+    "",
+    "```ts",
+    "const value = 1;",
+    "```",
+  ].join("\n"));
+  assert(streamingMarkdown.includes("<strong>Ready</strong>"), "streaming markdown should render bold text");
+  assert(streamingMarkdown.includes('href="https://milim.ai/docs"'), "streaming markdown should render links");
+  assert(streamingMarkdown.includes("<ul>"), "streaming markdown should render lists");
+  assert(streamingMarkdown.includes("<table>"), "streaming markdown should render tables");
+  assert(streamingMarkdown.includes("<pre>"), "streaming markdown should render code fences");
+  assert(!streamingMarkdown.includes("hljs"), "streaming markdown should skip syntax highlighting");
+
+  const streamingGeneratedCode = renderMemoizedMarkdown([
+    "```html",
+    indexHtml.content,
+    "```",
+  ].join("\n"), [indexHtml]);
+  equal(
+    count(streamingGeneratedCode, "code-block-collapsed"),
+    0,
+    "streaming markdown should not collapse generated artifacts",
+  );
+  assert(streamingGeneratedCode.includes("<pre>"), "streaming generated code should render as a code block");
+
+  const startedBlocks = parseMarkdownIntoBlocks([
+    "# Title",
+    "",
+    "Stable paragraph.",
+    "",
+    "```ts",
+    "const value = 1;",
+  ].join("\n"));
+  const grownBlocks = parseMarkdownIntoBlocks([
+    "# Title",
+    "",
+    "Stable paragraph.",
+    "",
+    "```ts",
+    "const value = 1;",
+    "const next = 2;",
+  ].join("\n"));
+  equal(startedBlocks.length, 3, "streaming splitter should separate completed blocks from the live tail");
+  equal(grownBlocks.length, 3, "growing the live tail should not create extra completed blocks");
+  equal(grownBlocks[0], startedBlocks[0], "first completed block should stay stable");
+  equal(grownBlocks[1], startedBlocks[1], "second completed block should stay stable");
+  assert(grownBlocks[2] !== startedBlocks[2], "only the trailing streaming block should change");
 } finally {
   await server.close();
 }

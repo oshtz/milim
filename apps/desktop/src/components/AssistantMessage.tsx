@@ -13,6 +13,10 @@ import { Calendar, Code, Eye, FileText, Lightbulb, Pencil, X } from "./icons";
 const Markdown = lazy(() =>
   import("./Markdown").then((mod) => ({ default: mod.Markdown })),
 );
+const MemoizedMarkdown = lazy(() =>
+  import("./Markdown").then((mod) => ({ default: mod.MemoizedMarkdown })),
+);
+const STREAMING_MARKDOWN_CHAR_LIMIT = 12000;
 type ChatStreamEventPart = Extract<ChatStreamPart, { kind: "event" }>;
 
 type AssistantMessageProps = {
@@ -389,11 +393,7 @@ function AnswerText({
 }) {
   if (!content.trim()) return null;
   if (streaming) {
-    return (
-      <div className="md md-streaming-text" dir="auto">
-        {content}
-      </div>
-    );
+    return <StreamingMarkdownText content={content} />;
   }
   return (
     <Suspense fallback={<span className="typing">...</span>}>
@@ -403,6 +403,24 @@ function AnswerText({
         onOpenPreview={onOpenPreview}
         highlight={!streaming}
         previewArtifactsStreaming={previewArtifactsStreaming}
+      />
+    </Suspense>
+  );
+}
+
+function StreamingMarkdownText({ content }: { content: string }) {
+  const fallback = (
+    <div className="md md-streaming-text" dir="auto">
+      {content}
+    </div>
+  );
+  if (content.length > STREAMING_MARKDOWN_CHAR_LIMIT) return fallback;
+  return (
+    <Suspense fallback={fallback}>
+      <MemoizedMarkdown
+        content={content}
+        highlight={false}
+        collapseArtifacts={false}
       />
     </Suspense>
   );
