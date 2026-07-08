@@ -1675,16 +1675,20 @@ fn validate_install_source_name(file_name: &str) -> std::result::Result<(), Stri
     {
         return Err("Invalid update source name.".to_string());
     }
-    let lower = file_name.to_ascii_lowercase();
-
     #[cfg(target_os = "windows")]
-    if lower.ends_with(".exe") {
-        return Ok(());
+    {
+        let lower = file_name.to_ascii_lowercase();
+        if lower.ends_with(".exe") {
+            return Ok(());
+        }
     }
 
     #[cfg(target_os = "macos")]
-    if lower.ends_with(".app") {
-        return Ok(());
+    {
+        let lower = file_name.to_ascii_lowercase();
+        if lower.ends_with(".app") {
+            return Ok(());
+        }
     }
 
     Err("Unsupported update source type.".to_string())
@@ -2075,61 +2079,69 @@ fn apply_update(app: tauri::AppHandle, update_path: String) -> std::result::Resu
         return Err("Auto-update is disabled in dev builds.".to_string());
     }
 
-    let update_file = canonical_update_source(&app, &update_path)?;
-    let current_exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let pid = std::process::id();
-
-    #[cfg(target_os = "windows")]
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
-        let update_root = update_dir(&app)?;
-        fs::create_dir_all(&update_root).map_err(|e| e.to_string())?;
-        let replacement = windows_update_replacement_path(&current_exe);
-        let backup = windows_update_backup_path(&current_exe);
-        let log = update_root.join("install.log");
-        let error_marker = update_root.join(UPDATE_RECOVERY_ERROR_NAME);
-        let script_path = update_root.join("apply-update.ps1");
-        let script = build_windows_update_script(
-            pid,
-            WindowsUpdateScriptPaths {
-                source: &update_file,
-                replacement: &replacement,
-                target: &current_exe,
-                backup: &backup,
-                log: &log,
-                error_marker: &error_marker,
-                script: &script_path,
-            },
-        );
-        fs::write(&script_path, script).map_err(|e| e.to_string())?;
-        Command::new("powershell.exe")
-            .args([
-                "-NoProfile",
-                "-NonInteractive",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-WindowStyle",
-                "Hidden",
-                "-File",
-                &script_path.to_string_lossy(),
-            ])
-            .creation_flags(CREATE_NO_WINDOW)
-            .spawn()
-            .map_err(|e| e.to_string())?;
+        let _ = (app, update_path);
+        return Err("Auto-update is not supported on this platform.".to_string());
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
     {
-        let update_root = update_dir(&app)?;
-        fs::create_dir_all(&update_root).map_err(|e| e.to_string())?;
-        let error_marker = update_root.join(UPDATE_RECOVERY_ERROR_NAME);
-        let app_bundle = current_exe
-            .parent()
-            .and_then(Path::parent)
-            .and_then(Path::parent)
-            .ok_or("Could not determine app bundle path")?;
-        let backup = app_bundle.with_extension("app.previous");
-        let script = format!(
-            r#"set -e
+        let update_file = canonical_update_source(&app, &update_path)?;
+        let current_exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        let pid = std::process::id();
+
+        #[cfg(target_os = "windows")]
+        {
+            let update_root = update_dir(&app)?;
+            fs::create_dir_all(&update_root).map_err(|e| e.to_string())?;
+            let replacement = windows_update_replacement_path(&current_exe);
+            let backup = windows_update_backup_path(&current_exe);
+            let log = update_root.join("install.log");
+            let error_marker = update_root.join(UPDATE_RECOVERY_ERROR_NAME);
+            let script_path = update_root.join("apply-update.ps1");
+            let script = build_windows_update_script(
+                pid,
+                WindowsUpdateScriptPaths {
+                    source: &update_file,
+                    replacement: &replacement,
+                    target: &current_exe,
+                    backup: &backup,
+                    log: &log,
+                    error_marker: &error_marker,
+                    script: &script_path,
+                },
+            );
+            fs::write(&script_path, script).map_err(|e| e.to_string())?;
+            Command::new("powershell.exe")
+                .args([
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-WindowStyle",
+                    "Hidden",
+                    "-File",
+                    &script_path.to_string_lossy(),
+                ])
+                .creation_flags(CREATE_NO_WINDOW)
+                .spawn()
+                .map_err(|e| e.to_string())?;
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            let update_root = update_dir(&app)?;
+            fs::create_dir_all(&update_root).map_err(|e| e.to_string())?;
+            let error_marker = update_root.join(UPDATE_RECOVERY_ERROR_NAME);
+            let app_bundle = current_exe
+                .parent()
+                .and_then(Path::parent)
+                .and_then(Path::parent)
+                .ok_or("Could not determine app bundle path")?;
+            let backup = app_bundle.with_extension("app.previous");
+            let script = format!(
+                r#"set -e
 pid={}
 source='{}'
 target='{}'
@@ -2143,25 +2155,21 @@ mv "$source" "$target"
 open "$target"
 rm -rf "$backup"
 "#,
-            pid,
-            escape_bash_literal(&update_file.to_string_lossy()),
-            escape_bash_literal(&app_bundle.to_string_lossy()),
-            escape_bash_literal(&backup.to_string_lossy()),
-            escape_bash_literal(&error_marker.to_string_lossy()),
-        );
-        Command::new("bash")
-            .args(["-c", &script])
-            .spawn()
-            .map_err(|e| e.to_string())?;
-    }
+                pid,
+                escape_bash_literal(&update_file.to_string_lossy()),
+                escape_bash_literal(&app_bundle.to_string_lossy()),
+                escape_bash_literal(&backup.to_string_lossy()),
+                escape_bash_literal(&error_marker.to_string_lossy()),
+            );
+            Command::new("bash")
+                .args(["-c", &script])
+                .spawn()
+                .map_err(|e| e.to_string())?;
+        }
 
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-    {
-        return Err("Auto-update is not supported on this platform.".to_string());
+        app.exit(0);
+        Ok(())
     }
-
-    app.exit(0);
-    Ok(())
 }
 
 #[cfg(target_os = "macos")]

@@ -150,6 +150,8 @@ impl PreviewToolState {
         }
     }
 
+    // ponytail: Tauri target payload is flat; wrap it only if this grows.
+    #[allow(clippy::too_many_arguments)]
     pub fn set_target(
         &self,
         label: Option<String>,
@@ -185,6 +187,7 @@ impl PreviewToolState {
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub fn set_active_preview_target(
     state: tauri::State<'_, SharedPreviewToolState>,
     label: Option<String>,
