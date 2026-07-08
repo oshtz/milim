@@ -37,7 +37,7 @@ User and assistant message bodies render Markdown in the transcript, and message
 
 The composer keeps prompt storage plain text. Recognized `@Skill Name`, `/Skill Name`, and `/server__tool` tags render as compact pills, while workspace `@file` references and bare HTTP(S) URLs render with link-like highlighting in the editor mirror layer; MCP slash suggestions insert the visible tag only and do not force a tool call or bypass approval/exposure policy.
 
-Image attachments are preserved as image content parts for provider chat and server-side agent runs when the backend supports vision. Codex and Claude account runtimes still receive prompt text plus attachment metadata because their bridge APIs are prompt-string only.
+Image attachments are preserved as image content parts for provider chat and server-side agent runs when the backend supports vision. Codex and Claude account runtimes still receive prompt text plus attachment metadata because their bridge APIs are prompt-string only. Desktop file attachments come from the native file picker or workspace-relative `@file` suggestions under the selected folder.
 
 ## Session controls
 

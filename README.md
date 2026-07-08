@@ -33,7 +33,7 @@ pnpm -C apps/desktop tauri dev
 
 | Command | Description |
 |---|---|
-| `serve [--port N] [--expose]` | Start the HTTP server. |
+| `serve [--port N] [--expose]` | Start the HTTP server; `--expose` binds on the LAN and auto-enables `msk-v1` auth if no auth is configured. |
 | `status [--url URL] [--port N] [--token T] [--json]` | Probe a running server's health. |
 | `models [--url URL] [--port N] [--token T] [--json]` | List models from a running server. |
 | `run [--url URL] [--port N] [--token T] [--system S] [--temperature N] [--max-tokens N] <model> [prompt...]` | Chat through the running server: one-shot if a prompt is given, else an interactive REPL. |
@@ -95,7 +95,7 @@ Claude CLI integration boundaries:
 | Installed Claude CLI | `GET /claude/status`, `POST /claude/run` |
 | Health | `GET /health` |
 
-Standalone auth is configured in `~/.milim/config/server.json`: set `authRequired: true` to accept locally minted `msk-v1` keys, add static bearer secrets under `apiKeys`, or trust extra signed-key issuers under `accessKeyIssuers`. CLI client commands accept `--url`, `--port`, and `--token` (`MILIM_API_TOKEN`) when calling an authenticated server. The desktop app disables loopback trust and uses a per-launch bearer token for its embedded server. Empty CORS allow-list means no browser origins are allowed; set explicit origins at `~/.milim/config/server.json` when needed.
+Standalone auth is configured in `~/.milim/config/server.json`: set `authRequired: true` to accept locally minted `msk-v1` keys, add static bearer secrets under `apiKeys`, or trust extra signed-key issuers under `accessKeyIssuers`. `milim serve --expose` persists `authRequired: true` and prints an immediate `MILIM_API_TOKEN` when no auth is already configured. CLI client commands accept `--url`, `--port`, and `--token` (`MILIM_API_TOKEN`) when calling an authenticated server. The desktop app disables loopback trust and uses a per-launch bearer token for its embedded server. Empty CORS allow-list means no browser origins are allowed; set explicit origins at `~/.milim/config/server.json` when needed.
 
 ## Workspace Layout
 
@@ -134,7 +134,7 @@ Shipped UI:
 
 - First-run Simple or Workbench mode. Simple keeps the chat surface calm; Workbench exposes workspace, agents, MCP, memory, media, sandbox, schedules, and computer-use controls.
 - Chat sessions with row-backed desktop persistence, Markdown-rendered user and assistant message bodies with raw source preserved for actions, memoized live Markdown streaming for normal assistant tails with preserved-text fallback for long streams before full Markdown finalize, browser-opening message links, reasoning blocks, virtualized long transcripts, compact live tool activity with expandable details, syntax-highlighted short code snippets, collapsed generated code artifacts, attachments, queued sends, persisted thread-local composer drafts and history recall, first-message and optional AI thread titles, copy/regenerate/edit-and-resend, in-place assistant edits, message deletion, branch-from-message, JSON/Markdown thread export/import, filtered search, custom right-click menus for app objects while preserving native text/link editing menus, tokenizer-backed context compaction checkpoints that reject truncated summaries, keep a bounded recent tail verbatim, cap old attachment/tool bodies in summary prompts, and track lifetime/since-checkpoint usage totals, persisted sidebar/side-panel state, response metrics that update after each built-in tool-agent model request, generated artifact previews with thread-local revision cycling, built-in scoped preview tools when the side panel is visible, no-folder virtual project files with review/apply and versioned artifact sources, visual-only preview activity cues for tool events with click-through browser-preview overlays, inline/display-only handling for anonymous code and markdown tables, lightweight anonymous script/TSX preview fallbacks, managed no-folder Node preview apps from named file metadata with package-manager detection, a required `dev` script, Vite entry/style and Tailwind config fallbacks, full named-file staging within the preview size budget, selected-folder Node preview apps that share one runtime per project folder and run that folder directly without staged-file rewrites, auto-opened running runtime previews for runnable generated apps with sidebar runtime markers, persisted preview URLs, read-only virtual preview file context for runtime follow-ups, compile-error status reporting, and manually openable native URL previews with a side-panel address bar.
-- Image attachments are forwarded as image content parts to provider chat and server-side agent runs when the selected backend supports vision; Codex and Claude account runtimes remain prompt-text only.
+- Image attachments are forwarded as image content parts to provider chat and server-side agent runs when the selected backend supports vision; Codex and Claude account runtimes remain prompt-text only. Desktop attachment reads are limited to files picked in the native dialog or workspace-relative files under the selected folder.
 - Provider onboarding for OpenAI, OpenRouter, Groq, Ollama, LM Studio, custom OpenAI-compatible remotes, Anthropic, Gemini, and Replicate/fal media with encrypted key storage and model capability metadata; account-runtime onboarding for Codex and the installed Claude CLI, with per-chat native session persistence, consent-gated Claude session recovery, Milim approval modes, and visible tool events.
 - Per-model reasoning effort controls where the provider, local runtime, or account runtime advertises supported effort levels.
 - Agents, schedules with attached file context and visible result threads, skills with deterministic `@Skill Name` or `/Skill Name` prompt tags, composer highlighting for skill, MCP, workspace-file, and URL tokens, external MCP servers, tool timelines, worker supervision, child threads that inherit Open-mode tools but stay read-only in safer modes, unfinished child-thread restart sweep to `error` and graceful shutdown marking running children `stopped`, sequenced child-thread events with tail-preserving reads and `after_seq` cursor backfill, bounded tool-result replay plus a default 100-turn loop ceiling to keep agent loops finite, one retry for initial stream-open failures, stop controls, plan mode, goal runs, and server-side tool-use runs.
@@ -176,7 +176,7 @@ The release workflow publishes stable Windows portable EXE and macOS universal D
 
 Linux release packaging is intentionally disabled in `apps/desktop/scripts/package-release.mjs`.
 
-Updater assets are verified with SHA-256 sidecars and an aggregate `SHA256SUMS.txt`.
+Release builds run desktop verification on both macOS and Windows, require Apple signing secrets for macOS artifacts, and publish `manifest.json` plus an aggregate `SHA256SUMS.txt` from the current release run. Updater assets are verified with SHA-256 sidecars and the aggregate checksum file.
 
 ## License
 

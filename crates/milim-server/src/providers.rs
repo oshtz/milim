@@ -97,6 +97,7 @@ pub struct ModelContextMetadata {
     pub max_completion_tokens: Option<u32>,
 }
 
+#[derive(Clone)]
 struct Runtime {
     cfg: Provider,
     backend: SharedService,
@@ -135,13 +136,13 @@ struct ProviderStore {
 }
 
 impl ProviderStore {
-    fn open(dir: &Path) -> Self {
-        let _ = std::fs::create_dir_all(dir);
-        let key = read_or_make_key(&dir.join("providers.key"));
-        Self {
+    fn open(dir: &Path) -> Result<Self> {
+        std::fs::create_dir_all(dir)?;
+        let key = read_or_make_key(&dir.join("providers.key"))?;
+        Ok(Self {
             enc: EncryptedStore::from_key(&key),
             path: dir.join("providers.enc"),
-        }
+        })
     }
 
     fn load(&self) -> Vec<Provider> {
@@ -154,36 +155,28 @@ impl ProviderStore {
         serde_json::from_slice(&plain).unwrap_or_default()
     }
 
-    fn save(&self, providers: &[Provider]) {
-        let plain = match serde_json::to_vec(providers) {
-            Ok(p) => p,
-            Err(e) => {
-                tracing::warn!("providers serialize failed: {e}");
-                return;
-            }
-        };
-        match self.enc.encrypt(&plain) {
-            Ok(blob) => {
-                if let Err(e) = std::fs::write(&self.path, blob) {
-                    tracing::warn!("providers write failed: {e}");
-                }
-            }
-            Err(e) => tracing::warn!("providers encrypt failed: {e}"),
-        }
+    fn save(&self, providers: &[Provider]) -> Result<()> {
+        let plain = serde_json::to_vec(providers)?;
+        let blob = self.enc.encrypt(&plain)?;
+        std::fs::write(&self.path, blob)?;
+        Ok(())
     }
 }
 
-fn read_or_make_key(path: &Path) -> [u8; 32] {
+fn read_or_make_key(path: &Path) -> Result<[u8; 32]> {
     if let Ok(b) = std::fs::read(path) {
         if b.len() == 32 {
             let mut k = [0u8; 32];
             k.copy_from_slice(&b);
-            return k;
+            return Ok(k);
         }
     }
     let k = EncryptedStore::random_key();
-    let _ = std::fs::write(path, k);
-    k
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, k)?;
+    Ok(k)
 }
 
 /// Live provider registry: the source of truth for the router + the CRUD API.
@@ -196,8 +189,8 @@ pub struct ProviderRegistry {
 impl ProviderRegistry {
     /// Load persisted providers (with their cached model lists) from `dir`.
     /// Cheap + synchronous: model lists are refreshed on upsert, not here.
-    pub fn open(dir: &Path, local: SharedService) -> Self {
-        let store = ProviderStore::open(dir);
+    pub fn open(dir: &Path, local: SharedService) -> Result<Self> {
+        let store = ProviderStore::open(dir)?;
         let runtimes = store
             .load()
             .into_iter()
@@ -206,11 +199,11 @@ impl ProviderRegistry {
                 cfg,
             })
             .collect();
-        Self {
+        Ok(Self {
             inner: Arc::new(RwLock::new(runtimes)),
             local,
             store,
-        }
+        })
     }
 
     /// A `ModelService` view that routes by model → provider, applying the
@@ -235,7 +228,7 @@ impl ProviderRegistry {
 
     /// Insert or update a provider, fetching its model list. Preserves the
     /// stored key when `cfg.api_key` is `None` (the UI omits it on edit).
-    pub async fn upsert(&self, mut cfg: Provider) -> Provider {
+    pub async fn upsert(&self, mut cfg: Provider) -> Result<Provider> {
         if cfg.api_key.is_none() {
             cfg.api_key = self
                 .inner
@@ -276,24 +269,26 @@ impl ProviderRegistry {
         }
 
         let mut w = self.inner.write().await;
-        if let Some(r) = w.iter_mut().find(|r| r.cfg.id == cfg.id) {
+        let mut next = w.clone();
+        if let Some(r) = next.iter_mut().find(|r| r.cfg.id == cfg.id) {
             r.cfg = cfg.clone();
             r.backend = backend;
         } else {
-            w.push(Runtime {
+            next.push(Runtime {
                 cfg: cfg.clone(),
                 backend,
             });
         }
         self.store
-            .save(&w.iter().map(|r| r.cfg.clone()).collect::<Vec<_>>());
-        cfg
+            .save(&next.iter().map(|r| r.cfg.clone()).collect::<Vec<_>>())?;
+        *w = next;
+        Ok(cfg)
     }
 
     /// Re-fetch the model list for every enabled provider. Called at startup so
     /// providers populate (or surface a connection error) without a manual
     /// re-save — the T3-style "add a key, models light up" behavior.
-    pub async fn refresh_all(&self) {
+    pub async fn refresh_all(&self) -> Result<()> {
         let configs: Vec<Provider> = {
             let r = self.inner.read().await;
             r.iter()
@@ -346,20 +341,23 @@ impl ProviderRegistry {
             .iter()
             .map(|rt| rt.cfg.clone())
             .collect::<Vec<_>>();
-        self.store.save(&snapshot);
+        self.store.save(&snapshot)?;
+        Ok(())
     }
 
     /// Remove a provider. Returns whether one was removed.
-    pub async fn delete(&self, id: &str) -> bool {
+    pub async fn delete(&self, id: &str) -> Result<bool> {
         let mut w = self.inner.write().await;
-        let n = w.len();
-        w.retain(|r| r.cfg.id != id);
-        let removed = w.len() != n;
+        let mut next = w.clone();
+        let n = next.len();
+        next.retain(|r| r.cfg.id != id);
+        let removed = next.len() != n;
         if removed {
             self.store
-                .save(&w.iter().map(|r| r.cfg.clone()).collect::<Vec<_>>());
+                .save(&next.iter().map(|r| r.cfg.clone()).collect::<Vec<_>>())?;
+            *w = next;
         }
-        removed
+        Ok(removed)
     }
 }
 

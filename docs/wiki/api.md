@@ -69,7 +69,7 @@ cargo run -p milim-cli -- keys identity
 cargo run -p milim-cli -- keys mint --label local-client --expires-secs 86400
 ```
 
-Set `authRequired: true` in `server.json` to make `milim serve` accept keys minted by this machine. Use `--audience` when minting a key for a different Milim identity. Omitting it mints for this machine's own address.
+Set `authRequired: true` in `server.json` to make `milim serve` accept keys minted by this machine. `milim serve --expose` saves that setting and prints a one-time token when no auth is already configured. Use `--audience` when minting a key for a different Milim identity. Omitting it mints for this machine's own address.
 
 ## Common failures
 

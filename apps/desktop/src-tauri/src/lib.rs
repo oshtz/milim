@@ -30,6 +30,7 @@ use sha2::{Digest, Sha256};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Manager, WindowEvent};
+use tauri_plugin_dialog::DialogExt;
 use toml::Value as TomlValue;
 
 #[cfg(target_os = "windows")]
@@ -80,6 +81,7 @@ const ARTIFACT_DIFF_LCS_CELL_LIMIT: usize = 2_000_000;
 #[derive(serde::Serialize)]
 struct AttachmentFilePayload {
     name: String,
+    path: String,
     size: u64,
     content: String,
     truncated: bool,
@@ -552,48 +554,95 @@ fn collect_skill_candidates(root: &Path, harness: &str, out: &mut Vec<HarnessSki
 }
 
 #[tauri::command]
-async fn read_attachment_file(
-    path: String,
+async fn pick_attachment_files(
+    app: tauri::AppHandle,
     max_bytes: Option<u64>,
-) -> std::result::Result<AttachmentFilePayload, String> {
+) -> std::result::Result<Vec<AttachmentFilePayload>, String> {
     tokio::task::spawn_blocking(
-        move || -> std::result::Result<AttachmentFilePayload, String> {
-            let path = PathBuf::from(path);
-            let metadata = std::fs::metadata(&path)
-                .map_err(|e| format!("failed to read attachment metadata: {e}"))?;
-            if !metadata.is_file() {
-                return Err("attachment path is not a file".to_string());
-            }
-            let limit = max_bytes
-                .unwrap_or(MAX_ATTACHMENT_BYTES)
-                .clamp(1, MAX_ATTACHMENT_BYTES);
-            let name = path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("attachment")
-                .to_string();
-            let mut file =
-                File::open(&path).map_err(|e| format!("failed to open attachment file: {e}"))?;
-            let mut bytes = Vec::new();
-            file.by_ref()
-                .take(limit + 1)
-                .read_to_end(&mut bytes)
-                .map_err(|e| format!("failed to read attachment file: {e}"))?;
-            let truncated = bytes.len() as u64 > limit;
-            if truncated {
-                bytes.truncate(limit as usize);
-            }
-            let content = String::from_utf8_lossy(&bytes).into_owned();
-            Ok(AttachmentFilePayload {
-                name,
-                size: metadata.len(),
-                content,
-                truncated,
-            })
+        move || -> std::result::Result<Vec<AttachmentFilePayload>, String> {
+            let Some(paths) = app.dialog().file().blocking_pick_files() else {
+                return Ok(Vec::new());
+            };
+            paths
+                .into_iter()
+                .map(|path| {
+                    let path = path
+                        .into_path()
+                        .map_err(|_| "picked attachment is not a local file".to_string())?;
+                    read_attachment_file_blocking(&path, max_bytes)
+                })
+                .collect()
         },
     )
     .await
     .map_err(|e| format!("attachment read task failed: {e}"))?
+}
+
+#[tauri::command]
+async fn read_workspace_attachment_file(
+    workspace: String,
+    path: String,
+    max_bytes: Option<u64>,
+) -> std::result::Result<AttachmentFilePayload, String> {
+    tokio::task::spawn_blocking(move || {
+        let path = resolve_workspace_attachment_path(&workspace, &path)?;
+        read_attachment_file_blocking(&path, max_bytes)
+    })
+    .await
+    .map_err(|e| format!("attachment read task failed: {e}"))?
+}
+
+fn read_attachment_file_blocking(
+    path: &Path,
+    max_bytes: Option<u64>,
+) -> std::result::Result<AttachmentFilePayload, String> {
+    let metadata =
+        std::fs::metadata(path).map_err(|e| format!("failed to read attachment metadata: {e}"))?;
+    if !metadata.is_file() {
+        return Err("attachment path is not a file".to_string());
+    }
+    let limit = max_bytes
+        .unwrap_or(MAX_ATTACHMENT_BYTES)
+        .clamp(1, MAX_ATTACHMENT_BYTES);
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("attachment")
+        .to_string();
+    let mut file = File::open(path).map_err(|e| format!("failed to open attachment file: {e}"))?;
+    let mut bytes = Vec::new();
+    file.by_ref()
+        .take(limit + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("failed to read attachment file: {e}"))?;
+    let truncated = bytes.len() as u64 > limit;
+    if truncated {
+        bytes.truncate(limit as usize);
+    }
+    let content = String::from_utf8_lossy(&bytes).into_owned();
+    Ok(AttachmentFilePayload {
+        name,
+        path: path.to_string_lossy().to_string(),
+        size: metadata.len(),
+        content,
+        truncated,
+    })
+}
+
+fn resolve_workspace_attachment_path(
+    workspace: &str,
+    path: &str,
+) -> std::result::Result<PathBuf, String> {
+    let root = workspace_root(workspace)?;
+    let target = root.join(safe_artifact_relative_path(path)?);
+    let root =
+        fs::canonicalize(&root).map_err(|e| format!("failed to resolve working folder: {e}"))?;
+    let target =
+        fs::canonicalize(&target).map_err(|e| format!("failed to resolve attachment path: {e}"))?;
+    if !target.starts_with(&root) {
+        return Err("attachment path must stay inside the working folder".to_string());
+    }
+    Ok(target)
 }
 
 #[tauri::command]
@@ -1879,15 +1928,20 @@ fn windows_update_backup_path(current_exe: &Path) -> PathBuf {
 }
 
 #[cfg(target_os = "windows")]
+struct WindowsUpdateScriptPaths<'a> {
+    source: &'a Path,
+    replacement: &'a Path,
+    target: &'a Path,
+    backup: &'a Path,
+    log: &'a Path,
+    error_marker: &'a Path,
+    script: &'a Path,
+}
+
+#[cfg(target_os = "windows")]
 fn build_windows_update_script(
     pid: u32,
-    source: &Path,
-    replacement: &Path,
-    target: &Path,
-    backup: &Path,
-    log: &Path,
-    error_marker: &Path,
-    script: &Path,
+    paths: WindowsUpdateScriptPaths<'_>,
 ) -> String {
     let template = r#"
 param([switch]$Elevated)
@@ -1982,31 +2036,31 @@ exit 1
         .replace("__PID__", &pid.to_string())
         .replace(
             "__SOURCE__",
-            &escape_powershell_literal(&source.to_string_lossy()),
+            &escape_powershell_literal(&paths.source.to_string_lossy()),
         )
         .replace(
             "__REPLACEMENT__",
-            &escape_powershell_literal(&replacement.to_string_lossy()),
+            &escape_powershell_literal(&paths.replacement.to_string_lossy()),
         )
         .replace(
             "__TARGET__",
-            &escape_powershell_literal(&target.to_string_lossy()),
+            &escape_powershell_literal(&paths.target.to_string_lossy()),
         )
         .replace(
             "__BACKUP__",
-            &escape_powershell_literal(&backup.to_string_lossy()),
+            &escape_powershell_literal(&paths.backup.to_string_lossy()),
         )
         .replace(
             "__LOG__",
-            &escape_powershell_literal(&log.to_string_lossy()),
+            &escape_powershell_literal(&paths.log.to_string_lossy()),
         )
         .replace(
             "__ERROR_MARKER__",
-            &escape_powershell_literal(&error_marker.to_string_lossy()),
+            &escape_powershell_literal(&paths.error_marker.to_string_lossy()),
         )
         .replace(
             "__SCRIPT__",
-            &escape_powershell_literal(&script.to_string_lossy()),
+            &escape_powershell_literal(&paths.script.to_string_lossy()),
         )
 }
 
@@ -2036,13 +2090,15 @@ fn apply_update(app: tauri::AppHandle, update_path: String) -> std::result::Resu
         let script_path = update_root.join("apply-update.ps1");
         let script = build_windows_update_script(
             pid,
-            &update_file,
-            &replacement,
-            &current_exe,
-            &backup,
-            &log,
-            &error_marker,
-            &script_path,
+            WindowsUpdateScriptPaths {
+                source: &update_file,
+                replacement: &replacement,
+                target: &current_exe,
+                backup: &backup,
+                log: &log,
+                error_marker: &error_marker,
+                script: &script_path,
+            },
         );
         fs::write(&script_path, script).map_err(|e| e.to_string())?;
         Command::new("powershell.exe")
@@ -2177,7 +2233,7 @@ fn build_state(
     AppState,
     SocketAddr,
     Arc<milim_mcp_client::McpHub>,
-    Arc<milim_server::providers::ProviderRegistry>,
+    Option<Arc<milim_server::providers::ProviderRegistry>>,
 ) {
     let config = desktop_config();
     let addr: SocketAddr = format!("127.0.0.1:{}", config.port)
@@ -2214,10 +2270,14 @@ fn build_state(
     // The default backend (configured remote / explicit unavailable) is the
     // fallback; configured providers route by model on top of it.
     let local = pick_backend();
-    let registry = Arc::new(milim_server::providers::ProviderRegistry::open(
-        paths.root(),
-        local.clone(),
-    ));
+    let registry =
+        match milim_server::providers::ProviderRegistry::open(paths.root(), local.clone()) {
+            Ok(registry) => Some(Arc::new(registry)),
+            Err(e) => {
+                eprintln!("provider registry unavailable: {e}");
+                None
+            }
+        };
 
     // External MCP servers (their tools merge into the agent registry per-run).
     let mcp = Arc::new(milim_mcp_client::McpHub::open(paths.root()));
@@ -2228,17 +2288,22 @@ fn build_state(
     let mobile_companion = Arc::new(milim_server::companion::MobileCompanionBridge::persistent(
         paths.config_dir().join("mobile-companion.json"),
     ));
-    let service: SharedService = Arc::new(registry.router(privacy.clone()));
+    let service: SharedService = registry
+        .as_ref()
+        .map(|registry| Arc::new(registry.router(privacy.clone())) as SharedService)
+        .unwrap_or_else(|| local.clone());
 
     let mut state = AppState::new(service.clone(), config)
         .with_tools(tools)
-        .with_providers(registry.clone())
         .with_workspace(workspace)
         .with_mcp(mcp.clone())
         .with_privacy(privacy)
         .with_mobile_companion(mobile_companion)
         .with_api_keys([api_key])
         .with_loopback_trust(false);
+    if let Some(registry) = &registry {
+        state = state.with_providers(registry.clone());
+    }
     state = attach_whisper_transcriber(state);
     state = attach_native_vad(state);
 
@@ -2516,9 +2581,13 @@ pub fn run() {
                 mcp.connect_all().await;
             });
             // Refresh enabled providers' model lists so they populate on launch.
-            tauri::async_runtime::spawn(async move {
-                providers.refresh_all().await;
-            });
+            if let Some(providers) = providers {
+                tauri::async_runtime::spawn(async move {
+                    if let Err(e) = providers.refresh_all().await {
+                        eprintln!("provider refresh failed: {e}");
+                    }
+                });
+            }
             if state.schedules.is_some() {
                 let scheduler_state = state.clone();
                 tauri::async_runtime::spawn(async move {
@@ -2598,7 +2667,8 @@ pub fn run() {
             user_state_import_legacy,
             quit_after_user_state_flush,
             user_data_path,
-            read_attachment_file,
+            pick_attachment_files,
+            read_workspace_attachment_file,
             list_workspace_files,
             save_artifact_file,
             preview_artifact_file,
@@ -2647,6 +2717,53 @@ mod artifact_save_tests {
         assert!(!all.iter().any(|file| file.path.contains("node_modules")));
 
         fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn workspace_attachment_reads_safe_relative_file() {
+        let root = std::env::temp_dir().join(format!(
+            "milim-workspace-attachment-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(root.join("notes")).unwrap();
+        fs::write(root.join("notes").join("brief.md"), "hello").unwrap();
+
+        let path =
+            resolve_workspace_attachment_path(root.to_str().unwrap(), "notes/brief.md").unwrap();
+        let payload = read_attachment_file_blocking(&path, Some(MAX_ATTACHMENT_BYTES)).unwrap();
+        assert_eq!(payload.name, "brief.md");
+        assert_eq!(payload.content, "hello");
+
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn workspace_attachment_rejects_absolute_and_parent_paths() {
+        let root = std::env::temp_dir().join(format!(
+            "milim-workspace-attachment-reject-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let outside = std::env::temp_dir().join("milim-outside-attachment.txt");
+        fs::write(&outside, "secret").unwrap();
+
+        assert!(resolve_workspace_attachment_path(root.to_str().unwrap(), "../x").is_err());
+        assert!(resolve_workspace_attachment_path(
+            root.to_str().unwrap(),
+            outside.to_str().unwrap()
+        )
+        .is_err());
+
+        fs::remove_dir_all(root).ok();
+        fs::remove_file(outside).ok();
     }
 
     #[test]
@@ -2766,13 +2883,19 @@ mod artifact_save_tests {
     fn windows_update_script_retries_replaces_elevates_then_relaunches() {
         let script = build_windows_update_script(
             1234,
-            Path::new(r"C:\Users\USER\AppData\Local\milim\milim-updates\milim-0.1.30.exe"),
-            Path::new(r"C:\Apps\milim\milim.exe.update"),
-            Path::new(r"C:\Apps\milim\milim.exe"),
-            Path::new(r"C:\Apps\milim\milim.exe.previous"),
-            Path::new(r"C:\Users\O'Brien\AppData\Local\milim\install.log"),
-            Path::new(r"C:\Users\O'Brien\AppData\Local\milim\install-error.txt"),
-            Path::new(r"C:\Users\O'Brien\AppData\Local\milim\apply-update.ps1"),
+            WindowsUpdateScriptPaths {
+                source: Path::new(
+                    r"C:\Users\USER\AppData\Local\milim\milim-updates\milim-0.1.30.exe",
+                ),
+                replacement: Path::new(r"C:\Apps\milim\milim.exe.update"),
+                target: Path::new(r"C:\Apps\milim\milim.exe"),
+                backup: Path::new(r"C:\Apps\milim\milim.exe.previous"),
+                log: Path::new(r"C:\Users\O'Brien\AppData\Local\milim\install.log"),
+                error_marker: Path::new(
+                    r"C:\Users\O'Brien\AppData\Local\milim\install-error.txt",
+                ),
+                script: Path::new(r"C:\Users\O'Brien\AppData\Local\milim\apply-update.ps1"),
+            },
         );
 
         assert!(script.contains("$ErrorActionPreference = 'Stop'"));

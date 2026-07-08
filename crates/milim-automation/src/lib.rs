@@ -304,12 +304,16 @@ impl ScheduleStore {
     /// Record that a schedule fired at `now_unix`.
     pub fn mark_ran(&self, id: &str, now_unix: i64) -> Result<()> {
         let db = self.db.lock().expect("schedules db poisoned");
-        db.conn()
+        let rows = db
+            .conn()
             .execute(
                 "UPDATE schedules SET last_run = ?2 WHERE id = ?1",
                 params![id, now_unix],
             )
             .map_err(sqlite)?;
+        if rows == 0 {
+            return Err(Error::Other(format!("schedule not found: {id}")));
+        }
         Ok(())
     }
 
@@ -434,6 +438,11 @@ mod tests {
         s.mark_ran(&sched.id, 10_000).unwrap();
         let due_after = s.due(10_050).unwrap();
         assert!(due_after.is_empty());
+    }
+
+    #[test]
+    fn mark_ran_requires_existing_schedule() {
+        assert!(store().mark_ran("missing", 10_000).is_err());
     }
 
     #[test]

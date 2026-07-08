@@ -19,7 +19,7 @@ Release work should verify the Rust workspace, desktop app, site docs, and platf
 | macOS | `milim-macos-universal.dmg` and `milim.app.zip` from the latest GitHub release. |
 | Linux | Not packaged as a release artifact. The Rust server and Tauri app remain source-buildable. |
 
-Updater assets are verified with SHA-256 sidecars and an aggregate `SHA256SUMS.txt`.
+Release builds run desktop verification on both macOS and Windows. macOS release artifacts require the Apple signing secrets, and the workflow publishes `manifest.json` plus an aggregate `SHA256SUMS.txt` from the current release run. Updater assets are verified with SHA-256 sidecars and the aggregate checksum file.
 
 ## Updater behavior
 

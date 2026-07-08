@@ -6,7 +6,7 @@ import {
   deleteSchedule,
   inferAttachmentMime,
   listSchedules,
-  readAttachmentFile,
+  pickAttachmentFiles,
   updateSchedule,
   type ChatAttachment,
   type ScheduleInfo,
@@ -478,15 +478,10 @@ export function SchedulesManager({ onClose }: { onClose: () => void }) {
       if (files?.length) {
         next = await Promise.all(files.map(browserFileAttachment));
       } else if (isTauri) {
-        const { open } = await import("@tauri-apps/plugin-dialog");
-        const selected = await open({ directory: false, multiple: true });
-        const paths = Array.isArray(selected) ? selected : typeof selected === "string" ? [selected] : [];
-        next = await Promise.all(
-          paths.map(async (path) => ({
-            id: attachmentId(),
-            ...(await readAttachmentFile(path)),
-          })),
-        );
+        next = (await pickAttachmentFiles()).map((attachment) => ({
+          id: attachmentId(),
+          ...attachment,
+        }));
       } else {
         fileInputRef.current?.click();
         return;

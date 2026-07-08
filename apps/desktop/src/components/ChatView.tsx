@@ -43,11 +43,12 @@ import {
   MAX_ATTACHMENT_BYTES,
   openArtifactLocation,
   openExternalUrl,
+  pickAttachmentFiles,
   pollMobileCompanionEvents,
   pollScheduleRunEvents,
   publishMobileThreadSnapshot,
   previewArtifactFile,
-  readAttachmentFile,
+  readWorkspaceAttachmentFile,
   restartPreviewApp,
   runWorkspaceGitAction,
   saveArtifactFile,
@@ -4802,19 +4803,10 @@ export function ChatView({
       if (files?.length) {
         next = await Promise.all(files.map(browserFileAttachment));
       } else if (inTauri) {
-        const { open } = await import("@tauri-apps/plugin-dialog");
-        const selected = await open({ directory: false, multiple: true });
-        const paths = Array.isArray(selected)
-          ? selected
-          : typeof selected === "string"
-            ? [selected]
-            : [];
-        next = await Promise.all(
-          paths.map(async (path) => ({
-            id: attachmentId(),
-            ...(await readAttachmentFile(path)),
-          })),
-        );
+        next = (await pickAttachmentFiles()).map((attachment) => ({
+          id: attachmentId(),
+          ...attachment,
+        }));
       }
       if (next.length)
         setPendingAttachments((current) => [...current, ...next].slice(0, 12));
@@ -4832,7 +4824,7 @@ export function ChatView({
     try {
       const next = {
         id: attachmentId(),
-        ...(await readAttachmentFile(file.full_path)),
+        ...(await readWorkspaceAttachmentFile(folder, file.path)),
       };
       setPendingAttachments((current) => [...current, next].slice(0, 12));
       return true;

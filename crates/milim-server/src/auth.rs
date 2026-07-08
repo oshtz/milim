@@ -60,3 +60,65 @@ fn bearer_token(headers: &HeaderMap) -> Option<&str> {
         .strip_prefix("Bearer ")
         .map(str::trim)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use std::net::SocketAddr;
+    use std::sync::Arc;
+
+    use axum::http::HeaderValue;
+    use milim_core::config::ServerConfiguration;
+    use milim_inference::unavailable::UnavailableBackend;
+
+    fn state() -> AppState {
+        AppState::new(
+            Arc::new(UnavailableBackend::new()),
+            ServerConfiguration::default(),
+        )
+    }
+
+    fn headers(token: Option<&str>) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        if let Some(token) = token {
+            headers.insert(
+                AUTHORIZATION,
+                HeaderValue::from_str(&format!("Bearer {token}")).unwrap(),
+            );
+        }
+        headers
+    }
+
+    #[test]
+    fn allows_requests_when_auth_is_not_configured() {
+        assert!(authorize(&state(), &headers(None), None).is_ok());
+    }
+
+    #[test]
+    fn accepts_static_bearer_key() {
+        let state = state()
+            .with_api_keys(["secret".to_string()])
+            .with_loopback_trust(false);
+
+        assert!(authorize(&state, &headers(Some("secret")), None).is_ok());
+        assert!(authorize(&state, &headers(Some("wrong")), None).is_err());
+    }
+
+    #[test]
+    fn loopback_trust_bypasses_token_when_enabled() {
+        let state = state().with_api_keys(["secret".to_string()]);
+        let peer: SocketAddr = "127.0.0.1:12345".parse().unwrap();
+
+        assert!(authorize(&state, &headers(None), Some(peer)).is_ok());
+    }
+
+    #[test]
+    fn rejects_missing_token_when_auth_is_configured() {
+        let state = state()
+            .with_api_keys(["secret".to_string()])
+            .with_loopback_trust(false);
+
+        assert!(authorize(&state, &headers(None), None).is_err());
+    }
+}

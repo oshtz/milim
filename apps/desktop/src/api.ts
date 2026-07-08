@@ -324,27 +324,53 @@ export async function typeDictationText(text: string): Promise<void> {
   await invoke("voice_type_text", { text });
 }
 
-export async function readAttachmentFile(
-  path: string,
-): Promise<Omit<ChatAttachment, "id">> {
-  if (!inTauri)
-    throw new Error(
-      "Desktop file picking is only available in the desktop app.",
-    );
-  const payload = await invoke<{
-    name: string;
-    size: number;
-    content: string;
-    truncated: boolean;
-  }>("read_attachment_file", { path, maxBytes: MAX_ATTACHMENT_BYTES });
+type AttachmentFilePayload = {
+  name: string;
+  path: string;
+  size: number;
+  content: string;
+  truncated: boolean;
+};
+
+function attachmentFromPayload(
+  payload: AttachmentFilePayload,
+): Omit<ChatAttachment, "id"> {
   return {
     name: payload.name,
     mime: inferAttachmentMime(payload.name),
     size: payload.size,
     content: payload.content,
     truncated: payload.truncated,
-    sourcePath: path,
+    sourcePath: payload.path,
   };
+}
+
+export async function pickAttachmentFiles(): Promise<
+  Omit<ChatAttachment, "id">[]
+> {
+  if (!inTauri)
+    throw new Error(
+      "Desktop file picking is only available in the desktop app.",
+    );
+  const payloads = await invoke<AttachmentFilePayload[]>("pick_attachment_files", {
+    maxBytes: MAX_ATTACHMENT_BYTES,
+  });
+  return payloads.map(attachmentFromPayload);
+}
+
+export async function readWorkspaceAttachmentFile(
+  workspace: string,
+  path: string,
+): Promise<Omit<ChatAttachment, "id">> {
+  if (!inTauri)
+    throw new Error(
+      "Desktop file picking is only available in the desktop app.",
+    );
+  const payload = await invoke<AttachmentFilePayload>(
+    "read_workspace_attachment_file",
+    { workspace, path, maxBytes: MAX_ATTACHMENT_BYTES },
+  );
+  return attachmentFromPayload(payload);
 }
 
 export async function listWorkspaceFiles(

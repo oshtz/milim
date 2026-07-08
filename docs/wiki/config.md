@@ -39,7 +39,7 @@ The remaining storage work is:
 | Setting | Behavior |
 |---|---|
 | Port | Standalone server defaults to `7377`; desktop discovers its embedded loopback port through Tauri. |
-| Expose | `milim serve --expose` can bind beyond loopback when configured. |
+| Expose | `milim serve --expose` binds beyond loopback and auto-enables `msk-v1` auth when no auth is configured. |
 | CORS | Empty allow-list means no browser origins are allowed. |
 | Auth | `authRequired: true` accepts locally minted `msk-v1` keys; `apiKeys` accepts static bearer secrets; `accessKeyIssuers` trusts additional signed-key issuers. |
 

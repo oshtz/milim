@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
 
 env:
@@ -34,6 +35,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
       - uses: pnpm/action-setup@v5
         with:
           version: 9
@@ -42,6 +46,11 @@ jobs:
           node-version: 20
           cache: pnpm
           cache-dependency-path: apps/desktop/pnpm-lock.yaml
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            apps/desktop/src-tauri -> target
       - name: Linux webview deps
         run: |
           sudo apt-get update
@@ -60,6 +69,10 @@ jobs:
             patchelf \
             rpm
       - run: pnpm -C apps/desktop install --frozen-lockfile
+      - name: Tauri Rust clippy
+        run: cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets -- -D warnings
+      - name: Tauri Rust tests
+        run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
       - run: pnpm -C apps/desktop verify
 
   optional-features:

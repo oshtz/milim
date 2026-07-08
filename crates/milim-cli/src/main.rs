@@ -179,6 +179,13 @@ async fn serve(port: Option<u16>, expose: bool) -> anyhow::Result<()> {
     }
     if expose {
         config.expose_to_network = true;
+        if let Some(token) =
+            ensure_expose_auth(&mut config, paths.root(), &paths.server_config_file())?
+        {
+            println!("auth: enabled msk-v1 for --expose");
+            println!("token: {token}");
+            println!("PowerShell: $env:MILIM_API_TOKEN='{token}'");
+        }
     }
 
     let backend = build_backend().await?;
@@ -352,6 +359,31 @@ fn configure_auth(
     }
 
     Ok(state)
+}
+
+fn ensure_expose_auth(
+    config: &mut ServerConfiguration,
+    root: &Path,
+    config_file: &Path,
+) -> anyhow::Result<Option<String>> {
+    if auth_configured(config) {
+        return Ok(None);
+    }
+    config.auth_required = true;
+    let token = mint_local_msk_token(root, None, Some("serve --expose".to_string()), None)?;
+    config
+        .save(config_file)
+        .with_context(|| format!("save {}", config_file.display()))?;
+    Ok(Some(token))
+}
+
+fn auth_configured(config: &ServerConfiguration) -> bool {
+    config.auth_required
+        || config.api_keys.iter().any(|key| !key.trim().is_empty())
+        || config
+            .access_key_issuers
+            .iter()
+            .any(|issuer| !issuer.trim().is_empty())
 }
 
 fn identity_key_path(root: &Path) -> std::path::PathBuf {
@@ -581,12 +613,12 @@ fn auth(req: reqwest::RequestBuilder, token: Option<&str>) -> reqwest::RequestBu
 fn keys_cmd(action: KeysAction) -> anyhow::Result<()> {
     let paths = Paths::resolve();
     paths.ensure().context("create milim directories")?;
-    let key_path = identity_key_path(paths.root());
-    let identity =
-        milim_identity::LocalIdentity::load_or_create(&key_path).context("load identity")?;
 
     match action {
         KeysAction::Identity => {
+            let key_path = identity_key_path(paths.root());
+            let identity = milim_identity::LocalIdentity::load_or_create(&key_path)
+                .context("load identity")?;
             println!("{}", identity.address()?);
         }
         KeysAction::Mint {
@@ -599,23 +631,38 @@ fn keys_cmd(action: KeysAction) -> anyhow::Result<()> {
                     anyhow::bail!("--expires-secs must be positive");
                 }
             }
-            let address = identity.address()?;
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .context("system clock is before the Unix epoch")?
-                .as_secs() as i64;
-            let params = milim_identity::MintParams {
-                audience: audience.unwrap_or(address),
-                label,
-                iat: now,
-                exp: expires_secs.map(|s| now + s),
-                cnt: now as u64,
-                nonce: milim_identity::random_nonce(),
-            };
-            println!("{}", identity.mint_token(params)?);
+            println!(
+                "{}",
+                mint_local_msk_token(paths.root(), audience, label, expires_secs)?
+            );
         }
     }
     Ok(())
+}
+
+fn mint_local_msk_token(
+    root: &Path,
+    audience: Option<String>,
+    label: Option<String>,
+    expires_secs: Option<i64>,
+) -> anyhow::Result<String> {
+    let key_path = identity_key_path(root);
+    let identity =
+        milim_identity::LocalIdentity::load_or_create(&key_path).context("load identity")?;
+    let address = identity.address()?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .context("system clock is before the Unix epoch")?
+        .as_secs() as i64;
+    let params = milim_identity::MintParams {
+        audience: audience.unwrap_or(address),
+        label,
+        iat: now,
+        exp: expires_secs.map(|s| now + s),
+        cnt: now as u64,
+        nonce: milim_identity::random_nonce(),
+    };
+    Ok(identity.mint_token(params)?)
 }
 
 /// Choose a backend from the environment, in priority order:
@@ -646,6 +693,16 @@ fn init_tracing() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn temp_root(prefix: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "{prefix}-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
 
     #[test]
     fn client_base_url_uses_config_port_and_normalizes_url() {
@@ -713,13 +770,7 @@ mod tests {
 
     #[test]
     fn auth_required_accepts_local_msk_tokens() {
-        let root = std::env::temp_dir().join(format!(
-            "milim-cli-auth-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let root = temp_root("milim-cli-auth");
         let config = ServerConfiguration {
             auth_required: true,
             ..Default::default()
@@ -748,6 +799,50 @@ mod tests {
             .unwrap()
             .validate(&token)
             .is_valid());
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn expose_auto_auth_enables_and_mints_local_token() {
+        let root = temp_root("milim-cli-expose-auth");
+        let config_file = root.join("config").join("server.json");
+        let mut config = ServerConfiguration::default();
+
+        let token = ensure_expose_auth(&mut config, &root, &config_file)
+            .unwrap()
+            .expect("token");
+
+        assert!(config.auth_required);
+        let saved = ServerConfiguration::load_or_default(&config_file);
+        assert!(saved.auth_required);
+        let state = AppState::new(Arc::new(UnavailableBackend::new()), config.clone());
+        let state = configure_auth(state, &root, &config).unwrap();
+        assert!(!state.trust_loopback);
+        assert!(state
+            .access_validator
+            .as_ref()
+            .unwrap()
+            .validate(&token)
+            .is_valid());
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn expose_auto_auth_leaves_existing_auth_alone() {
+        let root = temp_root("milim-cli-expose-existing-auth");
+        let config_file = root.join("config").join("server.json");
+        let mut config = ServerConfiguration {
+            api_keys: vec!["static-secret".to_string()],
+            ..Default::default()
+        };
+
+        assert!(ensure_expose_auth(&mut config, &root, &config_file)
+            .unwrap()
+            .is_none());
+        assert!(!config.auth_required);
+        assert!(!config_file.exists());
 
         let _ = std::fs::remove_dir_all(root);
     }

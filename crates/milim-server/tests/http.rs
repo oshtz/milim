@@ -2687,10 +2687,10 @@ async fn providers_accept_openai_compatible_wire_kind() {
         "milim-openai-provider-kind-test-{}",
         uuid::Uuid::new_v4()
     ));
-    let registry = Arc::new(milim_server::providers::ProviderRegistry::open(
-        &tmp,
-        Arc::new(TestBackend::new()),
-    ));
+    let registry = Arc::new(
+        milim_server::providers::ProviderRegistry::open(&tmp, Arc::new(TestBackend::new()))
+            .unwrap(),
+    );
     let state = AppState::new(Arc::new(TestBackend::new()), ServerConfiguration::default())
         .with_providers(registry);
     let base = spawn(state).await;
@@ -2719,10 +2719,10 @@ async fn providers_accept_media_provider_kinds_without_chat_model_fetch() {
         "milim-media-provider-kind-test-{}",
         uuid::Uuid::new_v4()
     ));
-    let registry = Arc::new(milim_server::providers::ProviderRegistry::open(
-        &tmp,
-        Arc::new(TestBackend::new()),
-    ));
+    let registry = Arc::new(
+        milim_server::providers::ProviderRegistry::open(&tmp, Arc::new(TestBackend::new()))
+            .unwrap(),
+    );
     let state = AppState::new(Arc::new(TestBackend::new()), ServerConfiguration::default())
         .with_providers(registry);
     let base = spawn(state).await;
@@ -2784,10 +2784,10 @@ async fn media_generate_replicate_uses_saved_provider_and_redacts_prompt() {
         "milim-media-replicate-test-{}",
         uuid::Uuid::new_v4()
     ));
-    let registry = Arc::new(milim_server::providers::ProviderRegistry::open(
-        &tmp,
-        Arc::new(TestBackend::new()),
-    ));
+    let registry = Arc::new(
+        milim_server::providers::ProviderRegistry::open(&tmp, Arc::new(TestBackend::new()))
+            .unwrap(),
+    );
     let privacy = Arc::new(milim_server::privacy::PrivacyGate::default());
     let state = AppState::new(Arc::new(TestBackend::new()), ServerConfiguration::default())
         .with_providers(registry)
@@ -2869,10 +2869,10 @@ async fn media_generate_fal_uses_queue_endpoint_and_key_auth() {
     )
     .await;
     let tmp = std::env::temp_dir().join(format!("milim-media-fal-test-{}", uuid::Uuid::new_v4()));
-    let registry = Arc::new(milim_server::providers::ProviderRegistry::open(
-        &tmp,
-        Arc::new(TestBackend::new()),
-    ));
+    let registry = Arc::new(
+        milim_server::providers::ProviderRegistry::open(&tmp, Arc::new(TestBackend::new()))
+            .unwrap(),
+    );
     let state = AppState::new(Arc::new(TestBackend::new()), ServerConfiguration::default())
         .with_providers(registry);
     let base = spawn(state).await;
@@ -2942,10 +2942,10 @@ async fn media_generate_openrouter_normalizes_to_image_only_output_modality() {
         "milim-media-openrouter-test-{}",
         uuid::Uuid::new_v4()
     ));
-    let registry = Arc::new(milim_server::providers::ProviderRegistry::open(
-        &tmp,
-        Arc::new(TestBackend::new()),
-    ));
+    let registry = Arc::new(
+        milim_server::providers::ProviderRegistry::open(&tmp, Arc::new(TestBackend::new()))
+            .unwrap(),
+    );
     let state = AppState::new(Arc::new(TestBackend::new()), ServerConfiguration::default())
         .with_providers(registry);
     let base = spawn(state).await;
@@ -3028,10 +3028,10 @@ async fn media_openrouter_metadata_lists_image_models_and_schema_controls() {
         "milim-media-openrouter-metadata-test-{}",
         uuid::Uuid::new_v4()
     ));
-    let registry = Arc::new(milim_server::providers::ProviderRegistry::open(
-        &tmp,
-        Arc::new(TestBackend::new()),
-    ));
+    let registry = Arc::new(
+        milim_server::providers::ProviderRegistry::open(&tmp, Arc::new(TestBackend::new()))
+            .unwrap(),
+    );
     let state = AppState::new(Arc::new(TestBackend::new()), ServerConfiguration::default())
         .with_providers(registry);
     let base = spawn(state).await;
@@ -3127,10 +3127,10 @@ async fn media_replicate_metadata_lists_image_models_and_schema_controls() {
         "milim-media-replicate-metadata-test-{}",
         uuid::Uuid::new_v4()
     ));
-    let registry = Arc::new(milim_server::providers::ProviderRegistry::open(
-        &tmp,
-        Arc::new(TestBackend::new()),
-    ));
+    let registry = Arc::new(
+        milim_server::providers::ProviderRegistry::open(&tmp, Arc::new(TestBackend::new()))
+            .unwrap(),
+    );
     let state = AppState::new(Arc::new(TestBackend::new()), ServerConfiguration::default())
         .with_providers(registry);
     let base = spawn(state).await;
@@ -3226,10 +3226,10 @@ async fn media_fal_metadata_lists_image_models_and_schema_controls() {
         "milim-media-fal-metadata-test-{}",
         uuid::Uuid::new_v4()
     ));
-    let registry = Arc::new(milim_server::providers::ProviderRegistry::open(
-        &tmp,
-        Arc::new(TestBackend::new()),
-    ));
+    let registry = Arc::new(
+        milim_server::providers::ProviderRegistry::open(&tmp, Arc::new(TestBackend::new()))
+            .unwrap(),
+    );
     let state = AppState::new(Arc::new(TestBackend::new()), ServerConfiguration::default())
         .with_providers(registry);
     let base = spawn(state).await;
@@ -3318,10 +3318,10 @@ async fn media_fal_metadata_lists_image_models_and_schema_controls() {
 async fn media_models_cache_uses_cached_list_until_refresh_requested() {
     let (upstream_base, upstream_requests) = spawn_replicate_refresh_upstream().await;
     let tmp = std::env::temp_dir().join(format!("milim-media-cache-test-{}", uuid::Uuid::new_v4()));
-    let registry = Arc::new(milim_server::providers::ProviderRegistry::open(
-        &tmp,
-        Arc::new(TestBackend::new()),
-    ));
+    let registry = Arc::new(
+        milim_server::providers::ProviderRegistry::open(&tmp, Arc::new(TestBackend::new()))
+            .unwrap(),
+    );
     let state = AppState::new(Arc::new(TestBackend::new()), ServerConfiguration::default())
         .with_providers(registry);
     let base = spawn(state).await;
@@ -3401,10 +3401,10 @@ async fn media_schema_controls_include_descriptions_urls_and_arrays() {
         "milim-media-schema-rich-test-{}",
         uuid::Uuid::new_v4()
     ));
-    let registry = Arc::new(milim_server::providers::ProviderRegistry::open(
-        &tmp,
-        Arc::new(TestBackend::new()),
-    ));
+    let registry = Arc::new(
+        milim_server::providers::ProviderRegistry::open(&tmp, Arc::new(TestBackend::new()))
+            .unwrap(),
+    );
     let state = AppState::new(Arc::new(TestBackend::new()), ServerConfiguration::default())
         .with_providers(registry);
     let base = spawn(state).await;
@@ -3481,10 +3481,10 @@ async fn media_status_replicate_fetches_prediction_and_extracts_media() {
         "milim-media-replicate-status-test-{}",
         uuid::Uuid::new_v4()
     ));
-    let registry = Arc::new(milim_server::providers::ProviderRegistry::open(
-        &tmp,
-        Arc::new(TestBackend::new()),
-    ));
+    let registry = Arc::new(
+        milim_server::providers::ProviderRegistry::open(&tmp, Arc::new(TestBackend::new()))
+            .unwrap(),
+    );
     let state = AppState::new(Arc::new(TestBackend::new()), ServerConfiguration::default())
         .with_providers(registry);
     let base = spawn(state).await;
@@ -3545,10 +3545,10 @@ async fn media_status_fal_fetches_result_url_and_extracts_images() {
         "milim-media-fal-status-test-{}",
         uuid::Uuid::new_v4()
     ));
-    let registry = Arc::new(milim_server::providers::ProviderRegistry::open(
-        &tmp,
-        Arc::new(TestBackend::new()),
-    ));
+    let registry = Arc::new(
+        milim_server::providers::ProviderRegistry::open(&tmp, Arc::new(TestBackend::new()))
+            .unwrap(),
+    );
     let state = AppState::new(Arc::new(TestBackend::new()), ServerConfiguration::default())
         .with_providers(registry);
     let base = spawn(state).await;
@@ -3612,10 +3612,10 @@ async fn media_real_fal_flux_schnell_smoke_when_env_configured() {
         "milim-media-real-fal-test-{}",
         uuid::Uuid::new_v4()
     ));
-    let registry = Arc::new(milim_server::providers::ProviderRegistry::open(
-        &tmp,
-        Arc::new(TestBackend::new()),
-    ));
+    let registry = Arc::new(
+        milim_server::providers::ProviderRegistry::open(&tmp, Arc::new(TestBackend::new()))
+            .unwrap(),
+    );
     let state = AppState::new(Arc::new(TestBackend::new()), ServerConfiguration::default())
         .with_providers(registry);
     let base = spawn(state).await;
@@ -3755,10 +3755,10 @@ async fn media_real_replicate_flux_schnell_smoke_when_env_configured() {
         "milim-media-real-replicate-test-{}",
         uuid::Uuid::new_v4()
     ));
-    let registry = Arc::new(milim_server::providers::ProviderRegistry::open(
-        &tmp,
-        Arc::new(TestBackend::new()),
-    ));
+    let registry = Arc::new(
+        milim_server::providers::ProviderRegistry::open(&tmp, Arc::new(TestBackend::new()))
+            .unwrap(),
+    );
     let state = AppState::new(Arc::new(TestBackend::new()), ServerConfiguration::default())
         .with_providers(registry);
     let base = spawn(state).await;
@@ -3878,10 +3878,10 @@ async fn media_real_replicate_flux_schnell_smoke_when_env_configured() {
 #[tokio::test]
 async fn media_generate_blocks_remote_prompt_when_privacy_gate_blocks_pii() {
     let tmp = std::env::temp_dir().join(format!("milim-media-block-test-{}", uuid::Uuid::new_v4()));
-    let registry = Arc::new(milim_server::providers::ProviderRegistry::open(
-        &tmp,
-        Arc::new(TestBackend::new()),
-    ));
+    let registry = Arc::new(
+        milim_server::providers::ProviderRegistry::open(&tmp, Arc::new(TestBackend::new()))
+            .unwrap(),
+    );
     let privacy = Arc::new(milim_server::privacy::PrivacyGate::default());
     let state = AppState::new(Arc::new(TestBackend::new()), ServerConfiguration::default())
         .with_providers(registry)
@@ -3938,10 +3938,10 @@ async fn anthropic_provider_kind_routes_via_messages_api() {
     let (upstream_base, upstream_requests) = spawn_two_request_anthropic_upstream().await;
     let tmp = std::env::temp_dir().join(format!("milim-provider-kind-test-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&tmp);
-    let registry = Arc::new(milim_server::providers::ProviderRegistry::open(
-        &tmp,
-        Arc::new(TestBackend::new()),
-    ));
+    let registry = Arc::new(
+        milim_server::providers::ProviderRegistry::open(&tmp, Arc::new(TestBackend::new()))
+            .unwrap(),
+    );
     let privacy = Arc::new(milim_server::privacy::PrivacyGate::default());
     let state = AppState::new(
         Arc::new(registry.router(privacy.clone())),
@@ -4018,10 +4018,10 @@ async fn gemini_provider_kind_routes_via_generate_content_api() {
         std::process::id()
     ));
     let _ = std::fs::remove_dir_all(&tmp);
-    let registry = Arc::new(milim_server::providers::ProviderRegistry::open(
-        &tmp,
-        Arc::new(TestBackend::new()),
-    ));
+    let registry = Arc::new(
+        milim_server::providers::ProviderRegistry::open(&tmp, Arc::new(TestBackend::new()))
+            .unwrap(),
+    );
     let privacy = Arc::new(milim_server::privacy::PrivacyGate::default());
     let state = AppState::new(
         Arc::new(registry.router(privacy.clone())),
@@ -6307,6 +6307,45 @@ async fn schedules_crud_and_fire_due() {
         .await
         .unwrap();
     assert_eq!(bad.status(), reqwest::StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn schedule_mark_failure_prevents_agent_run() {
+    use milim_automation::ScheduleStore;
+    use milim_storage::Database;
+
+    let db_path = unique_temp_path("milim-schedule-mark-fail.db");
+    let store = ScheduleStore::new(Database::open(&db_path).unwrap()).unwrap();
+    store
+        .create("hourly", "0 0 * * * *", None, "must not run")
+        .unwrap();
+    let blocker = Database::open(&db_path).unwrap();
+    blocker
+        .conn()
+        .execute_batch(
+            "CREATE TRIGGER fail_schedule_mark
+             BEFORE UPDATE OF last_run ON schedules
+             BEGIN
+               SELECT RAISE(FAIL, 'mark failed');
+             END;",
+        )
+        .unwrap();
+
+    let backend = MessageCaptureBackend::default();
+    let seen_messages = backend.seen();
+    let state = AppState::new(Arc::new(backend), ServerConfiguration::default())
+        .with_tools(milim_tools::ToolRegistry::with_builtins())
+        .with_schedules(store);
+
+    let err = milim_server::fire_due(&state, 10_000)
+        .await
+        .expect_err("mark failure should stop the run");
+    assert!(err.to_string().contains("mark failed"));
+    assert!(seen_messages.read().unwrap().is_empty());
+
+    fs::remove_file(&db_path).ok();
+    fs::remove_file(db_path.with_extension("db-wal")).ok();
+    fs::remove_file(db_path.with_extension("db-shm")).ok();
 }
 
 #[tokio::test]

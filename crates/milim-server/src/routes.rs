@@ -6155,7 +6155,7 @@ pub(crate) async fn provider_upsert(
         model_capabilities: BTreeMap::new(),
         last_error: None,
     };
-    let saved = reg.upsert(cfg).await;
+    let saved = reg.upsert(cfg).await.map_err(ApiError)?;
     Ok(Json(json!({
         "id": saved.id, "name": saved.name, "kind": saved.kind, "base_url": saved.base_url,
         "enabled": saved.enabled, "has_key": saved.api_key.is_some(), "models": saved.models,
@@ -6178,7 +6178,7 @@ pub(crate) async fn provider_delete(
             "providers are not enabled".to_string(),
         ))
     })?;
-    Ok(Json(json!({ "deleted": reg.delete(&id).await })).into_response())
+    Ok(Json(json!({ "deleted": reg.delete(&id).await.map_err(ApiError)? })).into_response())
 }
 
 // ----- Media generation -----

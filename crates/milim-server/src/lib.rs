@@ -449,8 +449,8 @@ fn skill_instruction_message(skills: &[milim_skills::SkillDef]) -> Option<ChatMe
 }
 
 /// Run any schedules due at `now_unix` once, returning how many fired. Each
-/// schedule runs its (optional) agent's tool-use loop with its prompt, then is
-/// marked as run. Factored out from the loop so it's deterministically testable.
+/// schedule is marked as run before its (optional) agent's tool-use loop starts.
+/// Factored out from the loop so it's deterministically testable.
 pub async fn fire_due(state: &AppState, now_unix: i64) -> Result<usize> {
     let Some(schedules) = state.schedules.as_ref() else {
         return Ok(0);
@@ -459,6 +459,7 @@ pub async fn fire_due(state: &AppState, now_unix: i64) -> Result<usize> {
 
     let mut fired = 0;
     for s in due {
+        schedules.mark_ran(&s.id, now_unix)?;
         let mut messages = Vec::new();
         let mut model = "default".to_string();
         let prompt = milim_automation::prompt_with_attachments(&s.prompt, &s.attachments);
@@ -490,7 +491,6 @@ pub async fn fire_due(state: &AppState, now_unix: i64) -> Result<usize> {
                     model: model.clone(),
                     ran_at: now_unix,
                 });
-                schedules.mark_ran(&s.id, now_unix)?;
                 fired += 1;
             }
             Err(e) => tracing::warn!("schedule {} failed: {e}", s.id),
