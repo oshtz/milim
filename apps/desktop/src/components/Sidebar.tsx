@@ -26,6 +26,17 @@ const SIDEBAR_DRAG_THRESHOLD = 5;
 const SIDEBAR_SECTION_PREVIEW_LIMIT = 5;
 const inTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
+function sidebarSectionShownCount(totalSessions: number, visibleLimit: number, activeIndex: number): number {
+  const baseCount = Math.max(0, Math.min(visibleLimit, totalSessions));
+  return activeIndex >= baseCount && activeIndex < totalSessions ? baseCount + 1 : baseCount;
+}
+
+export function sidebarSectionNextRevealCount(totalSessions: number, visibleLimit: number, activeIndex: number): number {
+  const currentCount = sidebarSectionShownCount(totalSessions, visibleLimit, activeIndex);
+  const nextLimit = Math.min(totalSessions, Math.max(0, visibleLimit) + SIDEBAR_SECTION_PREVIEW_LIMIT);
+  return Math.max(0, sidebarSectionShownCount(totalSessions, nextLimit, activeIndex) - currentCount);
+}
+
 type SidebarDragItem = { type: "session" | "section"; id: string };
 type SidebarDropPosition = "before" | "after" | "inside";
 type SidebarDragTarget = { type: "session"; id: string; sectionId: string; position: Exclude<SidebarDropPosition, "inside"> } | { type: "section"; id: string; position: SidebarDropPosition };
@@ -285,7 +296,7 @@ export function Sidebar({
   const [sidebarResizing, setSidebarResizing] = useState(false);
   const [dragging, setDragging] = useState<SidebarDragItem | null>(null);
   const [dragOver, setDragOver] = useState<SidebarDragTarget | null>(null);
-  const [manuallyExpandedSections, setManuallyExpandedSections] = useState<Set<string>>(() => new Set());
+  const [sectionVisibleLimits, setSectionVisibleLimits] = useState<Record<string, number>>(() => ({}));
 
   useEffect(() => {
     if (!projectMenuOpen && !confirmArchiveId && !confirmArchiveProjectId) return;
@@ -806,17 +817,19 @@ export function Sidebar({
                 : null;
               const searchActive = Boolean(query.trim());
               const totalSessions = group.sessions.length;
-              const sectionManuallyExpanded = manuallyExpandedSections.has(group.id);
-              const visibleCount = searchActive || sectionManuallyExpanded ? totalSessions : Math.min(SIDEBAR_SECTION_PREVIEW_LIMIT, totalSessions);
-              const baseVisibleSessions = group.sessions.slice(0, visibleCount);
+              const visibleLimit = searchActive
+                ? totalSessions
+                : Math.min(sectionVisibleLimits[group.id] ?? SIDEBAR_SECTION_PREVIEW_LIMIT, totalSessions);
+              const baseVisibleSessions = group.sessions.slice(0, visibleLimit);
               const activeIndex = group.sessions.findIndex((session) => session.id === activeId);
-              const visibleSessions = !searchActive && activeIndex >= visibleCount
+              const visibleSessions = !searchActive && activeIndex >= visibleLimit
                 ? [...baseVisibleSessions, group.sessions[activeIndex]]
                 : baseVisibleSessions;
               const currentShownCount = visibleSessions.length;
-              const nextRevealCount = Math.max(0, totalSessions - currentShownCount);
+              const nextRevealCount = sidebarSectionNextRevealCount(totalSessions, visibleLimit, activeIndex);
               const canShowMore = !collapsed && !searchActive && nextRevealCount > 0;
-              const canShowLess = !collapsed && !searchActive && sectionManuallyExpanded && totalSessions > SIDEBAR_SECTION_PREVIEW_LIMIT;
+              const canShowLess = !collapsed && !searchActive && visibleLimit > SIDEBAR_SECTION_PREVIEW_LIMIT;
+              const sectionExpanded = visibleLimit > SIDEBAR_SECTION_PREVIEW_LIMIT;
               const shownCountLabel = `${currentShownCount} of ${totalSessions} shown`;
               const showMoreLabel = `Show ${nextRevealCount} more ${nextRevealCount === 1 ? "thread" : "threads"} in ${group.label}, ${shownCountLabel}`;
               const showLessLabel = `Show fewer threads in ${group.label}, ${shownCountLabel}`;
@@ -826,10 +839,11 @@ export function Sidebar({
                   type="button"
                   title={showMoreLabel}
                   aria-label={showMoreLabel}
-                  aria-expanded={sectionManuallyExpanded}
-                  onClick={() => setManuallyExpandedSections((current) => {
-                    const next = new Set(current);
-                    next.add(group.id);
+                  aria-expanded={sectionExpanded}
+                  onClick={() => setSectionVisibleLimits((current) => {
+                    const currentLimit = Math.min(current[group.id] ?? SIDEBAR_SECTION_PREVIEW_LIMIT, totalSessions);
+                    const nextLimit = Math.min(totalSessions, currentLimit + SIDEBAR_SECTION_PREVIEW_LIMIT);
+                    const next = { ...current, [group.id]: nextLimit };
                     return next;
                   })}
                 >
@@ -843,10 +857,13 @@ export function Sidebar({
                   type="button"
                   title={showLessLabel}
                   aria-label={showLessLabel}
-                  aria-expanded={sectionManuallyExpanded}
-                  onClick={() => setManuallyExpandedSections((current) => {
-                    const next = new Set(current);
-                    next.delete(group.id);
+                  aria-expanded={sectionExpanded}
+                  onClick={() => setSectionVisibleLimits((current) => {
+                    const currentLimit = Math.min(current[group.id] ?? SIDEBAR_SECTION_PREVIEW_LIMIT, totalSessions);
+                    const nextLimit = Math.max(SIDEBAR_SECTION_PREVIEW_LIMIT, currentLimit - SIDEBAR_SECTION_PREVIEW_LIMIT);
+                    const next = { ...current };
+                    if (nextLimit === SIDEBAR_SECTION_PREVIEW_LIMIT) delete next[group.id];
+                    else next[group.id] = nextLimit;
                     return next;
                   })}
                 >

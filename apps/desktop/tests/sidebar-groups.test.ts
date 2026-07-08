@@ -59,8 +59,9 @@ const server = await createServer({
 });
 
 try {
-  const { groupSessionsByProjects } = await server.ssrLoadModule("/src/components/Sidebar.tsx") as {
+  const { groupSessionsByProjects, sidebarSectionNextRevealCount } = await server.ssrLoadModule("/src/components/Sidebar.tsx") as {
     groupSessionsByProjects: (sessions: SidebarSession[], projects: Project[], sidebar: SessionSidebarState, query: string) => SessionGroup[];
+    sidebarSectionNextRevealCount: (totalSessions: number, visibleLimit: number, activeIndex: number) => number;
   };
   const { SIDEBAR_CHATS_SECTION_ID, projectSectionId } = await server.ssrLoadModule("/src/sessions/store.ts") as {
     SIDEBAR_CHATS_SECTION_ID: string;
@@ -102,6 +103,10 @@ try {
 
   const filteredGroups = groupSessionsByProjects([], [], { ...sidebar, projectFolders: [] }, "missing");
   assert(filteredGroups.length === 0, "filtered empty sidebar should still show no result groups");
+
+  assert(sidebarSectionNextRevealCount(12, 5, -1) === 5, "expanded sidebar sections should reveal a full next batch");
+  assert(sidebarSectionNextRevealCount(7, 5, -1) === 2, "expanded sidebar sections should reveal only the remaining threads");
+  assert(sidebarSectionNextRevealCount(12, 5, 8) === 4, "active overflow thread should not be counted as newly revealed");
 } finally {
   await server.close();
 }
