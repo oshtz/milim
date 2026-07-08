@@ -96,6 +96,7 @@ import {
   type PreviewAppFile,
   type PreviewAppStatus,
   type PreviewAppStartOptions,
+  type PreviewSurfaceTarget,
   type PrivacyMode,
   type ProviderInfo,
   type ReasoningEffort,
@@ -2436,6 +2437,8 @@ export function ChatView({
   >([]);
   const [previewSelection, setPreviewSelection] =
     useState<PreviewSelection | null>(null);
+  const [activePreviewSurface, setActivePreviewSurface] =
+    useState<PreviewSurfaceTarget | null>(null);
   const [previewAppStatus, setPreviewAppStatus] =
     useState<PreviewAppStatus | null>(null);
   const [previewAppBusy, setPreviewAppBusy] = useState<
@@ -3666,6 +3669,10 @@ export function ChatView({
   useEffect(() => {
     sidePanelOpenRef.current = sidePanelVisible;
   }, [sidePanelVisible]);
+
+  useEffect(() => {
+    if (!sidePanelVisible || sidePanelMode === "git") setActivePreviewSurface(null);
+  }, [sidePanelMode, sidePanelVisible]);
 
   function resizePreviewPanel(width: number) {
     setPreviewPanelWidth(clampPreviewPanelWidth(width));
@@ -5537,9 +5544,10 @@ export function ChatView({
         model: turnModel,
         sandbox: turnSandbox,
         computerUse: turnComputerUse,
-        previewTools: Boolean(
-          sidePanelOpen && sidePanelMode !== "git" && visiblePreviewSelection,
-        ),
+        previewSurface:
+          sidePanelVisible && sidePanelMode !== "git"
+            ? activePreviewSurface
+            : null,
         activeAgentId: turnActiveAgentId,
         toolApproval: turnToolApproval,
         toolApprovalGrant: false,
@@ -6901,6 +6909,7 @@ export function ChatView({
                   onRuntimeStop={() => void stopPreviewRuntime()}
                   onRuntimeRestart={() => void restartPreviewRuntime()}
                   controlActivity={previewControlActivity}
+                  onSurfaceChange={setActivePreviewSurface}
                   modeSwitcher={sidePanelModeSwitcher}
                   style={previewPanelStyle}
                 />

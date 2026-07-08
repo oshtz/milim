@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type KeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent, type ReactNode } from "react";
-import { openExternalUrl, setActivePreviewTarget, type ChatArtifact, type PreviewAppStatus } from "../api";
+import { openExternalUrl, setActivePreviewTarget, type ChatArtifact, type PreviewAppStatus, type PreviewSurfaceCapability, type PreviewSurfaceKind, type PreviewSurfaceTarget } from "../api";
 import type { ArtifactRevision, ArtifactRevisionGroup } from "../lib/artifactRevisions";
 import { buildArtifactPreviewDocument, previewKindForArtifact } from "../lib/artifactPreview";
 import { isFileArtifact, normalizeArtifactBrowserUrl } from "../lib/artifacts";
@@ -66,9 +66,19 @@ const PREVIEW_CONTROL_OVERLAY_CLOSE_MS = 3400;
 const PREVIEW_CONTROL_OVERLAY_STORAGE_PREFIX = "milim-preview-control-activity:";
 const IS_TAURI = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 const APP_FLOATING_UI_SELECTOR = '[role="dialog"][aria-modal="true"], [role="menu"]';
+const DOM_PREVIEW_CAPABILITIES: PreviewSurfaceCapability[] = ["dom_snapshot", "click", "type", "key", "scroll", "logs", "source"];
 
 export function nativePreviewBlockedByAppUi(root: Pick<ParentNode, "querySelector"> = document): boolean {
   return Boolean(root.querySelector(APP_FLOATING_UI_SELECTOR));
+}
+
+export function previewSurfaceIsInspectable(surface: PreviewSurfaceTarget | null): boolean {
+  return Boolean(surface?.status === "ready" && surface.capabilities.includes("dom_snapshot"));
+}
+
+async function publishPreviewSurface(surface: PreviewSurfaceTarget | null, onSurfaceChange?: (surface: PreviewSurfaceTarget | null) => void) {
+  onSurfaceChange?.(surface);
+  await setActivePreviewTarget(surface).catch(() => undefined);
 }
 
 export function PreviewPanel({
@@ -91,6 +101,7 @@ export function PreviewPanel({
   onRuntimeStop,
   onRuntimeRestart,
   controlActivity,
+  onSurfaceChange,
   modeSwitcher,
   style,
 }: {
@@ -113,6 +124,7 @@ export function PreviewPanel({
   onRuntimeStop?: () => void;
   onRuntimeRestart?: () => void;
   controlActivity?: PreviewControlActivity | null;
+  onSurfaceChange?: (surface: PreviewSurfaceTarget | null) => void;
   modeSwitcher?: ReactNode;
   style?: CSSProperties;
 }) {
@@ -131,6 +143,7 @@ export function PreviewPanel({
   const [codeFileListWidth, setCodeFileListWidth] = useState(CODE_SPLIT_DEFAULT_WIDTH);
   const [codeSplitDragging, setCodeSplitDragging] = useState(false);
   const [logResizing, setLogResizing] = useState(false);
+  const [iframeReadyKey, setIframeReadyKey] = useState<string | null>(null);
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const logIdRef = useRef(0);
   const codePanelRef = useRef<HTMLDivElement | null>(null);
@@ -176,6 +189,7 @@ export function PreviewPanel({
   } as CSSProperties;
   const canGoBack = isUrlPreview && browserHistoryIndex > 0;
   const canGoForward = isUrlPreview && browserHistoryIndex >= 0 && browserHistoryIndex < browserHistory.length - 1;
+  const iframeSurfaceKey = `${artifact.id}:${frameKey}`;
 
   function setActiveTab(tab: PreviewTab) {
     if (controlledActiveTab === undefined) setLocalActiveTab(tab);
@@ -256,16 +270,36 @@ export function PreviewPanel({
   }, [artifact.id, browserUrl, frameKey, source]);
 
   useEffect(() => {
+    setIframeReadyKey(null);
+  }, [artifact.id, frameKey, previewSource]);
+
+  useEffect(() => {
     if (runtimeStatus?.status === "error") setLogsOpen(true);
   }, [runtimeStatus?.status]);
 
   useEffect(() => {
-    if (isUrlPreview || activeTab !== "preview" || previewDeferred || previewError) return;
-    void setActivePreviewTarget({ label: "main", url: title, native: false }).catch(() => undefined);
+    if (isUrlPreview && browserUrl) return;
+    let surface: PreviewSurfaceTarget;
+    if (isUrlPreview) {
+      surface = { kind: "blank", title: "Browser", native: false, status: "not_inspectable", capabilities: [] };
+    } else if (activeTab === "code") {
+      surface = { kind: "code", title, native: false, status: "not_inspectable", capabilities: ["source"] };
+    } else if (previewKind === "markdown") {
+      surface = { kind: "markdown", title, native: false, status: "not_inspectable", capabilities: ["source"] };
+    } else if (previewDeferred) {
+      surface = { kind: "artifact_iframe", title, native: false, status: "loading", capabilities: ["source"] };
+    } else if (previewError) {
+      surface = { kind: "artifact_iframe", title, native: false, status: "error", capabilities: ["logs", "source"] };
+    } else if (iframeReadyKey === iframeSurfaceKey) {
+      surface = { label: "main", kind: "artifact_iframe", title, url: title, native: false, status: "ready", capabilities: DOM_PREVIEW_CAPABILITIES };
+    } else {
+      surface = { kind: "artifact_iframe", title, native: false, status: "loading", capabilities: ["source"] };
+    }
+    void publishPreviewSurface(surface, onSurfaceChange);
     return () => {
-      void setActivePreviewTarget(null).catch(() => undefined);
+      void publishPreviewSurface(null, onSurfaceChange);
     };
-  }, [activeTab, frameKey, isUrlPreview, previewDeferred, previewError, title]);
+  }, [activeTab, browserUrl, iframeReadyKey, iframeSurfaceKey, isUrlPreview, onSurfaceChange, previewDeferred, previewError, previewKind, title]);
 
   useEffect(() => {
     function onMessage(event: MessageEvent) {
@@ -662,7 +696,7 @@ export function PreviewPanel({
                 {browserError && <div className="preview-browser-error" role="alert">{browserError}</div>}
                 <div className="preview-browser-content">
                   {browserUrl ? (
-                    <NativeArtifactBrowser url={browserUrl} frameKey={frameKey} title={title} active={!closing} controlActivity={controlActivity} />
+                    <NativeArtifactBrowser url={browserUrl} frameKey={frameKey} title={title} active={!closing} surfaceKind={runtimeStatus ? "runtime_browser" : "native_browser"} onSurfaceChange={onSurfaceChange} controlActivity={controlActivity} />
                   ) : (
                     <div className="preview-browser-empty" data-testid="preview-browser-empty">
                       <Logo height={42} className="preview-browser-empty-logo" />
@@ -687,6 +721,7 @@ export function PreviewPanel({
                   referrerPolicy="no-referrer"
                   src="about:blank"
                   srcDoc={previewSource}
+                  onLoad={() => setIframeReadyKey(iframeSurfaceKey)}
                 />
                 {controlActivity && <PreviewControlOverlay key={controlActivity.id} activity={controlActivity} />}
               </div>
@@ -866,7 +901,23 @@ function PreviewRuntimeStatus({
   );
 }
 
-function NativeArtifactBrowser({ url, frameKey, title, active, controlActivity }: { url: string; frameKey: number; title: string; active: boolean; controlActivity?: PreviewControlActivity | null }) {
+function NativeArtifactBrowser({
+  url,
+  frameKey,
+  title,
+  active,
+  surfaceKind,
+  onSurfaceChange,
+  controlActivity,
+}: {
+  url: string;
+  frameKey: number;
+  title: string;
+  active: boolean;
+  surfaceKind: PreviewSurfaceKind;
+  onSurfaceChange?: (surface: PreviewSurfaceTarget | null) => void;
+  controlActivity?: PreviewControlActivity | null;
+}) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const webviewRef = useRef<NativeWebviewHandle | null>(null);
   const overlayWindowRef = useRef<NativeOverlayWindowHandle | null>(null);
@@ -971,7 +1022,15 @@ function NativeArtifactBrowser({ url, frameKey, title, active, controlActivity }
         zoomHotkeysEnabled: true,
       }) as NativeWebviewHandle;
       webviewRef.current = webview;
-      void setActivePreviewTarget({ label, url, native: true }).catch(() => undefined);
+      void publishPreviewSurface({
+        label,
+        kind: surfaceKind,
+        title,
+        url,
+        native: true,
+        status: "ready",
+        capabilities: DOM_PREVIEW_CAPABILITIES,
+      }, onSurfaceChange);
       unlistenError = await webview.once<string>("tauri://error", (event) => {
         if (!cancelled) setNativeError(event.payload || "Could not open this page.");
       });
@@ -1012,10 +1071,10 @@ function NativeArtifactBrowser({ url, frameKey, title, active, controlActivity }
       appUiObserver?.disconnect();
       removeLayoutListeners?.();
       unlistenError?.();
-      void setActivePreviewTarget(null).catch(() => undefined);
+      void publishPreviewSurface(null, onSurfaceChange);
       void closeWebview();
     };
-  }, [active, frameKey, url]);
+  }, [active, frameKey, onSurfaceChange, surfaceKind, title, url]);
 
   useEffect(() => {
     if (!active || !controlActivity || !IS_TAURI) return;

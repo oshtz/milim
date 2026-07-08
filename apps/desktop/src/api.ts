@@ -86,6 +86,47 @@ export interface ArtifactWritePreview {
 
 export type ArtifactOpenTarget = "file" | "folder";
 
+export type PreviewSurfaceKind =
+  | "artifact_iframe"
+  | "native_browser"
+  | "runtime_browser"
+  | "blank"
+  | "markdown"
+  | "code"
+  | "none";
+export type PreviewSurfaceStatus =
+  | "loading"
+  | "ready"
+  | "error"
+  | "not_inspectable";
+export type PreviewSurfaceCapability =
+  | "dom_snapshot"
+  | "click"
+  | "type"
+  | "key"
+  | "scroll"
+  | "logs"
+  | "source";
+
+export interface PreviewSurfaceTarget {
+  label?: string | null;
+  title?: string | null;
+  url?: string | null;
+  native: boolean;
+  kind: PreviewSurfaceKind;
+  status: PreviewSurfaceStatus;
+  capabilities: PreviewSurfaceCapability[];
+}
+
+export function previewSurfaceCanInspect(
+  surface?: PreviewSurfaceTarget | null,
+): boolean {
+  return Boolean(
+    surface?.status === "ready" &&
+      surface.capabilities.includes("dom_snapshot"),
+  );
+}
+
 export interface TokenUsage {
   prompt_tokens: number;
   completion_tokens: number;
@@ -461,13 +502,17 @@ export async function openExternalUrl(url: string): Promise<void> {
 }
 
 export async function setActivePreviewTarget(
-  target: { label: string; url?: string | null; native: boolean } | null,
+  target: PreviewSurfaceTarget | null,
 ): Promise<void> {
   if (!inTauri) return;
   await invoke("set_active_preview_target", {
     label: target?.label ?? null,
+    title: target?.title ?? null,
     url: target?.url ?? null,
     native: target?.native ?? false,
+    kind: target?.kind ?? null,
+    status: target?.status ?? null,
+    capabilities: target?.capabilities ?? null,
   });
 }
 
@@ -1916,6 +1961,7 @@ export interface AgentToolContext {
   sandbox_enabled?: boolean;
   computer_use_enabled?: boolean;
   preview_tools_enabled?: boolean;
+  preview_surface?: PreviewSurfaceTarget | null;
   experimental_hashline_patch?: boolean;
   plan_mode?: boolean;
 }

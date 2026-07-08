@@ -1,7 +1,7 @@
 import { createElement, type ComponentType, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createServer } from "vite";
-import type { ChatArtifact } from "../src/api.js";
+import type { ChatArtifact, PreviewSurfaceTarget } from "../src/api.js";
 import type { PreviewControlActivity } from "../src/lib/previewActivity.js";
 
 type PreviewPanelProps = {
@@ -10,6 +10,7 @@ type PreviewPanelProps = {
   onClose: () => void;
   onOpenBrowser?: () => void;
   controlActivity?: PreviewControlActivity | null;
+  onSurfaceChange?: (surface: PreviewSurfaceTarget | null) => void;
 };
 
 function assert(condition: unknown, message: string): asserts condition {
@@ -62,9 +63,10 @@ const server = await createServer({
 });
 
 try {
-  const { PreviewPanel, nativePreviewBlockedByAppUi } = await server.ssrLoadModule("/src/components/PreviewPanel.tsx") as {
+  const { PreviewPanel, nativePreviewBlockedByAppUi, previewSurfaceIsInspectable } = await server.ssrLoadModule("/src/components/PreviewPanel.tsx") as {
     PreviewPanel: ComponentType<PreviewPanelProps>;
     nativePreviewBlockedByAppUi: (root: Pick<ParentNode, "querySelector">) => boolean;
+    previewSurfaceIsInspectable: (surface: PreviewSurfaceTarget | null) => boolean;
   };
   const { ContextMenuProvider } = await server.ssrLoadModule("/src/components/ContextMenu.tsx") as {
     ContextMenuProvider: ComponentType<{ children: ReactNode }>;
@@ -74,6 +76,28 @@ try {
   );
   assert(nativePreviewBlockedByAppUi({ querySelector: () => ({}) as Element }), "Native preview should hide behind app modal/menu UI");
   assert(!nativePreviewBlockedByAppUi({ querySelector: () => null }), "Native preview should stay visible without blocking app UI");
+  assert(previewSurfaceIsInspectable({
+    label: "main",
+    kind: "artifact_iframe",
+    title: "index.html",
+    native: false,
+    status: "ready",
+    capabilities: ["dom_snapshot", "click"],
+  }), "Ready DOM-capable artifact surfaces should expose preview tools");
+  assert(!previewSurfaceIsInspectable({
+    kind: "blank",
+    title: "Browser",
+    native: false,
+    status: "not_inspectable",
+    capabilities: [],
+  }), "Blank browser surfaces should not expose preview tools");
+  assert(!previewSurfaceIsInspectable({
+    kind: "markdown",
+    title: "notes.md",
+    native: false,
+    status: "not_inspectable",
+    capabilities: ["source"],
+  }), "Markdown/code-only surfaces should not expose preview tools");
 
   const urlMarkup = renderPreviewPanel({ artifact: urlArtifact, onClose: () => {} });
   assert(urlMarkup.includes('data-testid="preview-browser-bar"'), "URL artifacts should render browser chrome");
@@ -84,6 +108,7 @@ try {
   const blankUrlMarkup = renderPreviewPanel({ artifact: blankUrlArtifact, onClose: () => {} });
   assert(blankUrlMarkup.includes('data-testid="preview-browser-bar"'), "Blank URL artifacts should still render browser chrome");
   assert(blankUrlMarkup.includes('data-testid="preview-browser-empty"'), "Blank URL artifacts should render the empty browser state");
+  assert(!blankUrlMarkup.includes('data-testid="preview-native-browser"'), "Blank URL artifacts should not render a native browser host");
 
   const htmlMarkup = renderPreviewPanel({ artifact: htmlArtifact, onClose: () => {}, onOpenBrowser: () => {} });
   assert(!htmlMarkup.includes('data-testid="preview-browser-bar"'), "HTML artifacts should not render browser chrome");

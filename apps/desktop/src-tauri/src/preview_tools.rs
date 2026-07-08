@@ -126,9 +126,13 @@ try {
 
 #[derive(Clone, Debug)]
 struct PreviewTarget {
-    label: String,
+    label: Option<String>,
+    title: Option<String>,
     url: Option<String>,
     native: bool,
+    kind: String,
+    status: String,
+    capabilities: Vec<String>,
 }
 
 #[derive(Default)]
@@ -146,9 +150,36 @@ impl PreviewToolState {
         }
     }
 
-    pub fn set_target(&self, label: Option<String>, url: Option<String>, native: bool) {
+    pub fn set_target(
+        &self,
+        label: Option<String>,
+        title: Option<String>,
+        url: Option<String>,
+        native: bool,
+        kind: Option<String>,
+        status: Option<String>,
+        capabilities: Option<Vec<String>>,
+    ) {
         if let Ok(mut current) = self.target.write() {
-            *current = label.map(|label| PreviewTarget { label, url, native });
+            *current = if label.is_none() && kind.is_none() {
+                None
+            } else {
+                Some(PreviewTarget {
+                    label,
+                    title,
+                    url,
+                    native,
+                    kind: kind.unwrap_or_else(|| {
+                        if native {
+                            "native_browser".to_string()
+                        } else {
+                            "artifact_iframe".to_string()
+                        }
+                    }),
+                    status: status.unwrap_or_else(|| "ready".to_string()),
+                    capabilities: capabilities.unwrap_or_else(default_preview_capabilities),
+                })
+            };
         }
     }
 }
@@ -157,10 +188,14 @@ impl PreviewToolState {
 pub fn set_active_preview_target(
     state: tauri::State<'_, SharedPreviewToolState>,
     label: Option<String>,
+    title: Option<String>,
     url: Option<String>,
     native: bool,
+    kind: Option<String>,
+    status: Option<String>,
+    capabilities: Option<Vec<String>>,
 ) {
-    state.set_target(label, url, native);
+    state.set_target(label, title, url, native, kind, status, capabilities);
 }
 
 pub fn preview_tools(state: SharedPreviewToolState) -> Vec<Arc<dyn Tool>> {
@@ -180,14 +215,25 @@ fn run_preview_action(state: &SharedPreviewToolState, action: &str, args: Value)
         .ok()
         .and_then(|target| target.clone())
         .ok_or_else(|| Error::InvalidRequest("No active preview panel is available.".to_string()))?;
+    let capability = capability_for_action(action);
+    if target.status != "ready" || !target.capabilities.iter().any(|item| item == capability) {
+        return Err(Error::InvalidRequest(format!(
+            "Active preview surface is not inspectable: {} ({})",
+            target.kind, target.status
+        )));
+    }
     let app = state
         .app
         .read()
         .ok()
         .and_then(|app| app.clone())
         .ok_or_else(|| Error::InvalidRequest("Preview tools are not ready yet.".to_string()))?;
+    let label = target
+        .label
+        .as_deref()
+        .ok_or_else(|| Error::InvalidRequest("Active preview surface has no webview target.".to_string()))?;
     let webview = app
-        .get_webview(&target.label)
+        .get_webview(label)
         .ok_or_else(|| Error::InvalidRequest("The active preview webview is no longer available.".to_string()))?;
     let action_json = serde_json::to_string(action).map_err(|e| Error::Other(e.to_string()))?;
     let args_json = serde_json::to_string(&args).map_err(|e| Error::Other(e.to_string()))?;
@@ -207,8 +253,37 @@ fn run_preview_action(state: &SharedPreviewToolState, action: &str, args: Value)
     let mut result = serde_json::from_str::<Value>(&raw).unwrap_or_else(|_| json!({ "ok": true, "result": raw }));
     if let Value::Object(map) = &mut result {
         map.insert("preview_url".to_string(), json!(target.url));
+        map.insert("preview_surface".to_string(), target_metadata_json(&target));
     }
     Ok(result)
+}
+
+fn default_preview_capabilities() -> Vec<String> {
+    ["dom_snapshot", "click", "type", "key", "scroll", "logs", "source"]
+        .iter()
+        .map(|capability| (*capability).to_string())
+        .collect()
+}
+
+fn capability_for_action(action: &str) -> &str {
+    match action {
+        "snapshot" => "dom_snapshot",
+        "type_text" => "type",
+        "key_press" => "key",
+        other => other,
+    }
+}
+
+fn target_metadata_json(target: &PreviewTarget) -> Value {
+    json!({
+        "label": target.label.clone(),
+        "title": target.title.clone(),
+        "url": target.url.clone(),
+        "native": target.native,
+        "kind": target.kind.clone(),
+        "status": target.status.clone(),
+        "capabilities": target.capabilities.clone(),
+    })
 }
 
 #[derive(Debug, Deserialize)]
@@ -465,5 +540,47 @@ mod tests {
         assert!(schema["properties"]["text"].is_object());
         assert!(schema["properties"]["x"].is_object());
         assert!(schema["properties"]["y"].is_object());
+    }
+
+    #[test]
+    fn preview_state_stores_surface_metadata_and_clears() {
+        let state = PreviewToolState::default();
+        state.set_target(
+            Some("main".to_string()),
+            Some("index.html".to_string()),
+            Some("index.html".to_string()),
+            false,
+            Some("artifact_iframe".to_string()),
+            Some("ready".to_string()),
+            Some(vec!["dom_snapshot".to_string(), "source".to_string()]),
+        );
+        let target = state.target.read().unwrap().clone().unwrap();
+        assert_eq!(target.label.as_deref(), Some("main"));
+        assert_eq!(target.title.as_deref(), Some("index.html"));
+        assert_eq!(target.kind, "artifact_iframe");
+        assert_eq!(target.status, "ready");
+        assert!(target.capabilities.contains(&"dom_snapshot".to_string()));
+
+        state.set_target(None, None, None, false, None, None, None);
+        assert!(state.target.read().unwrap().is_none());
+    }
+
+    #[test]
+    fn preview_action_rejects_non_inspectable_surface() {
+        let state = Arc::new(PreviewToolState::default());
+        state.set_target(
+            None,
+            Some("Browser".to_string()),
+            None,
+            false,
+            Some("blank".to_string()),
+            Some("not_inspectable".to_string()),
+            Some(vec![]),
+        );
+        let err = run_preview_action(&state, "snapshot", json!({})).unwrap_err().to_string();
+        assert!(
+            err.contains("not inspectable"),
+            "unexpected error: {err}"
+        );
     }
 }

@@ -1,5 +1,5 @@
 import { strict as assert } from "node:assert";
-import type { ChatMessage } from "../src/api.js";
+import type { ChatMessage, PreviewSurfaceTarget } from "../src/api.js";
 import { buildTurnPromptContext, contextMessagesForTurn, folderLabel, memoryScopes, prepareTurnPromptContext, resolveTurnToolApproval } from "../src/lib/turnPrompt.js";
 
 function user(content: string): ChatMessage {
@@ -59,6 +59,36 @@ const previewTools = buildTurnPromptContext({
 assert.equal(previewTools.useTools, true, "visible preview should enable scoped preview tools without computer-use");
 assert.equal(previewTools.toolContext.computer_use_enabled, false);
 assert.equal(previewTools.toolContext.preview_tools_enabled, true);
+
+const blankPreviewSurface: PreviewSurfaceTarget = {
+  kind: "blank",
+  title: "Browser",
+  native: false,
+  status: "not_inspectable",
+  capabilities: [],
+};
+const blankPreview = buildTurnPromptContext({
+  sessionId: "s-preview-blank",
+  threadTitle: "Preview",
+  folder: "",
+  instructions: "",
+  planMode: false,
+  memory: false,
+  conversation: [user("inspect the visible preview")],
+  memoryHits: [],
+  selectedSkills: [],
+  turnId: "turn-preview-blank",
+  sandbox: false,
+  computerUse: false,
+  previewSurface: blankPreviewSurface,
+  activeAgentId: null,
+  toolApproval: "guarded",
+  toolApprovalGrant: false,
+  experimentalHashlinePatch: false,
+});
+assert.equal(blankPreview.useTools, false, "non-inspectable preview surfaces should not expose tools");
+assert.equal(blankPreview.toolContext.preview_tools_enabled, false);
+assert.deepEqual(blankPreview.toolContext.preview_surface, blankPreviewSurface);
 
 const virtualProject = buildTurnPromptContext({
   sessionId: "s1",

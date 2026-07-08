@@ -1,4 +1,4 @@
-import type { AgentMemoryContext, AgentToolContext, ChatMessage, MemoryScopeRef, PreviewAppFile, SkillInfo, ToolApprovalMode } from "../api.js";
+import type { AgentMemoryContext, AgentToolContext, ChatMessage, MemoryScopeRef, PreviewAppFile, PreviewSurfaceTarget, SkillInfo, ToolApprovalMode } from "../api.js";
 import { planModeInstructionMessages, threadArtifactInstructionMessages } from "./chatInstructions.js";
 import { goalInstructionMessage, type GoalSettings } from "./goals.js";
 import { skillInstructionMessage } from "./skills.js";
@@ -50,6 +50,10 @@ export function memoryScopes(threadId: string, folder: string): MemoryScopeRef[]
   return scopes;
 }
 
+function previewSurfaceCanInspect(surface?: PreviewSurfaceTarget | null): boolean {
+  return Boolean(surface?.status === "ready" && surface.capabilities.includes("dom_snapshot"));
+}
+
 export function buildTurnPromptContext({
   sessionId,
   threadTitle,
@@ -68,6 +72,7 @@ export function buildTurnPromptContext({
   sandbox,
   computerUse,
   previewTools,
+  previewSurface,
   activeAgentId,
   toolApproval,
   toolApprovalGrant,
@@ -91,6 +96,7 @@ export function buildTurnPromptContext({
   sandbox: boolean;
   computerUse: boolean;
   previewTools?: boolean;
+  previewSurface?: PreviewSurfaceTarget | null;
   activeAgentId?: string | null;
   toolApproval: ToolApprovalMode;
   toolApprovalGrant: boolean;
@@ -100,7 +106,8 @@ export function buildTurnPromptContext({
   const skillMessage = skillInstructionMessage(selectedSkills);
   const userText = lastUserText ?? latestUserContent(conversation);
   const useScheduleTools = !planMode && looksLikeScheduleRequest(userText);
-  const nonMemoryTools = planMode || sandbox || computerUse || previewTools || activeAgentId != null || folder.trim() !== "" || useScheduleTools;
+  const previewToolsEnabled = previewSurface === undefined ? Boolean(previewTools) : previewSurfaceCanInspect(previewSurface);
+  const nonMemoryTools = planMode || sandbox || computerUse || previewToolsEnabled || activeAgentId != null || folder.trim() !== "" || useScheduleTools;
   const memoryWriteEnabled = memory && !planMode && !codexModel && !claudeModel && (nonMemoryTools || looksLikeMemoryWriteRequest(userText));
   const memorySystem = memory && !planMode
     ? [
@@ -149,7 +156,8 @@ export function buildTurnPromptContext({
       tool_approval_grant: toolApprovalGrant,
       sandbox_enabled: sandbox,
       computer_use_enabled: computerUse,
-      preview_tools_enabled: Boolean(previewTools),
+      preview_tools_enabled: previewToolsEnabled,
+      preview_surface: previewSurface ?? null,
       experimental_hashline_patch: experimentalHashlinePatch,
       plan_mode: planMode,
     },
@@ -174,6 +182,7 @@ export async function prepareTurnPromptContext({
   sandbox,
   computerUse,
   previewTools,
+  previewSurface,
   activeAgentId,
   toolApproval,
   toolApprovalGrant,
@@ -200,6 +209,7 @@ export async function prepareTurnPromptContext({
   sandbox: boolean;
   computerUse: boolean;
   previewTools?: boolean;
+  previewSurface?: PreviewSurfaceTarget | null;
   activeAgentId?: string | null;
   toolApproval: ToolApprovalMode;
   toolApprovalGrant: boolean;
@@ -236,6 +246,7 @@ export async function prepareTurnPromptContext({
     sandbox,
     computerUse,
     previewTools,
+    previewSurface,
     activeAgentId,
     toolApproval,
     toolApprovalGrant,
