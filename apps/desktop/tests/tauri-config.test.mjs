@@ -93,6 +93,18 @@ if (!tauriFeatures.includes('"tray-icon"')) {
   );
 }
 
+if (config.app?.macOSPrivateApi !== true) {
+  throw new Error(
+    "macOS transparent preview overlays require app.macOSPrivateApi",
+  );
+}
+
+if (!tauriFeatures.includes('"macos-private-api"')) {
+  throw new Error(
+    "macOS transparent preview overlays require Tauri's macos-private-api Cargo feature",
+  );
+}
+
 if (repoVersion !== packageJson.version) {
   throw new Error(
     `Root VERSION ${repoVersion} must match package.json ${packageJson.version}`,

@@ -6,7 +6,7 @@ title: Release and verification
 summary: Release artifacts, updater behavior, verification commands, and site build checks.
 group: Reference
 order: 110
-updated: 2026-07-05
+updated: 2026-07-08
 ---
 
 Release work should verify the Rust workspace, desktop app, site docs, and platform artifacts without reintroducing Linux packaging as a release target.
@@ -19,7 +19,7 @@ Release work should verify the Rust workspace, desktop app, site docs, and platf
 | macOS | `milim-macos-universal.dmg` and `milim.app.zip` from the latest GitHub release. |
 | Linux | Not packaged as a release artifact. The Rust server and Tauri app remain source-buildable. |
 
-Release builds run desktop verification on both macOS and Windows. macOS release artifacts require the Apple signing secrets, and the workflow publishes `manifest.json` plus an aggregate `SHA256SUMS.txt` from the current release run. Updater assets are verified with SHA-256 sidecars and the aggregate checksum file.
+Release builds run desktop verification on both macOS and Windows. macOS release artifacts require the Apple signing secrets and intentionally enable Tauri's macOS private API for transparent preview activity overlay windows. The workflow publishes `manifest.json` plus an aggregate `SHA256SUMS.txt` from the current release run. Updater assets are verified with SHA-256 sidecars and the aggregate checksum file.
 
 ## Updater behavior
 

@@ -160,6 +160,12 @@ import {
 } from "../lib/contextCompaction";
 import { reasoningEffortForModel } from "../lib/reasoningEffort";
 import {
+  nextRecentThreadSwitcherIndex,
+  recentThreadSwitcherItems,
+  rememberRecentThread,
+  type RecentThreadSwitcherItem,
+} from "../lib/recentThreads";
+import {
   AI_THREAD_TITLE_SYSTEM_PROMPT,
   isThreadNamingModel,
   sanitizeAiThreadTitle,
@@ -321,6 +327,7 @@ const MESSAGE_VIRTUALIZE_AFTER = 80;
 const MESSAGE_ESTIMATED_HEIGHT = 152;
 const MESSAGE_VIRTUAL_OVERSCAN_PX = 900;
 const MESSAGE_ROW_GAP = 12;
+const RECENT_THREAD_SWITCHER_CLOSE_MS = 1600;
 const previewArtifactCache = new WeakMap<ChatMessage, ChatArtifact[] | null>();
 
 function documentVisible(): boolean {
@@ -2068,6 +2075,56 @@ type ChatSessionSummary = {
   archivedAt?: number;
 };
 
+type RecentThreadSwitcherState = {
+  items: RecentThreadSwitcherItem[];
+  activeIndex: number;
+};
+
+function RecentThreadSwitcherOverlay({
+  state,
+  onSelect,
+}: {
+  state: RecentThreadSwitcherState;
+  onSelect: (id: string) => void;
+}) {
+  return (
+    <div className="recent-thread-switcher" aria-live="polite">
+      <div
+        className="recent-thread-switcher-popover"
+        role="listbox"
+        aria-label="Recently viewed threads"
+      >
+        <div className="recent-thread-switcher-title">Recently viewed</div>
+        <div className="recent-thread-switcher-list">
+          {state.items.map((item, index) => {
+            const active = index === state.activeIndex;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                role="option"
+                aria-selected={active}
+                className={"recent-thread-switcher-row" + (active ? " active" : "")}
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => onSelect(item.id)}
+              >
+                <span className="recent-thread-switcher-row-title">
+                  {item.title}
+                </span>
+                {item.metadata && (
+                  <span className="recent-thread-switcher-row-meta">
+                    {item.metadata}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function usageDateKey(value: number): string {
   const date = new Date(value);
   return Number.isFinite(date.getTime())
@@ -2751,7 +2808,8 @@ export function ChatView({
   const stopShortcutConfirmUntilRef = useRef(0);
   const stopShortcutConfirmTimerRef = useRef<number | null>(null);
   const currentThreadIdRef = useRef(activeId);
-  const previousThreadIdRef = useRef<string | null>(null);
+  const recentThreadIdsRef = useRef<string[]>([activeId]);
+  const recentThreadSwitcherTimerRef = useRef<number | null>(null);
   const restoredPreviewThreadRef = useRef<string | null>(null);
   const sidePanelOpenRef = useRef(false);
   const autoPreviewRuntimeStartedRef = useRef(new Set<string>());
@@ -2763,6 +2821,8 @@ export function ChatView({
   const compactionInFlightRef = useRef(false);
   const messageHeightsRef = useRef<number[]>([]);
   const [previewResizing, setPreviewResizing] = useState(false);
+  const [recentThreadSwitcher, setRecentThreadSwitcher] =
+    useState<RecentThreadSwitcherState | null>(null);
   const [messageScrollSnapshot, setMessageScrollSnapshot] = useState({
     top: 0,
     height: 0,
@@ -2813,8 +2873,11 @@ export function ChatView({
 
   useEffect(() => {
     if (currentThreadIdRef.current === activeId) return;
-    previousThreadIdRef.current = currentThreadIdRef.current;
     currentThreadIdRef.current = activeId;
+    recentThreadIdsRef.current = rememberRecentThread(
+      recentThreadIdsRef.current,
+      activeId,
+    );
     const nextDraft = getSessionComposerDraft(activeId);
     setInputState(nextDraft);
     if (!nextDraft && messages.length === 0) focusComposer();
@@ -2830,6 +2893,14 @@ export function ChatView({
     return () =>
       window.removeEventListener("milim:session-drafts-hydrated", syncDraft);
   }, [activeId, input]);
+
+  useEffect(() => {
+    return () => {
+      if (recentThreadSwitcherTimerRef.current != null) {
+        window.clearTimeout(recentThreadSwitcherTimerRef.current);
+      }
+    };
+  }, []);
 
   function scrollToChatBottom() {
     const el = chatScrollRef.current;
@@ -6029,18 +6100,55 @@ export function ChatView({
     setChatSearchOpen(true);
   }
 
+  function clearRecentThreadSwitcherTimer() {
+    if (recentThreadSwitcherTimerRef.current == null) return;
+    window.clearTimeout(recentThreadSwitcherTimerRef.current);
+    recentThreadSwitcherTimerRef.current = null;
+  }
+
+  function scheduleRecentThreadSwitcherClose() {
+    clearRecentThreadSwitcherTimer();
+    recentThreadSwitcherTimerRef.current = window.setTimeout(() => {
+      setRecentThreadSwitcher(null);
+      recentThreadSwitcherTimerRef.current = null;
+    }, RECENT_THREAD_SWITCHER_CLOSE_MS);
+  }
+
+  function closeRecentThreadSwitcher() {
+    clearRecentThreadSwitcherTimer();
+    setRecentThreadSwitcher(null);
+  }
+
+  function selectRecentThread(id: string) {
+    closeRecentThreadSwitcher();
+    if (id !== activeId) switchToSession(id);
+  }
+
   function switchToPreviousThread() {
-    const previousId = previousThreadIdRef.current;
-    if (!previousId || previousId === activeId) return;
-    if (
-      sessionSummaries.some(
-        (session) => session.id === previousId && !session.archivedAt,
-      )
-    ) {
-      switchToSession(previousId);
-    } else {
-      previousThreadIdRef.current = null;
+    if (recentThreadSwitcher?.items.length) {
+      const activeIndex = nextRecentThreadSwitcherIndex(
+        recentThreadSwitcher.activeIndex,
+        recentThreadSwitcher.items.length,
+      );
+      const next = { ...recentThreadSwitcher, activeIndex };
+      const nextId = next.items[activeIndex]?.id;
+      setRecentThreadSwitcher(next);
+      scheduleRecentThreadSwitcherClose();
+      if (nextId && nextId !== activeId) switchToSession(nextId);
+      return;
     }
+
+    const items = recentThreadSwitcherItems(
+      recentThreadIdsRef.current,
+      activeId,
+      sessionSummaries,
+      projects,
+    );
+    const nextId = items[0]?.id;
+    if (!nextId) return;
+    setRecentThreadSwitcher({ items, activeIndex: 0 });
+    scheduleRecentThreadSwitcherClose();
+    if (nextId !== activeId) switchToSession(nextId);
   }
 
   function startShortcutNewChat() {
@@ -6086,6 +6194,11 @@ export function ChatView({
   useEffect(() => {
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
       if (event.defaultPrevented || shortcutTargetBlocked(event.target)) return;
+      if (recentThreadSwitcher && event.key === "Escape") {
+        event.preventDefault();
+        closeRecentThreadSwitcher();
+        return;
+      }
       if (shortcutMatchesEvent(appShortcuts.newChat, event)) {
         event.preventDefault();
         startShortcutNewChat();
@@ -6112,6 +6225,8 @@ export function ChatView({
     activeId,
     appShortcuts,
     busy,
+    projects,
+    recentThreadSwitcher,
     sessionSummaries,
     switchToSession,
     threadSettings,
@@ -6925,6 +7040,13 @@ export function ChatView({
           activeId={activeId}
           onSelect={switchToSession}
           onClose={() => setChatSearchOpen(false)}
+        />
+      )}
+
+      {recentThreadSwitcher && (
+        <RecentThreadSwitcherOverlay
+          state={recentThreadSwitcher}
+          onSelect={selectRecentThread}
         />
       )}
 

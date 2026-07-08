@@ -144,7 +144,7 @@ Shipped UI:
 - Voice input, press-to-record push-to-talk shortcuts, active-app dictation, STT, VAD, TTS, bounded voice controls, machine-local voice API key storage, Piper/Kokoro preset installs, and native ORT provider options behind feature flags where needed.
 - Image/video generation through configured remote providers with model schema controls, status polling, and result previews.
 - Mobile companion for paired phones, with restart-proof pairing, persisted phone URL base, startup Tailscale Serve repair when the bridge is enabled, in-app QR scanning, active desktop theme mirroring, Markdown-rendered live thread viewing/switching through a project-aware mobile sidebar, new-thread/stop/regenerate/rename/archive/delete controls, mobile file/photo attachments, model switching, phone sends through the desktop composer/model path, pairing, enable/disable, queued events, device revocation, and a Tailscale Serve setup helper that opens Tailscale download when missing and creates phone-reachable tailnet HTTPS URLs where available.
-- Searchable settings with section status indicators, themes with contrast validation for custom palettes, custom style settings, configurable app-window keyboard shortcuts (Previous thread defaults to `Ctrl+Tab` on Windows/macOS), frameless window controls, close-to-tray background mode, persisted window state, shared app notices for background events, and GitHub Release update checks for Windows/macOS artifacts with checksum verification and a top-bar one-click install action.
+- Searchable settings with section status indicators, themes with contrast validation for custom palettes, custom style settings, configurable app-window keyboard shortcuts (Previous thread defaults to `Ctrl+Tab` on Windows/macOS and opens a compact recent-thread switcher), frameless window controls, close-to-tray background mode, persisted window state, shared app notices for background events, and GitHub Release update checks for Windows/macOS artifacts with checksum verification and a top-bar one-click install action.
 
 Whisper STT, native VAD, and native TTS are opt-in build features because they require native toolchains and model files:
 
@@ -176,7 +176,7 @@ The release workflow publishes stable Windows portable EXE and macOS universal D
 
 Linux release packaging is intentionally disabled in `apps/desktop/scripts/package-release.mjs`.
 
-Release builds run desktop verification on both macOS and Windows, require Apple signing secrets for macOS artifacts, and publish `manifest.json` plus an aggregate `SHA256SUMS.txt` from the current release run. Updater assets are verified with SHA-256 sidecars and the aggregate checksum file.
+Release builds run desktop verification on both macOS and Windows, require Apple signing secrets for macOS artifacts, intentionally enable Tauri's macOS private API for transparent preview activity overlay windows, and publish `manifest.json` plus an aggregate `SHA256SUMS.txt` from the current release run. Updater assets are verified with SHA-256 sidecars and the aggregate checksum file.
 
 ## License
 

@@ -87,7 +87,7 @@ Goals are thread-level autonomous runs, not saved agent profiles. A goal stores 
 | Onboarding | First-run setup chooses Simple or Workbench, connects local/hosted/Codex model sources, and can import Claude/Codex MCP servers and skills as disabled Workbench entries. |
 | Settings | Settings search returns individual controls, jumps to the matched row, and section navigation shows warning status for incomplete setup. |
 | Theme editor | Themes and custom style settings are persisted with the desktop state. Custom palettes must pass core text contrast checks before saving, low-contrast preset/custom themes are marked in the theme grid, and custom theme cards expose an edit button. |
-| Keyboard shortcuts | App-window shortcuts are configurable; Previous thread defaults to `Ctrl+Tab` on Windows and macOS. Voice push-to-talk uses the same press-to-record flow. |
+| Keyboard shortcuts | App-window shortcuts are configurable; Previous thread defaults to `Ctrl+Tab` on Windows and macOS, switches to the last viewed thread immediately, and shows a compact recent-thread switcher for repeated presses. Voice push-to-talk uses the same press-to-record flow. |
 | Window close | Closing hides Milim to the system tray; minimize keeps normal taskbar behavior. |
 
 ## Slash commands

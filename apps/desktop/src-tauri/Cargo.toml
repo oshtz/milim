@@ -1,6 +1,6 @@
 [package]
 name = "milim-desktop"
-version = "0.1.16"
+version = "0.1.17"
 edition = "2021"
 description = "milim desktop app"
 authors = ["Omer Shatzberg <omershatzberg@gmail.com>"]
@@ -35,7 +35,7 @@ native-tts-espeak = ["native-tts", "milim-server/native-tts-espeak", "milim-voic
 computer-use = ["dep:enigo", "dep:xcap", "dep:image", "dep:base64", "dep:core-graphics"]
 
 [dependencies]
-tauri = { version = "2", features = ["unstable", "tray-icon"] }
+tauri = { version = "2", features = ["unstable", "tray-icon", "macos-private-api"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-window-state = "2"
