@@ -360,9 +360,15 @@ function ThinkingBlock({
         </span>
       </summary>
       <div className="stream-reasoning-body">
-        <Suspense fallback={<span className="typing">...</span>}>
-          <Markdown content={content} highlight={!streaming} />
-        </Suspense>
+        {streaming ? (
+          <div className="md md-streaming-text" dir="auto">
+            {content}
+          </div>
+        ) : (
+          <Suspense fallback={<span className="typing">...</span>}>
+            <Markdown content={content} highlight />
+          </Suspense>
+        )}
       </div>
     </details>
   );
@@ -382,6 +388,13 @@ function AnswerText({
   previewArtifactsStreaming?: boolean;
 }) {
   if (!content.trim()) return null;
+  if (streaming) {
+    return (
+      <div className="md md-streaming-text" dir="auto">
+        {content}
+      </div>
+    );
+  }
   return (
     <Suspense fallback={<span className="typing">...</span>}>
       <Markdown

@@ -20,6 +20,14 @@ export type AvatarStyle = "none" | "initials" | "role";
 export type CodeBlockTheme = "match" | "terminal" | "github" | "high-contrast";
 export type BackgroundFit = "cover" | "contain" | "tile" | "center";
 export type BackgroundTreatment = "clear" | "dim" | "blur" | "mono";
+export type AppNoticeTone = "info" | "success" | "warning" | "error";
+
+export interface AppNotice {
+  id: string;
+  tone: AppNoticeTone;
+  message: string;
+  createdAt: number;
+}
 
 const WINDOW_ALWAYS_ON_TOP_KEY = "milim.window.alwaysOnTop";
 
@@ -45,6 +53,7 @@ interface UiPreferencesState {
   backgroundFit: BackgroundFit;
   backgroundTreatment: BackgroundTreatment;
   gitPanelExpanded: boolean;
+  notices: AppNotice[];
   appShortcuts: AppShortcuts;
   setSidebarOpen: (sidebarOpen: boolean) => void;
   setSidebarWidth: (sidebarWidth: number) => void;
@@ -67,6 +76,8 @@ interface UiPreferencesState {
   setBackgroundFit: (backgroundFit: BackgroundFit) => void;
   setBackgroundTreatment: (backgroundTreatment: BackgroundTreatment) => void;
   setGitPanelExpanded: (gitPanelExpanded: boolean) => void;
+  pushNotice: (notice: { tone: AppNoticeTone; message: string }) => string;
+  dismissNotice: (id: string) => void;
   setAppShortcut: (action: AppShortcutAction, shortcut: string) => boolean;
   resetAppShortcuts: () => void;
   resetLayoutWidths: () => void;
@@ -168,6 +179,7 @@ export const useUiPreferences = create<UiPreferencesState>()(
       backgroundFit: "cover",
       backgroundTreatment: "clear",
       gitPanelExpanded: false,
+      notices: [],
       appShortcuts: { ...DEFAULT_APP_SHORTCUTS },
       setSidebarOpen: (sidebarOpen) => set({ sidebarOpen }),
       setSidebarWidth: (sidebarWidth) => set({ sidebarWidth: normalizeSidebarWidth(sidebarWidth) }),
@@ -194,6 +206,20 @@ export const useUiPreferences = create<UiPreferencesState>()(
       setBackgroundFit: (backgroundFit) => set({ backgroundFit: normalizeBackgroundFit(backgroundFit) }),
       setBackgroundTreatment: (backgroundTreatment) => set({ backgroundTreatment: normalizeBackgroundTreatment(backgroundTreatment) }),
       setGitPanelExpanded: (gitPanelExpanded) => set({ gitPanelExpanded }),
+      pushNotice: (notice) => {
+        const id = `notice-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        set((state) => ({
+          notices: [
+            ...state.notices.slice(-3),
+            { ...notice, id, createdAt: Date.now() },
+          ],
+        }));
+        return id;
+      },
+      dismissNotice: (id) =>
+        set((state) => ({
+          notices: state.notices.filter((notice) => notice.id !== id),
+        })),
       setAppShortcut: (action, shortcut) => {
         let accepted = false;
         set((state) => {
@@ -250,6 +276,7 @@ export const useUiPreferences = create<UiPreferencesState>()(
           backgroundFit: normalizeBackgroundFit(saved?.backgroundFit),
           backgroundTreatment: normalizeBackgroundTreatment(saved?.backgroundTreatment),
           gitPanelExpanded: typeof saved?.gitPanelExpanded === "boolean" ? saved.gitPanelExpanded : current.gitPanelExpanded,
+          notices: [],
           appShortcuts: normalizeAppShortcuts(saved?.appShortcuts),
         };
       },

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { themeContrastIssues } from "../theme/contrast";
 import { useTheme } from "../theme/store";
 import type { Theme } from "../theme/types";
 import { SheetDialog } from "./SheetDialog";
@@ -52,6 +53,7 @@ export function ThemeEditor({ base, isNew, onClose }: { base: Theme; isNew: bool
     }
     return d;
   });
+  const contrastIssues = themeContrastIssues(draft);
 
   function patch(mutate: (d: Theme) => void) {
     setConfirmDelete(false);
@@ -116,7 +118,7 @@ export function ThemeEditor({ base, isNew, onClose }: { base: Theme; isNew: bool
             </button>
           )}
           <button className="btn-ghost" type="button" onClick={() => { revert(); onClose(); }}>Cancel</button>
-          <button className="btn-accent" type="button" onClick={() => { saveCustom(draft); onClose(); }}>Save</button>
+          <button className="btn-accent" type="button" disabled={contrastIssues.length > 0} onClick={() => { saveCustom(draft); onClose(); }}>Save</button>
         </div>
       </div>
 
@@ -139,6 +141,9 @@ export function ThemeEditor({ base, isNew, onClose }: { base: Theme; isNew: bool
               onChange={(v) => patch((d) => { d.isDark = v; })}
               label="Dark theme (affects contrast on the accent)"
             />
+            {contrastIssues.length > 0 && (
+              <p className="sheet-hint error">{contrastIssues[0]}</p>
+            )}
           </section>
 
           <section className="editor-section">

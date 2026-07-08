@@ -731,7 +731,7 @@ export function Composer({
         <div className="attachment-tray" data-testid="attachment-tray">
           {attachments.map((attachment) => (
             <span key={attachment.id} className="attachment-pill" data-testid={`attachment-pill-${attachment.id}`} title={attachment.name}>
-              {attachment.dataUrl ? <img className="attachment-thumb" src={attachment.dataUrl} alt="" /> : <Paperclip size={13} />}
+              {attachment.dataUrl ? <img className="attachment-thumb" src={attachment.dataUrl} alt={`Attachment preview: ${attachment.name}`} /> : <Paperclip size={13} />}
               <span className="attachment-name">{attachment.name}</span>
               <span className="attachment-meta">
                 {attachmentSizeLabel(attachment.size)}
@@ -775,6 +775,7 @@ export function Composer({
           data-testid="composer-input"
           rows={1}
           value={value}
+          dir="auto"
           placeholder={placeholder}
           onChange={(e) => {
             syncCursor(e.currentTarget);

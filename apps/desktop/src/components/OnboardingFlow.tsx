@@ -54,7 +54,7 @@ function modelProviderLabel(model: ModelInfo | null): string {
 function isLikelyRemoteModel(model: ModelInfo | null): boolean {
   if (!model) return false;
   const provider = model.owned_by.toLowerCase();
-  return !/(local|ollama|lm studio|llama|gguf)/.test(provider);
+  return !/(^|\b)(local|ollama|lm studio|lmstudio|milim)(\b|$)/.test(provider);
 }
 
 function privacyLabel(mode: PrivacyMode): string {
@@ -161,6 +161,8 @@ export function OnboardingFlow({ onModelsChanged }: { onModelsChanged?: () => Pr
     try {
       const next = await listModelsDetailed();
       setModels(next);
+      if (!next.length)
+        setProviderNotice({ tone: "info", message: "No chat models found. Connect a provider or start a local runtime." });
       const preferred = preferredOwner
         ? next.find((model) => model.owned_by.toLowerCase() === preferredOwner.toLowerCase())
         : null;
@@ -170,6 +172,9 @@ export function OnboardingFlow({ onModelsChanged }: { onModelsChanged?: () => Pr
         onboarding.markStepComplete("model");
       }
       await onModelsChanged?.();
+    } catch (error) {
+      setProviderNotice({ tone: "error", message: error instanceof Error ? error.message : "Model refresh failed." });
+      setModels([]);
     } finally {
       setModelsLoading(false);
     }

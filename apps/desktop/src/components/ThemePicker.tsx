@@ -32,6 +32,7 @@ import {
   type VoiceSttProvider,
 } from "../settings/store";
 import { useTheme } from "../theme/store";
+import { themeContrastIssues } from "../theme/contrast";
 import type { Theme } from "../theme/types";
 import { useOnboarding } from "../onboarding/store";
 import { DAY_MS, useSessions, type ArchiveRetentionDays, type Project, type Session } from "../sessions/store";
@@ -2032,36 +2033,39 @@ export function ThemePicker({ onClose }: { onClose: () => void }) {
           <SettingsPanel>
             <SettingsBlock title="Theme">
               <div className="theme-grid">
-                {themes.map((t) => (
-                  <button
-                    key={t.id}
-                    className={"theme-card" + (t.id === themeId ? " active" : "")}
-                    onClick={() => setTheme(t.id)}
-                    onDoubleClick={() => customIds.has(t.id) && setEditing({ base: t, isNew: false })}
-                    title={customIds.has(t.id) ? "Double-click to edit" : undefined}
-                  >
-                    <span
-                      className="theme-preview"
-                      style={{
-                        background: t.background.image
-                          ? `${t.background.image}, ${t.colors.bgPrimary}`
-                          : t.colors.bgPrimary,
-                      }}
+                {themes.map((t) => {
+                  const contrastIssues = themeContrastIssues(t);
+                  return (
+                    <button
+                      key={t.id}
+                      className={"theme-card" + (t.id === themeId ? " active" : "") + (contrastIssues.length ? " low-contrast" : "")}
+                      onClick={() => setTheme(t.id)}
+                      onDoubleClick={() => customIds.has(t.id) && setEditing({ base: t, isNew: false })}
+                      title={contrastIssues[0] ?? (customIds.has(t.id) ? "Double-click to edit" : undefined)}
                     >
                       <span
-                        className="theme-panel"
-                        style={{ background: t.colors.bgSecondary, borderColor: t.colors.borderPrimary }}
+                        className="theme-preview"
+                        style={{
+                          background: t.background.image
+                            ? `${t.background.image}, ${t.colors.bgPrimary}`
+                            : t.colors.bgPrimary,
+                        }}
                       >
-                        <span className="theme-dot" style={{ background: t.colors.accent }} />
-                        <span className="theme-bar" style={{ background: t.colors.tertiaryText }} />
+                        <span
+                          className="theme-panel"
+                          style={{ background: t.colors.bgSecondary, borderColor: t.colors.borderPrimary }}
+                        >
+                          <span className="theme-dot" style={{ background: t.colors.accent }} />
+                          <span className="theme-bar" style={{ background: t.colors.tertiaryText }} />
+                        </span>
                       </span>
-                    </span>
-                    <span className="theme-name">
-                      {t.name}
-                      {t.id === themeId && <Check size={13} />}
-                    </span>
-                  </button>
-                ))}
+                      <span className="theme-name">
+                        {t.name}
+                        {t.id === themeId && <Check size={13} />}
+                      </span>
+                    </button>
+                  );
+                })}
 
                 <button className="theme-card new-card" onClick={() => setEditing({ base: current, isNew: true })}>
                   <span className="theme-preview new">

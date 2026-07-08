@@ -577,7 +577,7 @@ export function MediaManager({
                       {result.media[0]?.kind === "video" && result.media[0]?.url ? (
                         <video src={result.media[0].url} controls />
                       ) : result.media[0]?.url ? (
-                        <img src={result.media[0].url} alt="" />
+                        <img src={result.media[0].url} alt={`Generated media from ${result.model}`} />
                       ) : (
                         <Image size={26} />
                       )}

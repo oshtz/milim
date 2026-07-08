@@ -13,7 +13,7 @@ import { deleteThreadTree, listModelsDetailed } from "./api";
 import { AutoUpdater } from "./components/AutoUpdater";
 import { ChatView } from "./components/ChatView";
 import { ContextMenuProvider, useContextMenu } from "./components/ContextMenu";
-import { Gear, Pencil, Plus, Sidebar as SidebarIcon } from "./components/icons";
+import { Gear, Pencil, Plus, Sidebar as SidebarIcon, X } from "./components/icons";
 import { ResizeHandles } from "./components/ResizeHandles";
 import { Sidebar } from "./components/Sidebar";
 import { TopBar } from "./components/TopBar";
@@ -27,6 +27,7 @@ import {
   installUserStateFlushHandlers,
 } from "./persistence/userStateStorage.js";
 import {
+  hydrateSessionComposerDraftsFromUserState,
   purgeExpiredArchivesAfterHydration,
   useSessions,
 } from "./sessions/store";
@@ -122,6 +123,42 @@ function OnboardingGate() {
   return <OnboardingFlow onModelsChanged={refreshModelReadiness} />;
 }
 
+function AppNoticeHost() {
+  const notices = useUiPreferences((s) => s.notices);
+  const dismissNotice = useUiPreferences((s) => s.dismissNotice);
+  useEffect(() => {
+    if (!notices.length) return;
+    const timer = window.setTimeout(() => {
+      const oldest = notices[0];
+      if (oldest) dismissNotice(oldest.id);
+    }, 6000);
+    return () => window.clearTimeout(timer);
+  }, [dismissNotice, notices]);
+  if (!notices.length) return null;
+  return (
+    <div className="app-notices" aria-live="polite" aria-atomic="false">
+      {notices.map((notice) => (
+        <div
+          key={notice.id}
+          className={`app-notice ${notice.tone}`}
+          role={notice.tone === "error" ? "alert" : "status"}
+        >
+          <span>{notice.message}</span>
+          <button
+            className="icon-btn"
+            type="button"
+            title="Dismiss"
+            aria-label="Dismiss notice"
+            onClick={() => dismissNotice(notice.id)}
+          >
+            <X size={13} />
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export function App() {
   return (
     <ContextMenuProvider>
@@ -168,7 +205,12 @@ function AppContent() {
   }, [refreshAgents]);
   useEffect(() => {
     void importLegacyLocalStorageOnce()
-      .then(hydrateThemeFromUserState)
+      .then(() =>
+        Promise.all([
+          hydrateThemeFromUserState(),
+          hydrateSessionComposerDraftsFromUserState(),
+        ]),
+      )
       .catch((e) => console.warn("Failed to hydrate user state:", e));
   }, []);
 
@@ -319,6 +361,7 @@ function AppContent() {
           <SchedulesManager onClose={() => setSchedulesOpen(false)} />
         )}
       </Suspense>
+      <AppNoticeHost />
       <AutoUpdater />
       <ResizeHandles />
     </div>

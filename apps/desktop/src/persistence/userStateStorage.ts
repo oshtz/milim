@@ -11,6 +11,7 @@ const CANONICAL_USER_STATE_KEYS = [
   "milim.customThemes",
   "milim.window.alwaysOnTop",
   "milim.mobile.urlBase",
+  "milim.sessionDrafts",
 ] as const;
 
 const SYNCED_SETTINGS_KEY = "milim.settings";

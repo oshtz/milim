@@ -2,6 +2,7 @@ import {
   lazy,
   memo,
   Suspense,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -11,6 +12,7 @@ import {
   type MouseEvent,
   type MutableRefObject,
   type PointerEvent,
+  type ReactNode,
   type SetStateAction,
 } from "react";
 import { useAgents } from "../agents/store";
@@ -24,6 +26,7 @@ import {
   generateMedia,
   getClaudeStatus,
   getCodexAccount,
+  getMobileCompanionStatus,
   getWorkspaceGitStatus,
   getMediaModelSchema,
   getMediaStatus,
@@ -110,6 +113,8 @@ import {
 } from "../api";
 import {
   DEFAULT_THREAD_SETTINGS,
+  getSessionComposerDraft,
+  setSessionComposerDraft,
   normalizeVirtualFilePath,
   sessionVirtualProjectFiles,
   useSessions,
@@ -310,6 +315,15 @@ const EMPTY_QUEUE: QueuedMessage[] = [];
 const NON_EMPTY_USAGE_MESSAGES: ChatMessage[] = [{ role: "user", content: "" }];
 const MAX_ATTACHMENT_IMAGE_PREVIEW_BYTES = 2 * 1024 * 1024;
 const PREVIEW_PANEL_MIN_WIDTH = 280;
+const MESSAGE_VIRTUALIZE_AFTER = 80;
+const MESSAGE_ESTIMATED_HEIGHT = 152;
+const MESSAGE_VIRTUAL_OVERSCAN_PX = 900;
+const MESSAGE_ROW_GAP = 12;
+const previewArtifactCache = new WeakMap<ChatMessage, ChatArtifact[] | null>();
+
+function documentVisible(): boolean {
+  return typeof document === "undefined" || document.visibilityState === "visible";
+}
 
 type CompactionSummaryResult = {
   content: string;
@@ -530,7 +544,7 @@ function renderMessageAttachments(attachments?: ChatAttachment[]) {
             <img
               className="message-attachment-thumb"
               src={attachment.dataUrl}
-              alt=""
+              alt={`Attachment preview: ${attachment.name}`}
             />
           )}
           <span className="message-attachment-name">{attachment.name}</span>
@@ -552,11 +566,12 @@ function renderMessageMedia(results?: MediaGenerationResult[]) {
         const url = bestMediaResultUrl(result);
         const media = result.media[0];
         const key = `${result.provider_id}-${result.id || result.model}-${result.status}`;
+        const label = `Generated ${media?.kind ?? "media"} from ${result.model}`;
         const preview =
           media?.kind === "video" && media.url ? (
-            <video src={media.url} controls />
+            <video src={media.url} controls aria-label={label} />
           ) : media?.url ? (
-            <img src={media.url} alt="" />
+            <img src={media.url} alt={label} />
           ) : (
             <Image size={24} />
           );
@@ -601,13 +616,20 @@ function openResponseUrl(
 function previewArtifactsForMessage(
   message: ChatMessage,
 ): ChatArtifact[] | undefined {
+  const cached = previewArtifactCache.get(message);
+  if (cached !== undefined) return cached ?? undefined;
   if (isCompactionCheckpoint(message)) return undefined;
   if (message.role !== "assistant") return undefined;
   const completed = message.artifacts ?? [];
   if (completed.length) return completed;
-  if (!message.content) return undefined;
+  if (!message.content) {
+    previewArtifactCache.set(message, null);
+    return undefined;
+  }
   const live = extractLivePreviewArtifactFromContent(message.content);
-  return live ? [live] : undefined;
+  const artifacts = live ? [live] : null;
+  previewArtifactCache.set(message, artifacts);
+  return artifacts ?? undefined;
 }
 
 function preferredPreviewArtifact(
@@ -978,7 +1000,7 @@ function MessageRowView({
       }
       onContextMenu={openMessageContextMenu}
     >
-      <div className="msg-content">
+      <div className="msg-content" dir="auto">
         {m.role === "assistant" ? (
           <>
             {m.run && m.run !== activeRun && <RunTimeline run={m.run} />}
@@ -1202,6 +1224,104 @@ const MessageRow = memo(
     prev.toolApproval === next.toolApproval &&
     prev.actionsRef === next.actionsRef,
 );
+
+type VirtualMessageItem = {
+  index: number;
+  message: ChatMessage;
+  top: number;
+};
+
+type VirtualMessageWindow = {
+  virtualized: boolean;
+  items: VirtualMessageItem[];
+  totalHeight: number;
+};
+
+function virtualIndexAt(offsets: number[], value: number): number {
+  let low = 0;
+  let high = offsets.length - 1;
+  while (low < high) {
+    const mid = Math.floor((low + high) / 2);
+    if (offsets[mid] < value) low = mid + 1;
+    else high = mid;
+  }
+  return Math.max(0, low - 1);
+}
+
+function virtualMessageWindow(
+  messages: ChatMessage[],
+  heights: readonly number[],
+  scrollTop: number,
+  viewportHeight: number,
+): VirtualMessageWindow {
+  if (messages.length <= MESSAGE_VIRTUALIZE_AFTER) {
+    return {
+      virtualized: false,
+      totalHeight: 0,
+      items: messages.map((message, index) => ({ index, message, top: 0 })),
+    };
+  }
+  const offsets = new Array<number>(messages.length + 1);
+  offsets[0] = 0;
+  for (let i = 0; i < messages.length; i += 1) {
+    offsets[i + 1] =
+      offsets[i] + (heights[i] || MESSAGE_ESTIMATED_HEIGHT);
+  }
+  const start = virtualIndexAt(
+    offsets,
+    Math.max(0, scrollTop - MESSAGE_VIRTUAL_OVERSCAN_PX),
+  );
+  const end = Math.min(
+    messages.length - 1,
+    virtualIndexAt(
+      offsets,
+      scrollTop + viewportHeight + MESSAGE_VIRTUAL_OVERSCAN_PX,
+    ) + 1,
+  );
+  const items: VirtualMessageItem[] = [];
+  for (let index = start; index <= end; index += 1) {
+    items.push({ index, message: messages[index], top: offsets[index] });
+  }
+  return {
+    virtualized: true,
+    items,
+    totalHeight: offsets[messages.length],
+  };
+}
+
+function MessageVirtualRow({
+  index,
+  top,
+  measure,
+  children,
+}: {
+  index: number;
+  top: number;
+  measure: (index: number, height: number) => void;
+  children: ReactNode;
+}) {
+  const rowRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const row = rowRef.current;
+    if (!row) return;
+    const update = () =>
+      measure(index, row.getBoundingClientRect().height + MESSAGE_ROW_GAP);
+    update();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(update);
+    observer.observe(row);
+    return () => observer.disconnect();
+  }, [index, measure, children]);
+  return (
+    <div
+      ref={rowRef}
+      className="message-virtual-row"
+      style={{ transform: `translateY(${top}px)` }}
+    >
+      {children}
+    </div>
+  );
+}
 
 function previewRuntimeText(value?: string | null): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
@@ -2289,7 +2409,9 @@ export function ChatView({
   const { openContextMenu } = useContextMenu();
   const messageRowActionsRef = useRef<MessageRowActions | null>(null);
   const [models, setModels] = useState<ModelInfo[]>([]);
-  const [input, setInputState] = useState("");
+  const [input, setInputState] = useState(() =>
+    getSessionComposerDraft(useSessions.getState().activeId),
+  );
   const [providersOpen, setProvidersOpen] = useState(false);
   const [mcpOpen, setMcpOpen] = useState(false);
   const [memoryOpen, setMemoryOpen] = useState(false);
@@ -2333,7 +2455,6 @@ export function ChatView({
   const previewArtifact = previewSelection?.artifact ?? null;
 
   const activeId = useSessions((s) => s.activeId);
-  const composerDraftsRef = useRef<Record<string, string>>({});
   const sessionSummariesSelector = useMemo(
     createChatSessionSummariesSelector,
     [],
@@ -2433,6 +2554,7 @@ export function ChatView({
   const activeTheme = useTheme((s) => s.theme);
   const backgroundFit = useUiPreferences((s) => s.backgroundFit);
   const backgroundTreatment = useUiPreferences((s) => s.backgroundTreatment);
+  const pushNotice = useUiPreferences((s) => s.pushNotice);
   const showMcp = featureVisibleInMode("mcp", interfaceMode);
   const showMemoryManager = featureVisibleInMode(
     "memoryManager",
@@ -2542,6 +2664,7 @@ export function ChatView({
   useEffect(() => {
     let cancelled = false;
     async function pollPreviewApp() {
+      if (!documentVisible()) return;
       try {
         const status = await getPreviewAppStatus(activePreviewRuntimeKey);
         if (!cancelled) {
@@ -2561,9 +2684,14 @@ export function ChatView({
     }
     void pollPreviewApp();
     const timer = window.setInterval(() => void pollPreviewApp(), 2500);
+    const onVisible = () => {
+      if (documentVisible()) void pollPreviewApp();
+    };
+    document.addEventListener("visibilitychange", onVisible);
     return () => {
       cancelled = true;
       window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
     };
   }, [
     activeId,
@@ -2625,18 +2753,40 @@ export function ChatView({
   const autoPreviewRuntimeStartedRef = useRef(new Set<string>());
   const mobileRelayPollingRef = useRef(false);
   const scheduleRunPollingRef = useRef(false);
+  const mobileRelayReadyRef = useRef(false);
   const goalLoopRef = useRef<GoalLoopState | null>(null);
   const queueDrainRef = useRef<Set<string>>(new Set());
   const compactionInFlightRef = useRef(false);
+  const messageHeightsRef = useRef<number[]>([]);
   const [previewResizing, setPreviewResizing] = useState(false);
+  const [messageScrollSnapshot, setMessageScrollSnapshot] = useState({
+    top: 0,
+    height: 0,
+  });
+  const [messageHeightsVersion, setMessageHeightsVersion] = useState(0);
 
   function setInput(nextInput: SetStateAction<string>) {
     setInputState((current) => {
       const next =
         typeof nextInput === "function" ? nextInput(current) : nextInput;
-      if (next) composerDraftsRef.current[activeId] = next;
-      else delete composerDraftsRef.current[activeId];
+      setSessionComposerDraft(activeId, next);
       return next;
+    });
+  }
+
+  const measureMessageRow = useCallback((index: number, height: number) => {
+    const next = Math.max(1, Math.ceil(height));
+    if (messageHeightsRef.current[index] === next) return;
+    messageHeightsRef.current[index] = next;
+    setMessageHeightsVersion((version) => version + 1);
+  }, []);
+
+  function updateMessageScrollSnapshot() {
+    const el = chatScrollRef.current;
+    if (!el) return;
+    setMessageScrollSnapshot({
+      top: el.scrollTop,
+      height: el.clientHeight,
     });
   }
 
@@ -2661,15 +2811,27 @@ export function ChatView({
     if (currentThreadIdRef.current === activeId) return;
     previousThreadIdRef.current = currentThreadIdRef.current;
     currentThreadIdRef.current = activeId;
-    const nextDraft = composerDraftsRef.current[activeId] ?? "";
+    const nextDraft = getSessionComposerDraft(activeId);
     setInputState(nextDraft);
     if (!nextDraft && messages.length === 0) focusComposer();
   }, [activeId, messages.length]);
+
+  useEffect(() => {
+    const syncDraft = () => {
+      if (input) return;
+      const nextDraft = getSessionComposerDraft(activeId);
+      if (nextDraft) setInputState(nextDraft);
+    };
+    window.addEventListener("milim:session-drafts-hydrated", syncDraft);
+    return () =>
+      window.removeEventListener("milim:session-drafts-hydrated", syncDraft);
+  }, [activeId, input]);
 
   function scrollToChatBottom() {
     const el = chatScrollRef.current;
     if (!el) return;
     el.scrollTo({ top: el.scrollHeight, behavior: "auto" });
+    updateMessageScrollSnapshot();
   }
 
   function isLiveChildThread(thread: ChildThreadInfo): boolean {
@@ -2767,6 +2929,7 @@ export function ChatView({
     const el = chatScrollRef.current;
     if (!el) return;
     stickToBottomRef.current = isNearScrollBottom(el);
+    updateMessageScrollSnapshot();
   }
 
   useEffect(() => {
@@ -2898,10 +3061,13 @@ export function ChatView({
 
   useEffect(() => {
     if (stickToBottomRef.current) scrollToChatBottom();
+    else updateMessageScrollSnapshot();
   }, [messages]);
 
   useEffect(() => {
     stickToBottomRef.current = true;
+    messageHeightsRef.current = [];
+    setMessageHeightsVersion((version) => version + 1);
     scrollToChatBottom();
     setPendingAttachments([]);
     setChatNotice(null);
@@ -6203,10 +6369,12 @@ export function ChatView({
       event.text,
       mobileRelayAttachments(event.attachments),
     );
-    setChatNotice({
+    const notice = {
       tone: "info",
       message: `Mobile relay from ${event.device_name} added to the composer.`,
-    });
+    } as const;
+    setChatNotice(notice);
+    pushNotice(notice);
   }
 
   function applyScheduleRunEvent(event: ScheduleRunEvent) {
@@ -6219,13 +6387,28 @@ export function ChatView({
       ],
       settings: { model: event.model },
     });
-    if (importedId)
-      setChatNotice({ tone: "info", message: `${title} completed.` });
+    if (importedId) {
+      const notice = { tone: "info", message: `${title} completed.` } as const;
+      setChatNotice(notice);
+      pushNotice(notice);
+    }
   }
 
   useEffect(() => {
     let cancelled = false;
+    async function refreshMobileRelayReady() {
+      if (!documentVisible()) return;
+      try {
+        const status = await getMobileCompanionStatus();
+        mobileRelayReadyRef.current =
+          status.enabled && status.devices.length > 0;
+        if (mobileRelayReadyRef.current) void pollMobileRelay();
+      } catch {
+        mobileRelayReadyRef.current = false;
+      }
+    }
     async function pollMobileRelay() {
+      if (!documentVisible() || !mobileRelayReadyRef.current) return;
       if (mobileRelayPollingRef.current) return;
       mobileRelayPollingRef.current = true;
       try {
@@ -6239,17 +6422,28 @@ export function ChatView({
         mobileRelayPollingRef.current = false;
       }
     }
-    void pollMobileRelay();
+    void refreshMobileRelayReady();
     const timer = window.setInterval(() => void pollMobileRelay(), 1500);
+    const statusTimer = window.setInterval(
+      () => void refreshMobileRelayReady(),
+      30_000,
+    );
+    const onVisible = () => {
+      if (documentVisible()) void refreshMobileRelayReady();
+    };
+    document.addEventListener("visibilitychange", onVisible);
     return () => {
       cancelled = true;
       window.clearInterval(timer);
+      window.clearInterval(statusTimer);
+      document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [activeId, busy, effectiveModel, messages, switchToSession]);
+  }, [activeId, busy, effectiveModel, switchToSession]);
 
   useEffect(() => {
     let cancelled = false;
     async function pollScheduleRuns() {
+      if (!documentVisible()) return;
       if (scheduleRunPollingRef.current) return;
       scheduleRunPollingRef.current = true;
       try {
@@ -6263,9 +6457,14 @@ export function ChatView({
     }
     void pollScheduleRuns();
     const timer = window.setInterval(() => void pollScheduleRuns(), 5000);
+    const onVisible = () => {
+      if (documentVisible()) void pollScheduleRuns();
+    };
+    document.addEventListener("visibilitychange", onVisible);
     return () => {
       cancelled = true;
       window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
     };
   }, []);
 
@@ -6315,24 +6514,38 @@ export function ChatView({
   ]);
 
   const emptyThread = messages.length === 0;
-  const activeRun = busy
-    ? (messages
-        .slice()
-        .reverse()
-        .find(
-          (message) =>
-            message.role === "assistant" && message.run?.status === "running",
-        )?.run ?? null)
-    : null;
-  const activeStreamParts = busy
-    ? messages
-        .slice()
-        .reverse()
-        .find(
-          (message) =>
-            message.role === "assistant" && message.streamParts?.length,
-        )?.streamParts
-    : undefined;
+  const activeAssistantRuntime = useMemo(() => {
+    if (!busy) return { run: null, streamParts: undefined };
+    let run: RunTrace | null = null;
+    let streamParts: ChatStreamPart[] | undefined;
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      const message = messages[i];
+      if (message.role !== "assistant") continue;
+      run ??= message.run?.status === "running" ? message.run : null;
+      streamParts ??= message.streamParts?.length
+        ? message.streamParts
+        : undefined;
+      if (run && streamParts) break;
+    }
+    return { run, streamParts };
+  }, [busy, messages]);
+  const activeRun = activeAssistantRuntime.run;
+  const activeStreamParts = activeAssistantRuntime.streamParts;
+  const virtualMessages = useMemo(
+    () =>
+      virtualMessageWindow(
+        messages,
+        messageHeightsRef.current,
+        messageScrollSnapshot.top,
+        messageScrollSnapshot.height,
+      ),
+    [
+      messages,
+      messageHeightsVersion,
+      messageScrollSnapshot.height,
+      messageScrollSnapshot.top,
+    ],
+  );
   const debugPreviewControlActivity =
     typeof window === "undefined"
       ? null
@@ -6454,8 +6667,18 @@ export function ChatView({
             onScroll={updateAutoScrollCoupling}
           >
             {!emptyThread && (
-              <div className="messages">
-                {messages.map((m, i) => {
+              <div
+                className={
+                  "messages" +
+                  (virtualMessages.virtualized ? " messages-virtualized" : "")
+                }
+                style={
+                  virtualMessages.virtualized
+                    ? ({ height: virtualMessages.totalHeight } as CSSProperties)
+                    : undefined
+                }
+              >
+                {virtualMessages.items.map(({ message: m, index: i, top }) => {
                   const messageIsCompaction = isCompactionCheckpoint(m);
                   const isApprovalMessage = Boolean(m.approval);
                   const isLastAssistant =
@@ -6463,7 +6686,7 @@ export function ChatView({
                     !messageIsCompaction &&
                     !isApprovalMessage &&
                     i === messages.length - 1;
-                  return (
+                  const row = (
                     <MessageRow
                       key={m.id ?? i}
                       activeId={activeId}
@@ -6483,6 +6706,18 @@ export function ChatView({
                       toolApproval={toolApproval}
                       actionsRef={messageRowActionsRef}
                     />
+                  );
+                  return virtualMessages.virtualized ? (
+                    <MessageVirtualRow
+                      key={m.id ?? i}
+                      index={i}
+                      top={top}
+                      measure={measureMessageRow}
+                    >
+                      {row}
+                    </MessageVirtualRow>
+                  ) : (
+                    row
                   );
                 })}
               </div>

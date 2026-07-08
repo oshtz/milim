@@ -31,7 +31,68 @@ import {
 import { recordPerfMeasure, startPerfMeasure } from "../lib/perf.js";
 import { previewRuntimeKeyForThread } from "../lib/previewRuntimeKeys.js";
 import { deriveThreadTitle, NEW_CHAT_TITLE } from "../lib/threadTitles.js";
-import { userStateStorage } from "../persistence/userStateStorage.js";
+import {
+  readUserStateKey,
+  userStateStorage,
+  writeUserStateKey,
+} from "../persistence/userStateStorage.js";
+
+const COMPOSER_DRAFTS_KEY = "milim.sessionDrafts";
+const STREAMING_PERSIST_MARKER = "__deferStreamingWrite";
+let sessionComposerDrafts: Record<string, string> = {};
+let sessionComposerDraftsPersistTimer: ReturnType<typeof setTimeout> | null =
+  null;
+
+function persistSessionComposerDrafts(): void {
+  if (sessionComposerDraftsPersistTimer != null)
+    clearTimeout(sessionComposerDraftsPersistTimer);
+  sessionComposerDraftsPersistTimer = setTimeout(() => {
+    sessionComposerDraftsPersistTimer = null;
+    void Promise.resolve(
+      writeUserStateKey(COMPOSER_DRAFTS_KEY, JSON.stringify(sessionComposerDrafts)),
+    ).catch(() => {});
+  }, 250);
+}
+
+export function getSessionComposerDraft(sessionId: string): string {
+  return sessionComposerDrafts[sessionId] ?? "";
+}
+
+export function setSessionComposerDraft(sessionId: string, draft: string): void {
+  const next = draft.trim() ? draft : "";
+  if (next) sessionComposerDrafts = { ...sessionComposerDrafts, [sessionId]: next };
+  else {
+    const { [sessionId]: _removed, ...rest } = sessionComposerDrafts;
+    sessionComposerDrafts = rest;
+  }
+  persistSessionComposerDrafts();
+}
+
+export async function hydrateSessionComposerDraftsFromUserState(): Promise<void> {
+  const raw = await Promise.resolve(readUserStateKey(COMPOSER_DRAFTS_KEY));
+  if (!raw) return;
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return;
+    const next: Record<string, string> = {};
+    for (const [sessionId, draft] of Object.entries(parsed)) {
+      if (typeof draft === "string" && draft.trim()) next[sessionId] = draft;
+    }
+    sessionComposerDrafts = next;
+    if (typeof window !== "undefined")
+      window.dispatchEvent(new Event("milim:session-drafts-hydrated"));
+  } catch {
+    sessionComposerDrafts = {};
+  }
+}
+
+const sessionPersistStorage = {
+  ...userStateStorage,
+  setItem: (name: string, value: string) => {
+    if (value.includes(STREAMING_PERSIST_MARKER)) return undefined;
+    return userStateStorage.setItem(name, value);
+  },
+};
 
 export interface ThreadSettings {
   model: string;
@@ -2546,9 +2607,11 @@ export const useSessions = create<SessionState>()(
     },
     {
       name: "milim.sessions",
-      storage: createJSONStorage(() => userStateStorage),
+      storage: createJSONStorage(() => sessionPersistStorage),
       merge: (persisted, current) => {
         const state = persisted as Partial<SessionState>;
+        if ((state as Record<string, unknown> | undefined)?.[STREAMING_PERSIST_MARKER])
+          return current;
         const sessions =
           state.sessions?.map((session) =>
             normalizeSessionArtifacts(session),
@@ -2610,18 +2673,21 @@ export const useSessions = create<SessionState>()(
           sidebar: normalizeSidebarState(state.sidebar, active.sessions),
         };
       },
-      partialize: (state) => ({
-        sessions: sessionsForPersistence(
-          state.sessions,
-          state.generatingSessionIds,
-        ),
-        projects: state.projects,
-        previewRuntimesByKey: state.previewRuntimesByKey,
-        activeId: state.activeId,
-        archiveRetentionDays: state.archiveRetentionDays,
-        queuedMessagesBySession: state.queuedMessagesBySession,
-        sidebar: state.sidebar,
-      }),
+      partialize: (state) =>
+        state.generatingSessionIds.length
+          ? { [STREAMING_PERSIST_MARKER]: true }
+          : {
+              sessions: sessionsForPersistence(
+                state.sessions,
+                state.generatingSessionIds,
+              ),
+              projects: state.projects,
+              previewRuntimesByKey: state.previewRuntimesByKey,
+              activeId: state.activeId,
+              archiveRetentionDays: state.archiveRetentionDays,
+              queuedMessagesBySession: state.queuedMessagesBySession,
+              sidebar: state.sidebar,
+            },
     },
   ),
 );

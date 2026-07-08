@@ -36,6 +36,8 @@ const {
   DEFAULT_ARCHIVE_RETENTION_DAYS,
   SIDEBAR_CHATS_SECTION_ID,
   SIDEBAR_PINNED_SECTION_ID,
+  getSessionComposerDraft,
+  setSessionComposerDraft,
   useSessions,
   projectSectionId,
   normalizeVirtualFilePath,
@@ -293,6 +295,7 @@ assert(
   !localStorage.getItem("milim.sessions")?.includes("transient-token"),
   "live streamed text should stay out of persistence while generating",
 );
+const streamingPersistSnapshot = localStorage.getItem("milim.sessions");
 useSessions.getState().commitResponseMetrics(first, {
   startedAt: 1,
   endedAt: 2,
@@ -300,9 +303,10 @@ useSessions.getState().commitResponseMetrics(first, {
   model: "stream-model",
   provider: "Stream Provider",
 });
-assert(
-  localStorage.getItem("milim.sessions")?.includes('"durationMs":1'),
-  "response metrics should persist while generating",
+equal(
+  localStorage.getItem("milim.sessions"),
+  streamingPersistSnapshot,
+  "session persistence should be skipped while generating",
 );
 useSessions.getState().setSessionGenerating(first, false);
 assert(
@@ -324,6 +328,22 @@ assert(
 assert(
   localStorage.getItem("milim.sessions")?.includes('"durationMs":1'),
   "completed response metrics should persist once generation stops",
+);
+setSessionComposerDraft(first, "unsent draft");
+equal(
+  getSessionComposerDraft(first),
+  "unsent draft",
+  "composer drafts should be tracked per session",
+);
+assert(
+  !localStorage.getItem("milim.sessions")?.includes("unsent draft"),
+  "composer drafts should not dirty the full session snapshot",
+);
+setSessionComposerDraft(first, "");
+equal(
+  getSessionComposerDraft(first),
+  "",
+  "clearing a composer draft should remove it from the draft cache",
 );
 equal(
   DEFAULT_GOAL_SETTINGS.developerMaxTurns,

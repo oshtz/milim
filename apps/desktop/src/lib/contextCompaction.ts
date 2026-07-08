@@ -1,6 +1,5 @@
 import type { ChatAttachment, ChatCompactionMetrics, ChatCompactionSummaryMetrics, ChatMessage, ModelInfo, ProviderInfo, ReasoningEffort } from "../api";
-import { Tiktoken } from "js-tiktoken/lite";
-import cl100kBase from "js-tiktoken/ranks/cl100k_base";
+import type { Tiktoken } from "js-tiktoken/lite";
 
 const LOCAL_CONTEXT_WINDOW = 4096;
 const HOSTED_CONTEXT_WINDOW = 32_768;
@@ -14,6 +13,7 @@ const COMPACTION_TAIL_TURNS = 2;
 const COMPACTION_TAIL_MAX_TOKENS = 8_000;
 const COMPACTION_OLD_BODY_MAX_CHARS = 2_000;
 let defaultTokenizer: Tiktoken | null | undefined;
+let defaultTokenizerImport: Promise<void> | null = null;
 
 export interface ModelContextBudget {
   contextLength: number;
@@ -63,7 +63,19 @@ export function estimateTextTokens(text: string): number {
 
 function estimateTextTokensWithTokenizer(text: string): number | null {
   try {
-    defaultTokenizer ??= new Tiktoken(cl100kBase);
+    if (defaultTokenizer === undefined && !defaultTokenizerImport) {
+      defaultTokenizerImport = Promise.all([
+        import("js-tiktoken/lite"),
+        import("js-tiktoken/ranks/cl100k_base"),
+      ])
+        .then(([tokenizerModule, ranksModule]) => {
+          defaultTokenizer = new tokenizerModule.Tiktoken(ranksModule.default);
+        })
+        .catch(() => {
+          defaultTokenizer = null;
+        });
+    }
+    if (!defaultTokenizer) return null;
     return defaultTokenizer.encode(text, "all").length;
   } catch {
     defaultTokenizer = null;
@@ -72,6 +84,10 @@ function estimateTextTokensWithTokenizer(text: string): number | null {
 }
 
 function estimateTextTokensFallback(text: string): number {
+  if (!text) return 0;
+  if (/^[\x00-\x7f]*$/.test(text)) {
+    return Math.max(1, Math.ceil(text.length / 4) + (/[^\w\s'-]/.test(text) ? 2 : 1));
+  }
   const chunks = text.match(/[\p{L}\p{M}\p{N}_'-]+|[^\s]/gu) ?? [];
   let total = 0;
   for (const chunk of chunks) {

@@ -3577,6 +3577,8 @@ html[data-dark="true"] .preview-control-cursor {
 
 /* ---- Messages ---- */
 .messages { width: 100%; max-width: var(--chat-content-width); margin: 0 auto; display: flex; flex-direction: column; gap: 12px; padding: 8px 0 4px; user-select: text; cursor: auto; }
+.messages.messages-virtualized { position: relative; display: block; padding: 8px 0 4px; }
+.message-virtual-row { position: absolute; left: 0; right: 0; top: 0; padding-bottom: 12px; will-change: transform; }
 .messages, .msg-content, .md, .md * { user-select: text; -webkit-user-select: text; }
 .msg { display: flex; flex-direction: column; gap: 3px; }
 .messages .msg:not(:last-child) { content-visibility: auto; contain-intrinsic-size: auto 140px; }
@@ -4707,6 +4709,7 @@ html[data-dark="true"] .preview-control-cursor {
 .md table { border-collapse: collapse; margin: 0 0 10px; font-size: 13px; display: block; overflow-x: auto; }
 .md th, .md td { border: 1px solid var(--border-primary); padding: 5px 9px; text-align: left; }
 .md th { background: transparent; }
+.md-streaming-text { white-space: pre-wrap; overflow-wrap: anywhere; }
 .md :not(pre) > code {
   font-family: var(--mono);
   font-size: 0.88em;
@@ -4717,7 +4720,7 @@ html[data-dark="true"] .preview-control-cursor {
 }
 
 /* fenced code blocks */
-.code-block { position: relative; margin: 0 0 10px; border-radius: 8px; border: 1px solid var(--border-primary); background: var(--chat-block-bg); overflow: visible; backdrop-filter: blur(var(--blur)); }
+.code-block { position: relative; margin: 0 0 10px; border-radius: 8px; border: 1px solid var(--border-primary); background: var(--chat-block-bg); overflow: visible; }
 .code-block pre { margin: 0; padding: 10px 12px; overflow-x: auto; border-radius: inherit; }
 .code-block code { font-family: var(--mono); font-size: 12.5px; line-height: 1.5; background: none; border: none; padding: 0; }
 .code-block-collapsed {
@@ -4897,7 +4900,7 @@ html[data-dark="true"] .preview-control-cursor {
 .app.code-theme-high-contrast .hljs-deletion { color: #ff4d4d; }
 
 /* reasoning ("Thinking") block */
-.think { margin: 0 0 8px; border: 1px solid var(--border-primary); border-radius: 8px; background: var(--chat-block-bg); overflow: hidden; backdrop-filter: blur(var(--blur)); }
+.think { margin: 0 0 8px; border: 1px solid var(--border-primary); border-radius: 8px; background: var(--chat-block-bg); overflow: hidden; }
 .think > summary { cursor: pointer; padding: 6px 10px; font-size: 12.5px; color: var(--secondary-text); user-select: none; list-style: none; }
 .think > summary::-webkit-details-marker { display: none; }
 .think[open] > summary { border-bottom: 1px solid var(--border-primary); }
@@ -5086,6 +5089,33 @@ html[data-dark="true"] .preview-control-cursor {
   color: var(--warning);
 }
 
+.app-notices {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 80;
+  display: grid;
+  gap: 8px;
+  width: min(360px, calc(100vw - 36px));
+  pointer-events: none;
+}
+.app-notice {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 10px 10px 12px;
+  border: 1px solid var(--border-primary);
+  border-radius: 8px;
+  background: var(--popover-bg);
+  color: var(--primary-text);
+  box-shadow: var(--shadow-popover);
+  pointer-events: auto;
+}
+.app-notice.info { border-color: var(--border-primary); }
+.app-notice.success { border-color: var(--success); }
+.app-notice.warning { border-color: var(--warning); }
+.app-notice.error { border-color: var(--error); }
 .dock-surface {
   width: min(100%, var(--chat-content-width));
   min-width: 0;
@@ -6602,6 +6632,7 @@ html[data-dark="true"] .preview-control-cursor {
 }
 .theme-card:hover { background: var(--panel-row-hover); transform: none; }
 .theme-card.active { border-color: var(--border-secondary); background: var(--panel-row-active); }
+.theme-card.low-contrast { border-color: var(--warning); }
 .theme-preview {
   height: 52px;
   border-radius: 8px;

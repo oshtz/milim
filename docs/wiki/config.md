@@ -25,7 +25,7 @@ Configuration is intentionally local. The desktop app embeds the server, stores 
 
 ## Desktop session state
 
-The desktop UI hydrates through the canonical `milim.sessions` user-state key, but the Tauri store now persists each chat session as a `user_sessions` SQLite row and each transcript message as a `user_session_messages` row keyed by session id and message index. Non-session metadata such as the active id, queued messages, sidebar organization, and archive retention stays in a small `milim.sessions.meta` JSON entry. Legacy `milim.sessions` blobs are migrated into rows on first session read.
+The desktop UI hydrates through the canonical `milim.sessions` user-state key, but the Tauri store now persists each chat session as a `user_sessions` SQLite row and each transcript message as a `user_session_messages` row keyed by session id and message index. Non-session metadata such as the active id, queued messages, sidebar organization, and archive retention stays in a small `milim.sessions.meta` JSON entry. Legacy `milim.sessions` blobs are migrated into rows on first session read. During active generation, desktop session persistence skips the full session snapshot and flushes the final state when the turn ends; unsent composer drafts use the separate tiny `milim.sessionDrafts` user-state key.
 
 The remaining storage work is:
 

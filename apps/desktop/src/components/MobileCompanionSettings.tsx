@@ -251,7 +251,7 @@ export function MobileCompanionSettings() {
 
       {pairingUrl && (
         <div className="mobile-pairing-panel">
-          {qrDataUrl && <img className="mobile-pairing-qr" src={qrDataUrl} alt="" />}
+          {qrDataUrl && <img className="mobile-pairing-qr" src={qrDataUrl} alt="Mobile companion pairing QR code" />}
           <div className="mobile-pairing-copy">
             <span className="setting-mini-title">Pairing link</span>
             <code data-testid="mobile-companion-pairing-url">{pairingUrl}</code>
