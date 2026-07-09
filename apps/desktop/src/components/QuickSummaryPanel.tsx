@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import type { QuickSummary, QuickSummaryRow } from "../lib/quickSummary";
-import { ChevronDown, FileText, Folder, Globe, Paperclip, Sparkles, X } from "./icons";
+import { FileText, Folder, Globe, Paperclip, Sparkles, X } from "./icons";
 
 function toneClass(tone?: QuickSummaryRow["tone"]): string {
   return tone ? ` ${tone}` : "";
@@ -84,17 +84,19 @@ export function QuickSummaryPanel({
       className={`quick-summary-pull${open ? " expanded" : ""}${reserveSidePanelButtonSpace ? " with-side-panel-button" : ""}`}
       data-testid="quick-summary-panel"
     >
-      <button
-        className="quick-summary-pull-tab"
-        type="button"
-        aria-expanded={open}
-        aria-controls="quick-summary-drawer"
-        onClick={() => onOpenChange(!open)}
-      >
-        <FileText size={14} />
-        <span>Context</span>
-        <ChevronDown size={12} />
-      </button>
+      {!open && (
+        <button
+          className="icon-btn quick-summary-pull-tab"
+          type="button"
+          title="Open context"
+          aria-label="Open context"
+          aria-expanded={open}
+          aria-controls="quick-summary-drawer"
+          onClick={() => onOpenChange(true)}
+        >
+          <FileText size={15} />
+        </button>
+      )}
       <aside
         id="quick-summary-drawer"
         className="quick-summary-drawer"
@@ -104,7 +106,7 @@ export function QuickSummaryPanel({
         <div className="quick-summary-toolbar">
           <strong>Context</strong>
           <button
-            className="icon-btn"
+            className="icon-btn quick-summary-close"
             type="button"
             title="Close context"
             aria-label="Close context"
