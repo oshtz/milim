@@ -678,9 +678,22 @@ impl RunJournalStore {
         let q = query.q.as_deref().map(str::to_ascii_lowercase);
         let limit = query.limit.clamp(1, 200);
         // ponytail: local O(n) filter; switch to FTS only if journals get large.
-        Ok(rows.filter_map(|row| row.ok())
-            .filter(|entry| query.status.as_ref().map(|v| &entry.status == v).unwrap_or(true))
-            .filter(|entry| query.kind.as_ref().map(|v| &entry.kind == v).unwrap_or(true))
+        Ok(rows
+            .filter_map(|row| row.ok())
+            .filter(|entry| {
+                query
+                    .status
+                    .as_ref()
+                    .map(|v| &entry.status == v)
+                    .unwrap_or(true)
+            })
+            .filter(|entry| {
+                query
+                    .kind
+                    .as_ref()
+                    .map(|v| &entry.kind == v)
+                    .unwrap_or(true)
+            })
             .filter(|entry| {
                 query
                     .workspace
@@ -704,9 +717,18 @@ impl RunJournalStore {
                 ]
                 .iter()
                 .any(|value| value.to_ascii_lowercase().contains(q))
-                    || entry.files.iter().any(|value| value.to_ascii_lowercase().contains(q))
-                    || entry.tools.iter().any(|value| value.to_ascii_lowercase().contains(q))
-                    || entry.artifacts.iter().any(|value| value.to_ascii_lowercase().contains(q))
+                    || entry
+                        .files
+                        .iter()
+                        .any(|value| value.to_ascii_lowercase().contains(q))
+                    || entry
+                        .tools
+                        .iter()
+                        .any(|value| value.to_ascii_lowercase().contains(q))
+                    || entry
+                        .artifacts
+                        .iter()
+                        .any(|value| value.to_ascii_lowercase().contains(q))
             })
             .skip(query.offset)
             .take(limit)
@@ -778,7 +800,6 @@ fn row_to_run_journal_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<RunJour
         tags: parse_json_vec(row.get("tags_json")?),
     })
 }
-
 
 fn get_json_locked(conn: &Connection, key: &str) -> Result<Option<String>> {
     conn.query_row(

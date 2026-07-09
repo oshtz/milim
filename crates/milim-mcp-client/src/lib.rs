@@ -127,7 +127,10 @@ impl McpSecretStore {
     }
 
     fn get(&self, server_id: &str, key: &str) -> Result<Option<String>> {
-        let _guard = self.lock.lock().map_err(|_| Error::Other("MCP secret lock poisoned".into()))?;
+        let _guard = self
+            .lock
+            .lock()
+            .map_err(|_| Error::Other("MCP secret lock poisoned".into()))?;
         let all = self.read_all()?;
         Ok(all
             .get(server_id)
@@ -144,7 +147,10 @@ impl McpSecretStore {
     }
 
     fn put(&self, server_id: &str, key: &str, value: &str) -> Result<()> {
-        let _guard = self.lock.lock().map_err(|_| Error::Other("MCP secret lock poisoned".into()))?;
+        let _guard = self
+            .lock
+            .lock()
+            .map_err(|_| Error::Other("MCP secret lock poisoned".into()))?;
         let mut all = self.read_all()?;
         all.entry(server_id.to_string())
             .or_default()
@@ -153,7 +159,10 @@ impl McpSecretStore {
     }
 
     fn delete(&self, server_id: &str, key: &str) -> Result<()> {
-        let _guard = self.lock.lock().map_err(|_| Error::Other("MCP secret lock poisoned".into()))?;
+        let _guard = self
+            .lock
+            .lock()
+            .map_err(|_| Error::Other("MCP secret lock poisoned".into()))?;
         let mut all = self.read_all()?;
         if let Some(server) = all.get_mut(server_id) {
             server.remove(key);
@@ -165,7 +174,10 @@ impl McpSecretStore {
     }
 
     fn delete_server(&self, server_id: &str) -> Result<()> {
-        let _guard = self.lock.lock().map_err(|_| Error::Other("MCP secret lock poisoned".into()))?;
+        let _guard = self
+            .lock
+            .lock()
+            .map_err(|_| Error::Other("MCP secret lock poisoned".into()))?;
         let mut all = self.read_all()?;
         all.remove(server_id);
         self.write_all(&all)
@@ -753,7 +765,9 @@ fn missing_env(cfg: &McpServerConfig, secrets: Option<&McpSecretStore>) -> Vec<S
                     .as_ref()
                     .map(|value| !value.is_empty())
                     .unwrap_or(false)
-                    || secrets.map(|store| store.has(&cfg.id, &key)).unwrap_or(false)
+                    || secrets
+                        .map(|store| store.has(&cfg.id, &key))
+                        .unwrap_or(false)
             } else {
                 item.value
                     .as_ref()
@@ -928,9 +942,10 @@ impl McpHub {
             let Some(value) = env.value.take() else {
                 continue;
             };
-            let store = self.secrets.as_ref().ok_or_else(|| {
-                Error::Other("MCP secret store is not available".to_string())
-            })?;
+            let store = self
+                .secrets
+                .as_ref()
+                .ok_or_else(|| Error::Other("MCP secret store is not available".to_string()))?;
             if value.is_empty() {
                 store.delete(&cfg.id, &env.key)?;
             } else {
@@ -1071,7 +1086,11 @@ impl McpHub {
                 };
                 McpEnvVar {
                     key,
-                    value: if item.secret { None } else { item.value.clone() },
+                    value: if item.secret {
+                        None
+                    } else {
+                        item.value.clone()
+                    },
                     secret: item.secret,
                     required: item.required,
                     has_value,
@@ -1311,8 +1330,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_config_reports_missing_required_env() {
-        let dir =
-            std::env::temp_dir().join(format!("milim-mcp-env-test-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("milim-mcp-env-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let hub = McpHub::open(&dir);
         let result = hub

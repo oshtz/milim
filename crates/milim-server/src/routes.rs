@@ -8016,9 +8016,11 @@ pub(crate) struct RunJournalListParams {
 }
 
 fn run_journal_store(st: &AppState) -> Result<&milim_storage::RunJournalStore, ApiError> {
-    st.run_journal
-        .as_deref()
-        .ok_or_else(|| ApiError(Error::InvalidRequest("run journal is not enabled".to_string())))
+    st.run_journal.as_deref().ok_or_else(|| {
+        ApiError(Error::InvalidRequest(
+            "run journal is not enabled".to_string(),
+        ))
+    })
 }
 
 /// `GET /runs` — list local goal-attempt journal entries.
@@ -8091,7 +8093,10 @@ pub(crate) async fn run_delete(
     peer: Peer,
 ) -> Result<Response, ApiError> {
     authorize(&st, &headers, peer_addr(peer))?;
-    Ok(Json(json!({ "deleted": run_journal_store(&st)?.delete(&id).map_err(ApiError)? })).into_response())
+    Ok(
+        Json(json!({ "deleted": run_journal_store(&st)?.delete(&id).map_err(ApiError)? }))
+            .into_response(),
+    )
 }
 
 // ----- MCP servers (external MCP client connections) -----
@@ -8247,6 +8252,8 @@ fn run_journal_goal(messages: &[ChatMessage]) -> String {
         .unwrap_or_else(|| "Agent run".to_string())
 }
 
+// ponytail: helper mirrors RunJournalEntry fields; wrap it only if another writer appears.
+#[allow(clippy::too_many_arguments)]
 fn write_agent_journal(
     st: &AppState,
     journal_id: Option<String>,
