@@ -16,7 +16,8 @@ import { deleteThreadTree, listModelsDetailed } from "./api";
 import { AutoUpdater } from "./components/AutoUpdater";
 import { ChatView } from "./components/ChatView";
 import { ContextMenuProvider, useContextMenu } from "./components/ContextMenu";
-import { Gear, Pencil, Plus, Sidebar as SidebarIcon, X } from "./components/icons";
+import { Gear, Pencil, Plus, Refresh, Sidebar as SidebarIcon, X } from "./components/icons";
+import { Logo } from "./components/Logo";
 import { ResizeHandles } from "./components/ResizeHandles";
 import { Sidebar } from "./components/Sidebar";
 import { TopBar } from "./components/TopBar";
@@ -179,18 +180,61 @@ class AppErrorBoundary extends Component<
   render() {
     if (!this.state.error) return this.props.children;
     return (
-      <div className="app-error-state" role="alert">
-        <div className="app-error-card">
-          <h1>Milim hit a UI error</h1>
-          <p>{this.state.error.message || "Unknown render error."}</p>
-          <button
-            className="btn-accent"
-            type="button"
-            onClick={() => window.location.reload()}
-          >
-            Reload
-          </button>
-        </div>
+      <div className="app-error-state">
+        <div className="app-error-backdrop" aria-hidden="true" />
+        <main
+          className="app-error-layout"
+          aria-labelledby="app-error-title"
+        >
+          <header className="app-error-brand">
+            <Logo height={26} />
+            <span aria-hidden="true" />
+            <p>Recovery</p>
+          </header>
+
+          <div className="app-error-body">
+            <section className="app-error-copy">
+              <div role="alert">
+                <p className="app-error-kicker">
+                  <span aria-hidden="true" />
+                  Interface interrupted
+                </p>
+                <h1 id="app-error-title">Milim needs a quick reload.</h1>
+                <p className="app-error-description">
+                  The interface stopped unexpectedly. Reload to return to your
+                  workspace—your saved chats and settings will stay put.
+                </p>
+              </div>
+
+              <div className="app-error-actions">
+                <button
+                  className="app-error-reload"
+                  type="button"
+                  onClick={() => window.location.reload()}
+                >
+                  <Refresh size={15} aria-hidden="true" />
+                  Reload Milim
+                </button>
+                <span>Saved work stays on this device</span>
+              </div>
+
+              <details className="app-error-details">
+                <summary>Technical details</summary>
+                <code>
+                  {this.state.error.message || "Unknown render error."}
+                </code>
+              </details>
+            </section>
+
+            <div className="app-error-visual" aria-hidden="true">
+              <div className="app-error-orbit">
+                <Logo height={86} />
+                <span className="app-error-break" />
+              </div>
+              <p>UI / interrupted</p>
+            </div>
+          </div>
+        </main>
       </div>
     );
   }
