@@ -1770,12 +1770,42 @@ function AutomationCards({
 function MilimUsageRidgeline({ usage }: { usage: MilimUsageSummary }) {
   const months = visibleUsageMonths(usage);
   const width = 440;
-  const amplitude = usage.hasUsage ? 34 : 0;
-  const lineSpacing = 16;
-  const lineWidth = 1.2;
+  const gradientId = "usage-ridge-fill-gradient";
+  const amplitude = usage.hasUsage ? 40 : 0;
+  const lineSpacing = 17;
+  const lineWidth = 1.35;
   const topPad = amplitude + 8;
   const height = topPad + lineSpacing * (months.length - 1) + 10;
   const maxValue = Math.max(1, ...months.flatMap((month) => month.days));
+  const ridges = months.map((month, index) => {
+    const base = topPad + index * lineSpacing;
+    const line = ridgePath(month.days, base, amplitude, width, maxValue);
+    const empty = month.days.every((value) => value === 0);
+    const depth =
+      months.length <= 1 ? 1 : index / Math.max(1, months.length - 1);
+    return {
+      base,
+      closed: `${line} L${width},${base} L0,${base} Z`,
+      depth,
+      empty,
+      fillOpacity: empty ? 0 : 0.18 + depth * 0.18,
+      index,
+      key: month.key,
+      line,
+      lineOpacity: empty ? 0.16 : 0.5 + depth * 0.22,
+    };
+  });
+  const activeRidges = ridges.filter((ridge) => !ridge.empty);
+  const drawRidges = [
+    ...ridges.filter((ridge) => ridge.empty),
+    ...ridges.filter((ridge) => !ridge.empty),
+  ];
+  const blockersForRidge = (ridge: (typeof ridges)[number]) =>
+    ridge.empty
+      ? activeRidges
+      : activeRidges.filter((blocker) => blocker.index > ridge.index);
+  const maskIdForRidge = (ridge: (typeof ridges)[number]) =>
+    `usage-ridge-occlusion-${ridge.index}`;
 
   return (
     <section
@@ -1790,28 +1820,59 @@ function MilimUsageRidgeline({ usage }: { usage: MilimUsageSummary }) {
         viewBox={`0 0 ${width} ${height}`}
         preserveAspectRatio="none"
       >
-        {months.map((month, index) => {
-          const base = topPad + index * lineSpacing;
-          const line = ridgePath(month.days, base, amplitude, width, maxValue);
-          const empty = month.days.every((value) => value === 0);
-          const opacity = empty
-            ? 0.16
-            : 0.38 +
-              (months.length <= 1
-                ? 0.22
-                : (index / (months.length - 1)) * 0.22);
+        <defs>
+          <linearGradient id={gradientId} x1="0" x2="0" y1="0" y2="1">
+            <stop
+              offset="0%"
+              stopColor="var(--accent-light)"
+              stopOpacity="0.64"
+            />
+            <stop offset="54%" stopColor="var(--accent)" stopOpacity="0.28" />
+            <stop
+              offset="100%"
+              stopColor="var(--panel-bg)"
+              stopOpacity="0"
+            />
+          </linearGradient>
+          {ridges.map((ridge) => {
+            const blockers = blockersForRidge(ridge);
+            if (!blockers.length) return null;
+            return (
+              <mask
+                id={maskIdForRidge(ridge)}
+                key={ridge.key}
+                maskUnits="userSpaceOnUse"
+              >
+                <rect width={width} height={height} fill="white" />
+                {blockers.map((blocker) => (
+                  <path key={blocker.key} d={blocker.closed} fill="black" />
+                ))}
+              </mask>
+            );
+          })}
+        </defs>
+        {drawRidges.map((ridge) => {
+          const blockers = blockersForRidge(ridge);
           return (
-            <g key={month.key} className="usage-ridge-row">
+            <g
+              key={ridge.key}
+              className="usage-ridge-row"
+              mask={
+                blockers.length ? `url(#${maskIdForRidge(ridge)})` : undefined
+              }
+            >
               <path
                 className="usage-ridge-fill"
-                d={`${line} L${width},${base} L0,${base} Z`}
+                d={ridge.closed}
+                style={{ opacity: ridge.fillOpacity }}
+                data-empty={ridge.empty || undefined}
               />
               <path
                 className="usage-ridge-line"
-                d={line}
-                style={{ opacity }}
+                d={ridge.line}
+                style={{ opacity: ridge.lineOpacity }}
                 strokeWidth={lineWidth}
-                data-empty={empty || undefined}
+                data-empty={ridge.empty || undefined}
               />
             </g>
           );
@@ -1875,6 +1936,38 @@ function ridgePath(
     line += ` C${midX},${y0} ${midX},${y1} ${x1},${y1}`;
   }
   return line;
+}
+
+type EmptyStarterAction = {
+  label: string;
+  prompt: string;
+  icon: ReactNode;
+};
+
+function EmptyStarterActions({
+  actions,
+  onSelect,
+}: {
+  actions: EmptyStarterAction[];
+  onSelect: (prompt: string) => void;
+}) {
+  return (
+    <div className="empty-starter-actions" aria-label="Starter prompts">
+      {actions.map((action) => (
+        <button
+          type="button"
+          className="empty-starter-action"
+          key={action.label}
+          onClick={() => onSelect(action.prompt)}
+        >
+          <span className="empty-starter-icon" aria-hidden="true">
+            {action.icon}
+          </span>
+          <span>{action.label}</span>
+        </button>
+      ))}
+    </div>
+  );
 }
 
 function queuedAttachmentLabel(count: number): string {
@@ -2711,6 +2804,42 @@ export function ChatView({
   const gitPanelChecking = Boolean(folder.trim()) && gitStatus === null;
   const canShowGitPanel =
     canOpenGitPanel || (sidePanelMode === "git" && gitPanelChecking);
+  const emptyStarterActions = useMemo<EmptyStarterAction[]>(() => {
+    const hasFolder = Boolean(folder.trim());
+    const hasGitChanges = gitStatus?.state === "ready" && gitStatus.has_changes;
+    return [
+      {
+        label: hasFolder ? "Explore this project" : "Plan from scratch",
+        prompt: hasFolder
+          ? "Explore this project and map the important files, entrypoints, and current risks."
+          : "Help me plan what to build next. Ask me only for the missing context you need.",
+        icon: <Code size={13} />,
+      },
+      {
+        label: "Plan a feature",
+        prompt: hasFolder
+          ? "Plan a focused implementation for a new feature in this project. Start by identifying the files and risks before suggesting edits."
+          : "Help me turn a feature idea into a concrete implementation plan.",
+        icon: <Pencil size={13} />,
+      },
+      {
+        label: hasGitChanges ? "Review current changes" : "Review the code",
+        prompt: hasGitChanges
+          ? "Review the current git changes for bugs, regressions, and missing tests. Prioritize concrete findings."
+          : hasFolder
+            ? "Review this project for the highest-risk bugs or cleanup opportunities. Start with a quick scan before making recommendations."
+            : "Review code I provide for bugs, regressions, and missing tests.",
+        icon: <GitBranch size={13} />,
+      },
+      {
+        label: "Debug a failure",
+        prompt: hasFolder
+          ? "Help me debug a failing test, build, or runtime issue in this project. Start with the smallest relevant check."
+          : "Help me debug a failure. Ask for the error, reproduction steps, and relevant files first.",
+        icon: <Refresh size={13} />,
+      },
+    ];
+  }, [folder, gitStatus?.has_changes, gitStatus?.state]);
   const activeAgent = useMemo(
     () => agents.find((agent) => agent.id === activeAgentId) ?? null,
     [activeAgentId, agents],
@@ -3599,6 +3728,11 @@ export function ChatView({
         .querySelector<HTMLTextAreaElement>('[data-testid="composer-input"]')
         ?.focus();
     });
+  }
+
+  function prefillEmptyStarter(prompt: string) {
+    setInput(prompt);
+    focusComposerInput();
   }
 
   function attachRunJournalContext(text: string) {
@@ -7150,6 +7284,12 @@ export function ChatView({
                 busy={busy}
               />
             </div>
+            {emptyThread && !input.trim() && !activeMediaTarget && (
+              <EmptyStarterActions
+                actions={emptyStarterActions}
+                onSelect={prefillEmptyStarter}
+              />
+            )}
           </div>
         </div>
         {sidePanelVisible && (
