@@ -2762,17 +2762,17 @@ button.git-row:hover svg {
 .quick-summary-drawer {
   max-height: min(360px, calc(100vh - var(--titlebar-height) - 112px));
   min-height: 0;
-  border: 1px solid var(--border-primary);
+  border: 1px solid var(--popover-border);
   border-right: 0;
   border-radius: 7px 0 0 7px;
-  background: color-mix(in srgb, var(--panel-bg) 98%, transparent);
-  box-shadow: var(--shadow-lg);
+  background: var(--popover-bg);
+  box-shadow: var(--popover-shadow);
   opacity: 0;
   overflow: hidden;
   pointer-events: none;
   transform: translateX(calc(100% + 12px));
   transition: opacity 0.16s ease, transform 0.16s ease;
-  backdrop-filter: blur(var(--blur));
+  backdrop-filter: blur(var(--popover-blur));
 }
 .quick-summary-pull.expanded .quick-summary-drawer {
   opacity: 1;

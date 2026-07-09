@@ -18,7 +18,7 @@ export function themeCssVariables(t: Theme): Record<string, string> {
   const g = t.glass;
   const op = g.enabled ? g.opacityPrimary : 1;
   const op2 = g.enabled ? g.opacitySecondary : 1;
-  const popoverOp = g.enabled ? Math.min(op + 0.16, 1) : 1;
+  const popoverOp = g.enabled ? Math.min(op + 0.08, 0.88) : 1;
 
   return {
     "--primary-text": c.primaryText,

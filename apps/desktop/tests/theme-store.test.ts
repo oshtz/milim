@@ -98,9 +98,17 @@ localStorage.setItem("milim.customThemes", JSON.stringify([customTheme]));
 localStorage.setItem("milim.themeId", customTheme.id);
 
 const { hydrateThemeFromUserState, useTheme } = await import("../src/theme/store.js");
+const { themeCssVariables } = await import("../src/theme/applyTheme.js");
 
 equal(useTheme.getState().themeId, customTheme.id, "legacy raw active custom theme should initialize");
 equal(useTheme.getState().theme.name, customTheme.name, "active custom theme should resolve from persisted custom themes");
+
+const glassPopoverVars = themeCssVariables({
+  ...customTheme,
+  glass: { ...customTheme.glass, enabled: true, blurRadius: 12, opacityPrimary: 0.95 },
+});
+equal(glassPopoverVars["--popover-blur"], "12px", "glass popovers should inherit theme blur");
+equal(glassPopoverVars["--popover-bg"], "rgba(15, 23, 42, 0.88)", "glass popovers should stay translucent enough to show blur");
 
 localStorage.setItem("milim.themeId", JSON.stringify("mono-light"));
 await hydrateThemeFromUserState();
