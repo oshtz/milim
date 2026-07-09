@@ -19,7 +19,7 @@ import { featureVisibleInMode } from "../ui/features";
 import { MAX_SIDEBAR_WIDTH, MIN_SIDEBAR_WIDTH, normalizeSidebarWidth, useUiPreferences } from "../ui/store";
 import { GitPanel } from "./GitPanel";
 import { useContextMenu } from "./ContextMenu";
-import { Archive, ArrowUp, Calendar, ChevronDown, Cube, Download, FileText, Folder, FolderOpen, Gear, GitBranch, Lightbulb, MoreHorizontal, Pin, Plus, Search, Sidebar as PanelIcon } from "./icons";
+import { Archive, ArrowUp, Bolt, Calendar, ChevronDown, Cube, Download, FileText, Folder, FolderOpen, Gear, GitBranch, Lightbulb, MoreHorizontal, Pin, Plus, Search, Sidebar as PanelIcon } from "./icons";
 
 const SIDEBAR_KEYBOARD_STEP = 32;
 const SIDEBAR_DRAG_THRESHOLD = 5;
@@ -786,7 +786,7 @@ export function Sidebar({
                 onClick={() => setWorkbenchExpanded(!workbenchExpanded)}
                 aria-expanded={workbenchExpanded}
               >
-                <Cube size={15} />
+                <Bolt size={15} />
               </button>
             </div>
             <button className="icon-btn" data-testid="open-settings" title="Settings" onClick={onOpenSettings}>
@@ -1169,7 +1169,7 @@ export function Sidebar({
               onClick={() => setWorkbenchExpanded(!workbenchExpanded)}
               aria-expanded={workbenchExpanded}
             >
-              <Cube size={14} />
+              <Bolt size={14} />
               <span>Workbench</span>
               <ChevronDown className="sidebar-workbench-caret" size={13} />
             </button>
