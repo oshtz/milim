@@ -53,6 +53,13 @@ import {
   SettingsChoiceGroup,
   SettingsPanel,
 } from "./SettingsPrimitives";
+import {
+  AppearanceAvatarChoices,
+  AppearanceBackgroundImageChoices,
+  AppearanceChatLayoutChoices,
+  AppearanceCodeBlockThemeChoices,
+  AppearanceMessageWidthChoices,
+} from "./AppearancePreviewChoices";
 import { useTheme } from "../theme/store";
 import { themeContrastIssues } from "../theme/contrast";
 import type { Theme } from "../theme/types";
@@ -78,15 +85,9 @@ import {
   MIN_UI_SIZE,
   UI_SIZE_STEP,
   useUiPreferences,
-  type AvatarStyle,
-  type BackgroundFit,
-  type BackgroundTreatment,
-  type ChatLayoutStyle,
-  type CodeBlockTheme,
   type ComposerDensity,
   type ComposerSendShortcut,
   type InterfaceMode,
-  type MessageWidth,
 } from "../ui/store";
 import { featureVisibleInMode } from "../ui/features";
 import { Archive, Check, Code, Download, Eye, Gear, GitLogo, Pencil, PlusSquare, Refresh, Search, Sidebar, Smartphone, Sun, Trash, Volume2, X } from "../components/icons";
@@ -242,6 +243,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
   const custom = useTheme((s) => s.custom);
   const themeId = useTheme((s) => s.themeId);
   const current = useTheme((s) => s.theme);
+  const activeBackgroundImage = current.background.image?.trim() ? current.background.image : undefined;
   const setTheme = useTheme((s) => s.setTheme);
   const voice = useSettings((s) => s.voice);
   const setVoiceSettings = useSettings((s) => s.setVoiceSettings);
@@ -2163,91 +2165,44 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
               <div className="setting-stack">
                 <div className="setting-field">
                   <span className="setting-mini-title">Layout</span>
-                  <SettingsChoiceGroup<ChatLayoutStyle>
+                  <AppearanceChatLayoutChoices
                     value={chatLayoutStyle}
                     onChange={setChatLayoutStyle}
-                    testIdPrefix="appearance-chat-layout"
-                    options={[
-                      { value: "transcript", label: "Transcript", detail: "Assistant text stays open and flat." },
-                      { value: "bubbles", label: "Bubbles", detail: "Both sides render as message bubbles." },
-                      { value: "compact", label: "Compact log", detail: "Tighter spacing for long sessions." },
-                    ]}
                   />
                 </div>
                 <div className="setting-field">
                   <span className="setting-mini-title">Message width</span>
-                  <SettingsChoiceGroup<MessageWidth>
+                  <AppearanceMessageWidthChoices
                     value={messageWidth}
                     onChange={setMessageWidth}
-                    testIdPrefix="appearance-message-width"
-                    options={[
-                      { value: "standard", label: "Standard", detail: "Current reading width." },
-                      { value: "narrow", label: "Narrow", detail: "Shorter line length." },
-                      { value: "wide", label: "Wide", detail: "More horizontal room." },
-                      { value: "full", label: "Full", detail: "Use the full chat pane." },
-                    ]}
                   />
                 </div>
                 <div className="setting-field">
                   <span className="setting-mini-title">Avatars</span>
-                  <SettingsChoiceGroup<AvatarStyle>
+                  <AppearanceAvatarChoices
                     value={avatarStyle}
                     onChange={setAvatarStyle}
-                    testIdPrefix="appearance-avatar-style"
-                    options={[
-                      { value: "none", label: "None", detail: "Keep the current clean transcript." },
-                      { value: "initials", label: "Initials", detail: "Small role marks beside messages." },
-                      { value: "role", label: "Role labels", detail: "Text labels for sender scanning." },
-                    ]}
                   />
                 </div>
               </div>
             </SettingsBlock>
             <SettingsBlock title="Code blocks" data-setting-id="appearance-code-blocks" className={settingHighlightClass("appearance-code-blocks").trim()}>
-              <SettingsChoiceGroup<CodeBlockTheme>
+              <AppearanceCodeBlockThemeChoices
                 value={codeBlockTheme}
                 onChange={setCodeBlockTheme}
-                testIdPrefix="appearance-code-theme"
-                options={[
-                  { value: "match", label: "Match app", detail: "Use the active theme colors." },
-                  { value: "terminal", label: "Terminal", detail: "Dark console-style contrast." },
-                  { value: "github", label: "GitHub", detail: "Light editor-style blocks." },
-                  { value: "high-contrast", label: "High contrast", detail: "Maximum code legibility." },
-                ]}
               />
             </SettingsBlock>
-            <SettingsBlock title="Background image" data-setting-id="appearance-background" className={settingHighlightClass("appearance-background").trim()}>
-              <div className="setting-stack">
-                <div className="setting-field">
-                  <span className="setting-mini-title">Fit</span>
-                  <SettingsChoiceGroup<BackgroundFit>
-                    value={backgroundFit}
-                    onChange={setBackgroundFit}
-                    testIdPrefix="appearance-background-fit"
-                    options={[
-                      { value: "cover", label: "Cover", detail: "Fill the window." },
-                      { value: "contain", label: "Contain", detail: "Show the whole image." },
-                      { value: "center", label: "Center", detail: "Original size, centered." },
-                      { value: "tile", label: "Tile", detail: "Repeat as a pattern." },
-                    ]}
-                  />
-                </div>
-                <div className="setting-field">
-                  <span className="setting-mini-title">Treatment</span>
-                  <SettingsChoiceGroup<BackgroundTreatment>
-                    value={backgroundTreatment}
-                    onChange={setBackgroundTreatment}
-                    testIdPrefix="appearance-background-treatment"
-                    options={[
-                      { value: "clear", label: "Clear", detail: "Use the theme image as-is." },
-                      { value: "dim", label: "Dim", detail: "Darken for calmer contrast." },
-                      { value: "blur", label: "Blur", detail: "Soften busy images." },
-                      { value: "mono", label: "Mono", detail: "Desaturate the image." },
-                    ]}
-                  />
-                </div>
-              </div>
-            </SettingsBlock>
+            {activeBackgroundImage && (
+              <SettingsBlock title="Background image" data-setting-id="appearance-background" className={settingHighlightClass("appearance-background").trim()}>
+                <AppearanceBackgroundImageChoices
+                  backgroundImage={activeBackgroundImage}
+                  fit={backgroundFit}
+                  treatment={backgroundTreatment}
+                  onFitChange={setBackgroundFit}
+                  onTreatmentChange={setBackgroundTreatment}
+                />
+              </SettingsBlock>
+            )}
           </SettingsPanel>
         </section>
             )}

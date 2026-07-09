@@ -5,17 +5,32 @@ import type { Theme } from "../theme/types";
 import { SheetDialog } from "./SheetDialog";
 import { ColorField, Select, Slider as Range, Toggle } from "./ui";
 
-const COLOR_FIELDS: Array<[string, keyof Theme["colors"]]> = [
-  ["Background", "bgPrimary"],
-  ["Surface", "bgSecondary"],
-  ["Elevated", "bgTertiary"],
-  ["Text", "primaryText"],
-  ["Muted text", "secondaryText"],
-  ["Accent", "accent"],
-  ["Accent light", "accentLight"],
-  ["Border", "borderPrimary"],
-  ["Card", "cardBg"],
-  ["Input", "inputBg"],
+const COLOR_GROUPS: Array<{ title: string; fields: Array<[string, keyof Theme["colors"]]> }> = [
+  {
+    title: "Base",
+    fields: [
+      ["Background", "bgPrimary"],
+      ["Surface", "bgSecondary"],
+      ["Elevated", "bgTertiary"],
+      ["Card", "cardBg"],
+    ],
+  },
+  {
+    title: "Text",
+    fields: [
+      ["Primary", "primaryText"],
+      ["Muted", "secondaryText"],
+      ["Accent light", "accentLight"],
+    ],
+  },
+  {
+    title: "Controls",
+    fields: [
+      ["Accent", "accent"],
+      ["Border", "borderPrimary"],
+      ["Input", "inputBg"],
+    ],
+  },
 ];
 
 const FONT_PRESETS: Array<[string, string]> = [
@@ -40,6 +55,22 @@ function newId() {
   } catch {
     return "custom-" + Math.random().toString(36).slice(2);
   }
+}
+
+function alphaColor(color: string, alpha: number): string {
+  const raw = color.trim().replace(/^#/, "");
+  const hex =
+    raw.length === 3
+      ? raw
+          .split("")
+          .map((char) => char + char)
+          .join("")
+      : raw;
+  if (!/^[0-9a-f]{6}$/i.test(hex)) return color;
+  const red = Number.parseInt(hex.slice(0, 2), 16);
+  const green = Number.parseInt(hex.slice(2, 4), 16);
+  const blue = Number.parseInt(hex.slice(4, 6), 16);
+  return `rgba(${red}, ${green}, ${blue}, ${Math.max(0, Math.min(1, alpha)).toFixed(2)})`;
 }
 
 export function ThemeEditor({ base, isNew, onClose }: { base: Theme; isNew: boolean; onClose: () => void }) {
@@ -125,30 +156,54 @@ export function ThemeEditor({ base, isNew, onClose }: { base: Theme; isNew: bool
       <div className="editor-body">
         <div className="editor-main">
           <section className="editor-section editor-section-colors">
-            <h3>Colors</h3>
-            <div className="color-grid">
-              {COLOR_FIELDS.map(([label, key]) => (
-                <ColorField
-                  key={key}
-                  label={label}
-                  value={draft.colors[key]}
-                  onChange={(v) => patch((d) => { d.colors[key] = v; })}
-                />
+            <div className="editor-section-head">
+              <h3>Colors</h3>
+              <span>{draft.isDark ? "Dark" : "Light"}</span>
+            </div>
+            <div className="editor-color-groups">
+              {COLOR_GROUPS.map((group) => (
+                <div className="editor-color-group" key={group.title}>
+                  <div className="editor-color-group-title">{group.title}</div>
+                  <div className="color-grid">
+                    {group.fields.map(([label, key]) => (
+                      <ColorField
+                        key={key}
+                        label={(
+                          <span className="editor-color-label">
+                            <span>{label}</span>
+                            <code>{draft.colors[key]}</code>
+                          </span>
+                        )}
+                        value={draft.colors[key]}
+                        onChange={(v) => patch((d) => { d.colors[key] = v; })}
+                      />
+                    ))}
+                  </div>
+                </div>
               ))}
             </div>
-            <Toggle
-              checked={draft.isDark}
-              onChange={(v) => patch((d) => { d.isDark = v; })}
-              label="Dark theme (affects contrast on the accent)"
-            />
+            <div className="editor-theme-mode-row">
+              <div>
+                <strong>Contrast mode</strong>
+                <span>Changes how accent contrast is validated.</span>
+              </div>
+              <Toggle
+                checked={draft.isDark}
+                onChange={(v) => patch((d) => { d.isDark = v; })}
+                ariaLabel="Dark theme contrast mode"
+              />
+            </div>
             {contrastIssues.length > 0 && (
               <p className="sheet-hint error">{contrastIssues[0]}</p>
             )}
           </section>
 
-          <section className="editor-section">
-            <h3>Background</h3>
-            <div className="bg-row">
+          <section className="editor-section editor-section-background">
+            <div className="editor-section-head">
+              <h3>Background</h3>
+              <span>{draft.background.image ? "Image" : "Solid"}</span>
+            </div>
+            <div className="editor-background-actions">
               <label className="btn-file">
                 Upload image
                 <input type="file" accept="image/*" onChange={onUpload} hidden />
@@ -159,8 +214,8 @@ export function ThemeEditor({ base, isNew, onClose }: { base: Theme; isNew: bool
                 </button>
               )}
             </div>
-            <label className="text-row">
-              <span>Image / gradient (CSS)</span>
+            <label className="text-row editor-css-field">
+              <span>Image or gradient CSS</span>
               <input
                 className="css-input"
                 value={draft.background.image ?? ""}
@@ -168,76 +223,130 @@ export function ThemeEditor({ base, isNew, onClose }: { base: Theme; isNew: bool
                 onChange={(e) => patch((d) => { d.background.image = e.target.value || undefined; })}
               />
             </label>
-            <Slider label="Image blur" min={0} max={40} step={1} value={draft.background.imageBlur ?? 0}
-              onChange={(v) => patch((d) => { d.background.imageBlur = v; })} />
-            <ColorField
-              label="Overlay tint"
-              value={draft.background.overlayColor ?? "#000000"}
-              onChange={(v) => patch((d) => { d.background.overlayColor = v; })}
-            />
-            <div style={{ height: 4 }} />
-            <Slider label="Overlay opacity" min={0} max={0.85} step={0.02} value={draft.background.overlayOpacity}
-              onChange={(v) => patch((d) => { d.background.overlayOpacity = v; })} />
+            <div className="editor-background-controls">
+              <Slider label="Image blur" min={0} max={40} step={1} value={draft.background.imageBlur ?? 0}
+                onChange={(v) => patch((d) => { d.background.imageBlur = v; })} />
+              <label className="editor-inline-color">
+                <span>Overlay tint</span>
+                <ColorField
+                  value={draft.background.overlayColor ?? "#000000"}
+                  onChange={(v) => patch((d) => { d.background.overlayColor = v; })}
+                />
+              </label>
+              <Slider label="Overlay opacity" min={0} max={0.85} step={0.02} value={draft.background.overlayOpacity}
+                onChange={(v) => patch((d) => { d.background.overlayOpacity = v; })} />
+            </div>
           </section>
 
           <section className="editor-section editor-typography">
-            <h3>Typography</h3>
-            <label className="text-row">
-              <span>Font</span>
-              <Select
-                value={draft.typography.fontFamily}
-                options={FONT_PRESETS.map(([label, val]) => ({ label, value: val }))}
-                onChange={(v) => patch((d) => { d.typography.fontFamily = v; })}
-              />
-            </label>
-            <label className="text-row">
-              <span>Code font</span>
-              <Select
-                value={draft.typography.monoFamily}
-                options={MONO_PRESETS.map(([label, val]) => ({ label, value: val }))}
-                onChange={(v) => patch((d) => { d.typography.monoFamily = v; })}
-              />
-            </label>
+            <div className="editor-section-head">
+              <h3>Typography</h3>
+            </div>
+            <div className="editor-type-controls">
+              <label className="text-row">
+                <span>Interface font</span>
+                <Select
+                  value={draft.typography.fontFamily}
+                  options={FONT_PRESETS.map(([label, val]) => ({ label, value: val }))}
+                  onChange={(v) => patch((d) => { d.typography.fontFamily = v; })}
+                />
+              </label>
+              <label className="text-row">
+                <span>Code font</span>
+                <Select
+                  value={draft.typography.monoFamily}
+                  options={MONO_PRESETS.map(([label, val]) => ({ label, value: val }))}
+                  onChange={(v) => patch((d) => { d.typography.monoFamily = v; })}
+                />
+              </label>
+            </div>
+            <div className="editor-type-sample" style={{ fontFamily: draft.typography.fontFamily }}>
+              <span>Thread title sample</span>
+              <strong>Design pass for settings</strong>
+              <code style={{ fontFamily: draft.typography.monoFamily }}>pnpm -C apps/desktop build</code>
+            </div>
           </section>
         </div>
 
         <aside className="editor-side">
           <section className="editor-preview-card" aria-label="Theme preview">
-            <h3>Preview</h3>
+            <div className="editor-section-head">
+              <h3>Preview</h3>
+              <span>{draft.name}</span>
+            </div>
             <div
               className="theme-editor-preview"
               style={{
                 background: draft.background.image
                   ? `${draft.background.image}, ${draft.colors.bgPrimary}`
                   : draft.colors.bgPrimary,
+                color: draft.colors.primaryText,
+                borderColor: draft.colors.borderPrimary,
               }}
             >
+              <div className="theme-editor-preview-overlay" style={{
+                background: draft.background.overlayColor ?? "#000000",
+                opacity: draft.background.overlayOpacity,
+              }} />
+              <div
+                className="theme-editor-preview-sidebar"
+                style={{
+                  background: alphaColor(draft.colors.bgPrimary, draft.glass.enabled ? draft.glass.opacitySecondary : 1),
+                  borderColor: draft.colors.borderPrimary,
+                }}
+              >
+                <span style={{ background: draft.colors.accent }} />
+                <span style={{ background: draft.colors.secondaryText }} />
+                <span style={{ background: draft.colors.tertiaryText }} />
+              </div>
               <div
                 className="theme-editor-preview-panel"
-                style={{ background: draft.colors.bgSecondary, borderColor: draft.colors.borderPrimary }}
+                style={{
+                  background: alphaColor(draft.colors.bgSecondary, draft.glass.enabled ? draft.glass.opacityPrimary : 1),
+                  borderColor: draft.colors.borderPrimary,
+                  borderRadius: draft.borders.cardRadius,
+                  backdropFilter: draft.glass.enabled ? `blur(${draft.glass.blurRadius}px)` : undefined,
+                }}
               >
                 <div className="theme-editor-preview-topline">
                   <span style={{ background: draft.colors.accent }} />
                   <span style={{ background: draft.colors.tertiaryText }} />
                 </div>
                 <div className="theme-editor-preview-message" style={{ background: draft.colors.bgTertiary }} />
-                <div className="theme-editor-preview-input" style={{ background: draft.colors.inputBg, borderColor: draft.colors.inputBorder }} />
+                <div
+                  className="theme-editor-preview-message compact"
+                  style={{ background: draft.colors.cardBg, borderColor: draft.colors.cardBorder }}
+                />
+                <div
+                  className="theme-editor-preview-input"
+                  style={{
+                    background: draft.colors.inputBg,
+                    borderColor: draft.colors.inputBorder,
+                    borderRadius: draft.borders.inputRadius,
+                  }}
+                />
               </div>
             </div>
             <div className="editor-swatch-row" aria-label="Theme color summary">
               {[
-                draft.colors.bgPrimary,
-                draft.colors.bgSecondary,
-                draft.colors.primaryText,
-                draft.colors.accent,
-              ].map((color, index) => (
-                <span key={`${color}-${index}`} style={{ background: color }} title={color} />
+                ["Base", draft.colors.bgPrimary],
+                ["Panel", draft.colors.bgSecondary],
+                ["Text", draft.colors.primaryText],
+                ["Accent", draft.colors.accent],
+              ].map(([label, color]) => (
+                <span className="editor-swatch" key={`${label}-${color}`} title={color}>
+                  <span style={{ background: color }} />
+                  <small>{label}</small>
+                </span>
               ))}
             </div>
           </section>
 
           <section className="editor-section compact">
-            <h3>Glass</h3>
+            <div className="editor-section-head">
+              <h3>Glass</h3>
+              <span>{draft.glass.enabled ? "On" : "Off"}</span>
+            </div>
             <Toggle
               checked={draft.glass.enabled}
               onChange={(v) => patch((d) => { d.glass.enabled = v; })}
@@ -250,7 +359,10 @@ export function ThemeEditor({ base, isNew, onClose }: { base: Theme; isNew: bool
           </section>
 
           <section className="editor-section compact">
-            <h3>Shape</h3>
+            <div className="editor-section-head">
+              <h3>Shape</h3>
+              <span>{draft.borders.cardRadius}px cards</span>
+            </div>
             <Slider label="Card radius" min={0} max={24} step={1} value={draft.borders.cardRadius} suffix="px"
               onChange={(v) => patch((d) => { d.borders.cardRadius = v; })} />
             <Slider label="Input radius" min={0} max={28} step={1} value={draft.borders.inputRadius} suffix="px"
