@@ -92,6 +92,12 @@ function sortKeys(value: unknown): unknown {
   );
 }
 
+function snapshot<T>(value: T): T {
+  return value === undefined
+    ? value
+    : JSON.parse(JSON.stringify(value)) as T;
+}
+
 const first = useSessions.getState().activeId;
 equal(
   useSessions.getState().getSettings(first).planMode,
@@ -248,6 +254,136 @@ assert(
   localStorage.getItem("milim.sessions")?.includes(projectRuntimeKey),
   "project runtime key should persist in session storage",
 );
+const activeBeforeModelSwitchTest = useSessions.getState().activeId;
+useSessions.getState().newChat({
+  model: "model-before-switch",
+  folder: "C:\\workspace-a",
+  sandbox: true,
+  computerUse: true,
+  memory: true,
+  privacy: "redact",
+  toolApproval: "open",
+  planMode: true,
+});
+const modelSwitchSession = useSessions.getState().activeId;
+const modelSwitchRuntimeKey = previewRuntimeKeyForThread(
+  modelSwitchSession,
+  "C:\\workspace-a",
+);
+const switchQueued = useSessions.getState().enqueueQueuedMessage(modelSwitchSession, {
+  content: "switch model after this",
+});
+useSessions.getState().upsertVirtualFiles(modelSwitchSession, [
+  { path: "src/switch-context.ts", content: "export const preserved = true;" },
+]);
+useSessions.getState().setPreviewRuntime(modelSwitchSession, {
+  status: "running",
+  cwd: "C:\\workspace-a",
+  url: "http://127.0.0.1:6001/",
+  pid: 4321,
+  command: "pnpm dev",
+});
+useSessions.getState().setPreviewRuntimeByKey(modelSwitchRuntimeKey, {
+  status: "running",
+  cwd: "C:\\workspace-a",
+  url: "http://127.0.0.1:6002/",
+  command: "pnpm preview",
+});
+useSessions.getState().setSidePanelMode(modelSwitchSession, "browser");
+useSessions.getState().setArtifactPanelTab(modelSwitchSession, "code");
+const settingsBeforeModelSwitch = snapshot(
+  useSessions.getState().getSettings(modelSwitchSession),
+);
+const sessionBeforeModelSwitch = useSessions
+  .getState()
+  .sessions.find((session) => session.id === modelSwitchSession);
+assert(sessionBeforeModelSwitch, "model switch preservation session should exist");
+const queuedBeforeModelSwitch = snapshot(
+  useSessions.getState().queuedMessagesBySession[modelSwitchSession],
+);
+const virtualFilesBeforeModelSwitch = snapshot(sessionBeforeModelSwitch.virtualFiles);
+const previewRuntimeBeforeModelSwitch = snapshot(
+  sessionBeforeModelSwitch.previewRuntime,
+);
+const projectRuntimeBeforeModelSwitch = snapshot(
+  useSessions.getState().previewRuntimesByKey[modelSwitchRuntimeKey],
+);
+const artifactPanelOpenBeforeModelSwitch =
+  sessionBeforeModelSwitch.artifactPanelOpen;
+const sidePanelModeBeforeModelSwitch = sessionBeforeModelSwitch.sidePanelMode;
+const artifactPanelTabBeforeModelSwitch =
+  sessionBeforeModelSwitch.artifactPanelTab;
+useSessions.getState().updateSettings(modelSwitchSession, { model: "model-after-switch" });
+const settingsAfterModelSwitch = useSessions.getState().getSettings(modelSwitchSession);
+equal(
+  settingsAfterModelSwitch.model,
+  "model-after-switch",
+  "model switch should update only the selected model",
+);
+for (const key of [
+  "folder",
+  "sandbox",
+  "computerUse",
+  "memory",
+  "privacy",
+  "toolApproval",
+  "planMode",
+] as const) {
+  deepEqual(
+    settingsAfterModelSwitch[key],
+    settingsBeforeModelSwitch[key],
+    `model switch should preserve ${key}`,
+  );
+}
+const sessionAfterModelSwitch = useSessions
+  .getState()
+  .sessions.find((session) => session.id === modelSwitchSession);
+assert(sessionAfterModelSwitch, "model switch preservation session should remain");
+deepEqual(
+  useSessions.getState().queuedMessagesBySession[modelSwitchSession],
+  queuedBeforeModelSwitch,
+  "model switch should preserve queued messages",
+);
+equal(
+  useSessions.getState().queuedMessagesBySession[modelSwitchSession]?.some(
+    (message) => message.id === switchQueued.id,
+  ),
+  true,
+  "model switch should keep queued message ids stable",
+);
+deepEqual(
+  sessionAfterModelSwitch.virtualFiles,
+  virtualFilesBeforeModelSwitch,
+  "model switch should preserve virtual project files",
+);
+deepEqual(
+  sessionAfterModelSwitch.previewRuntime,
+  previewRuntimeBeforeModelSwitch,
+  "model switch should preserve thread preview runtime",
+);
+deepEqual(
+  useSessions.getState().previewRuntimesByKey[modelSwitchRuntimeKey],
+  projectRuntimeBeforeModelSwitch,
+  "model switch should preserve project preview runtime",
+);
+equal(
+  sessionAfterModelSwitch.artifactPanelOpen,
+  artifactPanelOpenBeforeModelSwitch,
+  "model switch should preserve preview panel open state",
+);
+equal(
+  sessionAfterModelSwitch.sidePanelMode,
+  sidePanelModeBeforeModelSwitch,
+  "model switch should preserve side panel mode",
+);
+equal(
+  sessionAfterModelSwitch.artifactPanelTab,
+  artifactPanelTabBeforeModelSwitch,
+  "model switch should preserve artifact panel tab",
+);
+useSessions.getState().setPreviewRuntimeByKey(modelSwitchRuntimeKey, undefined);
+useSessions.getState().remove(modelSwitchSession);
+useSessions.getState().switchTo(activeBeforeModelSwitchTest);
 useSessions
   .getState()
   .setAccountRuntime(first, { codexThreadId: "codex-thread-1" });

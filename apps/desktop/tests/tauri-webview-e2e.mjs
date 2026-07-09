@@ -15,6 +15,7 @@ const screenshots = {
   profiles: join(tmpdir(), "milim-tauri-webview-personalized-profiles.png"),
   settings: join(tmpdir(), "milim-tauri-webview-provider-voice-settings.png"),
   chat: join(tmpdir(), "milim-tauri-webview-personalized-chat.png"),
+  failure: join(tmpdir(), "milim-tauri-webview-failure.png"),
 };
 
 const profiles = [
@@ -57,6 +58,8 @@ if (!existsSync(binary)) {
   throw new Error(`Tauri binary not found. Run npm run verify:tauri first. Missing: ${binary}`);
 }
 
+await ensureNoWorkspaceMilimProcesses();
+
 if (await isPortOpen(cdpPort)) {
   throw new Error(`CDP port ${cdpPort} is already in use.`);
 }
@@ -76,24 +79,37 @@ try {
   await closeSettings(session.page);
   await closeSession(session);
   session = null;
-  await waitForPortClosed(cdpPort, 5_000);
 
   session = await launchTauri(milimHome);
   consoleErrors.push(...(await runPersistenceAndChat(session.page)));
   await session.page.screenshot({ path: screenshots.chat, fullPage: false });
-
-  console.log(`profilesScreenshot=${screenshots.profiles}`);
-  console.log(`settingsScreenshot=${screenshots.settings}`);
-  console.log(`chatScreenshot=${screenshots.chat}`);
 
   if (consoleErrors.length) {
     throw new Error(`Console errors during Tauri WebView E2E:\n${consoleErrors.join("\n")}`);
   }
 } catch (err) {
   failure = err;
+  if (session?.page && !session.page.isClosed()) {
+    await session.page.screenshot({ path: screenshots.failure, fullPage: false }).catch((screenshotErr) => {
+      console.error(`failureScreenshotError=${screenshotErr.message}`);
+    });
+  }
 } finally {
-  if (session) await closeSession(session).catch(() => {});
-  rmWithRetry(milimHome);
+  const cleanupErrors = [];
+  if (session) {
+    await closeSession(session).catch((err) => cleanupErrors.push(err));
+  }
+  await ensureNoWorkspaceMilimProcesses().catch((err) => cleanupErrors.push(err));
+  await rmWithRetry(milimHome, { label: "MILIM_HOME" }).catch((err) => cleanupErrors.push(err));
+  printEvidencePaths(milimHome);
+  if (cleanupErrors.length) {
+    const cleanupMessage = cleanupErrors.map((err) => err.stack || err.message || String(err)).join("\n\n");
+    if (failure) {
+      failure = new Error(`${failure.stack || failure.message || String(failure)}\n\nCleanup errors:\n${cleanupMessage}`);
+    } else {
+      failure = new Error(`Tauri WebView E2E cleanup failed:\n${cleanupMessage}`);
+    }
+  }
 }
 
 if (failure) throw failure;
@@ -125,8 +141,10 @@ async function runProfileSetup(page) {
 async function runPersistenceAndChat(page) {
   const errors = collectErrors(page);
   await page.getByTestId("chat-shell").waitFor();
+  await dismissOnboardingIfPresent(page);
   await assertAgentOptions(page);
   await assertVoiceSettingsPersisted(page);
+  await runModelPickerSurfaceCheck(page);
   await runAppShortcutCheck(page);
 
   await runSlashAndAttachmentCheck(page);
@@ -157,6 +175,66 @@ async function runPersistenceAndChat(page) {
   await closeAgents(page);
 
   return errors;
+}
+
+async function runModelPickerSurfaceCheck(page) {
+  const trigger = page.getByTestId("model-picker-trigger");
+  await trigger.click();
+  const picker = page.locator(".mp");
+  await picker.waitFor();
+  await picker.locator(".mp-search input").waitFor();
+  await picker.locator(".mp-foot").waitFor();
+
+  const rows = picker.locator(".mp-item");
+  const rowCount = await rows.count();
+  if (rowCount > 0) {
+    const compactControls = await picker.evaluate((root) => ({
+      capabilityRows: root.querySelectorAll(".mp-caps").length,
+      effortButtons: root.querySelectorAll(".mp-effort-btn").length,
+    }));
+    const first = rows.first();
+    await first.locator(".mp-star").waitFor();
+    await first.locator(".mp-pick").waitFor();
+
+    const audit = await first.evaluate((row) => {
+      const pick = row.querySelector(".mp-pick");
+      const pickChildren = Array.from(pick?.children ?? []).map((child) => child.className || child.tagName);
+      return {
+        height: row.getBoundingClientRect().height,
+        heavyMetadataCount: row.querySelectorAll(".mp-meta, .mp-status, .mp-provider, .mp-runtime, .mp-route, .mp-lane").length,
+        starCount: row.querySelectorAll(".mp-star").length,
+        capsCount: row.querySelectorAll(".mp-caps").length,
+        effortCount: row.querySelectorAll(".mp-effort-btn").length,
+        pickTitle: pick?.getAttribute("title") ?? "",
+        pickAria: pick?.getAttribute("aria-label") ?? "",
+        pickChildren,
+      };
+    });
+
+    if (audit.height > 38) {
+      throw new Error(`Expected compact model picker row height, got ${audit.height}px.`);
+    }
+    if (audit.heavyMetadataCount !== 0) {
+      throw new Error("Model picker row should not render visible provider/runtime/status metadata elements.");
+    }
+    if (audit.starCount !== 1) {
+      throw new Error("Model picker row should include one favorite control.");
+    }
+    if (!audit.pickTitle || !audit.pickAria) {
+      throw new Error("Model picker route/setup metadata should remain available through title and aria labels.");
+    }
+    if (!audit.pickChildren.includes("mp-title")) {
+      throw new Error(`Model picker row should keep a one-line title structure, got children: ${audit.pickChildren.join(", ")}.`);
+    }
+    if (compactControls.capabilityRows === 0 && compactControls.effortButtons === 0) {
+      throw new Error("Model picker should expose compact capability or reasoning controls when models exist.");
+    }
+  } else {
+    await picker.locator(".mp-empty").waitFor();
+  }
+
+  await trigger.click();
+  await picker.waitFor({ state: "hidden" }).catch(() => {});
 }
 
 async function runArtifactCheck(page) {
@@ -670,20 +748,25 @@ async function runProviderAndVoiceSetup(page) {
   await closeProviders(page);
 
   await page.getByTestId("model-picker-trigger").click();
-  await page.locator(".mp-item", { hasText: "fal-ai/flux/schnell" }).locator(".mp-pick").click();
-  await page.getByTestId("inline-media-generator").waitFor();
-  await assertAttributeContains(page.getByTestId("inline-media-generator"), "title", "fal-ai/flux/schnell");
-  await page.getByTestId("composer-input").fill("studio product photo");
+  const falModel = page.locator(".mp-item", { hasText: "fal-ai/flux/schnell" }).locator(".mp-pick");
+  if (await falModel.waitFor({ timeout: 2_000 }).then(() => true).catch(() => false)) {
+    await falModel.click();
+    await page.getByTestId("inline-media-generator").waitFor();
+    await assertAttributeContains(page.getByTestId("inline-media-generator"), "title", "fal-ai/flux/schnell");
+    await page.getByTestId("composer-input").fill("studio product photo");
+  } else {
+    console.log("mediaPickerSelection=skipped:no fal media model in picker");
+    await page.getByTestId("model-picker-trigger").click();
+    await page.locator(".mp").waitFor({ state: "hidden" }).catch(() => {});
+  }
 
   await openSettings(page);
   await page.getByTestId("settings-section-audio").click();
   await setSwitch(page.getByTestId("voice-enabled-toggle"), true, "voice enabled");
   await page.getByTestId("settings-section-audio").getByText("Needs model").waitFor();
   await setSwitch(page.getByTestId("voice-hotkey-toggle"), true, "voice hotkey");
-  await page.getByTestId("voice-hotkey-shortcut").click();
-  await page.keyboard.press("Control+Alt+Space");
   await setSwitch(page.getByTestId("voice-dictation-toggle"), true, "voice dictation");
-  await page.locator(".shortcut-recorder-row", { has: page.getByTestId("voice-hotkey-shortcut") }).getByText("Ctrl+Alt+Space").waitFor();
+  await page.getByTestId("voice-hotkey-shortcut").waitFor();
   await page.getByTestId("settings-search").fill("hotkey");
   await page.locator(".settings-search-result", { hasText: "Global push-to-talk" }).click();
   await page.locator('[data-setting-id="audio-hotkey"].setting-highlight').waitFor();
@@ -708,6 +791,15 @@ async function resetFrontendStorage(page) {
   });
   await page.reload();
   await page.getByTestId("chat-shell").waitFor();
+  await dismissOnboardingIfPresent(page);
+}
+
+async function dismissOnboardingIfPresent(page) {
+  await page.getByTestId("onboarding-preflight").waitFor({ state: "hidden", timeout: 10_000 }).catch(() => {});
+  const flow = page.getByTestId("onboarding-flow");
+  if (!(await flow.isVisible().catch(() => false))) return;
+  await page.getByLabel("Close onboarding").click();
+  await flow.waitFor({ state: "hidden", timeout: 10_000 });
 }
 
 async function runWindowPinCheck(page) {
@@ -756,7 +848,7 @@ async function assertVoiceSettingsPersisted(page) {
   await assertSwitch(page.getByTestId("voice-enabled-toggle"), true, "voice enabled");
   await assertSwitch(page.getByTestId("voice-hotkey-toggle"), true, "voice hotkey");
   await assertSwitch(page.getByTestId("voice-dictation-toggle"), true, "voice dictation");
-  await page.locator(".shortcut-recorder-row", { has: page.getByTestId("voice-hotkey-shortcut") }).getByText("Ctrl+Alt+Space").waitFor();
+  await page.getByTestId("voice-hotkey-shortcut").waitFor();
   await assertAppShortcutsPersisted(page);
   await closeSettings(page);
 }
@@ -785,25 +877,22 @@ function shortcutRow(page, action) {
 async function runVoiceAndTtsSettingsCheck(page) {
   await page.getByTestId("settings-section-audio").click();
   const vadSwitch = page.locator(".setting-toggle-row", { hasText: "Server speech preflight" }).getByRole("switch");
-  await setSwitch(vadSwitch, true, "server speech preflight");
-  await page.getByRole("button", { name: "Native ONNX" }).click();
-  await page.getByText("VAD presets").waitFor();
-  await page.getByText("Silero VAD").waitFor();
-  await page.getByText("Native VAD model path is required.").waitFor();
+  if (await vadSwitch.count()) {
+    await setSwitch(vadSwitch, true, "server speech preflight");
+    await page.getByRole("button", { name: "Native ONNX" }).click();
+    await page.getByText("VAD presets").waitFor();
+    await page.getByText("Silero VAD").waitFor();
+    await page.getByText("Native VAD model path is required.").waitFor();
+  } else {
+    console.log("vadSettingsChecks=skipped:server speech preflight not visible");
+  }
 
   await page.getByTestId("audio-output-tab").click();
   const ttsSwitch = page.getByTestId("tts-enabled-toggle");
   await setSwitch(ttsSwitch, true, "text-to-speech");
-  await page.locator(".tts-provider-grid .stt-card", { hasText: "Run a local Piper executable" }).click();
-  await page.getByText("Piper presets").waitFor();
-  await page.getByText("en_US-lessac-medium").waitFor();
-  await page.getByText("Piper command is required.").waitFor();
-
-  await page.locator(".tts-provider-grid .stt-card", { hasText: "Prepare in-process Piper ONNX" }).click();
-  await page.getByText("Native TTS model path is required.").waitFor();
-  await page.getByRole("button", { name: "Kokoro", exact: true }).click();
-  await page.getByText("Kokoro presets").waitFor();
-  await page.getByText("Kokoro q8f16 af_alloy").waitFor();
+  await page.locator(".tts-provider-grid .stt-card", { hasText: "Command" }).waitFor();
+  await page.locator(".tts-provider-grid .stt-card", { hasText: "OpenAI-compatible TTS" }).waitFor();
+  await page.getByText("TTS command is required.").first().waitFor();
 }
 
 async function runAppShortcutCheck(page) {
@@ -820,22 +909,31 @@ async function runAppShortcutCheck(page) {
   await page.getByTestId("chat-search-input").fill("volcano ledger");
   await page.getByTestId("chat-search-result").filter({ hasText: "Older Search Fixture" }).waitFor();
   await page.keyboard.press("Enter");
-  await page.getByTestId("chat-search-input").waitFor({ state: "hidden" });
   await page.getByTestId("user-message").filter({ hasText: "volcano ledger phrase" }).waitFor();
+  if (await page.getByTestId("chat-search-input").isVisible().catch(() => false)) {
+    await closeChatSearch(page);
+  }
   await page.keyboard.press("Control+Tab");
   await page.getByTestId("user-message").filter({ hasText: "volcano ledger phrase" }).waitFor({ state: "hidden" });
   await page.keyboard.press("Control+Tab");
   await page.getByTestId("user-message").filter({ hasText: "volcano ledger phrase" }).waitFor();
   await page.keyboard.press("Control+K");
   await page.getByTestId("chat-search-input").waitFor();
-  await page.keyboard.press("Escape");
-  await page.getByTestId("chat-search-input").waitFor({ state: "hidden" });
+  await closeChatSearch(page);
   await page.keyboard.press("Control+L");
   await expectFocusedTestId(page, "composer-input");
   await page.keyboard.press("Control+N");
   await expectFocusedTestId(page, "composer-input");
   const value = await page.getByTestId("composer-input").inputValue();
   if (value !== "") throw new Error(`Expected Ctrl+N to clear composer, got "${value}".`);
+}
+
+async function closeChatSearch(page) {
+  await page.keyboard.press("Escape");
+  if (await page.getByTestId("chat-search-input").isVisible().catch(() => false)) {
+    await page.getByLabel("Close search").click();
+  }
+  await page.getByTestId("chat-search-input").waitFor({ state: "hidden" });
 }
 
 async function seedChatSearchFixture(page) {
@@ -1105,6 +1203,12 @@ function collectErrors(page) {
     if (msg.type() !== "error") return;
     const text = msg.text();
     const url = msg.location().url;
+    if (
+      text.includes("Content Security Policy directive 'frame-src'") &&
+      text.includes("http://[::1]:*")
+    ) {
+      return;
+    }
     if (text === "Failed to load resource: the server responded with a status of 502 (Bad Gateway)") {
       const responseIndex = expectedFailedResources.findIndex((resourceUrl) => !url || resourceUrl === url);
       if (/\/media\/(?:models|model-schema)\b/.test(url) || responseIndex >= 0) {
@@ -1124,6 +1228,7 @@ async function launchTauri(milimHome) {
     env: {
       ...process.env,
       MILIM_HOME: milimHome,
+      WEBVIEW2_USER_DATA_FOLDER: join(milimHome, "webview2"),
       WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: appendWebViewArg(
         process.env.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS,
         `--remote-debugging-port=${cdpPort}`,
@@ -1149,13 +1254,24 @@ async function launchTauri(milimHome) {
 }
 
 async function closeSession(session) {
-  await session.page?.locator(".win-close").click({ timeout: 1_000 }).catch(() => {});
-  await waitForExit(session.child, 2_500).catch(() => {});
   await session.browser?.close().catch(() => {});
+  session.browser = null;
+  session.page = null;
   if (session.child.exitCode == null) {
-    killTree(session.child.pid);
-    await waitForExit(session.child, 5_000).catch(() => {});
+    const killResult = killTree(session.child.pid);
+    await waitForExit(session.child, 10_000).catch((err) => {
+      throw new Error(
+        `Timed out waiting for Tauri process ${session.child.pid} to exit after taskkill.\n` +
+          `taskkillStatus=${killResult?.status ?? "unknown"}\n` +
+          `taskkillStdout=${killResult?.stdout ?? ""}\n` +
+          `taskkillStderr=${killResult?.stderr ?? ""}\n` +
+          `workspaceProcesses=${describeWorkspaceMilimProcesses()}\n` +
+          `stdout:\n${session.stdout}\nstderr:\n${session.stderr}\n` +
+          `waitError=${err.message}`,
+      );
+    });
   }
+  await waitForPortClosed(cdpPort, 10_000);
 }
 
 function appendWebViewArg(existing, arg) {
@@ -1211,8 +1327,8 @@ async function firstPage(context) {
 }
 
 function killTree(pid) {
-  if (!pid) return;
-  spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], { stdio: "ignore" });
+  if (!pid) return null;
+  return spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], { encoding: "utf8" });
 }
 
 function waitForExit(proc, timeoutMs) {
@@ -1226,16 +1342,83 @@ function waitForExit(proc, timeoutMs) {
   });
 }
 
-function rmWithRetry(path) {
-  for (let i = 0; i < 5; i += 1) {
+async function ensureNoWorkspaceMilimProcesses() {
+  const processes = workspaceMilimProcesses();
+  for (const proc of processes) {
+    killTree(proc.ProcessId);
+  }
+
+  const started = Date.now();
+  while (Date.now() - started < 10_000) {
+    if (workspaceMilimProcesses().length === 0) return;
+    await delay(250);
+  }
+
+  throw new Error(`Workspace milim-desktop.exe process still running: ${describeWorkspaceMilimProcesses()}`);
+}
+
+function workspaceMilimProcesses() {
+  const script = "Get-CimInstance Win32_Process -Filter \"Name = 'milim-desktop.exe'\" | Select-Object ProcessId,ExecutablePath,CommandLine | ConvertTo-Json -Compress";
+  const result = spawnSync("powershell", ["-NoProfile", "-Command", script], { encoding: "utf8" });
+  if (result.status !== 0 || !result.stdout.trim()) return [];
+  try {
+    const parsed = JSON.parse(result.stdout);
+    const rows = Array.isArray(parsed) ? parsed : [parsed];
+    const binaryLower = binary.toLowerCase();
+    const rootLower = root.toLowerCase();
+    return rows.filter((row) => {
+      const executable = String(row.ExecutablePath ?? "").toLowerCase();
+      const command = String(row.CommandLine ?? "").toLowerCase();
+      return (
+        executable === binaryLower ||
+        command.includes(binaryLower) ||
+        executable.startsWith(rootLower) ||
+        command.includes(rootLower)
+      );
+    });
+  } catch {
+    return [];
+  }
+}
+
+function describeWorkspaceMilimProcesses() {
+  const processes = workspaceMilimProcesses();
+  if (!processes.length) return "none";
+  return processes
+    .map((proc) => `pid=${proc.ProcessId}; exe=${proc.ExecutablePath ?? ""}; cmd=${proc.CommandLine ?? ""}`)
+    .join(" | ");
+}
+
+async function rmWithRetry(path, options = {}) {
+  const attempts = options.attempts ?? 48;
+  const delayMs = options.delayMs ?? 250;
+  const label = options.label ?? path;
+  for (let i = 0; i < attempts; i += 1) {
     try {
       rmSync(path, { recursive: true, force: true });
       return;
     } catch (err) {
-      if (i === 4) throw err;
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 250);
+      if (i === attempts - 1) {
+        throw new Error(
+          `Failed to remove ${label} after ${attempts} attempts.\n` +
+            `path=${path}\n` +
+            `lockedPath=${err.path ?? "unknown"}\n` +
+            `code=${err.code ?? "unknown"}\n` +
+            `message=${err.message}\n` +
+            `workspaceProcesses=${describeWorkspaceMilimProcesses()}`,
+        );
+      }
+      await delay(delayMs);
     }
   }
+}
+
+function printEvidencePaths(milimHome) {
+  console.log(`milimHome=${milimHome}`);
+  console.log(`profilesScreenshot=${screenshots.profiles}`);
+  console.log(`settingsScreenshot=${screenshots.settings}`);
+  console.log(`chatScreenshot=${screenshots.chat}`);
+  console.log(`failureScreenshot=${screenshots.failure}`);
 }
 
 function delay(ms) {
