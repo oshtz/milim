@@ -128,6 +128,10 @@ pub fn build_router(state: AppState) -> Router {
             post(routes::preview_app_stage),
         )
         .route(
+            "/preview-apps/{thread_id}/preflight",
+            post(routes::preview_app_preflight),
+        )
+        .route(
             "/preview-apps/{thread_id}/start",
             post(routes::preview_app_start),
         )
@@ -351,6 +355,9 @@ where
     S: Future<Output = ()>,
 {
     shutdown.await;
+    if let Err(err) = state.preview_runtime.stop_all().await {
+        tracing::warn!("failed to stop preview apps during shutdown: {err}");
+    }
     if let Some(threads) = state.threads.as_ref() {
         if let Err(err) = threads.stop_running_children("stopped by server shutdown") {
             tracing::warn!("failed to stop child threads during shutdown: {err}");

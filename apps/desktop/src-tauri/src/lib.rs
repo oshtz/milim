@@ -12,6 +12,7 @@
 mod computer_tools;
 mod host_tools;
 mod preview_tools;
+mod preview_webview;
 
 use std::collections::BTreeMap;
 use std::fs::{self, File};
@@ -59,9 +60,11 @@ struct MobileRelayLocalTarget(String);
 
 struct UserDataState(Arc<milim_storage::UserDataStore>);
 
+struct DesktopPreviewRuntime(Arc<milim_server::preview_runtime::PreviewRuntimeManager>);
+
 #[tauri::command]
 fn quit_after_user_state_flush(app: tauri::AppHandle) {
-    app.exit(0);
+    exit_after_preview_cleanup(app);
 }
 
 const TAILSCALE_SERVE_PORT: u16 = 10000;
@@ -2869,7 +2872,7 @@ rm -rf "$backup"
                 .map_err(|e| e.to_string())?;
         }
 
-        app.exit(0);
+        exit_after_preview_cleanup(app);
         Ok(())
     }
 }
@@ -3227,12 +3230,22 @@ fn show_main_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     }
 }
 
+fn exit_after_preview_cleanup<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
+    let preview_runtime = app.state::<DesktopPreviewRuntime>().0.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) = preview_runtime.stop_all().await {
+            eprintln!("failed to stop preview apps during desktop shutdown: {error}");
+        }
+        app.exit(0);
+    });
+}
+
 fn request_user_state_flush_then_exit<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     let _ = app.emit(FLUSH_USER_STATE_AND_EXIT_EVENT, ());
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(Duration::from_secs(2)).await;
-        app.exit(0);
+        exit_after_preview_cleanup(app);
     });
 }
 
@@ -3285,6 +3298,7 @@ pub fn run() {
     .expect("bind embedded mobile relay server");
     let api_base = format!("http://{addr}");
     let mobile_local_target = format!("http://{mobile_addr}");
+    let preview_runtime = state.preview_runtime.clone();
     let mobile_state = state.clone();
     let mobile_startup_companion = state.mobile_companion.clone();
     let mobile_startup_target = mobile_local_target.clone();
@@ -3295,11 +3309,14 @@ pub fn run() {
         .manage(DesktopApiBaseUrl(api_base))
         .manage(MobileRelayLocalTarget(mobile_local_target))
         .manage(UserDataState(user_data))
+        .manage(DesktopPreviewRuntime(preview_runtime))
         .manage(preview_tools_state.clone())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         // Persist + restore window size/position/maximized across restarts.
         .plugin(tauri_plugin_window_state::Builder::default().build())
+        .plugin(preview_webview::init())
+        .on_page_load(preview_webview::handle_page_load)
         .setup(move |app| {
             setup_tray(app.handle())?;
             preview_tools_state.set_app(app.handle().clone());
@@ -3411,7 +3428,11 @@ pub fn run() {
             download_update_file,
             extract_app_zip,
             apply_update,
-            preview_tools::set_active_preview_target
+            preview_tools::set_active_preview_target,
+            preview_webview::preview_webview_navigate,
+            preview_webview::preview_webview_reload,
+            preview_webview::preview_webview_history,
+            preview_webview::preview_webview_url
         ])
         .run(tauri::generate_context!())
         .expect("error while running milim desktop");

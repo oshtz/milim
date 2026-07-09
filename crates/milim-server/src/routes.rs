@@ -54,7 +54,9 @@ use crate::companion::{
     MobileCompanionBridge, MobilePairRequest, MobileRelayRequest, MobileThreadUpdateRequest,
 };
 use crate::error::ApiError;
-use crate::preview_runtime::{PreviewAppStageRequest, PreviewAppStartRequest};
+use crate::preview_runtime::{
+    PreviewAppPreflightRequest, PreviewAppStageRequest, PreviewAppStartRequest,
+};
 use crate::privacy::{kinds_summary, PrivacyMode};
 use crate::sse::{agent_sse, anthropic_sse, ollama_ndjson, openai_sse, ChunkCtx};
 use crate::state::AppState;
@@ -4726,6 +4728,18 @@ pub(crate) async fn preview_app_stage(
     Ok(Json(st.preview_runtime.stage(&thread_id, &req.files)?).into_response())
 }
 
+/// `POST /preview-apps/{thread_id}/preflight` - inspect commands without staging or executing.
+pub(crate) async fn preview_app_preflight(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    peer: Peer,
+    Path(thread_id): Path<String>,
+    Json(req): Json<PreviewAppPreflightRequest>,
+) -> Result<Response, ApiError> {
+    authorize(&st, &headers, peer_addr(peer))?;
+    Ok(Json(st.preview_runtime.preflight(&thread_id, &req)?).into_response())
+}
+
 /// `POST /preview-apps/{thread_id}/start` - install and start the preview app.
 pub(crate) async fn preview_app_start(
     State(st): State<AppState>,
@@ -4735,8 +4749,8 @@ pub(crate) async fn preview_app_start(
     req: Option<Json<PreviewAppStartRequest>>,
 ) -> Result<Response, ApiError> {
     authorize(&st, &headers, peer_addr(peer))?;
-    let cwd = req.and_then(|Json(req)| req.cwd);
-    Ok(Json(st.preview_runtime.start(&thread_id, cwd.as_deref())?).into_response())
+    let request = req.map(|Json(req)| req).unwrap_or_default();
+    Ok(Json(st.preview_runtime.start(&thread_id, &request)?).into_response())
 }
 
 /// `POST /preview-apps/{thread_id}/stop` - stop the preview app process tree.
@@ -4759,13 +4773,8 @@ pub(crate) async fn preview_app_restart(
     req: Option<Json<PreviewAppStartRequest>>,
 ) -> Result<Response, ApiError> {
     authorize(&st, &headers, peer_addr(peer))?;
-    let cwd = req.and_then(|Json(req)| req.cwd);
-    Ok(Json(
-        st.preview_runtime
-            .restart(&thread_id, cwd.as_deref())
-            .await?,
-    )
-    .into_response())
+    let request = req.map(|Json(req)| req).unwrap_or_default();
+    Ok(Json(st.preview_runtime.restart(&thread_id, &request).await?).into_response())
 }
 
 /// `GET /preview-apps/{thread_id}/logs` - recent preview app logs.
@@ -4774,9 +4783,15 @@ pub(crate) async fn preview_app_logs(
     headers: HeaderMap,
     peer: Peer,
     Path(thread_id): Path<String>,
+    Query(query): Query<PreviewAppLogsQuery>,
 ) -> Result<Response, ApiError> {
     authorize(&st, &headers, peer_addr(peer))?;
-    Ok(Json(json!({ "logs": st.preview_runtime.logs(&thread_id)? })).into_response())
+    Ok(Json(st.preview_runtime.logs_after(&thread_id, query.after_seq)?).into_response())
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct PreviewAppLogsQuery {
+    after_seq: Option<u64>,
 }
 
 /// `GET /workspace/git` - Git status for the current host working folder.

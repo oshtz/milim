@@ -289,8 +289,7 @@ useSessions.getState().setPreviewRuntimeByKey(modelSwitchRuntimeKey, {
   url: "http://127.0.0.1:6002/",
   command: "pnpm preview",
 });
-useSessions.getState().setSidePanelMode(modelSwitchSession, "browser");
-useSessions.getState().setArtifactPanelTab(modelSwitchSession, "code");
+useSessions.getState().setInspectorTab(modelSwitchSession, "code");
 const settingsBeforeModelSwitch = snapshot(
   useSessions.getState().getSettings(modelSwitchSession),
 );
@@ -308,11 +307,8 @@ const previewRuntimeBeforeModelSwitch = snapshot(
 const projectRuntimeBeforeModelSwitch = snapshot(
   useSessions.getState().previewRuntimesByKey[modelSwitchRuntimeKey],
 );
-const artifactPanelOpenBeforeModelSwitch =
-  sessionBeforeModelSwitch.artifactPanelOpen;
-const sidePanelModeBeforeModelSwitch = sessionBeforeModelSwitch.sidePanelMode;
-const artifactPanelTabBeforeModelSwitch =
-  sessionBeforeModelSwitch.artifactPanelTab;
+const inspectorOpenBeforeModelSwitch = sessionBeforeModelSwitch.inspectorOpen;
+const inspectorTabBeforeModelSwitch = sessionBeforeModelSwitch.inspectorTab;
 useSessions.getState().updateSettings(modelSwitchSession, { model: "model-after-switch" });
 const settingsAfterModelSwitch = useSessions.getState().getSettings(modelSwitchSession);
 equal(
@@ -367,19 +363,14 @@ deepEqual(
   "model switch should preserve project preview runtime",
 );
 equal(
-  sessionAfterModelSwitch.artifactPanelOpen,
-  artifactPanelOpenBeforeModelSwitch,
-  "model switch should preserve preview panel open state",
+  sessionAfterModelSwitch.inspectorOpen,
+  inspectorOpenBeforeModelSwitch,
+  "model switch should preserve inspector open state",
 );
 equal(
-  sessionAfterModelSwitch.sidePanelMode,
-  sidePanelModeBeforeModelSwitch,
-  "model switch should preserve side panel mode",
-);
-equal(
-  sessionAfterModelSwitch.artifactPanelTab,
-  artifactPanelTabBeforeModelSwitch,
-  "model switch should preserve artifact panel tab",
+  sessionAfterModelSwitch.inspectorTab,
+  inspectorTabBeforeModelSwitch,
+  "model switch should preserve inspector tab",
 );
 useSessions.getState().setPreviewRuntimeByKey(modelSwitchRuntimeKey, undefined);
 useSessions.getState().remove(modelSwitchSession);
@@ -1076,80 +1067,78 @@ useSessions.getState().newChat({
 
 const second = useSessions.getState().activeId;
 assert(second !== first, "new chat should create a different active session");
-useSessions.getState().setArtifactPanelOpen(first, true);
+useSessions.getState().setInspectorOpen(first, true);
 equal(
   useSessions.getState().sessions.find((session) => session.id === first)
-    ?.artifactPanelOpen,
+    ?.inspectorOpen,
   true,
-  "artifact panel open state should persist per thread",
+  "inspector open state should persist per thread",
 );
 equal(
   useSessions.getState().sessions.find((session) => session.id === second)
-    ?.artifactPanelOpen,
+    ?.inspectorOpen,
   undefined,
-  "artifact panel state should not bleed into another thread",
+  "inspector state should not bleed into another thread",
 );
 assert(
-  localStorage.getItem("milim.sessions")?.includes('"artifactPanelOpen":true'),
-  "artifact panel open state should persist in session storage",
-);
-useSessions.getState().setArtifactPanelOpen(first, false);
-equal(
-  useSessions.getState().sessions.find((session) => session.id === first)
-    ?.artifactPanelOpen,
-  undefined,
-  "closing the artifact panel should persist collapsed state",
-);
-useSessions.getState().setSidePanelMode(first, "git");
-equal(
-  useSessions.getState().sessions.find((session) => session.id === first)
-    ?.sidePanelMode,
-  "git",
-  "side panel mode should persist per thread",
-);
-equal(
-  useSessions.getState().sessions.find((session) => session.id === first)
-    ?.artifactPanelOpen,
-  true,
-  "selecting a side panel mode should open it",
+  localStorage.getItem("milim.sessions")?.includes('"inspectorOpen":true'),
+  "inspector open state should persist in session storage",
 );
 assert(
-  localStorage.getItem("milim.sessions")?.includes('"sidePanelMode":"git"'),
-  "side panel mode should persist in session storage",
+  !localStorage.getItem("milim.sessions")?.includes('"artifactPanelOpen"'),
+  "new persistence writes should omit legacy artifact panel fields",
 );
-useSessions.getState().setSidePanelOpen(first, false);
+useSessions.getState().setInspectorOpen(first, false);
 equal(
   useSessions.getState().sessions.find((session) => session.id === first)
-    ?.artifactPanelOpen,
+    ?.inspectorOpen,
   undefined,
-  "collapsing the side panel should persist closed state",
+  "closing the inspector should persist collapsed state",
 );
+useSessions.getState().setInspectorTab(first, "git");
 equal(
   useSessions.getState().sessions.find((session) => session.id === first)
-    ?.sidePanelMode,
+    ?.inspectorTab,
   "git",
-  "collapsing the side panel should preserve selected mode",
+  "inspector tab should persist per thread",
 );
-useSessions.getState().setSidePanelOpen(first, true);
 equal(
   useSessions.getState().sessions.find((session) => session.id === first)
-    ?.artifactPanelOpen,
+    ?.inspectorOpen,
   true,
-  "reopening the side panel should restore open state",
+  "selecting an inspector tab should open it",
 );
+assert(
+  localStorage.getItem("milim.sessions")?.includes('"inspectorTab":"git"'),
+  "inspector tab should persist in session storage",
+);
+useSessions.getState().setInspectorOpen(first, false);
 equal(
   useSessions.getState().sessions.find((session) => session.id === first)
-    ?.sidePanelMode,
-  "git",
-  "reopening the side panel should keep the selected mode",
-);
-useSessions.getState().setSidePanelMode(first, null);
-equal(
-  useSessions.getState().sessions.find((session) => session.id === first)
-    ?.sidePanelMode,
+    ?.inspectorOpen,
   undefined,
-  "closing the side panel should clear the persisted mode",
+  "collapsing the inspector should persist closed state",
 );
+equal(
+  useSessions.getState().sessions.find((session) => session.id === first)
+    ?.inspectorTab,
+  "git",
+  "collapsing the inspector should preserve selected tab",
+);
+useSessions.getState().setInspectorOpen(first, true);
+equal(
+  useSessions.getState().sessions.find((session) => session.id === first)
+    ?.inspectorOpen,
+  true,
+  "reopening the inspector should restore open state",
+);
+equal(
+  useSessions.getState().sessions.find((session) => session.id === first)
+    ?.inspectorTab,
+  "git",
+  "reopening the inspector should keep the selected tab",
+);
+useSessions.getState().setInspectorTab(first, "preview");
 useSessions.getState().setSessionUnread(first, true);
 deepEqual(
   useSessions.getState().unreadSessionIds,

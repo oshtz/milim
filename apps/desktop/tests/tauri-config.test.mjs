@@ -132,18 +132,34 @@ if (csp.includes("frame-src blob: data: http:")) {
   throw new Error("Tauri CSP must not allow arbitrary public HTTP frames");
 }
 
-if (!previewPanel.includes("srcDoc={previewSource}")) {
+if (!previewPanel.includes("srcDoc={previewDocument.source}")) {
   throw new Error("Artifact previews must render HTML through iframe srcDoc");
+}
+
+if (!previewPanel.includes('setPreviewDocument({ key: "", source: "" })')) {
+  throw new Error("Artifact previews must clear stale HTML before rebuilding");
 }
 
 if (!previewPanel.includes('src="about:blank"')) {
   throw new Error("Artifact preview iframes must keep an inert src fallback");
 }
 
-if (previewPanel.includes("URL.createObjectURL(new Blob([previewSource]")) {
+if (previewPanel.includes("URL.createObjectURL(new Blob([previewDocument.source]")) {
   throw new Error(
     "Artifact previews must not use blob object URLs for iframe HTML",
   );
+}
+
+for (const needle of [
+  ".chat-body.inspector-stacked",
+  "min-width: 360px",
+  "@container preview-panel (max-width: 439px)",
+  ".preview-file-select",
+  ".preview-overflow",
+]) {
+  if (!styles.includes(needle)) {
+    throw new Error(`Inspector responsive layout is missing: ${needle}`);
+  }
 }
 
 for (const needle of [

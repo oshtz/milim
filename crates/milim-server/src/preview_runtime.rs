@@ -1,25 +1,29 @@
 use std::borrow::Cow;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::TcpListener;
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
-use tokio::process::Command;
+use tokio::process::{Child, Command};
+use tokio::sync::watch;
+use tokio::task::JoinHandle;
 
 use milim_core::{Error, Result};
 
 const MAX_LOG_LINES: usize = 500;
+const MAX_FINGERPRINT_FILES: usize = 20_000;
+const MAX_FINGERPRINT_BYTES: u64 = 64 * 1024 * 1024;
 const INSTALL_MARKER_FILE: &str = ".milim-install-ok";
 #[cfg(not(test))]
-const PREVIEW_READY_QUIET_MS: u64 = 1_000;
+const PREVIEW_COMPILE_ERROR_QUIET_MS: u64 = 1_000;
 #[cfg(test)]
-const PREVIEW_READY_QUIET_MS: u64 = 10;
+const PREVIEW_COMPILE_ERROR_QUIET_MS: u64 = 10;
 #[cfg(not(test))]
 const PREVIEW_READY_PROBE_TIMEOUT_MS: u64 = 10_000;
 #[cfg(test)]
@@ -32,18 +36,51 @@ const PREVIEW_READY_PROBE_INTERVAL_MS: u64 = 5;
 const PREVIEW_READY_REQUEST_TIMEOUT_MS: u64 = 1_000;
 #[cfg(test)]
 const PREVIEW_READY_REQUEST_TIMEOUT_MS: u64 = 50;
+#[cfg(not(test))]
+const PREVIEW_PROCESS_STOP_TIMEOUT_MS: u64 = 10_000;
+#[cfg(test)]
+const PREVIEW_PROCESS_STOP_TIMEOUT_MS: u64 = 2_000;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct PreviewAppLog {
+    pub seq: u64,
     pub ts: u64,
     pub stream: String,
     pub line: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct PreviewAppError {
+    pub code: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct PreviewAppPreflight {
+    pub thread_id: String,
+    pub cwd: String,
+    pub managed: bool,
+    pub scope: String,
+    pub package_manager: String,
+    pub install_required: bool,
+    pub install_command: String,
+    pub dev_command: String,
+    pub source_fingerprint: String,
+    pub port: u16,
+    pub url: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct PreviewAppStatus {
     pub thread_id: String,
     pub status: String,
+    pub active: bool,
+    pub ready: bool,
+    pub managed: bool,
+    pub run_id: Option<String>,
+    pub updated_at: u64,
+    pub error: Option<PreviewAppError>,
+    pub preflight: Option<PreviewAppPreflight>,
     pub cwd: String,
     pub url: Option<String>,
     pub pid: Option<u32>,
@@ -52,7 +89,7 @@ pub struct PreviewAppStatus {
     pub logs: Vec<PreviewAppLog>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PreviewAppFile {
     pub path: String,
     pub content: String,
@@ -64,21 +101,51 @@ pub struct PreviewAppStageRequest {
     pub files: Vec<PreviewAppFile>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct PreviewAppPreflightRequest {
+    #[serde(default)]
+    pub cwd: Option<String>,
+    #[serde(default)]
+    pub files: Vec<PreviewAppFile>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct PreviewAppStartRequest {
     #[serde(default)]
     pub cwd: Option<String>,
+    #[serde(default)]
+    pub files: Vec<PreviewAppFile>,
+    #[serde(default)]
+    pub source_fingerprint: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PreviewAppLogsResponse {
+    pub logs: Vec<PreviewAppLog>,
+    pub next_seq: u64,
+    pub truncated: bool,
 }
 
 #[derive(Default)]
 struct PreviewAppEntry {
     cwd: Option<PathBuf>,
     status: String,
+    active: bool,
+    ready: bool,
+    managed: bool,
+    run_id: Option<String>,
+    updated_at: u64,
+    error: Option<PreviewAppError>,
+    preflight: Option<PreviewAppPreflight>,
     url: Option<String>,
     pid: Option<u32>,
     command: Option<String>,
     message: Option<String>,
     logs: VecDeque<PreviewAppLog>,
+    next_log_seq: u64,
+    cancel: Option<watch::Sender<bool>>,
+    task: Option<JoinHandle<()>>,
+    compile_error_at: Option<Instant>,
 }
 
 pub struct PreviewRuntimeManager {
@@ -100,15 +167,45 @@ impl PreviewRuntimeManager {
     }
 
     pub fn logs(&self, thread_id: &str) -> Result<Vec<PreviewAppLog>> {
+        Ok(self.logs_after(thread_id, None)?.logs)
+    }
+
+    pub fn logs_after(
+        &self,
+        thread_id: &str,
+        after_seq: Option<u64>,
+    ) -> Result<PreviewAppLogsResponse> {
         let thread_id = safe_thread_id(thread_id)?;
         let entries = self
             .entries
             .lock()
             .map_err(|_| Error::Other("preview runtime state lock poisoned".to_string()))?;
-        Ok(entries
-            .get(&thread_id)
-            .map(|entry| entry.logs.iter().cloned().collect())
-            .unwrap_or_default())
+        let Some(entry) = entries.get(&thread_id) else {
+            return Ok(PreviewAppLogsResponse {
+                logs: Vec::new(),
+                next_seq: after_seq.unwrap_or_default(),
+                truncated: false,
+            });
+        };
+        let requested = after_seq.unwrap_or_default();
+        let oldest = entry.logs.front().map(|log| log.seq);
+        let logs = entry
+            .logs
+            .iter()
+            .filter(|log| after_seq.is_none_or(|seq| log.seq > seq))
+            .cloned()
+            .collect();
+        let next_seq = entry
+            .logs
+            .back()
+            .map(|log| log.seq.max(requested))
+            .unwrap_or(requested);
+        Ok(PreviewAppLogsResponse {
+            logs,
+            next_seq,
+            truncated: after_seq.is_some()
+                && oldest.is_some_and(|seq| seq > requested.saturating_add(1)),
+        })
     }
 
     pub fn stage(&self, thread_id: &str, files: &[PreviewAppFile]) -> Result<PreviewAppStatus> {
@@ -124,21 +221,12 @@ impl PreviewRuntimeManager {
                 "stop the preview app before staging new files".to_string(),
             ));
         }
-        if dir.exists() {
-            std::fs::remove_dir_all(&dir)?;
-        }
-        std::fs::create_dir_all(&dir)?;
-        for file in files {
-            let rel = safe_relative_path(&file.path)?;
-            let target = dir.join(rel);
-            if let Some(parent) = target.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            std::fs::write(target, file.content.as_bytes())?;
-        }
+        self.stage_files_atomically(&thread_id, files)?;
         self.set_entry(&thread_id, |entry| {
             entry.cwd = Some(dir.clone());
-            if entry.pid.is_none() {
+            entry.managed = true;
+            entry.preflight = None;
+            if !entry.active {
                 entry.status = "staged".to_string();
             }
             entry.message = Some(format!("Staged {} file(s).", files.len()));
@@ -147,72 +235,245 @@ impl PreviewRuntimeManager {
         Ok(self.status_for(&thread_id))
     }
 
-    pub fn start(self: &Arc<Self>, thread_id: &str, cwd: Option<&str>) -> Result<PreviewAppStatus> {
+    pub fn preflight(
+        &self,
+        thread_id: &str,
+        request: &PreviewAppPreflightRequest,
+    ) -> Result<PreviewAppPreflight> {
         let thread_id = safe_thread_id(thread_id)?;
-        let target = self.start_target(&thread_id, cwd)?;
-        let dir = target.dir;
-        if let Some(status) = self.running_status(&thread_id, &dir)? {
+        let target = self.start_target(&thread_id, request.cwd.as_deref())?;
+        if self.running_status(&thread_id, &target.dir)?.is_some() {
+            return Err(Error::InvalidRequest(
+                "stop the preview app before running preflight".to_string(),
+            ));
+        }
+        if !target.managed && !request.files.is_empty() {
+            return Err(Error::InvalidRequest(
+                "selected-folder preview preflight does not accept managed files".to_string(),
+            ));
+        }
+        let (package, install_required, source_fingerprint) =
+            inspect_preview_source(&target, &request.files)?;
+        validate_preview_package(&package)?;
+        let port = free_port()?;
+        let cwd = target.dir.to_string_lossy().to_string();
+        let preflight = PreviewAppPreflight {
+            thread_id: thread_id.clone(),
+            cwd,
+            managed: target.managed,
+            scope: if target.managed {
+                "managed".to_string()
+            } else {
+                "selected_folder".to_string()
+            },
+            package_manager: package.manager.command_name().to_string(),
+            install_required,
+            install_command: package.install_label(),
+            dev_command: package.dev_label(port),
+            source_fingerprint,
+            port,
+            url: format!("http://127.0.0.1:{port}/"),
+        };
+        self.set_entry(&thread_id, |entry| {
+            entry.cwd = Some(target.dir.clone());
+            entry.managed = target.managed;
+            entry.preflight = Some(preflight.clone());
+        })?;
+        Ok(preflight)
+    }
+
+    pub fn start(
+        self: &Arc<Self>,
+        thread_id: &str,
+        request: &PreviewAppStartRequest,
+    ) -> Result<PreviewAppStatus> {
+        let thread_id = safe_thread_id(thread_id)?;
+        let target = self.start_target(&thread_id, request.cwd.as_deref())?;
+        if let Some(status) = self.running_status(&thread_id, &target.dir)? {
             return Ok(status);
         }
-        if !dir.join("package.json").is_file() {
+        if !target.managed && !request.files.is_empty() {
             return Err(Error::InvalidRequest(
-                "preview app requires package.json".to_string(),
+                "selected-folder preview start does not accept managed files".to_string(),
             ));
         }
-        let package = preview_package(&dir)?;
-        if !package.has_dev_script {
-            return Err(Error::InvalidRequest(
-                "preview app package.json requires scripts.dev".to_string(),
-            ));
-        }
-        let vite_setup_logs = if target.managed {
-            ensure_vite_setup(&dir, &package)?
-        } else {
-            Vec::new()
+        let supplied_fingerprint = request
+            .source_fingerprint
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                Error::InvalidRequest(
+                    "preview app start requires a current preflight fingerprint".to_string(),
+                )
+            })?;
+        let expected = {
+            let entries = self
+                .entries
+                .lock()
+                .map_err(|_| Error::Other("preview runtime state lock poisoned".to_string()))?;
+            entries
+                .get(&thread_id)
+                .and_then(|entry| entry.preflight.clone())
+                .ok_or_else(|| {
+                    Error::InvalidRequest(
+                        "preview app preflight is required before start".to_string(),
+                    )
+                })?
         };
-        let port = free_port()?;
-        let url = format!("http://127.0.0.1:{port}/");
-        let command = package.dev_label(port);
-        self.set_entry(&thread_id, |entry| {
-            entry.cwd = Some(dir.clone());
-            entry.status = "installing".to_string();
-            entry.url = Some(url.clone());
-            entry.pid = None;
-            entry.command = Some(command.clone());
-            entry.message = Some("Installing dependencies.".to_string());
-            push_log(entry, "system", "starting preview app");
-            for log in vite_setup_logs {
-                push_log(entry, "system", &log);
-            }
-        })?;
-        tokio::spawn(run_preview_app(
-            self.clone(),
-            thread_id.clone(),
+        if expected.managed != target.managed || Path::new(&expected.cwd) != target.dir.as_path() {
+            return Err(stale_preflight_error());
+        }
+        let (inspected_package, install_required, current_fingerprint) =
+            inspect_preview_source(&target, &request.files)?;
+        validate_preview_package(&inspected_package)?;
+        if supplied_fingerprint != expected.source_fingerprint
+            || current_fingerprint != expected.source_fingerprint
+            || install_required != expected.install_required
+            || inspected_package.manager.command_name() != expected.package_manager
+            || inspected_package.install_label() != expected.install_command
+            || inspected_package.dev_label(expected.port) != expected.dev_command
+        {
+            return Err(stale_preflight_error());
+        }
+        if !port_is_available(expected.port) {
+            return Err(Error::InvalidRequest(
+                "preview app preflight port is no longer available; run preflight again"
+                    .to_string(),
+            ));
+        }
+
+        let dir = target.dir;
+        let package = inspected_package;
+        let files = request.files.clone();
+        let stages_files = target.managed && !files.is_empty();
+        let run_id = uuid::Uuid::new_v4().simple().to_string();
+        let (cancel, cancel_rx) = watch::channel(false);
+        let mut entries = self
+            .entries
+            .lock()
+            .map_err(|_| Error::Other("preview runtime state lock poisoned".to_string()))?;
+        let entry = entries
+            .entry(thread_id.clone())
+            .or_insert_with(|| PreviewAppEntry {
+                status: "idle".to_string(),
+                managed: true,
+                ..Default::default()
+            });
+        if entry.active {
+            return Ok(status_from_entry(
+                &thread_id,
+                entry,
+                &self.app_dir(&thread_id),
+            ));
+        }
+        entry.task.take();
+        entry.cwd = Some(dir.clone());
+        entry.status = if stages_files {
+            "staging".to_string()
+        } else if install_required {
+            "installing".to_string()
+        } else {
+            "starting".to_string()
+        };
+        entry.active = true;
+        entry.ready = false;
+        entry.managed = target.managed;
+        entry.run_id = Some(run_id.clone());
+        entry.error = None;
+        entry.url = Some(expected.url.clone());
+        entry.pid = None;
+        entry.command = Some(if install_required {
+            expected.install_command.clone()
+        } else {
+            expected.dev_command.clone()
+        });
+        entry.message = Some(if stages_files {
+            "Staging preview files.".to_string()
+        } else if install_required {
+            "Installing dependencies.".to_string()
+        } else {
+            "Starting dev server.".to_string()
+        });
+        entry.cancel = Some(cancel);
+        entry.compile_error_at = None;
+        entry.updated_at = crate::now_unix();
+        push_log(entry, "system", "starting preview app");
+        let manager = self.clone();
+        let run_thread_id = thread_id.clone();
+        let port = expected.port;
+        let run = PreviewRun {
+            thread_id: run_thread_id,
+            run_id,
             dir,
             port,
             package,
-            target.managed,
-        ));
+            managed: target.managed,
+            files,
+            install_required,
+        };
+        let task = tokio::spawn(async move {
+            run_preview_app(manager, run, cancel_rx).await;
+        });
+        entry.task = Some(task);
+        drop(entries);
         Ok(self.status_for(&thread_id))
     }
 
     pub async fn stop(&self, thread_id: &str) -> Result<PreviewAppStatus> {
         let thread_id = safe_thread_id(thread_id)?;
-        let pid = {
-            let entries = self
+        let (run_id, cancel, task, fallback_pid) = {
+            let mut entries = self
                 .entries
                 .lock()
                 .map_err(|_| Error::Other("preview runtime state lock poisoned".to_string()))?;
-            entries.get(&thread_id).and_then(|entry| entry.pid)
+            let entry = entries
+                .entry(thread_id.clone())
+                .or_insert_with(|| PreviewAppEntry {
+                    status: "idle".to_string(),
+                    managed: true,
+                    ..Default::default()
+                });
+            let run_id = entry.run_id.clone();
+            if !entry.active {
+                entry.status = "stopped".to_string();
+                entry.ready = false;
+                entry.pid = None;
+                entry.error = None;
+                entry.message = Some("Stopped.".to_string());
+                entry.updated_at = crate::now_unix();
+                return Ok(status_from_entry(
+                    &thread_id,
+                    entry,
+                    &self.app_dir(&thread_id),
+                ));
+            }
+            entry.status = "stopping".to_string();
+            entry.ready = false;
+            entry.message = Some("Stopping.".to_string());
+            entry.updated_at = crate::now_unix();
+            (run_id, entry.cancel.take(), entry.task.take(), entry.pid)
         };
-        if let Some(pid) = pid {
-            kill_process_tree(pid).await?;
+        if let Some(cancel) = cancel {
+            let _ = cancel.send(true);
+        } else if let Some(pid) = fallback_pid {
+            let _ = kill_process_tree(pid).await;
+        }
+        if let Some(task) = task {
+            let _ = task.await;
         }
         self.set_entry(&thread_id, |entry| {
-            entry.status = "stopped".to_string();
-            entry.pid = None;
-            entry.message = Some("Stopped.".to_string());
-            push_log(entry, "system", "stopped preview app");
+            if entry.run_id == run_id {
+                entry.status = "stopped".to_string();
+                entry.active = false;
+                entry.ready = false;
+                entry.pid = None;
+                entry.error = None;
+                entry.message = Some("Stopped.".to_string());
+                entry.cancel = None;
+                entry.compile_error_at = None;
+                push_log(entry, "system", "stopped preview app");
+            }
         })?;
         Ok(self.status_for(&thread_id))
     }
@@ -220,11 +481,87 @@ impl PreviewRuntimeManager {
     pub async fn restart(
         self: &Arc<Self>,
         thread_id: &str,
-        cwd: Option<&str>,
+        request: &PreviewAppStartRequest,
     ) -> Result<PreviewAppStatus> {
         let thread_id = safe_thread_id(thread_id)?;
-        let _ = self.stop(&thread_id).await;
-        self.start(&thread_id, cwd)
+        let _ = self.stop(&thread_id).await?;
+        self.start(&thread_id, request)
+    }
+
+    pub async fn stop_all(&self) -> Result<()> {
+        let thread_ids = {
+            let entries = self
+                .entries
+                .lock()
+                .map_err(|_| Error::Other("preview runtime state lock poisoned".to_string()))?;
+            entries
+                .iter()
+                .filter(|(_, entry)| entry.active)
+                .map(|(thread_id, _)| thread_id.clone())
+                .collect::<Vec<_>>()
+        };
+        for thread_id in thread_ids {
+            self.stop(&thread_id).await?;
+        }
+        Ok(())
+    }
+
+    fn stage_files_atomically(&self, thread_id: &str, files: &[PreviewAppFile]) -> Result<()> {
+        let dir = self.app_dir(thread_id);
+        let staging = self.root.join(format!(
+            ".{thread_id}.staging-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let backup = self.root.join(format!(
+            ".{thread_id}.backup-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let mut seen = HashSet::new();
+        let mut paths = Vec::with_capacity(files.len());
+        for file in files {
+            let rel = safe_relative_path(&file.path)?;
+            if !seen.insert(rel.clone()) {
+                return Err(Error::InvalidRequest(format!(
+                    "duplicate preview app file path: {}",
+                    file.path
+                )));
+            }
+            paths.push((rel, file));
+        }
+        std::fs::create_dir_all(&self.root)?;
+        std::fs::create_dir_all(&staging)?;
+        let write_result = (|| -> Result<()> {
+            for (rel, file) in &paths {
+                let target = staging.join(rel);
+                if let Some(parent) = target.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::write(target, file.content.as_bytes())?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = write_result {
+            let _ = std::fs::remove_dir_all(&staging);
+            return Err(error);
+        }
+        let had_previous = dir.exists();
+        if had_previous {
+            if let Err(error) = std::fs::rename(&dir, &backup) {
+                let _ = std::fs::remove_dir_all(&staging);
+                return Err(error.into());
+            }
+        }
+        if let Err(error) = std::fs::rename(&staging, &dir) {
+            if had_previous {
+                let _ = std::fs::rename(&backup, &dir);
+            }
+            let _ = std::fs::remove_dir_all(&staging);
+            return Err(error.into());
+        }
+        if had_previous {
+            let _ = std::fs::remove_dir_all(&backup);
+        }
+        Ok(())
     }
 
     fn app_dir(&self, thread_id: &str) -> PathBuf {
@@ -258,24 +595,25 @@ impl PreviewRuntimeManager {
     fn status_for(&self, thread_id: &str) -> PreviewAppStatus {
         let entries = self.entries.lock().ok();
         let entry = entries.as_ref().and_then(|items| items.get(thread_id));
-        let cwd = entry
-            .and_then(|entry| entry.cwd.clone())
-            .unwrap_or_else(|| self.app_dir(thread_id))
-            .to_string_lossy()
-            .to_string();
-        PreviewAppStatus {
-            thread_id: thread_id.to_string(),
-            status: entry
-                .map(|entry| entry.status.clone())
-                .unwrap_or_else(|| "idle".to_string()),
-            cwd,
-            url: entry.and_then(|entry| entry.url.clone()),
-            pid: entry.and_then(|entry| entry.pid),
-            command: entry.and_then(|entry| entry.command.clone()),
-            message: entry.and_then(|entry| entry.message.clone()),
-            logs: entry
-                .map(|entry| entry.logs.iter().cloned().collect())
-                .unwrap_or_default(),
+        match entry {
+            Some(entry) => status_from_entry(thread_id, entry, &self.app_dir(thread_id)),
+            None => PreviewAppStatus {
+                thread_id: thread_id.to_string(),
+                status: "idle".to_string(),
+                active: false,
+                ready: false,
+                managed: true,
+                run_id: None,
+                updated_at: 0,
+                error: None,
+                preflight: None,
+                cwd: self.app_dir(thread_id).to_string_lossy().to_string(),
+                url: None,
+                pid: None,
+                command: None,
+                message: None,
+                logs: Vec::new(),
+            },
         }
     }
 
@@ -287,16 +625,14 @@ impl PreviewRuntimeManager {
         let Some(entry) = entries.get(thread_id) else {
             return Ok(None);
         };
-        let running = entry.pid.is_some()
-            || matches!(entry.status.as_str(), "installing" | "starting" | "running");
-        if running && entry.cwd.as_deref().is_some_and(|current| current != dir) {
+        if entry.active && entry.cwd.as_deref().is_some_and(|current| current != dir) {
             return Err(Error::InvalidRequest(
                 "stop the current preview app before starting another folder".to_string(),
             ));
         }
-        let running = running.then_some(());
-        drop(entries);
-        Ok(running.map(|_| self.status_for(thread_id)))
+        Ok(entry
+            .active
+            .then(|| status_from_entry(thread_id, entry, &self.app_dir(thread_id))))
     }
 
     fn set_entry(&self, thread_id: &str, update: impl FnOnce(&mut PreviewAppEntry)) -> Result<()> {
@@ -308,59 +644,185 @@ impl PreviewRuntimeManager {
             .entry(thread_id.to_string())
             .or_insert_with(|| PreviewAppEntry {
                 status: "idle".to_string(),
+                managed: true,
                 ..Default::default()
             });
         update(entry);
+        entry.updated_at = crate::now_unix();
         Ok(())
+    }
+
+    fn with_run_entry(
+        &self,
+        thread_id: &str,
+        run_id: &str,
+        update: impl FnOnce(&mut PreviewAppEntry),
+    ) -> Result<bool> {
+        let mut entries = self
+            .entries
+            .lock()
+            .map_err(|_| Error::Other("preview runtime state lock poisoned".to_string()))?;
+        let Some(entry) = entries.get_mut(thread_id) else {
+            return Ok(false);
+        };
+        if entry.run_id.as_deref() != Some(run_id) {
+            return Ok(false);
+        }
+        update(entry);
+        entry.updated_at = crate::now_unix();
+        Ok(true)
     }
 }
 
+fn status_from_entry(
+    thread_id: &str,
+    entry: &PreviewAppEntry,
+    default_dir: &Path,
+) -> PreviewAppStatus {
+    PreviewAppStatus {
+        thread_id: thread_id.to_string(),
+        status: entry.status.clone(),
+        active: entry.active,
+        ready: entry.ready,
+        managed: entry.managed,
+        run_id: entry.run_id.clone(),
+        updated_at: entry.updated_at,
+        error: entry.error.clone(),
+        preflight: entry.preflight.clone(),
+        cwd: entry
+            .cwd
+            .clone()
+            .unwrap_or_else(|| default_dir.to_path_buf())
+            .to_string_lossy()
+            .to_string(),
+        url: entry.url.clone(),
+        pid: entry.pid,
+        command: entry.command.clone(),
+        message: entry.message.clone(),
+        logs: entry.logs.iter().cloned().collect(),
+    }
+}
+
+#[derive(Clone)]
 struct PreviewAppTarget {
     dir: PathBuf,
     managed: bool,
 }
 
-async fn run_preview_app(
-    manager: Arc<PreviewRuntimeManager>,
+fn stale_preflight_error() -> Error {
+    Error::InvalidRequest(
+        "preview app source changed after preflight; run preflight again".to_string(),
+    )
+}
+
+struct PreviewRun {
     thread_id: String,
+    run_id: String,
     dir: PathBuf,
     port: u16,
     package: PreviewPackage,
     managed: bool,
+    files: Vec<PreviewAppFile>,
+    install_required: bool,
+}
+
+async fn run_preview_app(
+    manager: Arc<PreviewRuntimeManager>,
+    run: PreviewRun,
+    mut cancel: watch::Receiver<bool>,
 ) {
-    if needs_dependency_install(&dir, managed) {
-        let install = package.install_args();
-        let install_label = package.install_label();
-        let status = run_logged_command(
-            manager.clone(),
-            &thread_id,
-            &dir,
-            &install_label,
-            package.manager.command_name(),
-            &install,
-        )
-        .await;
-        if let Err(error) = status {
-            let _ = manager.set_entry(&thread_id, |entry| {
-                entry.status = "error".to_string();
-                entry.message = Some(error.to_string());
-                push_log(entry, "system", &error.to_string());
-            });
+    let PreviewRun {
+        thread_id,
+        run_id,
+        dir,
+        port,
+        package,
+        managed,
+        files,
+        install_required,
+    } = run;
+    if managed && !files.is_empty() {
+        if let Err(error) = manager.stage_files_atomically(&thread_id, &files) {
+            fail_run(
+                &manager,
+                &thread_id,
+                &run_id,
+                "stage_failed",
+                &format!("failed to stage preview files: {error}"),
+            );
             return;
         }
-        if managed {
-            let _ = std::fs::write(dir.join(INSTALL_MARKER_FILE), b"ok");
+    }
+    if !run_is_active(&manager, &thread_id, &run_id) || *cancel.borrow() {
+        return;
+    }
+    if managed {
+        match ensure_vite_setup(&dir, &package) {
+            Ok(logs) => {
+                let _ = manager.with_run_entry(&thread_id, &run_id, |entry| {
+                    for log in logs {
+                        push_log(entry, "system", &log);
+                    }
+                });
+            }
+            Err(error) => {
+                fail_run(
+                    &manager,
+                    &thread_id,
+                    &run_id,
+                    "stage_failed",
+                    &format!("failed to prepare preview files: {error}"),
+                );
+                return;
+            }
+        }
+    }
+    if !run_is_active(&manager, &thread_id, &run_id) || *cancel.borrow() {
+        return;
+    }
+    if install_required {
+        match run_install_command(
+            manager.clone(),
+            &thread_id,
+            &run_id,
+            &dir,
+            &package,
+            &mut cancel,
+        )
+        .await
+        {
+            Ok(CommandOutcome::Success) => {
+                if managed {
+                    let _ = std::fs::write(dir.join(INSTALL_MARKER_FILE), b"ok");
+                }
+            }
+            Ok(CommandOutcome::Cancelled) => return,
+            Err(error) => {
+                fail_run(
+                    &manager,
+                    &thread_id,
+                    &run_id,
+                    "install_failed",
+                    &error.to_string(),
+                );
+                return;
+            }
         }
     } else {
-        let _ = manager.set_entry(&thread_id, |entry| {
-            push_log(
-                entry,
-                "system",
-                "dependencies already installed; skipping npm install",
-            );
+        let _ = manager.with_run_entry(&thread_id, &run_id, |entry| {
+            if entry.active {
+                push_log(
+                    entry,
+                    "system",
+                    "dependencies already installed; skipping install",
+                );
+            }
         });
     }
 
+    if !run_is_active(&manager, &thread_id, &run_id) || *cancel.borrow() {
+        return;
+    }
     let command = package.dev_label(port);
     let dev_args = package.dev_args(port);
     let mut child = match preview_command(package.manager.command_name())
@@ -375,96 +837,179 @@ async fn run_preview_app(
     {
         Ok(child) => child,
         Err(error) => {
-            let _ = manager.set_entry(&thread_id, |entry| {
-                entry.status = "error".to_string();
-                entry.message = Some(error.to_string());
-                push_log(
-                    entry,
-                    "system",
-                    &format!("failed to start dev server: {error}"),
-                );
-            });
+            fail_run(
+                &manager,
+                &thread_id,
+                &run_id,
+                "dev_server_start_failed",
+                &format!("failed to start dev server: {error}"),
+            );
             return;
         }
     };
     let pid = child.id();
-    let _ = manager.set_entry(&thread_id, |entry| {
-        entry.status = "starting".to_string();
-        entry.pid = pid;
-        entry.command = Some(command);
-        entry.message = Some("Starting dev server.".to_string());
-        push_log(entry, "system", "preview app is starting");
-    });
+    let current = manager
+        .with_run_entry(&thread_id, &run_id, |entry| {
+            if !entry.active {
+                return;
+            }
+            entry.status = "starting".to_string();
+            entry.ready = false;
+            entry.pid = pid;
+            entry.command = Some(command);
+            entry.message = Some("Starting dev server.".to_string());
+            entry.error = None;
+            push_log(entry, "system", "preview app is starting");
+        })
+        .unwrap_or(false);
+    if !current || !run_is_active(&manager, &thread_id, &run_id) {
+        terminate_child(&mut child).await;
+        return;
+    }
     pipe_child_logs(
         manager.clone(),
         thread_id.clone(),
+        run_id.clone(),
         child.stdout.take(),
         "stdout",
     );
     pipe_child_logs(
         manager.clone(),
         thread_id.clone(),
+        run_id.clone(),
         child.stderr.take(),
         "stderr",
     );
-    match child.wait().await {
-        Ok(status) => {
-            let _ = manager.set_entry(&thread_id, |entry| {
-                entry.pid = None;
-                if entry.status != "stopped" {
-                    entry.status = if status.success() { "stopped" } else { "error" }.to_string();
-                    entry.message = Some(format!("Process exited with {status}."));
-                    push_log(entry, "system", &format!("process exited with {status}"));
+
+    let readiness_deadline = Instant::now() + Duration::from_millis(PREVIEW_READY_PROBE_TIMEOUT_MS);
+    let mut probe_interval =
+        tokio::time::interval(Duration::from_millis(PREVIEW_READY_PROBE_INTERVAL_MS));
+    probe_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        tokio::select! {
+            status = child.wait() => {
+                match status {
+                    Ok(status) => {
+                        let _ = manager.with_run_entry(&thread_id, &run_id, |entry| {
+                            entry.pid = None;
+                            entry.active = false;
+                            entry.ready = false;
+                            entry.cancel = None;
+                            if status.success() {
+                                entry.status = "stopped".to_string();
+                                entry.error = None;
+                            } else {
+                                entry.status = "error".to_string();
+                                entry.error = Some(PreviewAppError {
+                                    code: "process_exit".to_string(),
+                                    message: format!("Process exited with {status}."),
+                                });
+                            }
+                            entry.message = Some(format!("Process exited with {status}."));
+                            push_log(entry, "system", &format!("process exited with {status}"));
+                        });
+                    }
+                    Err(error) => fail_run(
+                        &manager,
+                        &thread_id,
+                        &run_id,
+                        "process_wait_failed",
+                        &format!("process wait failed: {error}"),
+                    ),
                 }
-            });
-        }
-        Err(error) => {
-            let _ = manager.set_entry(&thread_id, |entry| {
-                entry.pid = None;
-                entry.status = "error".to_string();
-                entry.message = Some(error.to_string());
-                push_log(entry, "system", &format!("process wait failed: {error}"));
-            });
+                return;
+            }
+            _ = wait_for_cancel(&mut cancel) => {
+                terminate_child(&mut child).await;
+                let _ = manager.with_run_entry(&thread_id, &run_id, |entry| {
+                    entry.pid = None;
+                    entry.ready = false;
+                });
+                return;
+            }
+            _ = probe_interval.tick() => {
+                let probe = probe_preview_url(&format!("http://127.0.0.1:{port}/")).await;
+                apply_probe_result(
+                    &manager,
+                    &thread_id,
+                    &run_id,
+                    probe,
+                    Instant::now() >= readiness_deadline,
+                );
+            }
         }
     }
 }
 
-async fn run_logged_command(
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CommandOutcome {
+    Success,
+    Cancelled,
+}
+
+async fn run_install_command(
     manager: Arc<PreviewRuntimeManager>,
     thread_id: &str,
+    run_id: &str,
     dir: &Path,
-    label: &str,
-    command_name: &str,
-    args: &[String],
-) -> Result<()> {
-    let _ = manager.set_entry(thread_id, |entry| {
-        entry.status = "installing".to_string();
-        entry.command = Some(label.to_string());
-        entry.message = Some(label.to_string());
-        push_log(entry, "system", label);
+    package: &PreviewPackage,
+    cancel: &mut watch::Receiver<bool>,
+) -> Result<CommandOutcome> {
+    let label = package.install_label();
+    let args = package.install_args();
+    let _ = manager.with_run_entry(thread_id, run_id, |entry| {
+        if entry.active {
+            entry.status = "installing".to_string();
+            entry.ready = false;
+            entry.command = Some(label.clone());
+            entry.message = Some(label.clone());
+            push_log(entry, "system", &label);
+        }
     });
-    let mut child = preview_command(command_name)
-        .args(args)
+    let mut child = preview_command(package.manager.command_name())
+        .args(&args)
         .current_dir(dir)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()?;
+    let pid = child.id();
+    let current = manager.with_run_entry(thread_id, run_id, |entry| {
+        if entry.active {
+            entry.pid = pid;
+        }
+    })?;
+    if !current || !run_is_active(&manager, thread_id, run_id) {
+        terminate_child(&mut child).await;
+        return Ok(CommandOutcome::Cancelled);
+    }
     pipe_child_logs(
         manager.clone(),
         thread_id.to_string(),
+        run_id.to_string(),
         child.stdout.take(),
         "stdout",
     );
     pipe_child_logs(
         manager.clone(),
         thread_id.to_string(),
+        run_id.to_string(),
         child.stderr.take(),
         "stderr",
     );
-    let status = child.wait().await?;
+    let status = tokio::select! {
+        status = child.wait() => Some(status?),
+        _ = wait_for_cancel(cancel) => None,
+    };
+    if status.is_none() {
+        terminate_child(&mut child).await;
+        let _ = manager.with_run_entry(thread_id, run_id, |entry| entry.pid = None);
+        return Ok(CommandOutcome::Cancelled);
+    }
+    let status = status.expect("checked above");
+    let _ = manager.with_run_entry(thread_id, run_id, |entry| entry.pid = None);
     if status.success() {
-        Ok(())
+        Ok(CommandOutcome::Success)
     } else {
         Err(Error::Other(format!("{label} exited with {status}")))
     }
@@ -525,18 +1070,11 @@ impl PreviewPackage {
     }
 
     fn install_label(&self) -> String {
-        format!("{} install", self.manager.command_name())
+        command_label(self.manager.command_name(), &self.install_args())
     }
 
     fn dev_label(&self, port: u16) -> String {
-        self.dev_args(port).into_iter().fold(
-            self.manager.command_name().to_string(),
-            |mut out, arg| {
-                out.push(' ');
-                out.push_str(&arg);
-                out
-            },
-        )
+        command_label(self.manager.command_name(), &self.dev_args(port))
     }
 
     fn is_next_dev(&self) -> bool {
@@ -550,6 +1088,14 @@ impl PreviewPackage {
             .split_whitespace()
             .any(|part| part == "vite" || part.ends_with("/vite"))
     }
+}
+
+fn command_label(command: &str, args: &[String]) -> String {
+    args.iter().fold(command.to_string(), |mut out, arg| {
+        out.push(' ');
+        out.push_str(arg);
+        out
+    })
 }
 
 fn preview_package(dir: &Path) -> Result<PreviewPackage> {
@@ -567,6 +1113,247 @@ fn preview_package(dir: &Path) -> Result<PreviewPackage> {
         has_dev_script: !dev_script.is_empty(),
         dev_script,
     })
+}
+
+fn preview_package_from_files(files: &[PreviewAppFile]) -> Result<PreviewPackage> {
+    let mut package_json = None;
+    let mut normalized_paths = Vec::with_capacity(files.len());
+    for file in files {
+        let path = safe_relative_path(&file.path)?;
+        if path == Path::new("package.json") {
+            package_json = Some(file.content.as_str());
+        }
+        normalized_paths.push(path);
+    }
+    let package_json = package_json
+        .ok_or_else(|| Error::InvalidRequest("preview app requires package.json".to_string()))?;
+    let package: Value = serde_json::from_str(package_json)?;
+    let dev_script = package
+        .get("scripts")
+        .and_then(|scripts| scripts.get("dev"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let manager = package
+        .get("packageManager")
+        .and_then(Value::as_str)
+        .and_then(package_manager_from_text)
+        .or_else(|| {
+            normalized_paths
+                .iter()
+                .any(|path| path == Path::new("pnpm-lock.yaml"))
+                .then_some(PackageManager::Pnpm)
+        })
+        .or_else(|| {
+            normalized_paths
+                .iter()
+                .any(|path| path == Path::new("yarn.lock"))
+                .then_some(PackageManager::Yarn)
+        })
+        .or_else(|| {
+            normalized_paths
+                .iter()
+                .any(|path| path == Path::new("bun.lockb") || path == Path::new("bun.lock"))
+                .then_some(PackageManager::Bun)
+        })
+        .unwrap_or(PackageManager::Npm);
+    Ok(PreviewPackage {
+        manager,
+        has_dev_script: !dev_script.is_empty(),
+        dev_script,
+    })
+}
+
+fn validate_preview_package(package: &PreviewPackage) -> Result<()> {
+    if package.has_dev_script {
+        Ok(())
+    } else {
+        Err(Error::InvalidRequest(
+            "preview app package.json requires scripts.dev".to_string(),
+        ))
+    }
+}
+
+fn inspect_preview_source(
+    target: &PreviewAppTarget,
+    files: &[PreviewAppFile],
+) -> Result<(PreviewPackage, bool, String)> {
+    if target.managed && !files.is_empty() {
+        return Ok((
+            preview_package_from_files(files)?,
+            true,
+            fingerprint_files(files)?,
+        ));
+    }
+    if !target.dir.join("package.json").is_file() {
+        return Err(Error::InvalidRequest(
+            "preview app requires package.json".to_string(),
+        ));
+    }
+    let package = preview_package(&target.dir)?;
+    let fingerprint = if target.managed {
+        fingerprint_managed_dir(&target.dir)?
+    } else {
+        fingerprint_selected_dir(&target.dir)?
+    };
+    Ok((
+        package,
+        needs_dependency_install(&target.dir, target.managed),
+        fingerprint,
+    ))
+}
+
+fn fingerprint_files(files: &[PreviewAppFile]) -> Result<String> {
+    let mut normalized = Vec::with_capacity(files.len());
+    let mut seen = HashSet::new();
+    for file in files {
+        let path = safe_relative_path(&file.path)?;
+        let path = path.to_string_lossy().replace('\\', "/");
+        if !seen.insert(path.clone()) {
+            return Err(Error::InvalidRequest(format!(
+                "duplicate preview app file path: {}",
+                file.path
+            )));
+        }
+        normalized.push((path, file.content.as_bytes().to_vec()));
+    }
+    normalized.sort_by(|left, right| left.0.cmp(&right.0));
+    Ok(fingerprint_parts(&normalized, &[]))
+}
+
+fn fingerprint_managed_dir(dir: &Path) -> Result<String> {
+    let mut files = Vec::new();
+    collect_managed_files(dir, dir, &mut files)?;
+    files.sort_by(|left, right| left.0.cmp(&right.0));
+    Ok(fingerprint_parts(&files, &[]))
+}
+
+fn collect_managed_files(
+    root: &Path,
+    dir: &Path,
+    files: &mut Vec<(String, Vec<u8>)>,
+) -> Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let path = entry?.path();
+        let rel = path.strip_prefix(root).unwrap_or(&path);
+        let first = rel.components().next();
+        if first.is_some_and(|part| {
+            matches!(part, Component::Normal(name) if name == "node_modules" || name == ".git")
+        }) || rel == Path::new(INSTALL_MARKER_FILE)
+        {
+            continue;
+        }
+        if path.is_dir() {
+            collect_managed_files(root, &path, files)?;
+        } else if path.is_file() {
+            files.push((
+                rel.to_string_lossy().replace('\\', "/"),
+                std::fs::read(path)?,
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn fingerprint_selected_dir(dir: &Path) -> Result<String> {
+    let mut files = Vec::new();
+    let mut file_count = 0_usize;
+    let mut byte_count = 0_u64;
+    collect_selected_files(dir, dir, &mut files, &mut file_count, &mut byte_count)?;
+    files.sort_by(|left, right| left.0.cmp(&right.0));
+    let extra = [if dir.join("node_modules").is_dir() {
+        "node_modules=present"
+    } else {
+        "node_modules=missing"
+    }];
+    Ok(fingerprint_parts(&files, &extra))
+}
+
+fn collect_selected_files(
+    root: &Path,
+    dir: &Path,
+    files: &mut Vec<(String, Vec<u8>)>,
+    file_count: &mut usize,
+    byte_count: &mut u64,
+) -> Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if selected_fingerprint_ignored(&name) {
+            continue;
+        }
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            collect_selected_files(root, &path, files, file_count, byte_count)?;
+            continue;
+        }
+        if file_type.is_symlink() {
+            let rel = path.strip_prefix(root).unwrap_or(&path);
+            let target = std::fs::read_link(&path)?;
+            files.push((
+                rel.to_string_lossy().replace('\\', "/"),
+                target.to_string_lossy().as_bytes().to_vec(),
+            ));
+            continue;
+        }
+        if !file_type.is_file() {
+            continue;
+        }
+        *file_count = file_count.saturating_add(1);
+        let size = entry.metadata()?.len();
+        *byte_count = byte_count.saturating_add(size);
+        if *file_count > MAX_FINGERPRINT_FILES || *byte_count > MAX_FINGERPRINT_BYTES {
+            return Err(Error::InvalidRequest(format!(
+                "preview app source is too large to fingerprint (limit: {MAX_FINGERPRINT_FILES} files / {} MiB)",
+                MAX_FINGERPRINT_BYTES / (1024 * 1024)
+            )));
+        }
+        let rel = path.strip_prefix(root).unwrap_or(&path);
+        files.push((
+            rel.to_string_lossy().replace('\\', "/"),
+            std::fs::read(path)?,
+        ));
+    }
+    Ok(())
+}
+
+fn selected_fingerprint_ignored(name: &str) -> bool {
+    matches!(
+        name,
+        ".git"
+            | "node_modules"
+            | ".next"
+            | "dist"
+            | "build"
+            | "coverage"
+            | "target"
+            | ".cache"
+            | ".turbo"
+            | ".vite"
+            | INSTALL_MARKER_FILE
+    )
+}
+
+fn fingerprint_parts(files: &[(String, Vec<u8>)], extra: &[&str]) -> String {
+    let mut hash = 0xcbf29ce484222325_u64;
+    for (path, content) in files {
+        fingerprint_update(&mut hash, path.as_bytes());
+        fingerprint_update(&mut hash, content);
+    }
+    for value in extra {
+        fingerprint_update(&mut hash, value.as_bytes());
+    }
+    format!("fnv1a64:{hash:016x}")
+}
+
+fn fingerprint_update(hash: &mut u64, value: &[u8]) {
+    for byte in (value.len() as u64).to_le_bytes().iter().chain(value) {
+        *hash ^= u64::from(*byte);
+        *hash = hash.wrapping_mul(0x100000001b3);
+    }
 }
 
 fn package_manager_for(dir: &Path, package: &Value) -> PackageManager {
@@ -603,6 +1390,7 @@ fn package_manager_from_text(value: &str) -> Option<PackageManager> {
 fn pipe_child_logs<T>(
     manager: Arc<PreviewRuntimeManager>,
     thread_id: String,
+    run_id: String,
     pipe: Option<T>,
     stream: &'static str,
 ) where
@@ -614,87 +1402,168 @@ fn pipe_child_logs<T>(
     tokio::spawn(async move {
         let mut lines = BufReader::new(pipe).lines();
         while let Ok(Some(line)) = lines.next_line().await {
-            let ready = is_preview_ready_log(&line);
-            let _ = manager.set_entry(&thread_id, |entry| push_child_log(entry, stream, &line));
-            if ready {
-                schedule_preview_ready(manager.clone(), thread_id.clone());
-            }
+            let _ = manager.with_run_entry(&thread_id, &run_id, |entry| {
+                push_child_log(entry, stream, &line)
+            });
         }
     });
 }
 
 fn push_child_log(entry: &mut PreviewAppEntry, stream: &str, line: &str) {
-    if is_preview_compile_error(line) {
+    if entry.active && entry.status != "stopping" && is_preview_compile_error(line) {
+        let message = "Preview app compile error. Check logs.".to_string();
         entry.status = "error".to_string();
-        entry.message = Some("Preview app compile error. Check logs.".to_string());
+        entry.ready = false;
+        entry.message = Some(message.clone());
+        entry.error = Some(PreviewAppError {
+            code: "compile_error".to_string(),
+            message,
+        });
+        entry.compile_error_at = Some(Instant::now());
     }
     push_log(entry, stream, line);
 }
 
-fn schedule_preview_ready(manager: Arc<PreviewRuntimeManager>, thread_id: String) {
-    tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(PREVIEW_READY_QUIET_MS)).await;
-        let status = match manager.status(&thread_id) {
-            Ok(status) => status,
-            Err(_) => return,
-        };
-        if status.status != "starting" || status.pid.is_none() {
+fn apply_probe_result(
+    manager: &PreviewRuntimeManager,
+    thread_id: &str,
+    run_id: &str,
+    probe: Option<u16>,
+    initial_deadline_elapsed: bool,
+) {
+    let _ = manager.with_run_entry(thread_id, run_id, |entry| {
+        if !entry.active || entry.pid.is_none() || entry.status == "stopping" {
             return;
         }
-        let Some(url) = status.url else {
-            return;
-        };
-        let probe = wait_for_preview_ready(&url).await;
-        let _ = manager.set_entry(&thread_id, |entry| {
-            if entry.status != "starting" || entry.pid.is_none() {
-                return;
-            }
-            match probe {
-                PreviewReadyProbe::Ready => {
-                    entry.status = "running".to_string();
-                    entry.message = Some("Running.".to_string());
+        match probe {
+            Some(code) if (200..400).contains(&code) => {
+                if entry.compile_error_at.is_some_and(|at| {
+                    at.elapsed() < Duration::from_millis(PREVIEW_COMPILE_ERROR_QUIET_MS)
+                }) {
+                    return;
+                }
+                let transitioned = !entry.ready || entry.status != "running";
+                entry.status = "running".to_string();
+                entry.ready = true;
+                entry.message = Some("Running.".to_string());
+                entry.error = None;
+                entry.compile_error_at = None;
+                if transitioned {
                     push_log(entry, "system", "preview app is running");
                 }
-                PreviewReadyProbe::HttpError(code) => {
-                    entry.status = "error".to_string();
-                    entry.message = Some(format!("Preview URL returned HTTP {code}. Check logs."));
+            }
+            Some(code) if code >= 400 => {
+                let message = format!("Preview URL returned HTTP {code}. Check logs.");
+                let changed = entry
+                    .error
+                    .as_ref()
+                    .is_none_or(|error| error.code != "http_error" || error.message != message);
+                entry.status = "error".to_string();
+                entry.ready = false;
+                entry.message = Some(message.clone());
+                entry.error = Some(PreviewAppError {
+                    code: "http_error".to_string(),
+                    message,
+                });
+                if changed {
                     push_log(
                         entry,
                         "system",
                         &format!("preview URL returned HTTP {code}"),
                     );
                 }
-                PreviewReadyProbe::Unavailable => {
-                    entry.status = "error".to_string();
-                    entry.message =
-                        Some("Preview URL did not become ready. Check logs.".to_string());
+            }
+            _ if initial_deadline_elapsed || entry.ready => {
+                let message = "Preview URL did not become ready. Check logs.".to_string();
+                let changed = entry
+                    .error
+                    .as_ref()
+                    .is_none_or(|error| error.code != "preview_unavailable");
+                entry.status = "error".to_string();
+                entry.ready = false;
+                entry.message = Some(message.clone());
+                entry.error = Some(PreviewAppError {
+                    code: "preview_unavailable".to_string(),
+                    message,
+                });
+                if changed {
                     push_log(entry, "system", "preview URL did not become ready");
                 }
             }
-        });
+            _ => {}
+        }
     });
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum PreviewReadyProbe {
-    Ready,
-    HttpError(u16),
-    Unavailable,
+fn fail_run(
+    manager: &PreviewRuntimeManager,
+    thread_id: &str,
+    run_id: &str,
+    code: &str,
+    message: &str,
+) {
+    let _ = manager.with_run_entry(thread_id, run_id, |entry| {
+        if !entry.active || entry.status == "stopping" {
+            return;
+        }
+        entry.status = "error".to_string();
+        entry.active = false;
+        entry.ready = false;
+        entry.pid = None;
+        entry.message = Some(message.to_string());
+        entry.error = Some(PreviewAppError {
+            code: code.to_string(),
+            message: message.to_string(),
+        });
+        entry.cancel = None;
+        push_log(entry, "system", message);
+    });
 }
 
-async fn wait_for_preview_ready(url: &str) -> PreviewReadyProbe {
-    let deadline =
-        tokio::time::Instant::now() + Duration::from_millis(PREVIEW_READY_PROBE_TIMEOUT_MS);
-    loop {
-        match probe_preview_url(url).await {
-            Some(code) if (200..400).contains(&code) => return PreviewReadyProbe::Ready,
-            Some(code) if code >= 400 => return PreviewReadyProbe::HttpError(code),
-            _ => {}
+fn run_is_active(manager: &PreviewRuntimeManager, thread_id: &str, run_id: &str) -> bool {
+    manager
+        .entries
+        .lock()
+        .ok()
+        .and_then(|entries| {
+            entries.get(thread_id).map(|entry| {
+                entry.active
+                    && entry.status != "stopping"
+                    && entry.run_id.as_deref() == Some(run_id)
+            })
+        })
+        .unwrap_or(false)
+}
+
+async fn wait_for_cancel(cancel: &mut watch::Receiver<bool>) {
+    if *cancel.borrow() {
+        return;
+    }
+    while cancel.changed().await.is_ok() {
+        if *cancel.borrow() {
+            return;
         }
-        if tokio::time::Instant::now() >= deadline {
-            return PreviewReadyProbe::Unavailable;
+    }
+    std::future::pending::<()>().await;
+}
+
+async fn terminate_child(child: &mut Child) {
+    let pid = child.id();
+    if let Some(pid) = pid {
+        let _ = kill_process_tree(pid).await;
+    }
+    if tokio::time::timeout(
+        Duration::from_millis(PREVIEW_PROCESS_STOP_TIMEOUT_MS),
+        child.wait(),
+    )
+    .await
+    .is_err()
+    {
+        if let Some(pid) = pid {
+            let _ = force_kill_process_tree(pid).await;
         }
-        tokio::time::sleep(Duration::from_millis(PREVIEW_READY_PROBE_INTERVAL_MS)).await;
+        let _ = child.start_kill();
+        let _ = child.wait().await;
     }
 }
 
@@ -738,7 +1607,9 @@ fn preview_url_port(url: &str) -> Option<u16> {
 
 fn push_log(entry: &mut PreviewAppEntry, stream: &str, line: &str) {
     let line = strip_ansi_control_sequences(line);
+    entry.next_log_seq = entry.next_log_seq.saturating_add(1);
     entry.logs.push_back(PreviewAppLog {
+        seq: entry.next_log_seq,
         ts: crate::now_unix(),
         stream: stream.to_string(),
         line: line.into_owned(),
@@ -756,11 +1627,6 @@ fn is_preview_compile_error(line: &str) -> bool {
         || line.contains("Unexpected closing")
         || line.contains("does not match opening")
         || line.contains("Plugin: vite:")
-}
-
-fn is_preview_ready_log(line: &str) -> bool {
-    let line = strip_ansi_control_sequences(line);
-    line.contains("Local:") && (line.contains("http://") || line.contains("https://"))
 }
 
 fn strip_ansi_control_sequences(value: &str) -> Cow<'_, str> {
@@ -804,6 +1670,10 @@ fn strip_ansi_control_sequences(value: &str) -> Cow<'_, str> {
 
 fn needs_dependency_install(dir: &Path, managed: bool) -> bool {
     !dir.join("node_modules").is_dir() || managed && !dir.join(INSTALL_MARKER_FILE).is_file()
+}
+
+fn port_is_available(port: u16) -> bool {
+    TcpListener::bind(("127.0.0.1", port)).is_ok()
 }
 
 fn ensure_vite_setup(dir: &Path, package: &PreviewPackage) -> Result<Vec<String>> {
@@ -1113,7 +1983,11 @@ fn preview_command(name: &str) -> Command {
         command
     };
     #[cfg(not(windows))]
-    let command = Command::new(name);
+    let command = {
+        let mut command = Command::new(name);
+        command.process_group(0);
+        command
+    };
     command
 }
 
@@ -1135,8 +2009,9 @@ async fn kill_process_tree(pid: u32) -> Result<()> {
 
 #[cfg(not(windows))]
 async fn kill_process_tree(pid: u32) -> Result<()> {
+    let group = format!("-{pid}");
     let status = Command::new("kill")
-        .args(["-TERM", &pid.to_string()])
+        .args(["-TERM", "--", &group])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -1149,6 +2024,30 @@ async fn kill_process_tree(pid: u32) -> Result<()> {
     }
 }
 
+#[cfg(windows)]
+async fn force_kill_process_tree(pid: u32) -> Result<()> {
+    kill_process_tree(pid).await
+}
+
+#[cfg(not(windows))]
+async fn force_kill_process_tree(pid: u32) -> Result<()> {
+    let group = format!("-{pid}");
+    let status = Command::new("kill")
+        .args(["-KILL", "--", &group])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .await?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(Error::Other(format!(
+            "force kill failed for process group {pid}"
+        )))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1158,6 +2057,41 @@ mod tests {
             "milim-preview-app-test-{}",
             uuid::Uuid::new_v4().simple()
         ))
+    }
+
+    async fn npm_available() -> bool {
+        preview_command("npm")
+            .arg("--version")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .await
+            .is_ok_and(|status| status.success())
+    }
+
+    fn managed_node_files(preinstall: Option<&str>, server: &str) -> Vec<PreviewAppFile> {
+        let scripts = match preinstall {
+            Some(_) => r#"{"preinstall":"node preinstall.js","dev":"node server.js"}"#,
+            None => r#"{"dev":"node server.js"}"#,
+        };
+        let mut files = vec![
+            PreviewAppFile {
+                path: "package.json".to_string(),
+                content: format!(r#"{{"private":true,"scripts":{scripts}}}"#),
+            },
+            PreviewAppFile {
+                path: "server.js".to_string(),
+                content: server.to_string(),
+            },
+        ];
+        if let Some(preinstall) = preinstall {
+            files.push(PreviewAppFile {
+                path: "preinstall.js".to_string(),
+                content: preinstall.to_string(),
+            });
+        }
+        files
     }
 
     #[test]
@@ -1192,8 +2126,114 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
-    #[tokio::test]
-    async fn preview_app_start_requires_package_json() {
+    #[test]
+    fn preview_app_preflight_is_read_only_and_reports_exact_commands() {
+        let root = test_root();
+        let manager = PreviewRuntimeManager::new(root.clone());
+        let files = managed_node_files(
+            Some("require('fs').writeFileSync('sentinel', 'ran')"),
+            "setInterval(() => {}, 1000)",
+        );
+        let preflight = manager
+            .preflight(
+                "thread-1",
+                &PreviewAppPreflightRequest {
+                    files,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        assert!(preflight.managed);
+        assert_eq!(preflight.scope, "managed");
+        assert_eq!(preflight.package_manager, "npm");
+        assert!(preflight.install_required);
+        assert_eq!(
+            preflight.install_command,
+            "npm install --no-audit --no-fund"
+        );
+        assert!(preflight.dev_command.contains(&preflight.port.to_string()));
+        assert!(preflight.source_fingerprint.starts_with("fnv1a64:"));
+        assert!(
+            !root.exists(),
+            "preflight must not stage files or run scripts"
+        );
+        let status = manager.status("thread-1").unwrap();
+        assert_eq!(status.status, "idle");
+        assert!(!status.active);
+        assert_eq!(status.preflight, Some(preflight));
+    }
+
+    #[test]
+    fn preview_app_start_rejects_stale_managed_files_before_staging() {
+        let root = test_root();
+        let manager = Arc::new(PreviewRuntimeManager::new(root.clone()));
+        let files = managed_node_files(None, "setInterval(() => {}, 1000)");
+        let preflight = manager
+            .preflight(
+                "thread-1",
+                &PreviewAppPreflightRequest {
+                    files: files.clone(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let mut changed = files;
+        changed[1].content = "console.log('changed'); setInterval(() => {}, 1000)".to_string();
+        let result = manager.start(
+            "thread-1",
+            &PreviewAppStartRequest {
+                files: changed,
+                source_fingerprint: Some(preflight.source_fingerprint),
+                ..Default::default()
+            },
+        );
+
+        assert!(matches!(result, Err(Error::InvalidRequest(_))));
+        assert!(!root.join("thread-1").exists());
+        assert!(!manager.status("thread-1").unwrap().active);
+    }
+
+    #[test]
+    fn preview_app_start_rejects_selected_folder_source_change() {
+        let root = test_root();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::create_dir_all(root.join("node_modules")).unwrap();
+        std::fs::write(
+            root.join("package.json"),
+            r#"{"private":true,"scripts":{"dev":"node server.js"}}"#,
+        )
+        .unwrap();
+        std::fs::write(root.join("server.js"), "setInterval(() => {}, 1000)").unwrap();
+        std::fs::write(root.join("src").join("app.js"), "export const value = 1").unwrap();
+        let manager = Arc::new(PreviewRuntimeManager::new(test_root()));
+        let cwd = root.to_string_lossy().to_string();
+        let preflight = manager
+            .preflight(
+                "thread-1",
+                &PreviewAppPreflightRequest {
+                    cwd: Some(cwd.clone()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        std::fs::write(root.join("src").join("app.js"), "export const value = 2").unwrap();
+
+        let result = manager.start(
+            "thread-1",
+            &PreviewAppStartRequest {
+                cwd: Some(cwd),
+                source_fingerprint: Some(preflight.source_fingerprint),
+                ..Default::default()
+            },
+        );
+        assert!(matches!(result, Err(Error::InvalidRequest(_))));
+        assert!(!manager.status("thread-1").unwrap().active);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn preview_app_preflight_requires_package_json() {
         let root = test_root();
         let manager = Arc::new(PreviewRuntimeManager::new(root.clone()));
         manager
@@ -1205,13 +2245,13 @@ mod tests {
                 }],
             )
             .unwrap();
-        let result = manager.start("thread-1", None);
+        let result = manager.preflight("thread-1", &PreviewAppPreflightRequest::default());
         assert!(matches!(result, Err(Error::InvalidRequest(_))));
         let _ = std::fs::remove_dir_all(root);
     }
 
-    #[tokio::test]
-    async fn preview_app_start_requires_dev_script() {
+    #[test]
+    fn preview_app_preflight_requires_dev_script() {
         let root = test_root();
         let manager = Arc::new(PreviewRuntimeManager::new(root.clone()));
         manager
@@ -1223,7 +2263,7 @@ mod tests {
                 }],
             )
             .unwrap();
-        let result = manager.start("thread-1", None);
+        let result = manager.preflight("thread-1", &PreviewAppPreflightRequest::default());
         assert!(matches!(result, Err(Error::InvalidRequest(_))));
         let _ = std::fs::remove_dir_all(root);
     }
@@ -1282,9 +2322,65 @@ mod tests {
     }
 
     #[test]
+    fn preview_app_logs_use_monotonic_cursor_and_report_truncation() {
+        let root = test_root();
+        let manager = PreviewRuntimeManager::new(root.clone());
+        manager
+            .set_entry("thread-1", |entry| {
+                for index in 0..(MAX_LOG_LINES + 3) {
+                    push_log(entry, "stdout", &format!("line {index}"));
+                }
+            })
+            .unwrap();
+
+        let response = manager.logs_after("thread-1", Some(1)).unwrap();
+        assert_eq!(response.logs.len(), MAX_LOG_LINES);
+        assert!(response.truncated);
+        assert_eq!(response.logs.first().unwrap().seq, 4);
+        assert_eq!(response.next_seq, (MAX_LOG_LINES + 3) as u64);
+
+        let tail = manager
+            .logs_after("thread-1", Some(response.next_seq - 1))
+            .unwrap();
+        assert_eq!(tail.logs.len(), 1);
+        assert!(!tail.truncated);
+        assert_eq!(tail.logs[0].seq, response.next_seq);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn preview_app_stale_run_cannot_overwrite_current_state() {
+        let root = test_root();
+        let manager = PreviewRuntimeManager::new(root.clone());
+        manager
+            .set_entry("thread-1", |entry| {
+                entry.status = "running".to_string();
+                entry.active = true;
+                entry.ready = true;
+                entry.run_id = Some("new-run".to_string());
+            })
+            .unwrap();
+
+        let updated = manager
+            .with_run_entry("thread-1", "old-run", |entry| {
+                entry.status = "error".to_string();
+                entry.ready = false;
+            })
+            .unwrap();
+        assert!(!updated);
+        let status = manager.status("thread-1").unwrap();
+        assert_eq!(status.status, "running");
+        assert!(status.ready);
+        assert_eq!(status.run_id.as_deref(), Some("new-run"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn preview_app_marks_vite_compile_errors() {
         let mut entry = PreviewAppEntry {
             status: "running".to_string(),
+            active: true,
+            ready: true,
             pid: Some(123),
             ..Default::default()
         };
@@ -1302,16 +2398,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn preview_app_waits_before_running_from_ready_log() {
+    async fn preview_app_compile_error_recovers_after_quiet_healthy_probe() {
         let root = test_root();
         let manager = Arc::new(PreviewRuntimeManager::new(root.clone()));
         manager
             .set_entry("thread-1", |entry| {
-                entry.status = "starting".to_string();
+                entry.status = "running".to_string();
+                entry.active = true;
+                entry.ready = true;
                 entry.pid = Some(123);
+                entry.run_id = Some("run-1".to_string());
             })
             .unwrap();
-        schedule_preview_ready(manager.clone(), "thread-1".to_string());
         manager
             .set_entry("thread-1", |entry| {
                 push_child_log(
@@ -1321,43 +2419,205 @@ mod tests {
                 );
             })
             .unwrap();
-        tokio::time::sleep(Duration::from_millis(
-            PREVIEW_READY_QUIET_MS + PREVIEW_READY_PROBE_TIMEOUT_MS + 20,
-        ))
-        .await;
+        apply_probe_result(&manager, "thread-1", "run-1", Some(200), true);
         assert_eq!(manager.status("thread-1").unwrap().status, "error");
-
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
-            .await
-            .unwrap();
-        let port = listener.local_addr().unwrap().port();
-        tokio::spawn(async move {
-            let (mut socket, _) = listener.accept().await.unwrap();
-            let mut request = [0_u8; 512];
-            let _ = socket.read(&mut request).await;
-            let _ = socket
-                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK")
-                .await;
-        });
-        manager
-            .set_entry("thread-2", |entry| {
-                entry.status = "starting".to_string();
-                entry.pid = Some(456);
-                entry.url = Some(format!("http://127.0.0.1:{port}/"));
-            })
-            .unwrap();
-        schedule_preview_ready(manager.clone(), "thread-2".to_string());
-        tokio::time::sleep(Duration::from_millis(
-            PREVIEW_READY_QUIET_MS + PREVIEW_READY_PROBE_TIMEOUT_MS + 20,
-        ))
-        .await;
-        let status = manager.status("thread-2").unwrap();
+        tokio::time::sleep(Duration::from_millis(PREVIEW_COMPILE_ERROR_QUIET_MS + 5)).await;
+        apply_probe_result(&manager, "thread-1", "run-1", Some(200), true);
+        let status = manager.status("thread-1").unwrap();
         assert_eq!(status.status, "running");
+        assert!(status.active);
+        assert!(status.ready);
+        assert!(status.error.is_none());
         assert!(status
             .logs
             .iter()
             .any(|log| log.line == "preview app is running"));
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn preview_app_stop_cancels_slow_install_before_dev_server() {
+        if !npm_available().await {
+            return;
+        }
+        let root = test_root();
+        let manager = Arc::new(PreviewRuntimeManager::new(root.clone()));
+        let files = managed_node_files(
+            Some(
+                "const fs = require('fs'); fs.writeFileSync('install-started', 'yes'); setInterval(() => {}, 1000);",
+            ),
+            "require('fs').writeFileSync('dev-started', 'yes'); setInterval(() => {}, 1000);",
+        );
+        let preflight = manager
+            .preflight(
+                "thread-1",
+                &PreviewAppPreflightRequest {
+                    files: files.clone(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        manager
+            .start(
+                "thread-1",
+                &PreviewAppStartRequest {
+                    files,
+                    source_fingerprint: Some(preflight.source_fingerprint),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        let install_started = root.join("thread-1").join("install-started");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !install_started.is_file() && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert!(
+            install_started.is_file(),
+            "npm preinstall did not start; logs: {:?}",
+            manager.logs("thread-1").unwrap()
+        );
+
+        let stop_started = Instant::now();
+        let status = manager.stop("thread-1").await.unwrap();
+        assert!(stop_started.elapsed() < Duration::from_secs(5));
+        assert_eq!(status.status, "stopped");
+        assert!(!status.active);
+        assert!(!status.ready);
+        assert!(status.pid.is_none());
+        assert!(!root.join("thread-1").join("dev-started").exists());
+        assert!(!root.join("thread-1").join(INSTALL_MARKER_FILE).exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn preview_app_cancelled_phase_boundary_never_spawns_dev_server() {
+        let root = test_root();
+        std::fs::create_dir_all(root.join("node_modules")).unwrap();
+        std::fs::write(
+            root.join("package.json"),
+            r#"{"private":true,"scripts":{"dev":"node server.js"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("server.js"),
+            "require('fs').writeFileSync('dev-started', 'yes')",
+        )
+        .unwrap();
+        let manager = Arc::new(PreviewRuntimeManager::new(test_root()));
+        manager
+            .set_entry("thread-1", |entry| {
+                entry.cwd = Some(root.clone());
+                entry.status = "installing".to_string();
+                entry.active = true;
+                entry.run_id = Some("run-1".to_string());
+            })
+            .unwrap();
+        let (cancel, cancel_rx) = watch::channel(false);
+        cancel.send(true).unwrap();
+        run_preview_app(
+            manager.clone(),
+            PreviewRun {
+                thread_id: "thread-1".to_string(),
+                run_id: "run-1".to_string(),
+                dir: root.clone(),
+                port: free_port().unwrap(),
+                package: preview_package(&root).unwrap(),
+                managed: false,
+                files: Vec::new(),
+                install_required: false,
+            },
+            cancel_rx,
+        )
+        .await;
+
+        assert!(!root.join("dev-started").exists());
+        assert!(manager.status("thread-1").unwrap().pid.is_none());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn preview_app_generic_http_server_becomes_ready_and_stop_all_cleans_up() {
+        if !npm_available().await {
+            return;
+        }
+        let root = test_root();
+        std::fs::create_dir_all(root.join("node_modules")).unwrap();
+        std::fs::write(
+            root.join("package.json"),
+            r#"{"private":true,"scripts":{"dev":"node server.js"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("server.js"),
+            r#"const http = require('http');
+const index = process.argv.indexOf('--port');
+const port = Number(process.argv[index + 1]);
+const started = Date.now();
+http.createServer((_request, response) => {
+  response.statusCode = Date.now() - started < 250 ? 500 : 200;
+  response.end('ok');
+}).listen(port, '127.0.0.1');
+"#,
+        )
+        .unwrap();
+        let runtime_root = test_root();
+        let manager = Arc::new(PreviewRuntimeManager::new(runtime_root.clone()));
+        let cwd = root.to_string_lossy().to_string();
+        let preflight = manager
+            .preflight(
+                "thread-1",
+                &PreviewAppPreflightRequest {
+                    cwd: Some(cwd.clone()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert!(!preflight.managed);
+        assert!(!preflight.install_required);
+        manager
+            .start(
+                "thread-1",
+                &PreviewAppStartRequest {
+                    cwd: Some(cwd),
+                    source_fingerprint: Some(preflight.source_fingerprint),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut saw_active_error = false;
+        let status = loop {
+            let status = manager.status("thread-1").unwrap();
+            saw_active_error |= status.active && status.status == "error" && status.url.is_some();
+            if status.ready || !status.active || Instant::now() >= deadline {
+                break status;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        };
+        assert!(status.active, "server exited; logs: {:?}", status.logs);
+        assert!(
+            status.ready,
+            "server never became ready; logs: {:?}",
+            status.logs
+        );
+        assert_eq!(status.status, "running");
+        assert!(status.url.is_some());
+        assert!(saw_active_error, "active unhealthy state was not published");
+        assert!(
+            !status.logs.iter().any(|log| log.line.contains("Local:")),
+            "readiness must not depend on Vite console output"
+        );
+
+        manager.stop_all().await.unwrap();
+        let stopped = manager.status("thread-1").unwrap();
+        assert_eq!(stopped.status, "stopped");
+        assert!(!stopped.active);
+        assert!(stopped.pid.is_none());
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(runtime_root);
     }
 
     #[test]
@@ -1435,6 +2695,7 @@ mod tests {
         manager
             .set_entry("thread-1", |entry| {
                 entry.status = "running".to_string();
+                entry.active = true;
                 entry.pid = Some(123);
             })
             .unwrap();
@@ -1450,6 +2711,7 @@ mod tests {
         manager
             .set_entry("thread-2", |entry| {
                 entry.status = "error".to_string();
+                entry.active = true;
                 entry.pid = Some(456);
             })
             .unwrap();

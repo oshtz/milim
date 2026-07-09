@@ -10,6 +10,8 @@ import type {
   ChildThreadStatus,
   MemoryNotice,
   PreviewAppFile,
+  PreviewAppError,
+  PreviewAppPreflight,
   PreviewAppState,
   PrivacyMode,
   ReasoningEffort,
@@ -122,8 +124,13 @@ export interface Session {
   title: string;
   messages: ChatMessage[];
   virtualFiles?: Record<string, SessionVirtualFile>;
+  inspectorOpen?: boolean;
+  inspectorTab?: SessionInspectorTab;
+  /** @deprecated Read for one-release side-panel migration only. */
   artifactPanelOpen?: boolean;
+  /** @deprecated Read for one-release side-panel migration only. */
   sidePanelMode?: SessionSidePanelMode;
+  /** @deprecated Read for one-release side-panel migration only. */
   artifactPanelTab?: SessionArtifactPanelTab;
   previewRuntime?: SessionPreviewRuntime;
   settings?: ThreadSettings;
@@ -156,6 +163,7 @@ export interface SessionVirtualFile {
 
 export type SessionSidePanelMode = "artifact" | "browser" | "git";
 export type SessionArtifactPanelTab = "preview" | "code";
+export type SessionInspectorTab = "preview" | "code" | "git";
 
 export interface SessionPreviewRuntime {
   status: PreviewAppState | string;
@@ -164,6 +172,12 @@ export interface SessionPreviewRuntime {
   pid?: number;
   command?: string;
   message?: string;
+  active?: boolean;
+  ready?: boolean;
+  managed?: boolean;
+  runId?: string;
+  error?: PreviewAppError;
+  preflight?: PreviewAppPreflight;
   updatedAt?: number;
 }
 
@@ -286,6 +300,25 @@ function normalizePreviewRuntime(
     pid,
     command: stringValue(raw.command),
     message: stringValue(raw.message),
+    active: typeof raw.active === "boolean" ? raw.active : undefined,
+    ready: typeof raw.ready === "boolean" ? raw.ready : undefined,
+    managed: typeof raw.managed === "boolean" ? raw.managed : undefined,
+    runId: stringValue(raw.runId),
+    error:
+      raw.error && typeof raw.error === "object" && !Array.isArray(raw.error)
+        ? {
+            code: stringValue((raw.error as Record<string, unknown>).code) ?? "preview_error",
+            message:
+              stringValue((raw.error as Record<string, unknown>).message) ??
+              "Preview runtime failed.",
+          }
+        : undefined,
+    preflight:
+      raw.preflight &&
+      typeof raw.preflight === "object" &&
+      !Array.isArray(raw.preflight)
+        ? (raw.preflight as PreviewAppPreflight)
+        : undefined,
     updatedAt: timestamp(raw.updatedAt),
   };
 }
@@ -381,23 +414,30 @@ function samePreviewRuntime(
     (a?.url ?? "") === (b?.url ?? "") &&
     (a?.pid ?? null) === (b?.pid ?? null) &&
     (a?.command ?? "") === (b?.command ?? "") &&
-    (a?.message ?? "") === (b?.message ?? "")
+    (a?.message ?? "") === (b?.message ?? "") &&
+    (a?.active ?? false) === (b?.active ?? false) &&
+    (a?.ready ?? false) === (b?.ready ?? false) &&
+    (a?.managed ?? false) === (b?.managed ?? false) &&
+    (a?.runId ?? "") === (b?.runId ?? "") &&
+    (a?.error?.code ?? "") === (b?.error?.code ?? "") &&
+    (a?.error?.message ?? "") === (b?.error?.message ?? "") &&
+    (a?.preflight?.source_fingerprint ?? "") ===
+      (b?.preflight?.source_fingerprint ?? "")
   );
 }
 
-function normalizeSidePanelMode(
+function normalizeInspectorTab(
   value: unknown,
-  legacyOpen?: boolean,
-): SessionSidePanelMode | undefined {
-  if (value === "artifact" || value === "browser" || value === "git")
+  legacyMode?: unknown,
+  legacyArtifactTab?: unknown,
+): SessionInspectorTab | undefined {
+  if (value === "preview" || value === "code" || value === "git")
     return value;
-  return legacyOpen === true ? "artifact" : undefined;
-}
-
-function normalizeArtifactPanelTab(
-  value: unknown,
-): SessionArtifactPanelTab | undefined {
-  return value === "code" ? "code" : undefined;
+  if (legacyMode === "git") return "git";
+  if (legacyMode === "browser") return "preview";
+  if (legacyArtifactTab === "code") return "code";
+  if (legacyMode === "artifact") return "preview";
+  return undefined;
 }
 
 function normalizeSettings(
@@ -902,16 +942,26 @@ function normalizePersistedStreamParts(message: ChatMessage): ChatMessage {
 function normalizeSessionArtifacts(session: Session): Session {
   const archivedAt = timestamp(session.archivedAt);
   const messages = Array.isArray(session.messages) ? session.messages : [];
+  const {
+    artifactPanelOpen: legacyOpen,
+    sidePanelMode: legacyMode,
+    artifactPanelTab: legacyArtifactTab,
+    ...current
+  } = session;
   return {
-    ...session,
+    ...current,
     virtualFiles: normalizeVirtualFiles(session.virtualFiles),
     archivedAt,
-    artifactPanelOpen: session.artifactPanelOpen === true ? true : undefined,
-    sidePanelMode: normalizeSidePanelMode(
-      session.sidePanelMode,
-      session.artifactPanelOpen,
-    ),
-    artifactPanelTab: normalizeArtifactPanelTab(session.artifactPanelTab),
+    inspectorOpen:
+      session.inspectorOpen === true ||
+      (session.inspectorOpen === undefined && legacyOpen === true)
+        ? true
+        : undefined,
+    inspectorTab: normalizeInspectorTab(
+      session.inspectorTab,
+      legacyMode,
+      legacyArtifactTab,
+    ) ?? (legacyOpen === true ? "preview" : undefined),
     previewRuntime: normalizePreviewRuntime(session.previewRuntime),
     accountRuntime: normalizeAccountRuntime(session.accountRuntime),
     settings: normalizeSettings(session.settings, { pauseRunningGoal: true }),
@@ -1292,10 +1342,8 @@ interface SessionState {
       "sourceMessageIndex" | "sourceRevisionNumber"
     >,
   ) => void;
-  setArtifactPanelOpen: (id: string, open: boolean) => void;
-  setSidePanelOpen: (id: string, open: boolean) => void;
-  setSidePanelMode: (id: string, mode: SessionSidePanelMode | null) => void;
-  setArtifactPanelTab: (id: string, tab: SessionArtifactPanelTab) => void;
+  setInspectorOpen: (id: string, open: boolean) => void;
+  setInspectorTab: (id: string, tab: SessionInspectorTab) => void;
   setPreviewRuntime: (
     id: string,
     runtime: SessionPreviewRuntime | undefined,
@@ -2437,59 +2485,28 @@ export const useSessions = create<SessionState>()(
             }),
           })),
 
-        setArtifactPanelOpen: (id, open) =>
+        setInspectorOpen: (id, open) =>
           set((st) => ({
             sessions: st.sessions.map((s) =>
               s.id === id
                 ? {
                     ...s,
-                    artifactPanelOpen: open || undefined,
-                    sidePanelMode: open
-                      ? (s.sidePanelMode ?? "artifact")
-                      : s.sidePanelMode,
+                    inspectorOpen: open || undefined,
+                    inspectorTab: s.inspectorTab ?? "preview",
                     updatedAt: Date.now(),
                   }
                 : s,
             ),
           })),
 
-        setSidePanelOpen: (id, open) =>
+        setInspectorTab: (id, tab) =>
           set((st) => ({
             sessions: st.sessions.map((s) =>
               s.id === id
                 ? {
                     ...s,
-                    artifactPanelOpen: open || undefined,
-                    sidePanelMode: open
-                      ? (s.sidePanelMode ?? "browser")
-                      : s.sidePanelMode,
-                    updatedAt: Date.now(),
-                  }
-                : s,
-            ),
-          })),
-
-        setSidePanelMode: (id, mode) =>
-          set((st) => ({
-            sessions: st.sessions.map((s) =>
-              s.id === id
-                ? {
-                    ...s,
-                    artifactPanelOpen: mode ? true : undefined,
-                    sidePanelMode: mode || undefined,
-                    updatedAt: Date.now(),
-                  }
-                : s,
-            ),
-          })),
-
-        setArtifactPanelTab: (id, tab) =>
-          set((st) => ({
-            sessions: st.sessions.map((s) =>
-              s.id === id
-                ? {
-                    ...s,
-                    artifactPanelTab: tab === "code" ? "code" : undefined,
+                    inspectorOpen: true,
+                    inspectorTab: tab,
                     updatedAt: Date.now(),
                   }
                 : s,

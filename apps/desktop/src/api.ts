@@ -129,6 +129,7 @@ export interface PreviewSurfaceTarget {
   label?: string | null;
   title?: string | null;
   url?: string | null;
+  message?: string | null;
   native: boolean;
   kind: PreviewSurfaceKind;
   status: PreviewSurfaceStatus;
@@ -738,9 +739,11 @@ async function parseJsonResponse<T>(
 export type PreviewAppState =
   | "idle"
   | "staged"
+  | "staging"
   | "installing"
   | "starting"
   | "running"
+  | "stopping"
   | "stopped"
   | "error";
 
@@ -750,24 +753,66 @@ export interface PreviewAppFile {
 }
 
 export interface PreviewAppLog {
+  seq?: number;
   ts: number;
   stream: "stdout" | "stderr" | "system" | string;
   line: string;
+}
+
+export interface PreviewAppError {
+  code: string;
+  message: string;
+}
+
+export interface PreviewAppPreflight {
+  thread_id: string;
+  cwd: string;
+  managed: boolean;
+  scope: "managed" | "selected_folder";
+  package_manager: string;
+  install_required: boolean;
+  install_command?: string | null;
+  dev_command?: string | null;
+  source_fingerprint: string;
+  port: number;
+  url: string;
 }
 
 export interface PreviewAppStatus {
   thread_id: string;
   status: PreviewAppState | string;
   cwd: string;
+  active?: boolean;
+  ready?: boolean;
+  managed?: boolean;
+  run_id?: string | null;
+  updated_at?: number;
+  error?: PreviewAppError | null;
+  preflight?: PreviewAppPreflight | null;
   url?: string | null;
   pid?: number | null;
   command?: string | null;
   message?: string | null;
   logs: PreviewAppLog[];
+  /** Client-only marker set when polling fails and this is last-known state. */
+  stale?: boolean;
 }
 
 export interface PreviewAppStartOptions {
   cwd?: string;
+  files?: PreviewAppFile[];
+  source_fingerprint?: string;
+}
+
+export interface PreviewAppPreflightOptions {
+  cwd?: string;
+  files?: PreviewAppFile[];
+}
+
+export interface PreviewAppLogs {
+  logs: PreviewAppLog[];
+  next_seq: number;
+  truncated: boolean;
 }
 
 function previewAppUrl(threadId: string, suffix = ""): string {
@@ -780,6 +825,24 @@ export async function getPreviewAppStatus(
   return await parseJsonResponse<PreviewAppStatus>(
     await authFetch(previewAppUrl(threadId)),
     "preview app status failed",
+  );
+}
+
+export async function preflightPreviewApp(
+  threadId: string,
+  options: PreviewAppPreflightOptions = {},
+): Promise<PreviewAppPreflight> {
+  const cwd = options.cwd?.trim();
+  return await parseJsonResponse<PreviewAppPreflight>(
+    await authFetch(previewAppUrl(threadId, "/preflight"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ...(cwd ? { cwd } : {}),
+        ...(options.files ? { files: options.files } : {}),
+      }),
+    }),
+    "preview app preflight failed",
   );
 }
 
@@ -802,13 +865,20 @@ export async function startPreviewApp(
   options: PreviewAppStartOptions = {},
 ): Promise<PreviewAppStatus> {
   const cwd = options.cwd?.trim();
+  const body = {
+    ...(cwd ? { cwd } : {}),
+    ...(options.files ? { files: options.files } : {}),
+    ...(options.source_fingerprint
+      ? { source_fingerprint: options.source_fingerprint }
+      : {}),
+  };
   return await parseJsonResponse<PreviewAppStatus>(
     await authFetch(previewAppUrl(threadId, "/start"), {
       method: "POST",
-      ...(cwd
+      ...(Object.keys(body).length
         ? {
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ cwd }),
+            body: JSON.stringify(body),
           }
         : {}),
     }),
@@ -830,13 +900,20 @@ export async function restartPreviewApp(
   options: PreviewAppStartOptions = {},
 ): Promise<PreviewAppStatus> {
   const cwd = options.cwd?.trim();
+  const body = {
+    ...(cwd ? { cwd } : {}),
+    ...(options.files ? { files: options.files } : {}),
+    ...(options.source_fingerprint
+      ? { source_fingerprint: options.source_fingerprint }
+      : {}),
+  };
   return await parseJsonResponse<PreviewAppStatus>(
     await authFetch(previewAppUrl(threadId, "/restart"), {
       method: "POST",
-      ...(cwd
+      ...(Object.keys(body).length
         ? {
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ cwd }),
+            body: JSON.stringify(body),
           }
         : {}),
     }),
@@ -846,12 +923,16 @@ export async function restartPreviewApp(
 
 export async function getPreviewAppLogs(
   threadId: string,
-): Promise<PreviewAppLog[]> {
-  const payload = await parseJsonResponse<{ logs: PreviewAppLog[] }>(
-    await authFetch(previewAppUrl(threadId, "/logs")),
+  afterSeq?: number,
+): Promise<PreviewAppLogs> {
+  const query =
+    typeof afterSeq === "number" && Number.isFinite(afterSeq)
+      ? `?after_seq=${encodeURIComponent(String(Math.max(0, Math.floor(afterSeq))))}`
+      : "";
+  return await parseJsonResponse<PreviewAppLogs>(
+    await authFetch(previewAppUrl(threadId, `/logs${query}`)),
     "preview app logs failed",
   );
-  return payload.logs ?? [];
 }
 
 export async function getMobileCompanionStatus(): Promise<MobileCompanionStatus> {

@@ -66,12 +66,17 @@ const persistedSessions = JSON.stringify({
             ],
           },
         ],
+        artifactPanelOpen: true,
+        sidePanelMode: "artifact",
+        artifactPanelTab: "code",
         createdAt: 1,
         updatedAt: 1,
       },
       {
         id: "title-only-session",
         title: "Recovered title only",
+        artifactPanelOpen: true,
+        artifactPanelTab: "code",
         createdAt: 2,
         updatedAt: 2,
       },
@@ -168,6 +173,11 @@ assert(
   "title-only sessions should hydrate with an empty messages array",
 );
 assert(
+  useSessions.getState().sessions[1]?.inspectorOpen === true &&
+    useSessions.getState().sessions[1]?.inspectorTab === "code",
+  "legacy code tabs should migrate even when sidePanelMode was absent",
+);
+assert(
   stored.state.projects[0]?.folder === "C:\\keep",
   "startup archive cleanup should preserve hydrated projects",
 );
@@ -181,6 +191,23 @@ assert(
     (part) => part.kind === "text" && part.content === "restored answer",
   ),
   "hydration should regenerate stripped text stream parts from assistant content",
+);
+const migratedInspector = useSessions.getState().sessions[0];
+assert(
+  migratedInspector?.inspectorOpen === true &&
+    migratedInspector.inspectorTab === "code",
+  "hydration should migrate legacy artifact panel state to the unified inspector",
+);
+assert(
+  stored.state.sessions[0]?.inspectorOpen === true &&
+    stored.state.sessions[0]?.inspectorTab === "code",
+  "the first post-hydration write should persist unified inspector fields",
+);
+assert(
+  !("artifactPanelOpen" in stored.state.sessions[0]) &&
+    !("sidePanelMode" in stored.state.sessions[0]) &&
+    !("artifactPanelTab" in stored.state.sessions[0]),
+  "post-migration persistence should omit all legacy side-panel fields",
 );
 
 export {};

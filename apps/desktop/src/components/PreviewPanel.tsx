@@ -1,16 +1,24 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type KeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent, type ReactNode } from "react";
-import { openExternalUrl, setActivePreviewTarget, type ChatArtifact, type PreviewAppStatus, type PreviewSurfaceCapability, type PreviewSurfaceKind, type PreviewSurfaceTarget } from "../api";
+import { openExternalUrl, setActivePreviewTarget, type ChatArtifact, type PreviewAppPreflight, type PreviewAppStatus, type PreviewSurfaceCapability, type PreviewSurfaceKind, type PreviewSurfaceTarget } from "../api";
 import type { ArtifactRevision, ArtifactRevisionGroup } from "../lib/artifactRevisions";
 import { buildArtifactPreviewDocument, previewKindForArtifact } from "../lib/artifactPreview";
-import { isFileArtifact, normalizeArtifactBrowserUrl } from "../lib/artifacts";
+import { isFileArtifact, isPreviewableArtifact, normalizeArtifactBrowserUrl } from "../lib/artifacts";
 import type { PreviewControlActivity } from "../lib/previewActivity";
+import { listenForPreviewWebviewNavigation, movePreviewWebviewHistory, navigatePreviewWebview, reloadPreviewWebview, type PreviewWebviewLoadState } from "../lib/previewWebview";
 import { useContextMenu } from "./ContextMenu";
-import { ArrowLeft, ArrowRight, Bolt, Code, Copy, Download, Eye, FileText, Globe, Plus, Refresh, X } from "./icons";
+import { ArrowLeft, ArrowRight, Bolt, Code, Copy, Download, ExternalLink, Eye, FileText, Globe, MoreHorizontal, Plus, Refresh, Square, Terminal, X } from "./icons";
 import { Logo } from "./Logo";
 
 const Markdown = lazy(() => import("./Markdown").then((mod) => ({ default: mod.Markdown })));
 
-type PreviewTab = "preview" | "code";
+export type PreviewTab = "preview" | "code";
+export type PreviewSource = "artifact" | "app" | "url";
+export interface PreviewBrowserSession {
+  url: string | null;
+  input: string;
+  history: string[];
+  historyIndex: number;
+}
 type PreviewLogLevel = "log" | "info" | "warn" | "error";
 type NativeWebviewHandle = {
   label: string;
@@ -64,8 +72,16 @@ const CODE_SPLIT_MIN_CODE_WIDTH = 160;
 const CODE_SPLIT_KEYBOARD_STEP = 24;
 const PREVIEW_CONTROL_OVERLAY_CLOSE_MS = 3400;
 const PREVIEW_CONTROL_OVERLAY_STORAGE_PREFIX = "milim-preview-control-activity:";
+const PREVIEW_TAB_IDS: Record<PreviewTab, string> = {
+  preview: "inspector-tab-preview",
+  code: "inspector-tab-code",
+};
+const PREVIEW_PANEL_IDS: Record<PreviewTab, string> = {
+  preview: "inspector-panel-preview",
+  code: "inspector-panel-code",
+};
 const IS_TAURI = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
-const APP_FLOATING_UI_SELECTOR = '[role="dialog"][aria-modal="true"], [role="menu"]';
+const APP_FLOATING_UI_SELECTOR = '[role="dialog"][aria-modal="true"], [role="menu"]:not(.preview-overflow-menu), .preview-overflow[open] .preview-overflow-menu';
 const DOM_PREVIEW_CAPABILITIES: PreviewSurfaceCapability[] = ["dom_snapshot", "click", "type", "key", "scroll", "logs", "source"];
 
 export function nativePreviewBlockedByAppUi(root: Pick<ParentNode, "querySelector"> = document): boolean {
@@ -84,6 +100,9 @@ async function publishPreviewSurface(surface: PreviewSurfaceTarget | null, onSur
 export function PreviewPanel({
   artifact,
   artifacts,
+  fixArtifact,
+  fixArtifacts,
+  fixRevision,
   revision,
   revisionGroup,
   closing = false,
@@ -94,9 +113,19 @@ export function PreviewPanel({
   onSelectRevision,
   onOpenBrowser,
   onSendArtifactFixPrompt,
+  onPrepareArtifactFix,
   onActiveTabChange,
+  previewSource: controlledPreviewSource,
+  availablePreviewSources,
+  onPreviewSourceChange,
+  browserSession: controlledBrowserSession,
+  onBrowserSessionChange,
   runtimeStatus,
   runtimeBusy = false,
+  runtimePreflight,
+  runtimePreflightBusy = false,
+  runtimeStale = false,
+  onRuntimePreflight,
   onRuntimeStart,
   onRuntimeStop,
   onRuntimeRestart,
@@ -107,6 +136,9 @@ export function PreviewPanel({
 }: {
   artifact: ChatArtifact;
   artifacts?: readonly ChatArtifact[];
+  fixArtifact?: ChatArtifact;
+  fixArtifacts?: readonly ChatArtifact[];
+  fixRevision?: ArtifactRevision;
   revision?: ArtifactRevision;
   revisionGroup?: ArtifactRevisionGroup;
   closing?: boolean;
@@ -116,10 +148,21 @@ export function PreviewPanel({
   onClose: () => void;
   onSelectRevision?: (revision: ArtifactRevision) => void;
   onOpenBrowser?: () => void;
+  /** @deprecated Use onPrepareArtifactFix so the controller can queue an editable draft. */
   onSendArtifactFixPrompt?: (prompt: string) => void;
+  onPrepareArtifactFix?: (prompt: string) => void;
   onActiveTabChange?: (tab: PreviewTab) => void;
+  previewSource?: PreviewSource;
+  availablePreviewSources?: readonly PreviewSource[];
+  onPreviewSourceChange?: (source: PreviewSource) => void;
+  browserSession?: PreviewBrowserSession;
+  onBrowserSessionChange?: (session: PreviewBrowserSession) => void;
   runtimeStatus?: PreviewAppStatus | null;
   runtimeBusy?: boolean;
+  runtimePreflight?: PreviewAppPreflight | null;
+  runtimePreflightBusy?: boolean;
+  runtimeStale?: boolean;
+  onRuntimePreflight?: () => void;
   onRuntimeStart?: () => void;
   onRuntimeStop?: () => void;
   onRuntimeRestart?: () => void;
@@ -129,12 +172,15 @@ export function PreviewPanel({
   style?: CSSProperties;
 }) {
   const { openContextMenu } = useContextMenu();
+  const panelRef = useRef<HTMLElement | null>(null);
+  const returnFocusRef = useRef<HTMLElement | null>(typeof document !== "undefined" && document.activeElement instanceof HTMLElement ? document.activeElement : null);
+  const tabRefs = useRef<Record<PreviewTab, HTMLButtonElement | null>>({ preview: null, code: null });
   const [localActiveTab, setLocalActiveTab] = useState<PreviewTab>(previewDeferred ? "code" : "preview");
   const activeTab = controlledActiveTab ?? localActiveTab;
   const [frameKey, setFrameKey] = useState(0);
   const [copied, setCopied] = useState(false);
   const [selectedCodeArtifactId, setSelectedCodeArtifactId] = useState(artifact.id);
-  const [previewSource, setPreviewSource] = useState(artifact.content);
+  const [previewDocument, setPreviewDocument] = useState({ key: `${artifact.id}:${artifact.content}`, source: artifact.content });
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [logs, setLogs] = useState<PreviewLogEntry[]>([]);
   const [logsOpen, setLogsOpen] = useState(false);
@@ -151,15 +197,17 @@ export function PreviewPanel({
   const codeSplitStartRef = useRef<{ clientX: number; width: number } | null>(null);
   const logResizeStartRef = useRef<{ clientY: number; height: number } | null>(null);
   const previewWasDeferredRef = useRef(previewDeferred);
+  const nativeBrowserLabelRef = useRef<string | null>(null);
+  const pendingNativeHistoryDeltaRef = useRef<-1 | 1 | null>(null);
+  const pendingNativeUrlRef = useRef<string | null>(null);
   const title = artifact.filename ?? artifact.title;
   const source = useMemo(() => artifact.content, [artifact.content]);
   const isUrlPreview = artifact.mime === "text/uri-list";
   const previewUrl = isUrlPreview ? normalizeArtifactBrowserUrl(source) : null;
   const previewKind = isUrlPreview ? "html" : previewKindForArtifact(artifact);
-  const [browserUrl, setBrowserUrl] = useState<string | null>(previewUrl);
-  const [browserInput, setBrowserInput] = useState(previewUrl ?? "");
-  const [browserHistory, setBrowserHistory] = useState<string[]>(() => previewUrl ? [previewUrl] : []);
-  const [browserHistoryIndex, setBrowserHistoryIndex] = useState(() => previewUrl ? 0 : -1);
+  const [localBrowserSession, setLocalBrowserSession] = useState<PreviewBrowserSession>(() => initialBrowserSession(previewUrl));
+  const browserSession = controlledBrowserSession ?? localBrowserSession;
+  const { url: browserUrl, input: browserInput, history: browserHistory, historyIndex: browserHistoryIndex } = browserSession;
   const [browserError, setBrowserError] = useState<string | null>(null);
   const artifactContext = useMemo(() => (artifacts?.length ? artifacts : [artifact]), [artifact, artifacts]);
   const codeFiles = useMemo(
@@ -172,8 +220,8 @@ export function PreviewPanel({
   const codeLines = useMemo(() => selectedSource.split("\n"), [selectedSource]);
   const runtimeLogs = useMemo(
     () => (runtimeStatus?.logs ?? []).filter((log) => log.ts > runtimeLogsClearedAt).slice(-MAX_PREVIEW_LOGS).map((log, index): PreviewLogEntry => ({
-      id: -index - 1,
-      level: log.stream === "stderr" ? "error" : log.stream === "system" ? "info" : "log",
+      id: log.seq == null ? -index - 1 : -log.seq - 1,
+      level: log.stream === "system" ? "info" : "log",
       label: log.stream,
       message: log.line,
       timestamp: log.ts,
@@ -181,8 +229,12 @@ export function PreviewPanel({
     [runtimeLogsClearedAt, runtimeStatus?.logs],
   );
   const visibleLogs = useMemo(() => [...logs, ...runtimeLogs].slice(-MAX_PREVIEW_LOGS), [logs, runtimeLogs]);
-  const errorLogs = logs.filter((log) => log.level === "error");
-  const canQuickFix = Boolean(!isUrlPreview && onSendArtifactFixPrompt && (previewError || errorLogs.length));
+  const errorLogs = visibleLogs.filter((log) => log.level === "error");
+  const fixLogs = visibleLogs.filter((log) => log.level === "error" || log.label === "stderr");
+  const selectedPreviewSource = controlledPreviewSource ?? (isUrlPreview ? "url" : "artifact");
+  const runtimeError = runtimeErrorMessage(runtimeStatus);
+  const prepareArtifactFix = onPrepareArtifactFix ?? onSendArtifactFixPrompt;
+  const canPrepareFix = Boolean(selectedPreviewSource !== "url" && prepareArtifactFix && (previewError || runtimeError || errorLogs.length));
   const canSwitchRevisions = Boolean(revision && revisionGroup && revisionGroup.revisions.length > 1 && onSelectRevision);
   const codePanelStyle = {
     "--preview-file-list-width": `${codeFileListWidth}px`,
@@ -190,11 +242,65 @@ export function PreviewPanel({
   const canGoBack = isUrlPreview && browserHistoryIndex > 0;
   const canGoForward = isUrlPreview && browserHistoryIndex >= 0 && browserHistoryIndex < browserHistory.length - 1;
   const iframeSurfaceKey = `${artifact.id}:${frameKey}`;
+  const previewBuildKey = `${artifact.id}:${source}`;
+  const previewDocumentReady = previewDocument.key === previewBuildKey;
+  const previewSources = availablePreviewSources?.length ? availablePreviewSources : [selectedPreviewSource];
+  const previewAvailable = selectedPreviewSource !== "artifact" || isUrlPreview || isPreviewableArtifact(artifact);
+  const resolvedRuntimePreflight = runtimePreflight ?? runtimeStatus?.preflight ?? null;
+  const showRuntimeControls = Boolean(runtimeStatus && (onRuntimePreflight || onRuntimeStart || runtimeStatus.active || resolvedRuntimePreflight));
+  const contextSource = activeTab === "code" ? "artifact" : selectedPreviewSource;
+  const inspectorTitle = activeTab === "code"
+    ? title
+    : selectedPreviewSource === "app"
+      ? basename(resolvedRuntimePreflight?.cwd || runtimeStatus?.cwd || "") || "Generated app"
+      : selectedPreviewSource === "url"
+        ? browserUrl || "New URL"
+        : title;
 
   function setActiveTab(tab: PreviewTab) {
+    if (tab === "preview" && !previewAvailable) return;
     if (controlledActiveTab === undefined) setLocalActiveTab(tab);
     if (tab !== activeTab) onActiveTabChange?.(tab);
   }
+
+  function updateBrowserSession(next: PreviewBrowserSession) {
+    if (!controlledBrowserSession) setLocalBrowserSession(next);
+    onBrowserSessionChange?.(next);
+  }
+
+  function closePanel() {
+    onClose();
+    window.requestAnimationFrame(() => returnFocusRef.current?.focus({ preventScroll: true }));
+  }
+
+  function handlePanelKeyDown(event: KeyboardEvent<HTMLElement>) {
+    if (event.key !== "Escape" || event.defaultPrevented) return;
+    event.preventDefault();
+    event.stopPropagation();
+    closePanel();
+  }
+
+  function handleTabKeyDown(event: KeyboardEvent<HTMLButtonElement>) {
+    const tabs = isUrlPreview ? (["preview"] as const) : previewAvailable ? (["preview", "code"] as const) : (["code"] as const);
+    const nextTab = nextPreviewTab(activeTab, event.key, tabs);
+    if (!nextTab) return;
+    event.preventDefault();
+    setActiveTab(nextTab);
+    tabRefs.current[nextTab]?.focus();
+  }
+
+  useEffect(() => {
+    const panel = panelRef.current;
+    window.requestAnimationFrame(() => {
+      const activeView = panel?.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]');
+      (activeView ?? panel)?.focus({ preventScroll: true });
+    });
+    return () => {
+      if (document.activeElement === document.body || document.activeElement === null) {
+        returnFocusRef.current?.focus({ preventScroll: true });
+      }
+    };
+  }, []);
 
   useEffect(() => {
     setSelectedCodeArtifactId(artifact.id);
@@ -202,12 +308,9 @@ export function PreviewPanel({
 
   useEffect(() => {
     if (!isUrlPreview) return;
-    setBrowserUrl(previewUrl);
-    setBrowserInput(previewUrl ?? "");
-    setBrowserHistory(previewUrl ? [previewUrl] : []);
-    setBrowserHistoryIndex(previewUrl ? 0 : -1);
+    if (!controlledBrowserSession) setLocalBrowserSession(initialBrowserSession(previewUrl));
     setBrowserError(null);
-  }, [artifact.id, isUrlPreview, previewUrl]);
+  }, [artifact.id, controlledBrowserSession, isUrlPreview, previewUrl]);
 
   useEffect(() => {
     if (isUrlPreview && activeTab !== "preview") setActiveTab("preview");
@@ -216,6 +319,10 @@ export function PreviewPanel({
   useEffect(() => {
     if (!isUrlPreview && previewDeferred && activeTab === "preview") setActiveTab("code");
   }, [activeTab, isUrlPreview, previewDeferred]);
+
+  useEffect(() => {
+    if (!previewAvailable && activeTab === "preview") setActiveTab("code");
+  }, [activeTab, previewAvailable]);
 
   useEffect(() => {
     if (previewWasDeferredRef.current && !previewDeferred) setActiveTab("preview");
@@ -238,31 +345,32 @@ export function PreviewPanel({
     let cancelled = false;
     setPreviewError(null);
     if (isUrlPreview) {
-      setPreviewSource(browserUrl ?? "");
+      setPreviewDocument({ key: previewBuildKey, source: browserUrl ?? "" });
       return () => {
         cancelled = true;
       };
     }
     if (previewKind === "markdown") {
-      setPreviewSource(source);
+      setPreviewDocument({ key: previewBuildKey, source });
       return () => {
         cancelled = true;
       };
     }
+    setPreviewDocument({ key: "", source: "" });
     void buildArtifactPreviewDocument(artifact, artifactContext)
       .then((document) => {
         if (cancelled) return;
-        setPreviewSource(document.source);
+        setPreviewDocument({ key: previewBuildKey, source: document.source });
       })
       .catch((e) => {
         if (cancelled) return;
-        setPreviewSource(source);
+        setPreviewDocument({ key: previewBuildKey, source: "" });
         setPreviewError(e instanceof Error ? e.message : String(e));
       });
     return () => {
       cancelled = true;
     };
-  }, [artifact, artifactContext, browserUrl, isUrlPreview, previewDeferred, previewKind, source]);
+  }, [artifact, artifactContext, browserUrl, isUrlPreview, previewBuildKey, previewDeferred, previewKind, source]);
 
   useEffect(() => {
     setLogs([]);
@@ -271,7 +379,7 @@ export function PreviewPanel({
 
   useEffect(() => {
     setIframeReadyKey(null);
-  }, [artifact.id, frameKey, previewSource]);
+  }, [artifact.id, frameKey, previewDocument.source]);
 
   useEffect(() => {
     if (runtimeStatus?.status === "error") setLogsOpen(true);
@@ -286,10 +394,10 @@ export function PreviewPanel({
       surface = { kind: "code", title, native: false, status: "not_inspectable", capabilities: ["source"] };
     } else if (previewKind === "markdown") {
       surface = { kind: "markdown", title, native: false, status: "not_inspectable", capabilities: ["source"] };
-    } else if (previewDeferred) {
-      surface = { kind: "artifact_iframe", title, native: false, status: "loading", capabilities: ["source"] };
+    } else if (previewDeferred || !previewDocumentReady) {
+      surface = { kind: "artifact_iframe", title, message: "Building artifact preview", native: false, status: "loading", capabilities: ["source"] };
     } else if (previewError) {
-      surface = { kind: "artifact_iframe", title, native: false, status: "error", capabilities: ["logs", "source"] };
+      surface = { kind: "artifact_iframe", title, message: previewError, native: false, status: "error", capabilities: ["logs", "source"] };
     } else if (iframeReadyKey === iframeSurfaceKey) {
       surface = { label: "main", kind: "artifact_iframe", title, url: title, native: false, status: "ready", capabilities: DOM_PREVIEW_CAPABILITIES };
     } else {
@@ -299,7 +407,7 @@ export function PreviewPanel({
     return () => {
       void publishPreviewSurface(null, onSurfaceChange);
     };
-  }, [activeTab, browserUrl, iframeReadyKey, iframeSurfaceKey, isUrlPreview, onSurfaceChange, previewDeferred, previewError, previewKind, title]);
+  }, [activeTab, browserUrl, iframeReadyKey, iframeSurfaceKey, isUrlPreview, onSurfaceChange, previewDeferred, previewDocumentReady, previewError, previewKind, title]);
 
   useEffect(() => {
     function onMessage(event: MessageEvent) {
@@ -331,13 +439,11 @@ export function PreviewPanel({
   }
 
   function openBrowserUrl(url: string) {
-    setBrowserUrl(url);
-    setBrowserInput(url);
     setBrowserError(null);
     const nextHistory = browserHistory.slice(0, Math.max(browserHistoryIndex + 1, 0));
     if (nextHistory[nextHistory.length - 1] !== url) nextHistory.push(url);
-    setBrowserHistory(nextHistory);
-    setBrowserHistoryIndex(nextHistory.length - 1);
+    if (IS_TAURI && nativeBrowserLabelRef.current) pendingNativeUrlRef.current = url;
+    updateBrowserSession({ url, input: url, history: nextHistory, historyIndex: nextHistory.length - 1 });
   }
 
   function submitBrowserUrl(event: FormEvent<HTMLFormElement>) {
@@ -354,16 +460,60 @@ export function PreviewPanel({
     const nextIndex = browserHistoryIndex + delta;
     const nextUrl = browserHistory[nextIndex];
     if (!nextUrl) return;
-    setBrowserHistoryIndex(nextIndex);
-    setBrowserUrl(nextUrl);
-    setBrowserInput(nextUrl);
+    if (IS_TAURI && nativeBrowserLabelRef.current) {
+      pendingNativeHistoryDeltaRef.current = delta;
+      void movePreviewWebviewHistory(nativeBrowserLabelRef.current, delta).catch((error) => {
+        pendingNativeHistoryDeltaRef.current = null;
+        setBrowserError(error instanceof Error ? error.message : String(error));
+      });
+      return;
+    }
+    updateBrowserSession({ url: nextUrl, input: nextUrl, history: browserHistory, historyIndex: nextIndex });
     setBrowserError(null);
   }
 
+  function syncNativeNavigation(url: string, state: PreviewWebviewLoadState) {
+    if (state === "error") return;
+    if (state !== "ready") {
+      updateBrowserSession({ ...browserSession, url, input: url });
+      setBrowserError(null);
+      return;
+    }
+    const pendingDelta = pendingNativeHistoryDeltaRef.current;
+    if (pendingDelta) {
+      pendingNativeHistoryDeltaRef.current = null;
+      const nextIndex = Math.min(Math.max(browserHistoryIndex + pendingDelta, 0), Math.max(browserHistory.length - 1, 0));
+      const nextHistory = [...browserHistory];
+      if (nextHistory.length) nextHistory[nextIndex] = url;
+      else nextHistory.push(url);
+      updateBrowserSession({ url, input: url, history: nextHistory, historyIndex: nextIndex });
+    } else if (pendingNativeUrlRef.current) {
+      pendingNativeUrlRef.current = null;
+      const nextHistory = [...browserHistory];
+      const index = Math.min(Math.max(browserHistoryIndex, 0), Math.max(nextHistory.length - 1, 0));
+      if (nextHistory.length) nextHistory[index] = url;
+      else nextHistory.push(url);
+      updateBrowserSession({ url, input: url, history: nextHistory, historyIndex: index });
+    } else if (browserHistory[browserHistoryIndex] !== url) {
+      const nextHistory = browserHistory.slice(0, Math.max(browserHistoryIndex + 1, 0));
+      if (nextHistory[nextHistory.length - 1] !== url) nextHistory.push(url);
+      updateBrowserSession({ url, input: url, history: nextHistory, historyIndex: nextHistory.length - 1 });
+    } else if (browserInput !== url) {
+      updateBrowserSession({ ...browserSession, input: url });
+    }
+    setBrowserError(null);
+  }
+
+  function handleNativeBrowserError(message: string) {
+    pendingNativeUrlRef.current = null;
+    pendingNativeHistoryDeltaRef.current = null;
+    setBrowserError(message);
+  }
+
   function blankBrowser() {
-    setBrowserUrl(null);
-    setBrowserInput("");
-    setBrowserHistoryIndex(browserHistory.length);
+    pendingNativeUrlRef.current = null;
+    pendingNativeHistoryDeltaRef.current = null;
+    updateBrowserSession({ url: null, input: "", history: browserHistory, historyIndex: browserHistory.length });
     setBrowserError(null);
   }
 
@@ -377,9 +527,16 @@ export function PreviewPanel({
     void openExternalUrl(browserUrl).catch((error) => console.warn("failed to open URL", error));
   }
 
-  function sendQuickFix() {
-    if (!onSendArtifactFixPrompt) return;
-    onSendArtifactFixPrompt(buildFixPrompt(artifact, codeFiles.map((file) => file.path), previewError, errorLogs));
+  function prepareFix() {
+    if (!prepareArtifactFix) return;
+    prepareArtifactFix(buildFixPrompt(
+      fixArtifact ?? artifact,
+      fixArtifacts?.length ? fixArtifacts.map(artifactLabel) : codeFiles.map((file) => file.path),
+      fixRevision?.revisionNumber ?? revision?.revisionNumber,
+      previewError,
+      runtimeError,
+      fixLogs,
+    ));
   }
 
   function clearLogs() {
@@ -438,21 +595,26 @@ export function PreviewPanel({
         icon: <Download size={13} />,
         action: downloadSource,
       }] : []),
-      ...(canQuickFix ? [{
-        id: "quick-fix",
-        label: "Quick Fix",
+      ...(canPrepareFix ? [{
+        id: "prepare-fix",
+        label: "Prepare fix",
         icon: <Bolt size={13} />,
         separatorBefore: true,
-        action: sendQuickFix,
+        action: prepareFix,
       }] : []),
       {
         id: "close",
         label: "Close preview",
         icon: <X size={13} />,
         separatorBefore: true,
-        action: onClose,
+        action: closePanel,
       },
     ], title);
+  }
+
+  function closeOverflowAfterAction(event: ReactMouseEvent<HTMLDivElement>) {
+    if (!(event.target instanceof Element) || !event.target.closest("button")) return;
+    event.currentTarget.closest("details")?.removeAttribute("open");
   }
 
   function maxLogDrawerHeight(): number {
@@ -556,32 +718,92 @@ export function PreviewPanel({
   }
 
   return (
-    <aside className={`preview-panel${closing ? " closing" : ""}${noEnterMotion ? " no-enter" : ""}`} data-testid="chat-preview-split" style={style} onContextMenu={openPreviewContextMenu}>
+    <aside
+      ref={panelRef}
+      className={`preview-panel${closing ? " closing" : ""}${noEnterMotion ? " no-enter" : ""}`}
+      data-testid="chat-preview-split"
+      aria-label="Inspector"
+      tabIndex={-1}
+      style={style}
+      onKeyDown={handlePanelKeyDown}
+      onContextMenu={openPreviewContextMenu}
+    >
       <div className="preview-toolbar">
-        {modeSwitcher}
-        {!isUrlPreview && (
-          <div className="preview-tabs" role="tablist" aria-label="Preview panel">
-            <button
-              className={`preview-tab${activeTab === "preview" ? " active" : ""}`}
-              data-testid="preview-tab-preview"
-              role="tab"
-              aria-selected={activeTab === "preview"}
-              onClick={() => setActiveTab("preview")}
-            >
-              <Eye size={13} />
-              <span>Preview</span>
-            </button>
-            <button
-              className={`preview-tab${activeTab === "code" ? " active" : ""}`}
-              data-testid="preview-tab-code"
-              role="tab"
-              aria-selected={activeTab === "code"}
-              onClick={() => setActiveTab("code")}
-            >
-              <Code size={13} />
-              <span>Code</span>
-            </button>
-          </div>
+        <div className="preview-primary-navigation">
+          {modeSwitcher ?? (
+            <div className="preview-tabs" role="tablist" aria-label="Inspector views">
+              {previewAvailable && (
+                <button
+                  ref={(element) => { tabRefs.current.preview = element; }}
+                  id={PREVIEW_TAB_IDS.preview}
+                  className={`preview-tab${activeTab === "preview" ? " active" : ""}`}
+                  data-testid="preview-tab-preview"
+                  role="tab"
+                  tabIndex={activeTab === "preview" ? 0 : -1}
+                  aria-controls={PREVIEW_PANEL_IDS.preview}
+                  aria-selected={activeTab === "preview"}
+                  onKeyDown={handleTabKeyDown}
+                  onClick={() => setActiveTab("preview")}
+                >
+                  <Eye size={13} />
+                  <span>Preview</span>
+                </button>
+              )}
+              {!isUrlPreview && (
+                <button
+                  ref={(element) => { tabRefs.current.code = element; }}
+                  id={PREVIEW_TAB_IDS.code}
+                  className={`preview-tab${activeTab === "code" ? " active" : ""}`}
+                  data-testid="preview-tab-code"
+                  role="tab"
+                  tabIndex={activeTab === "code" ? 0 : -1}
+                  aria-controls={PREVIEW_PANEL_IDS.code}
+                  aria-selected={activeTab === "code"}
+                  onKeyDown={handleTabKeyDown}
+                  onClick={() => setActiveTab("code")}
+                >
+                  <Code size={13} />
+                  <span>Code</span>
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+        <button className="preview-action preview-close" title="Close inspector" aria-label="Close inspector" onClick={closePanel}>
+          <X size={14} />
+        </button>
+      </div>
+
+      <div className="preview-context-toolbar">
+        <div className="preview-context-title" data-testid="preview-context-title">
+          <span>{contextSource === "app" ? "App" : contextSource === "url" ? "URL" : "Artifact"}</span>
+          <strong title={inspectorTitle}>{inspectorTitle}</strong>
+        </div>
+        {activeTab === "preview" && previewSources.length > 1 && (
+          <>
+            <div className="preview-source-selector" role="group" aria-label="Preview source" data-testid="preview-source-selector">
+              {previewSources.map((item) => (
+                <button
+                  key={item}
+                  className={item === selectedPreviewSource ? "active" : ""}
+                  aria-pressed={item === selectedPreviewSource}
+                  onClick={() => onPreviewSourceChange?.(item)}
+                >
+                  {previewSourceLabel(item)}
+                </button>
+              ))}
+            </div>
+            <label className="preview-source-select">
+              <span>Source</span>
+              <select
+                aria-label="Preview source"
+                value={selectedPreviewSource}
+                onChange={(event) => onPreviewSourceChange?.(event.currentTarget.value as PreviewSource)}
+              >
+                {previewSources.map((item) => <option key={item} value={item}>{previewSourceLabel(item)}</option>)}
+              </select>
+            </label>
+          </>
         )}
         {canSwitchRevisions && revision && revisionGroup && (
           <label className="preview-revision-control" title={`${revisionGroup.label} revision`}>
@@ -603,14 +825,15 @@ export function PreviewPanel({
             </select>
           </label>
         )}
-        <div className="preview-actions" aria-label="Preview actions">
+        {activeTab === "preview" && runtimeStatus && <PreviewRuntimeBadge status={runtimeStatus} stale={runtimeStale || Boolean(runtimeStatus.stale)} />}
+        <div className="preview-actions preview-secondary-actions" aria-label="Inspector actions">
           {activeTab === "preview" && previewKind === "html" && !isUrlPreview && (
             <button className="preview-action" title="Reload preview" aria-label="Reload preview" onClick={() => setFrameKey((key) => key + 1)}>
               <Refresh size={14} />
             </button>
           )}
           {!isUrlPreview && onOpenBrowser && (
-            <button className="preview-action" data-testid="preview-open-browser" title="Open browser panel" aria-label="Open browser panel" onClick={onOpenBrowser}>
+            <button className="preview-action" data-testid="preview-open-browser" title="Open URL preview" aria-label="Open URL preview" onClick={onOpenBrowser}>
               <Globe size={14} />
             </button>
           )}
@@ -622,94 +845,128 @@ export function PreviewPanel({
               <Download size={14} />
             </button>
           )}
-          <button className="preview-action" title="Close preview" aria-label="Close preview" onClick={onClose}>
-            <X size={14} />
-          </button>
         </div>
+        <details className="preview-overflow">
+          <summary className="preview-action" title="More inspector actions" aria-label="More inspector actions">
+            <MoreHorizontal size={14} />
+          </summary>
+          <div className="preview-overflow-menu" role="group" aria-label="Inspector actions" onClick={closeOverflowAfterAction}>
+            {activeTab === "preview" && previewKind === "html" && !isUrlPreview && (
+              <button onClick={() => setFrameKey((key) => key + 1)}><Refresh size={13} />Reload preview</button>
+            )}
+            {!isUrlPreview && onOpenBrowser && (
+              <button onClick={onOpenBrowser}><Globe size={13} />Open URL preview</button>
+            )}
+            <button onClick={() => void copySource()}><Copy size={13} />{isUrlPreview ? "Copy URL" : "Copy source"}</button>
+            {!isUrlPreview && <button onClick={downloadSource}><Download size={13} />Download source</button>}
+          </div>
+        </details>
       </div>
-      <div className="preview-tab-panel" role="tabpanel" hidden={activeTab !== "preview"}>
+
+      <div
+        id={PREVIEW_PANEL_IDS.preview}
+        className="preview-tab-panel"
+        role="tabpanel"
+        aria-labelledby={PREVIEW_TAB_IDS.preview}
+        hidden={activeTab !== "preview" || !previewAvailable}
+      >
         {previewKind === "markdown" ? (
           <div className="preview-markdown">
             <Suspense fallback={<span className="typing">...</span>}>
               <Markdown content={source} />
             </Suspense>
           </div>
-        ) : previewDeferred ? (
-          <div className="preview-markdown">
-            <span className="typing">Generating...</span>
+        ) : previewDeferred || !previewDocumentReady ? (
+          <div className="preview-loading" role="status" aria-live="polite">
+            <span className="typing">Building preview...</span>
           </div>
         ) : previewError ? (
           <div className="preview-error" role="alert">
-            Preview failed: {previewError}
-            {canQuickFix && (
-              <button className="preview-quick-fix" data-testid="preview-quick-fix" onClick={sendQuickFix}>
+            <strong>Preview failed</strong>
+            <span>{previewError}</span>
+            {canPrepareFix && (
+              <button className="preview-quick-fix" data-testid="preview-prepare-fix" onClick={prepareFix}>
                 <Bolt size={13} />
-                <span>Quick Fix</span>
+                <span>Prepare fix</span>
               </button>
             )}
           </div>
         ) : (
           <div className="preview-runtime-shell">
-            {isUrlPreview ? (
-              <>
-                <div className="preview-browser-bar" data-testid="preview-browser-bar">
-                  <div className="preview-browser-nav">
-                    <button className="preview-browser-action" title="Back" aria-label="Back" disabled={!canGoBack} onClick={() => navigateBrowser(-1)}>
-                      <ArrowLeft size={14} />
-                    </button>
-                    <button className="preview-browser-action" title="Forward" aria-label="Forward" disabled={!canGoForward} onClick={() => navigateBrowser(1)}>
-                      <ArrowRight size={14} />
-                    </button>
-                    <button className="preview-browser-action" title="Reload" aria-label="Reload" disabled={!browserUrl} onClick={reloadBrowser}>
-                      <Refresh size={14} />
-                    </button>
-                    <button className="preview-browser-action" title="New" aria-label="New blank page" onClick={blankBrowser}>
-                      <Plus size={14} />
-                    </button>
-                  </div>
-                  <form className="preview-browser-form" onSubmit={submitBrowserUrl}>
-                    <Globe size={14} />
-                    <input
-                      data-testid="preview-browser-url"
-                      value={browserInput}
-                      onChange={(event) => {
-                        setBrowserInput(event.currentTarget.value);
-                        setBrowserError(null);
-                      }}
-                      placeholder="Enter a URL"
-                      aria-label="Preview URL"
-                    />
-                  </form>
-                  {runtimeStatus && (
-                    <PreviewRuntimeStatus
-                      status={runtimeStatus}
-                      busy={runtimeBusy}
-                      onStart={onRuntimeStart}
-                      onStop={onRuntimeStop}
-                      onRestart={onRuntimeRestart}
-                    />
-                  )}
-                  <button className="preview-browser-action preview-browser-open-external" title="Open in browser" aria-label="Open in browser" disabled={!browserUrl} onClick={openBrowserUrlExternal}>
+            {isUrlPreview && (
+              <div className="preview-browser-bar" data-testid="preview-browser-bar">
+                <div className="preview-browser-nav">
+                  <button className="preview-browser-action" title="Back" aria-label="Back" disabled={!canGoBack} onClick={() => navigateBrowser(-1)}>
+                    <ArrowLeft size={14} />
+                  </button>
+                  <button className="preview-browser-action" title="Forward" aria-label="Forward" disabled={!canGoForward} onClick={() => navigateBrowser(1)}>
                     <ArrowRight size={14} />
                   </button>
+                  <button className="preview-browser-action" title="Reload" aria-label="Reload page" disabled={!browserUrl} onClick={reloadBrowser}>
+                    <Refresh size={14} />
+                  </button>
+                  <button className="preview-browser-action" title="New" aria-label="Open blank page" onClick={blankBrowser}>
+                    <Plus size={14} />
+                  </button>
                 </div>
-                {browserError && <div className="preview-browser-error" role="alert">{browserError}</div>}
-                <div className="preview-browser-content">
-                  {browserUrl ? (
-                    <NativeArtifactBrowser url={browserUrl} frameKey={frameKey} title={title} active={!closing} surfaceKind={runtimeStatus ? "runtime_browser" : "native_browser"} onSurfaceChange={onSurfaceChange} controlActivity={controlActivity} />
-                  ) : (
-                    <div className="preview-browser-empty" data-testid="preview-browser-empty">
-                      <Logo height={42} className="preview-browser-empty-logo" />
-                      <strong>Open a preview URL</strong>
-                      <span>
-                        Use the address bar for localhost
-                        <br />
-                        or HTTPS pages.
-                      </span>
-                    </div>
-                  )}
-                </div>
-              </>
+                <form className="preview-browser-form" onSubmit={submitBrowserUrl}>
+                  <Globe size={14} aria-hidden="true" />
+                  <input
+                    data-testid="preview-browser-url"
+                    value={browserInput}
+                    onChange={(event) => {
+                      updateBrowserSession({ ...browserSession, input: event.currentTarget.value });
+                      setBrowserError(null);
+                    }}
+                    placeholder="Enter a URL"
+                    aria-label="Preview URL"
+                  />
+                </form>
+                <button className="preview-browser-action preview-browser-open-external" title="Open in browser" aria-label="Open in system browser" disabled={!browserUrl} onClick={openBrowserUrlExternal}>
+                  <ExternalLink size={14} />
+                </button>
+              </div>
+            )}
+            {showRuntimeControls && runtimeStatus && (
+              <PreviewRuntimeStatus
+                status={runtimeStatus}
+                preflight={resolvedRuntimePreflight}
+                busy={runtimeBusy}
+                preflightBusy={runtimePreflightBusy}
+                stale={runtimeStale || Boolean(runtimeStatus.stale)}
+                onPreflight={onRuntimePreflight}
+                onStart={onRuntimeStart}
+                onStop={onRuntimeStop}
+                onRestart={onRuntimeRestart}
+              />
+            )}
+            {browserError && <div className="preview-browser-error" role="alert">{browserError}</div>}
+            {isUrlPreview ? (
+              <div className="preview-browser-content">
+                {browserUrl ? (
+                  <NativeArtifactBrowser
+                    key={selectedPreviewSource}
+                    url={browserUrl}
+                    frameKey={frameKey}
+                    title={title}
+                    active={!closing}
+                    surfaceKind={selectedPreviewSource === "app" ? "runtime_browser" : "native_browser"}
+                    surfaceReady={selectedPreviewSource === "app" ? Boolean(runtimeStatus?.ready) : undefined}
+                    surfaceError={selectedPreviewSource === "app" ? runtimeError : null}
+                    onNativeLabelChange={(label) => { nativeBrowserLabelRef.current = label; }}
+                    onNavigation={(nextUrl, state) => syncNativeNavigation(nextUrl, state)}
+                    onNavigationError={handleNativeBrowserError}
+                    onSurfaceChange={onSurfaceChange}
+                    controlActivity={controlActivity}
+                  />
+                ) : (
+                  <div className="preview-browser-empty" data-testid="preview-browser-empty">
+                    <Logo height={42} className="preview-browser-empty-logo" />
+                    <strong>Open a preview URL</strong>
+                    <span>Use the address bar for localhost or HTTPS pages.</span>
+                  </div>
+                )}
+              </div>
             ) : (
               <div className="preview-frame-host">
                 <iframe
@@ -720,7 +977,7 @@ export function PreviewPanel({
                   sandbox="allow-forms allow-modals allow-popups allow-scripts"
                   referrerPolicy="no-referrer"
                   src="about:blank"
-                  srcDoc={previewSource}
+                  srcDoc={previewDocument.source}
                   onLoad={() => setIframeReadyKey(iframeSurfaceKey)}
                 />
                 {controlActivity && <PreviewControlOverlay key={controlActivity.id} activity={controlActivity} />}
@@ -728,7 +985,13 @@ export function PreviewPanel({
             )}
             <div className={`preview-log-drawer${logsOpen ? " open" : ""}`} data-testid="preview-log-drawer">
               <div className="preview-log-head">
-                <button className="preview-log-toggle" data-testid="preview-log-toggle" aria-expanded={logsOpen} onClick={() => setLogsOpen((open) => !open)}>
+                <button
+                  className="preview-log-toggle"
+                  data-testid="preview-log-toggle"
+                  aria-controls="preview-log-list"
+                  aria-expanded={logsOpen}
+                  onClick={() => setLogsOpen((open) => !open)}
+                >
                   Logs <span>{visibleLogs.length}</span>
                 </button>
                 <div className="preview-log-actions">
@@ -738,10 +1001,10 @@ export function PreviewPanel({
                       <span>Clear</span>
                     </button>
                   )}
-                  {canQuickFix && (
-                    <button className="preview-quick-fix" data-testid="preview-quick-fix" onClick={sendQuickFix}>
+                  {canPrepareFix && (
+                    <button className="preview-quick-fix" data-testid="preview-prepare-fix" onClick={prepareFix}>
                       <Bolt size={13} />
-                      <span>Quick Fix</span>
+                      <span>Prepare fix</span>
                     </button>
                   )}
                 </div>
@@ -764,7 +1027,15 @@ export function PreviewPanel({
                     onPointerUp={endLogResize}
                     onPointerCancel={endLogResize}
                   />
-                  <div className="preview-log-list" data-testid="preview-log-list" style={{ height: logDrawerHeight }}>
+                  <div
+                    id="preview-log-list"
+                    className="preview-log-list"
+                    data-testid="preview-log-list"
+                    role="log"
+                    aria-live="polite"
+                    aria-relevant="additions"
+                    style={{ height: logDrawerHeight }}
+                  >
                     {visibleLogs.length ? visibleLogs.map((log) => <PreviewLogRow key={log.id} log={log} />) : <div className="preview-log-empty">No logs</div>}
                   </div>
                 </>
@@ -775,11 +1046,25 @@ export function PreviewPanel({
       </div>
       <div
         ref={codePanelRef}
+        id={PREVIEW_PANEL_IDS.code}
         className={`preview-code-panel${codeFiles.length > 1 ? " with-file-list" : ""}`}
         role="tabpanel"
+        aria-labelledby={PREVIEW_TAB_IDS.code}
         hidden={activeTab !== "code" || isUrlPreview}
         style={codePanelStyle}
       >
+        {codeFiles.length > 1 && (
+          <label className="preview-file-select">
+            <span>File</span>
+            <select
+              aria-label="Artifact file"
+              value={selectedCodeArtifact.id}
+              onChange={(event) => setSelectedCodeArtifactId(event.currentTarget.value)}
+            >
+              {codeFiles.map((file) => <option key={file.artifact.id} value={file.artifact.id}>{file.path}{file.entry ? " (entry)" : ""}</option>)}
+            </select>
+          </label>
+        )}
         {codeFiles.length > 1 && (
           <div className="preview-file-list" data-testid="preview-code-file-list" aria-label="Artifact files">
             {codeFiles.map((file) => (
@@ -816,10 +1101,17 @@ export function PreviewPanel({
             onPointerCancel={endCodeSplitResize}
           />
         )}
-        <div ref={codeSourceRef} className="preview-source" data-testid="preview-code-source">
+        <div
+          ref={codeSourceRef}
+          className="preview-source"
+          data-testid="preview-code-source"
+          role="region"
+          aria-label={`${artifactLabel(selectedCodeArtifact)} source`}
+          tabIndex={0}
+        >
           {codeLines.map((line, index) => (
             <div className="preview-code-line" key={index}>
-              <span className="preview-code-line-number" data-testid="preview-code-line-number">{index + 1}</span>
+              <span className="preview-code-line-number" data-testid="preview-code-line-number" aria-hidden="true">{index + 1}</span>
               <span className="preview-code-text">{line || " "}</span>
             </div>
           ))}
@@ -862,42 +1154,107 @@ function previewControlLabel(activity: PreviewControlActivity): string {
   return activity.label;
 }
 
+function PreviewRuntimeBadge({ status, stale }: { status: PreviewAppStatus; stale: boolean }) {
+  const label = previewRuntimeLabel(status, stale);
+  return (
+    <span className={`preview-runtime-badge ${previewRuntimeTone(status, stale)}`} role="status" aria-live="polite" title={status.cwd}>
+      <span aria-hidden="true" />
+      {label}
+    </span>
+  );
+}
+
 function PreviewRuntimeStatus({
   status,
+  preflight,
   busy,
+  preflightBusy,
+  stale,
+  onPreflight,
   onStart,
   onStop,
   onRestart,
 }: {
   status: PreviewAppStatus;
+  preflight: PreviewAppPreflight | null;
   busy: boolean;
+  preflightBusy: boolean;
+  stale: boolean;
+  onPreflight?: () => void;
   onStart?: () => void;
   onStop?: () => void;
   onRestart?: () => void;
 }) {
-  const running = Boolean(status.pid) || status.status === "installing" || status.status === "starting" || status.status === "running";
-  const statusText = String(status.status);
+  const active = previewRuntimeIsActive(status);
+  const statusText = previewRuntimeLabel(status, stale);
+  const error = runtimeErrorMessage(status);
+  const runRequiresPreflight = Boolean(onPreflight && !preflight);
   return (
-    <div className={`preview-managed-runtime ${status.status}`} data-testid="preview-managed-runtime">
+    <section
+      className={`preview-managed-runtime ${previewRuntimeTone(status, stale)}`}
+      data-testid="preview-managed-runtime"
+      aria-label="App preview runtime"
+      aria-busy={busy || preflightBusy}
+    >
       <div className="preview-managed-runtime-head">
         <div className="preview-managed-runtime-copy">
           <span className="preview-managed-runtime-dot" aria-hidden="true" />
-          <strong>Runtime</strong>
-          <span title={status.cwd}>{statusText}</span>
+          <div>
+            <strong>App runtime</strong>
+            <span role="status" aria-live="polite">{statusText}</span>
+          </div>
         </div>
         <div className="preview-managed-runtime-actions">
-          <button className="preview-browser-action" data-testid="preview-runtime-start" title="Start runtime" disabled={busy || running || !onStart} onClick={onStart}>
-            <Globe size={14} />
-          </button>
-          <button className="preview-browser-action" data-testid="preview-runtime-stop" title="Stop runtime" disabled={busy || !running || !onStop} onClick={onStop}>
-            <X size={14} />
-          </button>
-          <button className="preview-browser-action" data-testid="preview-runtime-restart" title="Restart runtime" disabled={busy || !onRestart} onClick={onRestart}>
-            <Refresh size={14} />
-          </button>
+          {onPreflight && (
+            <button className="preview-runtime-button" data-testid="preview-runtime-preflight" disabled={busy || preflightBusy || active} onClick={onPreflight}>
+              <Terminal size={13} />
+              <span>{preflight ? "Refresh review" : "Review run"}</span>
+            </button>
+          )}
+          {!active ? (
+            <button
+              className="preview-runtime-button primary"
+              data-testid="preview-runtime-start"
+              aria-label={runRequiresPreflight ? "Run preview unavailable until review is complete" : "Run app preview"}
+              disabled={busy || preflightBusy || runRequiresPreflight || !onStart || stale}
+              onClick={onStart}
+            >
+              <Bolt size={13} />
+              <span>Run</span>
+            </button>
+          ) : (
+            <>
+              <button className="preview-runtime-button" data-testid="preview-runtime-stop" aria-label="Stop app preview" disabled={busy || !onStop} onClick={onStop}>
+                <Square size={12} />
+                <span>Stop</span>
+              </button>
+              <button className="preview-runtime-button" data-testid="preview-runtime-restart" aria-label="Restart app preview" disabled={busy || !onRestart || stale} onClick={onRestart}>
+                <Refresh size={13} />
+                <span>Restart</span>
+              </button>
+            </>
+          )}
         </div>
       </div>
-    </div>
+      {preflight && (
+        <div className="preview-runtime-preflight" data-testid="preview-runtime-preflight-details">
+          <dl>
+            <div><dt>Scope</dt><dd>{preflight.managed ? "Managed copy" : "Selected folder"}</dd></div>
+            <div><dt>Folder</dt><dd title={preflight.cwd}>{preflight.cwd}</dd></div>
+            <div><dt>Package manager</dt><dd>{preflight.package_manager}</dd></div>
+            <div><dt>Install</dt><dd>{preflight.install_required ? "Required" : "Not required"}</dd></div>
+            <div><dt>Install command</dt><dd><code>{preflight.install_command || "None"}</code></dd></div>
+            <div><dt>Dev command</dt><dd><code>{preflight.dev_command || "Unavailable"}</code></dd></div>
+            <div><dt>Source</dt><dd title={preflight.source_fingerprint}><code>{shortFingerprint(preflight.source_fingerprint)}</code></dd></div>
+          </dl>
+          {!preflight.managed && preflight.install_required && (
+            <p className="preview-runtime-warning" role="note">Installing dependencies may modify the selected folder.</p>
+          )}
+        </div>
+      )}
+      {error && <p className="preview-runtime-message error" role="alert">{error}</p>}
+      {!error && status.message && <p className="preview-runtime-message" role="status" aria-live="polite">{status.message}</p>}
+    </section>
   );
 }
 
@@ -907,6 +1264,11 @@ function NativeArtifactBrowser({
   title,
   active,
   surfaceKind,
+  surfaceReady,
+  surfaceError,
+  onNativeLabelChange,
+  onNavigation,
+  onNavigationError,
   onSurfaceChange,
   controlActivity,
 }: {
@@ -915,6 +1277,11 @@ function NativeArtifactBrowser({
   title: string;
   active: boolean;
   surfaceKind: PreviewSurfaceKind;
+  surfaceReady?: boolean;
+  surfaceError?: string | null;
+  onNativeLabelChange?: (label: string | null) => void;
+  onNavigation?: (url: string, state: PreviewWebviewLoadState) => void;
+  onNavigationError?: (message: string) => void;
   onSurfaceChange?: (surface: PreviewSurfaceTarget | null) => void;
   controlActivity?: PreviewControlActivity | null;
 }) {
@@ -927,7 +1294,21 @@ function NativeArtifactBrowser({
   const overlayCleanupRef = useRef<(() => void) | null>(null);
   const overlayCloseTimerRef = useRef<number | null>(null);
   const overlayInstanceRef = useRef(0);
+  const navigationCallbackRef = useRef(onNavigation);
+  const navigationErrorCallbackRef = useRef(onNavigationError);
+  const labelCallbackRef = useRef(onNativeLabelChange);
+  const currentNativeUrlRef = useRef(url);
+  const previousFrameKeyRef = useRef(frameKey);
   const [nativeError, setNativeError] = useState<string | null>(null);
+  const [nativeNavigation, setNativeNavigation] = useState<{ label: string | null; url: string; state: PreviewWebviewLoadState }>({
+    label: null,
+    url,
+    state: "loading",
+  });
+
+  navigationCallbackRef.current = onNavigation;
+  navigationErrorCallbackRef.current = onNavigationError;
+  labelCallbackRef.current = onNativeLabelChange;
 
   function clearOverlayCloseTimer() {
     if (overlayCloseTimerRef.current === null) return;
@@ -950,6 +1331,7 @@ function NativeArtifactBrowser({
     let resizeObserver: ResizeObserver | null = null;
     let appUiObserver: MutationObserver | null = null;
     let unlistenError: (() => void) | null = null;
+    let unlistenNavigation: (() => void) | null = null;
     let removeLayoutListeners: (() => void) | null = null;
     let raf = 0;
     let nativeHidden = false;
@@ -969,8 +1351,6 @@ function NativeArtifactBrowser({
       if (!host) return;
       const hostElement = host;
       setNativeError(null);
-      await closeWebview();
-      if (cancelled) return;
 
       const [{ Webview }, { getCurrentWindow }, { LogicalPosition, LogicalSize }] = await Promise.all([
         import("@tauri-apps/api/webview"),
@@ -1010,7 +1390,28 @@ function NativeArtifactBrowser({
       }
 
       const rect = bounds();
-      const label = `${labelRef.current}-${frameKey}-${Math.random().toString(36).slice(2)}`;
+      const label = `${labelRef.current}-${Math.random().toString(36).slice(2)}`;
+      currentNativeUrlRef.current = url;
+      setNativeNavigation({ label, url, state: "loading" });
+      labelCallbackRef.current?.(label);
+      unlistenNavigation = await listenForPreviewWebviewNavigation((navigation) => {
+        if (cancelled || navigation.label !== label) return;
+        if (navigation.state === "error") {
+          const message = navigation.message || "This preview navigation was blocked.";
+          setNativeError(message);
+          setNativeNavigation({ label, url: navigation.url, state: "error" });
+          navigationErrorCallbackRef.current?.(message);
+          return;
+        }
+        currentNativeUrlRef.current = navigation.url;
+        setNativeError(null);
+        setNativeNavigation(navigation);
+        navigationCallbackRef.current?.(navigation.url, navigation.state);
+      });
+      if (cancelled) {
+        unlistenNavigation();
+        return;
+      }
       const webview = new Webview(getCurrentWindow(), label, {
         url,
         x: rect.x,
@@ -1022,18 +1423,13 @@ function NativeArtifactBrowser({
         zoomHotkeysEnabled: true,
       }) as NativeWebviewHandle;
       webviewRef.current = webview;
-      void publishPreviewSurface({
-        label,
-        kind: surfaceKind,
-        title,
-        url,
-        native: true,
-        status: "ready",
-        capabilities: DOM_PREVIEW_CAPABILITIES,
-      }, onSurfaceChange);
       unlistenError = await webview.once<string>("tauri://error", (event) => {
-        if (!cancelled) setNativeError(event.payload || "Could not open this page.");
+        if (cancelled) return;
+        const message = event.payload || "Could not open this page.";
+        setNativeError(message);
+        navigationErrorCallbackRef.current?.(message);
       });
+      await waitForNativeCreated(webview);
       if (cancelled) {
         unlistenError?.();
         await closeWebview();
@@ -1044,7 +1440,7 @@ function NativeArtifactBrowser({
       resizeObserver = new ResizeObserver(() => void syncBounds(webview));
       resizeObserver.observe(hostElement);
       appUiObserver = new MutationObserver(() => void syncAppUiVisibility());
-      appUiObserver.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["aria-modal", "role"] });
+      appUiObserver.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["aria-modal", "role", "open"] });
       const onWindowLayout = () => void syncBounds(webview);
       window.addEventListener("resize", onWindowLayout);
       window.addEventListener("scroll", onWindowLayout, true);
@@ -1061,7 +1457,10 @@ function NativeArtifactBrowser({
       raf = window.requestAnimationFrame(syncAnimationFrame);
     })()
       .catch((error) => {
-        if (!cancelled) setNativeError(error instanceof Error ? error.message : String(error));
+        if (cancelled) return;
+        const message = error instanceof Error ? error.message : String(error);
+        setNativeError(message);
+        navigationErrorCallbackRef.current?.(message);
       });
 
     return () => {
@@ -1071,10 +1470,69 @@ function NativeArtifactBrowser({
       appUiObserver?.disconnect();
       removeLayoutListeners?.();
       unlistenError?.();
-      void publishPreviewSurface(null, onSurfaceChange);
+      unlistenNavigation?.();
+      labelCallbackRef.current?.(null);
       void closeWebview();
     };
-  }, [active, frameKey, onSurfaceChange, surfaceKind, title, url]);
+  }, [active]);
+
+  useEffect(() => {
+    const label = nativeNavigation.label;
+    if (!IS_TAURI || !label || currentNativeUrlRef.current === url) return;
+    setNativeNavigation((current) => ({ ...current, url, state: "loading" }));
+    void navigatePreviewWebview(label, url).catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      setNativeError(message);
+      navigationErrorCallbackRef.current?.(message);
+    });
+  }, [nativeNavigation.label, url]);
+
+  useEffect(() => {
+    const label = nativeNavigation.label;
+    if (!IS_TAURI || !label) {
+      previousFrameKeyRef.current = frameKey;
+      return;
+    }
+    if (previousFrameKeyRef.current === frameKey) return;
+    previousFrameKeyRef.current = frameKey;
+    setNativeNavigation((current) => ({ ...current, state: "loading" }));
+    void reloadPreviewWebview(label).catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      setNativeError(message);
+      navigationErrorCallbackRef.current?.(message);
+    });
+  }, [frameKey, nativeNavigation.label]);
+
+  useEffect(() => {
+    if (!active) return;
+    if (!IS_TAURI) {
+      void publishPreviewSurface({
+        kind: surfaceKind,
+        title,
+        url: nativeNavigation.url,
+        message: "Native preview inspection is available in the desktop app",
+        native: false,
+        status: "not_inspectable",
+        capabilities: [],
+      }, onSurfaceChange);
+      return () => { void publishPreviewSurface(null, onSurfaceChange); };
+    }
+    const runtimeWaiting = surfaceReady === false;
+    const error = nativeError || surfaceError;
+    const ready = nativeNavigation.state === "ready" && !runtimeWaiting && !error;
+    const surface: PreviewSurfaceTarget = {
+      label: nativeNavigation.label,
+      kind: surfaceKind,
+      title,
+      url: nativeNavigation.url,
+      message: error || (runtimeWaiting ? "Waiting for the app runtime to become healthy" : ready ? undefined : "Loading preview page"),
+      native: true,
+      status: error ? "error" : ready ? "ready" : "loading",
+      capabilities: ready ? DOM_PREVIEW_CAPABILITIES : [],
+    };
+    void publishPreviewSurface(surface, onSurfaceChange);
+    return () => { void publishPreviewSurface(null, onSurfaceChange); };
+  }, [active, nativeError, nativeNavigation, onSurfaceChange, surfaceError, surfaceKind, surfaceReady, title]);
 
   useEffect(() => {
     if (!active || !controlActivity || !IS_TAURI) return;
@@ -1183,9 +1641,18 @@ function NativeArtifactBrowser({
           sandbox="allow-forms allow-modals allow-popups allow-same-origin allow-scripts"
           referrerPolicy="no-referrer"
           src={url}
+          onLoad={() => {
+            currentNativeUrlRef.current = url;
+            setNativeNavigation({ label: null, url, state: "ready" });
+            navigationCallbackRef.current?.(url, "ready");
+          }}
         />
       )}
-      {nativeError && <div className="preview-native-browser-error" role="alert">{nativeError}</div>}
+      {nativeError && !onNavigationError ? (
+        <div className="preview-native-browser-error" role="alert">{nativeError}</div>
+      ) : nativeNavigation.state !== "ready" && nativeNavigation.state !== "error" ? (
+        <div className="preview-native-browser-status" role="status" aria-live="polite">Loading preview...</div>
+      ) : null}
     </div>
   );
 }
@@ -1340,15 +1807,89 @@ function isPreviewLogLevel(value: string): value is PreviewLogLevel {
   return value === "log" || value === "info" || value === "warn" || value === "error";
 }
 
-function buildFixPrompt(artifact: ChatArtifact, files: string[], previewError: string | null, errors: PreviewLogEntry[]): string {
+function initialBrowserSession(url: string | null): PreviewBrowserSession {
+  return {
+    url,
+    input: url ?? "",
+    history: url ? [url] : [],
+    historyIndex: url ? 0 : -1,
+  };
+}
+
+export function nextPreviewTab(current: PreviewTab, key: string, tabs: readonly PreviewTab[]): PreviewTab | null {
+  if (!tabs.length) return null;
+  if (key === "Home") return tabs[0];
+  if (key === "End") return tabs[tabs.length - 1];
+  const direction = key === "ArrowRight" || key === "ArrowDown" ? 1 : key === "ArrowLeft" || key === "ArrowUp" ? -1 : 0;
+  if (!direction) return null;
+  const index = Math.max(0, tabs.indexOf(current));
+  return tabs[(index + direction + tabs.length) % tabs.length];
+}
+
+function previewSourceLabel(source: PreviewSource): string {
+  if (source === "app") return "App";
+  if (source === "url") return "URL";
+  return "Artifact";
+}
+
+function previewRuntimeIsActive(status: PreviewAppStatus): boolean {
+  return status.active ?? (Boolean(status.pid) || status.status === "installing" || status.status === "starting" || status.status === "running");
+}
+
+function previewRuntimeLabel(status: PreviewAppStatus, stale: boolean): string {
+  const base = status.ready
+    ? "Ready"
+    : status.status === "installing"
+      ? "Installing"
+      : status.status === "starting"
+        ? "Starting"
+        : status.status === "error"
+          ? "Unhealthy"
+          : previewRuntimeIsActive(status)
+            ? "Active · not ready"
+            : status.status === "staged"
+              ? "Ready to run"
+              : "Stopped";
+  return stale ? `${base} · disconnected` : base;
+}
+
+function previewRuntimeTone(status: PreviewAppStatus, stale: boolean): string {
+  if (stale) return "stale";
+  if (status.error || status.status === "error") return "error";
+  if (status.ready) return "running";
+  if (previewRuntimeIsActive(status)) return "starting";
+  return "stopped";
+}
+
+function runtimeErrorMessage(status?: PreviewAppStatus | null): string | null {
+  if (!status) return null;
+  if (!status.error && status.status !== "error") return null;
+  const messages = [status.error?.message, status.message].filter((message, index, all): message is string => Boolean(message) && all.indexOf(message) === index);
+  return messages.join("\n") || "The app preview runtime failed.";
+}
+
+function shortFingerprint(fingerprint: string): string {
+  return fingerprint.length > 16 ? `${fingerprint.slice(0, 12)}...` : fingerprint;
+}
+
+export function buildFixPrompt(
+  artifact: ChatArtifact,
+  files: string[],
+  revisionNumber: number | undefined,
+  previewError: string | null,
+  runtimeError: string | null,
+  errors: PreviewLogEntry[],
+): string {
   const details = [
     previewError ? `Preview build error:\n${previewError}` : "",
+    runtimeError ? `Runtime error:\n${runtimeError}` : "",
     errors.slice(-5).map(formatErrorLog).join("\n\n"),
   ].filter(Boolean).join("\n\n");
   return [
     "Please fix the current artifact preview errors.",
     "",
     `Artifact: ${artifactLabel(artifact)}`,
+    ...(revisionNumber ? [`Revision: v${revisionNumber}`] : []),
     "Files:",
     ...files.map((file) => `- ${file}`),
     "",

@@ -46,6 +46,7 @@ import {
   pickAttachmentFiles,
   pollMobileCompanionEvents,
   pollScheduleRunEvents,
+  preflightPreviewApp,
   publishMobileThreadSnapshot,
   previewArtifactFile,
   readWorkspaceAttachmentFile,
@@ -59,7 +60,6 @@ import {
   setPrivacyMode,
   setWorkspace,
   speakText,
-  stagePreviewApp,
   startPreviewApp,
   stopChildThread,
   stopPreviewApp,
@@ -95,6 +95,7 @@ import {
   type MemoryNotice,
   type ModelInfo,
   type PreviewAppFile,
+  type PreviewAppPreflight,
   type PreviewAppStatus,
   type PreviewAppStartOptions,
   type PreviewSurfaceTarget,
@@ -127,7 +128,6 @@ import {
   type Session,
   type SessionPreviewRuntime,
   type SessionSidebarState,
-  type SessionSidePanelMode,
   type SessionVirtualFile,
 } from "../sessions/store";
 import {
@@ -282,6 +282,7 @@ import {
   Check,
   Code,
   Copy,
+  Eye,
   GitBranch,
   Globe,
   Image,
@@ -302,9 +303,9 @@ import { GitWorkspacePanel } from "./GitPanel";
 import { PreviewPanel } from "./PreviewPanel";
 import { QuickSummaryPanel } from "./QuickSummaryPanel";
 import { RunTimeline } from "./RunTimeline";
+import { WorkspaceLauncherButton } from "./WorkspaceLauncher";
 
 const ProvidersManager = lazy(() =>
-import { WorkspaceLauncherButton } from "./WorkspaceLauncher";
   import("./ProvidersManager").then((mod) => ({
     default: mod.ProvidersManager,
   })),
@@ -330,7 +331,7 @@ const EMPTY: ChatMessage[] = [];
 const EMPTY_QUEUE: QueuedMessage[] = [];
 const NON_EMPTY_USAGE_MESSAGES: ChatMessage[] = [{ role: "user", content: "" }];
 const MAX_ATTACHMENT_IMAGE_PREVIEW_BYTES = 2 * 1024 * 1024;
-const PREVIEW_PANEL_MIN_WIDTH = 280;
+const PREVIEW_PANEL_MIN_WIDTH = 360;
 const MESSAGE_VIRTUALIZE_AFTER = 80;
 const MESSAGE_ESTIMATED_HEIGHT = 152;
 const MESSAGE_VIRTUAL_OVERSCAN_PX = 900;
@@ -478,7 +479,10 @@ function isUsableMobileModel(model: ModelInfo): boolean {
 }
 
 const PREVIEW_PANEL_MAX_WIDTH = 900;
-const CHAT_MAIN_MIN_WIDTH = 360;
+const CHAT_MAIN_MIN_WIDTH = 420;
+const PREVIEW_RESIZE_HANDLE_WIDTH = 8;
+const INSPECTOR_STACK_THRESHOLD =
+  PREVIEW_PANEL_MIN_WIDTH + CHAT_MAIN_MIN_WIDTH + PREVIEW_RESIZE_HANDLE_WIDTH;
 const PREVIEW_PANEL_KEYBOARD_STEP = 32;
 const PREVIEW_PANEL_ANIMATION_MS = 190;
 const MEDIA_CONTEXT_MESSAGE_LIMIT = 10;
@@ -775,18 +779,32 @@ function blankBrowserPreviewSelection(): PreviewSelection {
   return { artifact, artifacts: [artifact], previewDeferred: false };
 }
 
-function sidePanelModeForArtifact(
-  artifact: ChatArtifact,
-): SessionSidePanelMode {
-  return artifact.mime === "text/uri-list" ? "browser" : "artifact";
+function emptyBrowserSession(): InspectorBrowserSession {
+  return { url: null, input: "", history: [], historyIndex: -1 };
+}
+
+function browserPreviewSelection(
+  session: InspectorBrowserSession,
+): PreviewSelection {
+  if (!session.url) return blankBrowserPreviewSelection();
+  const artifact: ChatArtifact = {
+    ...blankBrowserArtifact(),
+    title: session.url,
+    content: session.url,
+    size: session.url.length,
+  };
+  return { artifact, artifacts: [artifact], previewDeferred: false };
 }
 
 function isPreviewAppActive(status: PreviewAppStatus | null): boolean {
+  if (typeof status?.active === "boolean") return status.active;
   return (
     Boolean(status?.pid) ||
+    status?.status === "staging" ||
     status?.status === "installing" ||
     status?.status === "starting" ||
-    status?.status === "running"
+    status?.status === "running" ||
+    status?.status === "stopping"
   );
 }
 
@@ -796,8 +814,8 @@ type MessageRowActions = {
     items: ContextMenuItem[],
     label?: string,
   ) => boolean;
-  setArtifactPanelTab: (sessionId: string, tab: "code" | "preview") => void;
-  startPreviewRuntimeForArtifacts: (
+  setInspectorTab: (sessionId: string, tab: "code" | "preview") => void;
+  preparePreviewRuntimeForArtifacts: (
     artifacts?: readonly ChatArtifact[],
   ) => Promise<void>;
   openPreviewArtifact: (
@@ -895,22 +913,18 @@ function MessageRowView({
     revision?: ArtifactRevision,
   ) => {
     if (!actions) return;
-    if (
-      folderIsEmpty &&
-      !assistantStreaming &&
-      hasPreviewPackageJson(previewRuntimeFiles(artifactContext))
-    ) {
-      void actions.startPreviewRuntimeForArtifacts(artifactContext);
-      return;
-    }
     const artifactIndex =
       m.artifacts?.findIndex((item) => item.id === artifact.id) ?? -1;
     const choice =
       !revision && artifactIndex >= 0
         ? actions.artifactRevisionChoice(i, artifactIndex)
         : undefined;
-    if (!isPreviewableArtifact(artifact))
-      actions.setArtifactPanelTab(activeId, "code");
+    actions.setInspectorTab(
+      activeId,
+      isPreviewableArtifact(revision?.artifact ?? artifact)
+        ? "preview"
+        : "code",
+    );
     actions.openPreviewArtifact(
       artifact,
       artifactContext ?? [artifact],
@@ -1138,20 +1152,20 @@ function MessageRowView({
                 <button
                   className="msg-act msg-act-text"
                   data-testid="preview-app-start"
-                  title="Stage named files and start preview app"
+                  title="Review preview app commands before running"
                   disabled={
                     previewAppBusy != null ||
                     isPreviewAppActive(previewAppStatus)
                   }
                   onClick={() =>
-                    void actions?.startPreviewRuntimeForArtifacts(m.artifacts)
+                    void actions?.preparePreviewRuntimeForArtifacts(m.artifacts)
                   }
                 >
                   <Globe size={13} />
                   <span>
                     {previewAppBusy === "start"
-                      ? "Starting preview..."
-                      : "Start preview app"}
+                      ? "Inspecting preview..."
+                      : "Inspect preview app"}
                   </span>
                 </button>
               </div>
@@ -1409,7 +1423,12 @@ function previewRuntimeFromStatus(
   const state = previewRuntimeText(status.status) ?? "idle";
   const url =
     previewRuntimeText(status.url) ??
-    (state === "installing" || state === "starting"
+    (status.active === true ||
+    state === "staging" ||
+    state === "installing" ||
+    state === "starting" ||
+    state === "stopping" ||
+    state === "error"
       ? previous?.url
       : undefined);
   return {
@@ -1422,6 +1441,12 @@ function previewRuntimeFromStatus(
         : undefined,
     command: previewRuntimeText(status.command),
     message: previewRuntimeText(status.message),
+    active: status.active,
+    ready: status.ready,
+    managed: status.managed,
+    runId: previewRuntimeText(status.run_id),
+    error: status.error ?? undefined,
+    preflight: status.preflight ?? undefined,
   };
 }
 
@@ -1438,6 +1463,13 @@ function previewStatusFromRuntime(
     pid: runtime.pid ?? null,
     command: runtime.command ?? null,
     message: runtime.message ?? null,
+    active: runtime.active,
+    ready: runtime.ready,
+    managed: runtime.managed,
+    run_id: runtime.runId ?? null,
+    updated_at: runtime.updatedAt,
+    error: runtime.error ?? null,
+    preflight: runtime.preflight ?? null,
     logs: [],
   };
 }
@@ -1450,12 +1482,11 @@ function previewStatusMatchesFolder(
   return !cwd || previewRuntimeFoldersEqual(status?.cwd, cwd);
 }
 
-function folderPreviewIdleStatus(
+function previewIdleStatus(
   threadId: string,
   folder: string,
-): PreviewAppStatus | null {
-  const cwd = previewRuntimeText(folder);
-  if (!cwd) return null;
+): PreviewAppStatus {
+  const cwd = previewRuntimeText(folder) ?? "";
   return {
     thread_id: threadId,
     status: "idle",
@@ -1464,13 +1495,15 @@ function folderPreviewIdleStatus(
     pid: null,
     command: null,
     message: null,
+    active: false,
+    ready: false,
+    managed: !cwd,
+    run_id: null,
+    updated_at: Date.now(),
+    error: null,
+    preflight: null,
     logs: [],
   };
-}
-
-function previewRuntimeStartOptions(folder: string): PreviewAppStartOptions {
-  const cwd = previewRuntimeText(folder);
-  return cwd ? { cwd } : {};
 }
 
 function mergePreviewAppFiles(
@@ -1560,17 +1593,26 @@ function extensionOf(filename: string): string {
   return dot >= 0 ? filename.slice(dot + 1).toLowerCase() : "";
 }
 
-function maxPreviewPanelWidth(): number {
-  if (typeof window === "undefined") return PREVIEW_PANEL_MAX_WIDTH;
+function maxPreviewPanelWidth(chatBodyWidth?: number): number {
+  const availableWidth =
+    chatBodyWidth ??
+    (typeof window === "undefined" ? undefined : window.innerWidth);
+  if (availableWidth === undefined) return PREVIEW_PANEL_MAX_WIDTH;
   return Math.min(
     PREVIEW_PANEL_MAX_WIDTH,
-    Math.max(PREVIEW_PANEL_MIN_WIDTH, window.innerWidth - CHAT_MAIN_MIN_WIDTH),
+    Math.max(
+      PREVIEW_PANEL_MIN_WIDTH,
+      availableWidth - CHAT_MAIN_MIN_WIDTH - PREVIEW_RESIZE_HANDLE_WIDTH,
+    ),
   );
 }
 
-function clampPreviewPanelWidth(width: number): number {
+function clampPreviewPanelWidth(width: number, chatBodyWidth?: number): number {
   return Math.round(
-    Math.min(Math.max(width, PREVIEW_PANEL_MIN_WIDTH), maxPreviewPanelWidth()),
+    Math.min(
+      Math.max(width, PREVIEW_PANEL_MIN_WIDTH),
+      maxPreviewPanelWidth(chatBodyWidth),
+    ),
   );
 }
 
@@ -2205,6 +2247,15 @@ type PreviewSelection = {
   autoOpenKey?: string;
 };
 
+type InspectorPreviewSource = "artifact" | "app" | "url";
+
+type InspectorBrowserSession = {
+  url: string | null;
+  input: string;
+  history: string[];
+  historyIndex: number;
+};
+
 type ActiveMediaTarget = {
   provider: ProviderInfo;
   model: string;
@@ -2656,16 +2707,26 @@ export function ChatView({
   const [pendingAttachments, setPendingAttachments] = useState<
     ChatAttachment[]
   >([]);
-  const [previewSelection, setPreviewSelection] =
+  const [, setPreviewSelection] =
     useState<PreviewSelection | null>(null);
   const [activePreviewSurface, setActivePreviewSurface] =
     useState<PreviewSurfaceTarget | null>(null);
   const [previewAppStatus, setPreviewAppStatus] =
     useState<PreviewAppStatus | null>(null);
+  const [previewAppPreflight, setPreviewAppPreflight] =
+    useState<PreviewAppPreflight | null>(null);
+  const [previewAppPreflightBusy, setPreviewAppPreflightBusy] = useState(false);
   const [previewAppBusy, setPreviewAppBusy] = useState<
     "start" | "stop" | "restart" | null
   >(null);
   const [previewPanelClosing, setPreviewPanelClosing] = useState(false);
+  const [, setPreviewSource] =
+    useState<InspectorPreviewSource>("url");
+  const [, setBrowserSession] =
+    useState<InspectorBrowserSession>(emptyBrowserSession);
+  const [chatBodyWidth, setChatBodyWidth] = useState(() =>
+    typeof window === "undefined" ? INSPECTOR_STACK_THRESHOLD : window.innerWidth,
+  );
   const [gitStatus, setGitStatus] = useState<WorkspaceGitStatus | null>(null);
   const [dismissedPreviewKey, setDismissedPreviewKey] = useState<string | null>(
     null,
@@ -2678,8 +2739,6 @@ export function ChatView({
   const [sessionsHydrated, setSessionsHydrated] = useState(() =>
     useSessions.persist.hasHydrated(),
   );
-  const previewArtifact = previewSelection?.artifact ?? null;
-
   const activeId = useSessions((s) => s.activeId);
   const sessionSummariesSelector = useMemo(
     createChatSessionSummariesSelector,
@@ -2717,17 +2776,12 @@ export function ChatView({
   const queuedMessages = useSessions(
     (s) => s.queuedMessagesBySession[s.activeId] ?? EMPTY_QUEUE,
   );
-  const sidePanelMode = useSessions(
-    (s) => s.sessions.find((x) => x.id === s.activeId)?.sidePanelMode ?? null,
+  const inspectorTab = useSessions(
+    (s) => s.sessions.find((x) => x.id === s.activeId)?.inspectorTab ?? "preview",
   );
-  const sidePanelOpen = useSessions(
+  const inspectorOpen = useSessions(
     (s) =>
-      s.sessions.find((x) => x.id === s.activeId)?.artifactPanelOpen === true,
-  );
-  const artifactPanelTab = useSessions(
-    (s) =>
-      s.sessions.find((x) => x.id === s.activeId)?.artifactPanelTab ??
-      "preview",
+      s.sessions.find((x) => x.id === s.activeId)?.inspectorOpen === true,
   );
   const activePreviewRuntime = useSessions((s) => {
     const session = s.sessions.find((x) => x.id === s.activeId);
@@ -2742,9 +2796,8 @@ export function ChatView({
   const markArtifactSaved = useSessions((s) => s.markArtifactSaved);
   const upsertVirtualFiles = useSessions((s) => s.upsertVirtualFiles);
   const commitResponseMetrics = useSessions((s) => s.commitResponseMetrics);
-  const setSessionSidePanelOpen = useSessions((s) => s.setSidePanelOpen);
-  const setSessionSidePanelMode = useSessions((s) => s.setSidePanelMode);
-  const setArtifactPanelTab = useSessions((s) => s.setArtifactPanelTab);
+  const setSessionInspectorOpen = useSessions((s) => s.setInspectorOpen);
+  const setSessionInspectorTab = useSessions((s) => s.setInspectorTab);
   const setSessionPreviewRuntime = useSessions((s) => s.setPreviewRuntime);
   const setPreviewRuntimeByKey = useSessions((s) => s.setPreviewRuntimeByKey);
   const updateThreadSettings = useSessions((s) => s.updateSettings);
@@ -2801,10 +2854,24 @@ export function ChatView({
     goal,
   } = threadSettings;
   const activePreviewRuntimeKey = previewRuntimeKeyForThread(activeId, folder);
+  const activePreviewAppStatus =
+    previewAppStatus?.thread_id === activePreviewRuntimeKey &&
+    previewStatusMatchesFolder(previewAppStatus, folder)
+      ? previewAppStatus
+      : null;
+  const activePreviewAppPreflight =
+    previewAppPreflight?.thread_id === activePreviewRuntimeKey &&
+    previewRuntimeFoldersEqual(previewAppPreflight.cwd, folder)
+      ? previewAppPreflight
+      : !folder.trim() &&
+          previewAppPreflight?.thread_id === activePreviewRuntimeKey &&
+          previewAppPreflight.managed
+        ? previewAppPreflight
+        : null;
   const canOpenGitPanel = gitStatus?.state === "ready" && gitStatus.is_repo;
   const gitPanelChecking = Boolean(folder.trim()) && gitStatus === null;
   const canShowGitPanel =
-    canOpenGitPanel || (sidePanelMode === "git" && gitPanelChecking);
+    canOpenGitPanel || (inspectorTab === "git" && gitPanelChecking);
   const emptyStarterActions = useMemo<EmptyStarterAction[]>(() => {
     const hasFolder = Boolean(folder.trim());
     const hasGitChanges = gitStatus?.state === "ready" && gitStatus.has_changes;
@@ -2947,9 +3014,11 @@ export function ChatView({
       : state.sessions.find((session) => session.id === activeId)
           ?.previewRuntime;
     const status = previewStatusFromRuntime(activePreviewRuntimeKey, runtime);
-    setPreviewAppStatus(
-      previewStatusMatchesFolder(status, folder) ? status : null,
-    );
+    const matchingStatus = previewStatusMatchesFolder(status, folder)
+      ? status
+      : null;
+    setPreviewAppStatus(matchingStatus);
+    setPreviewAppPreflight(matchingStatus?.preflight ?? null);
   }, [activeId, activePreviewRuntimeKey, folder, sessionsHydrated]);
 
   useEffect(() => {
@@ -2960,8 +3029,10 @@ export function ChatView({
         const status = await getPreviewAppStatus(activePreviewRuntimeKey);
         if (!cancelled) {
           if (previewStatusMatchesFolder(status, folder)) {
-            setPreviewAppStatus(status);
-            persistPreviewRuntimeStatus(status);
+            const freshStatus = { ...status, stale: false };
+            setPreviewAppStatus(freshStatus);
+            setPreviewAppPreflight(status.preflight ?? null);
+            persistPreviewRuntimeStatus(freshStatus);
           } else {
             setPreviewAppStatus(null);
             if (folder.trim())
@@ -2970,7 +3041,13 @@ export function ChatView({
           }
         }
       } catch {
-        if (!cancelled) setPreviewAppStatus(null);
+        if (!cancelled) {
+          setPreviewAppStatus((current) =>
+            current?.thread_id === activePreviewRuntimeKey
+              ? { ...current, stale: true }
+              : current,
+          );
+        }
       }
     }
     void pollPreviewApp();
@@ -3018,6 +3095,7 @@ export function ChatView({
   const busy = generatingSessionIds.includes(activeId) || activeWorkerRunning;
 
   const chatScrollRef = useRef<HTMLDivElement>(null);
+  const chatBodyRef = useRef<HTMLDivElement>(null);
   const stickToBottomRef = useRef(true);
   const generationControllersRef = useRef<Map<string, AbortController>>(
     new Map(),
@@ -3042,7 +3120,19 @@ export function ChatView({
   const recentThreadSwitcherTimerRef = useRef<number | null>(null);
   const restoredPreviewThreadRef = useRef<string | null>(null);
   const sidePanelOpenRef = useRef(false);
-  const autoPreviewRuntimeStartedRef = useRef(new Set<string>());
+  const inspectorInvokerRef = useRef<HTMLElement | null>(null);
+  const artifactSelectionsByThreadRef = useRef(
+    new Map<string, PreviewSelection>(),
+  );
+  const previewSourcesByThreadRef = useRef(
+    new Map<string, InspectorPreviewSource>(),
+  );
+  const browserSessionsByThreadRef = useRef(
+    new Map<string, InspectorBrowserSession>(),
+  );
+  const preparedPreviewFilesByThreadRef = useRef(
+    new Map<string, PreviewAppFile[]>(),
+  );
   const mobileRelayPollingRef = useRef(false);
   const scheduleRunPollingRef = useRef(false);
   const mobileRelayReadyRef = useRef(false);
@@ -3058,6 +3148,20 @@ export function ChatView({
     height: 0,
   });
   const [messageHeightsVersion, setMessageHeightsVersion] = useState(0);
+
+  useEffect(() => {
+    const body = chatBodyRef.current;
+    if (!body) return;
+    const update = () => setChatBodyWidth(body.getBoundingClientRect().width);
+    update();
+    if (typeof ResizeObserver === "undefined") {
+      window.addEventListener("resize", update);
+      return () => window.removeEventListener("resize", update);
+    }
+    const observer = new ResizeObserver(update);
+    observer.observe(body);
+    return () => observer.disconnect();
+  }, []);
 
   function setInput(nextInput: SetStateAction<string>) {
     setInputState((current) => {
@@ -3582,6 +3686,10 @@ export function ChatView({
     return null;
   }, [busy, folder, messages]);
 
+  const activeArtifactSelection =
+    artifactSelectionsByThreadRef.current.get(activeId) ??
+    latestPreviewSelection;
+
   const matchingPreviewRuntime = useMemo(() => {
     const status = previewStatusFromRuntime(
       activePreviewRuntimeKey,
@@ -3595,26 +3703,15 @@ export function ChatView({
     () => previewSelectionFromRuntime(matchingPreviewRuntime),
     [matchingPreviewRuntime],
   );
-
-  useEffect(() => {
-    if (!sessionsHydrated || !latestRuntimePreview) return;
-    autoPreviewRuntimeStartedRef.current.add(
-      `${activeId}\0${latestRuntimePreview.key}`,
-    );
-  }, [activeId, sessionsHydrated]);
-
-  useEffect(() => {
-    if (
-      !latestRuntimePreview ||
-      previewAppBusy != null ||
-      isPreviewAppActive(previewAppStatus)
-    )
-      return;
-    const autoPreviewKey = `${activeId}\0${latestRuntimePreview.key}`;
-    if (autoPreviewRuntimeStartedRef.current.has(autoPreviewKey)) return;
-    autoPreviewRuntimeStartedRef.current.add(autoPreviewKey);
-    void startPreviewRuntimeForArtifacts(latestRuntimePreview.artifacts);
-  }, [activeId, latestRuntimePreview, previewAppBusy, previewAppStatus]);
+  const activeInspectorPreviewSource =
+    previewSourcesByThreadRef.current.get(activeId) ??
+    (inspectorTab === "code" || activeArtifactSelection
+      ? "artifact"
+      : runtimePreviewSelection
+        ? "app"
+        : "url");
+  const activeInspectorBrowserSession =
+    browserSessionsByThreadRef.current.get(activeId) ?? emptyBrowserSession();
 
   useEffect(() => {
     const restoreKey = `${activeId}:${sessionsHydrated ? "hydrated" : "initial"}`;
@@ -3622,47 +3719,30 @@ export function ChatView({
     restoredPreviewThreadRef.current = restoreKey;
     clearPreviewCloseTimer();
     setPreviewPanelClosing(false);
-    if (sidePanelMode === "artifact") {
-      if (latestPreviewSelection) {
-        setPreviewSelection(latestPreviewSelection);
-        setDismissedPreviewKey(null);
-      } else {
-        setPreviewSelection(null);
-        setDismissedPreviewKey(null);
-        setSessionSidePanelMode(activeId, null);
-      }
-    } else if (sidePanelMode === "browser") {
-      setPreviewSelection(
-        runtimePreviewSelection ?? blankBrowserPreviewSelection(),
-      );
-      setDismissedPreviewKey(latestPreviewSelection?.autoOpenKey ?? null);
-    } else {
-      setPreviewSelection(null);
-      setDismissedPreviewKey(latestPreviewSelection?.autoOpenKey ?? null);
-    }
+    const restoredArtifact =
+      artifactSelectionsByThreadRef.current.get(activeId) ??
+      latestPreviewSelection ??
+      null;
+    if (restoredArtifact)
+      artifactSelectionsByThreadRef.current.set(activeId, restoredArtifact);
+    setPreviewSelection(restoredArtifact);
+    const restoredBrowser =
+      browserSessionsByThreadRef.current.get(activeId) ?? emptyBrowserSession();
+    browserSessionsByThreadRef.current.set(activeId, restoredBrowser);
+    setBrowserSession(restoredBrowser);
+    const restoredSource =
+      previewSourcesByThreadRef.current.get(activeId) ??
+      (inspectorTab === "code" || restoredArtifact
+        ? "artifact"
+        : runtimePreviewSelection
+          ? "app"
+          : "url");
+    previewSourcesByThreadRef.current.set(activeId, restoredSource);
+    setPreviewSource(restoredSource);
+    setDismissedPreviewKey(
+      inspectorOpen ? null : (latestPreviewSelection?.autoOpenKey ?? null),
+    );
   }, [activeId, sessionsHydrated]);
-
-  useEffect(() => {
-    if (sidePanelMode !== "browser" || !runtimePreviewSelection) return;
-    setPreviewSelection((current) => {
-      if (
-        current?.artifact.mime === "text/uri-list" &&
-        current.artifact.content === runtimePreviewSelection.artifact.content
-      )
-        return current;
-      const currentIsBlankBrowser = current?.artifact.id === "artifact-browser";
-      const currentIsRuntimeBrowser =
-        current?.artifact.id.startsWith("localhost-preview-");
-      if (
-        current &&
-        !currentIsBlankBrowser &&
-        !currentIsRuntimeBrowser &&
-        current.artifact.content
-      )
-        return current;
-      return runtimePreviewSelection;
-    });
-  }, [runtimePreviewSelection?.artifact.content, sidePanelMode]);
 
   useEffect(() => {
     if (
@@ -3670,33 +3750,48 @@ export function ChatView({
       dismissedPreviewKey === latestPreviewSelection.autoOpenKey
     )
       return;
-    if (sidePanelMode !== "artifact") {
+    if (
+      !inspectorOpen ||
+      inspectorTab === "git" ||
+      activeInspectorPreviewSource !== "artifact" ||
+      (activeArtifactSelection?.revision != null &&
+        activeArtifactSelection.revision.revisionNumber <
+          activeArtifactSelection.revision.totalRevisions)
+    ) {
       setDismissedPreviewKey(latestPreviewSelection.autoOpenKey ?? null);
       return;
     }
     clearPreviewCloseTimer();
     setPreviewPanelClosing(false);
+    artifactSelectionsByThreadRef.current.set(activeId, latestPreviewSelection);
     setPreviewSelection(latestPreviewSelection);
   }, [
+    activeId,
     dismissedPreviewKey,
+    inspectorOpen,
+    inspectorTab,
     latestPreviewSelection,
     latestPreviewSelection?.artifact.content,
-    sidePanelMode,
+    activeInspectorPreviewSource,
+    activeArtifactSelection?.revision?.revisionNumber,
+    activeArtifactSelection?.revision?.totalRevisions,
   ]);
 
   function openGitPanel() {
     if (!folder.trim() || (gitStatus && !canOpenGitPanel)) return;
+    rememberInspectorInvoker();
     clearPreviewCloseTimer();
     setPreviewPanelClosing(false);
     setDismissedPreviewKey(latestPreviewSelection?.autoOpenKey ?? null);
-    setSessionSidePanelMode(activeId, "git");
+    setSessionInspectorTab(activeId, "git");
   }
 
   function closeGitPanel() {
     clearPreviewCloseTimer();
     if (prefersReducedMotion()) {
       setPreviewPanelClosing(false);
-      setSessionSidePanelOpen(activeId, false);
+      setSessionInspectorOpen(activeId, false);
+      restoreInspectorInvokerFocus();
       return;
     }
     setPreviewPanelClosing(true);
@@ -3705,13 +3800,31 @@ export function ChatView({
         useSessions
           .getState()
           .sessions.find((session) => session.id === activeId)
-          ?.sidePanelMode === "git"
+          ?.inspectorTab === "git"
       ) {
-        setSessionSidePanelOpen(activeId, false);
+        setSessionInspectorOpen(activeId, false);
       }
       setPreviewPanelClosing(false);
       previewCloseTimeoutRef.current = null;
+      restoreInspectorInvokerFocus();
     }, PREVIEW_PANEL_ANIMATION_MS);
+  }
+
+  function rememberInspectorInvoker() {
+    if (inspectorOpen || typeof document === "undefined") return;
+    const active = document.activeElement;
+    if (active instanceof HTMLElement) inspectorInvokerRef.current = active;
+  }
+
+  function restoreInspectorInvokerFocus() {
+    const target = inspectorInvokerRef.current;
+    inspectorInvokerRef.current = null;
+    window.requestAnimationFrame(() => {
+      const fallback = document.querySelector<HTMLElement>(
+        '[data-testid="open-artifact-browser"]',
+      );
+      (target?.isConnected ? target : fallback)?.focus();
+    });
   }
 
   function loadGitActionDraft(text: string) {
@@ -3746,28 +3859,22 @@ export function ChatView({
   }
 
   function closePreview() {
-    const closingId = previewArtifact?.id ?? null;
-    setDismissedPreviewKey(previewSelection?.autoOpenKey ?? null);
+    const closingId = activeArtifactSelection?.artifact.id ?? null;
+    setDismissedPreviewKey(activeArtifactSelection?.autoOpenKey ?? null);
     if (!closingId || prefersReducedMotion()) {
       clearPreviewCloseTimer();
       setPreviewPanelClosing(false);
-      setPreviewSelection(null);
-      setSessionSidePanelOpen(activeId, false);
+      setSessionInspectorOpen(activeId, false);
+      restoreInspectorInvokerFocus();
       return;
     }
     clearPreviewCloseTimer();
     setPreviewPanelClosing(true);
     previewCloseTimeoutRef.current = window.setTimeout(() => {
-      setPreviewSelection((current) =>
-        current?.artifact.id === closingId ? null : current,
-      );
-      const currentMode = useSessions
-        .getState()
-        .sessions.find((session) => session.id === activeId)?.sidePanelMode;
-      if (currentMode === "artifact" || currentMode === "browser")
-        setSessionSidePanelOpen(activeId, false);
+      setSessionInspectorOpen(activeId, false);
       setPreviewPanelClosing(false);
       previewCloseTimeoutRef.current = null;
+      restoreInspectorInvokerFocus();
     }, PREVIEW_PANEL_ANIMATION_MS);
   }
 
@@ -3777,17 +3884,14 @@ export function ChatView({
     previewDeferred = false,
     revision?: ArtifactRevision,
   ) {
+    rememberInspectorInvoker();
     clearPreviewCloseTimer();
     setPreviewPanelClosing(false);
     setDismissedPreviewKey(latestPreviewSelection?.autoOpenKey ?? null);
-    setSessionSidePanelMode(
-      activeId,
-      sidePanelModeForArtifact(revision?.artifact ?? artifact),
-    );
     const choice = revision
       ? artifactRevisionChoice(revision.messageIndex, revision.artifactIndex)
       : undefined;
-    setPreviewSelection({
+    const selection: PreviewSelection = {
       artifact: revision?.artifact ?? artifact,
       artifacts: [
         ...(revision?.artifacts ??
@@ -3796,78 +3900,148 @@ export function ChatView({
       revision,
       revisionGroup: choice?.group,
       previewDeferred,
-    });
+    };
+    const target = selection.artifact;
+    if (target.mime === "text/uri-list") {
+      const url = target.content.trim() || null;
+      const nextBrowser: InspectorBrowserSession = {
+        url,
+        input: url ?? "",
+        history: url ? [url] : [],
+        historyIndex: url ? 0 : -1,
+      };
+      browserSessionsByThreadRef.current.set(activeId, nextBrowser);
+      setBrowserSession(nextBrowser);
+      selectPreviewSource("url");
+    } else {
+      artifactSelectionsByThreadRef.current.set(activeId, selection);
+      setPreviewSelection(selection);
+      selectPreviewSource("artifact");
+    }
+    setSessionInspectorTab(
+      activeId,
+      isPreviewableArtifact(target) ? "preview" : "code",
+    );
   }
 
   function openArtifactBrowser() {
-    const selection = runtimePreviewSelection;
-    if (selection) {
-      openPreviewArtifact(selection.artifact, selection.artifacts);
-      return;
-    }
-    openPreviewArtifact(blankBrowserArtifact());
+    rememberInspectorInvoker();
+    clearPreviewCloseTimer();
+    setPreviewPanelClosing(false);
+    setDismissedPreviewKey(latestPreviewSelection?.autoOpenKey ?? null);
+    selectPreviewSource("url");
+    setSessionInspectorTab(activeId, "preview");
   }
 
-  async function startPreviewRuntimeForArtifacts(
+  function selectPreviewSource(source: InspectorPreviewSource) {
+    previewSourcesByThreadRef.current.set(activeId, source);
+    setPreviewSource(source);
+  }
+
+  function updateBrowserSession(session: InspectorBrowserSession) {
+    browserSessionsByThreadRef.current.set(activeId, session);
+    setBrowserSession(session);
+  }
+
+  function managedPreviewFiles(
+    artifacts?: readonly ChatArtifact[],
+  ): PreviewAppFile[] {
+    const files = previewRuntimeFiles(artifacts);
+    if (files.length) return virtualRuntimeFilesWith(files);
+    return (
+      preparedPreviewFilesByThreadRef.current.get(activeId) ??
+      currentVirtualProjectFiles()
+    );
+  }
+
+  async function preparePreviewRuntimeForArtifacts(
     artifacts?: readonly ChatArtifact[],
   ) {
-    const files = previewRuntimeFiles(artifacts);
-    if (!files.length) {
-      setChatNotice({
-        tone: "error",
-        message: "Preview runtime needs named artifact files.",
-      });
-      return;
-    }
-    const runtimeFiles = folder.trim() ? files : virtualRuntimeFilesWith(files);
-    if (!hasPreviewPackageJson(runtimeFiles)) {
+    const files = folder.trim() ? [] : managedPreviewFiles(artifacts);
+    if (!folder.trim() && (!files.length || !hasPreviewPackageJson(files))) {
       setChatNotice({
         tone: "error",
         message: "Preview runtime needs a named package.json artifact.",
       });
       return;
     }
-    setPreviewAppBusy("start");
+    if (!folder.trim())
+      preparedPreviewFilesByThreadRef.current.set(activeId, files);
+    selectPreviewSource("app");
+    setSessionInspectorTab(activeId, "preview");
+    await preflightPreviewRuntime(files);
+  }
+
+  async function preflightPreviewRuntime(files?: PreviewAppFile[]) {
+    setPreviewAppPreflightBusy(true);
     try {
-      if (!folder.trim()) upsertVirtualFiles(activeId, files);
-      await stagePreviewApp(activePreviewRuntimeKey, runtimeFiles);
-      const status = await startPreviewApp(activePreviewRuntimeKey);
-      setPreviewAppStatus(status);
-      persistPreviewRuntimeStatus(status);
-      const url = previewRuntimeBrowserUrl(status);
-      openPreviewArtifact(
-        url ? localhostPreviewArtifact(url) : blankBrowserArtifact(),
+      const managedFiles = folder.trim()
+        ? undefined
+        : (files ??
+          preparedPreviewFilesByThreadRef.current.get(activeId) ??
+          managedPreviewFiles(latestRuntimePreview?.artifacts));
+      if (managedFiles)
+        preparedPreviewFilesByThreadRef.current.set(activeId, managedFiles);
+      const preflight = await preflightPreviewApp(
+        activePreviewRuntimeKey,
+        folder.trim()
+          ? { cwd: folder }
+          : { files: managedFiles },
       );
-      setSessionSidePanelMode(activeId, "browser");
-      setSessionSidePanelOpen(activeId, true);
+      setPreviewAppPreflight(preflight);
+      setPreviewAppStatus((current) =>
+        current
+          ? { ...current, preflight, stale: false }
+          : current,
+      );
+      setChatNotice({ tone: "info", message: "Preview commands are ready to review." });
     } catch (error) {
       setChatNotice({
         tone: "error",
         message: error instanceof Error ? error.message : String(error),
       });
     } finally {
-      setPreviewAppBusy(null);
+      setPreviewAppPreflightBusy(false);
     }
   }
 
+  function previewRuntimeRunOptions(): PreviewAppStartOptions | null {
+    if (!activePreviewAppPreflight) {
+      setChatNotice({
+        tone: "info",
+        message: "Review the preview preflight before running commands.",
+      });
+      return null;
+    }
+    return folder.trim()
+      ? {
+          cwd: folder,
+          source_fingerprint: activePreviewAppPreflight.source_fingerprint,
+        }
+      : {
+          files: managedPreviewFiles(),
+          source_fingerprint: activePreviewAppPreflight.source_fingerprint,
+        };
+  }
+
+  function applyPreviewAppStatus(status: PreviewAppStatus) {
+    const freshStatus = { ...status, stale: false };
+    setPreviewAppStatus(freshStatus);
+    setPreviewAppPreflight(status.preflight ?? activePreviewAppPreflight);
+    persistPreviewRuntimeStatus(freshStatus);
+  }
+
   async function startPreviewRuntime() {
+    const options = previewRuntimeRunOptions();
+    if (!options) return;
     setPreviewAppBusy("start");
     try {
-      if (!folder.trim()) {
-        const files = currentVirtualProjectFiles();
-        if (files.length && hasPreviewPackageJson(files))
-          await stagePreviewApp(activePreviewRuntimeKey, files);
-      }
-      const status = await startPreviewApp(
-        activePreviewRuntimeKey,
-        previewRuntimeStartOptions(folder),
-      );
-      setPreviewAppStatus(status);
-      persistPreviewRuntimeStatus(status);
-      const url = previewRuntimeBrowserUrl(status);
-      if (url) openPreviewArtifact(localhostPreviewArtifact(url));
-      else if (sidePanelMode === "browser")
-        openPreviewArtifact(blankBrowserArtifact());
+      const status = await startPreviewApp(activePreviewRuntimeKey, options);
+      applyPreviewAppStatus(status);
+      if (!folder.trim() && options.files?.length)
+        upsertVirtualFiles(activeId, options.files);
+      selectPreviewSource("app");
+      setSessionInspectorTab(activeId, "preview");
     } catch (error) {
       setChatNotice({
         tone: "error",
@@ -3882,8 +4056,7 @@ export function ChatView({
     setPreviewAppBusy("stop");
     try {
       const status = await stopPreviewApp(activePreviewRuntimeKey);
-      setPreviewAppStatus(status);
-      persistPreviewRuntimeStatus(status);
+      applyPreviewAppStatus(status);
     } catch (error) {
       setChatNotice({
         tone: "error",
@@ -3895,34 +4068,14 @@ export function ChatView({
   }
 
   async function restartPreviewRuntime() {
+    const options = previewRuntimeRunOptions();
+    if (!options) return;
     setPreviewAppBusy("restart");
     try {
-      let status: PreviewAppStatus;
-      const files = !folder.trim()
-        ? currentVirtualProjectFiles()
-        : latestRuntimePreview
-          ? previewRuntimeFiles(latestRuntimePreview.artifacts)
-          : [];
-      if (!folder.trim() && files.length && hasPreviewPackageJson(files)) {
-        await stopPreviewApp(activePreviewRuntimeKey).catch(() => undefined);
-        await stagePreviewApp(activePreviewRuntimeKey, files);
-        status = await startPreviewApp(activePreviewRuntimeKey);
-      } else if (files.length && hasPreviewPackageJson(files)) {
-        await stopPreviewApp(activePreviewRuntimeKey).catch(() => undefined);
-        await stagePreviewApp(activePreviewRuntimeKey, files);
-        status = await startPreviewApp(activePreviewRuntimeKey);
-      } else {
-        status = await restartPreviewApp(
-          activePreviewRuntimeKey,
-          previewRuntimeStartOptions(folder),
-        );
-      }
-      setPreviewAppStatus(status);
-      persistPreviewRuntimeStatus(status);
-      const url = previewRuntimeBrowserUrl(status);
-      openPreviewArtifact(
-        url ? localhostPreviewArtifact(url) : blankBrowserArtifact(),
-      );
+      const status = await restartPreviewApp(activePreviewRuntimeKey, options);
+      applyPreviewAppStatus(status);
+      if (!folder.trim() && options.files?.length)
+        upsertVirtualFiles(activeId, options.files);
     } catch (error) {
       setChatNotice({
         tone: "error",
@@ -3933,28 +4086,28 @@ export function ChatView({
     }
   }
 
-  function openArtifactSidePanel() {
+  function openArtifactSidePanel(tab: "preview" | "code" = "preview") {
     const selection =
-      latestPreviewSelection ??
-      (sidePanelMode === "artifact" ? previewSelection : null);
+      activeArtifactSelection ??
+      latestPreviewSelection;
     if (!selection) return;
+    rememberInspectorInvoker();
     clearPreviewCloseTimer();
     setPreviewPanelClosing(false);
-    setSessionSidePanelMode(activeId, "artifact");
+    artifactSelectionsByThreadRef.current.set(activeId, selection);
+    selectPreviewSource("artifact");
+    setSessionInspectorTab(activeId, tab);
     setDismissedPreviewKey(null);
     setPreviewSelection(selection);
   }
 
   function openSelectedSidePanel() {
-    if (sidePanelMode === "git" && (canOpenGitPanel || gitPanelChecking)) {
+    if (inspectorTab === "git" && (canOpenGitPanel || gitPanelChecking)) {
       openGitPanel();
-    } else if (
-      sidePanelMode === "artifact" &&
-      (latestPreviewSelection || previewSelection)
-    ) {
-      openArtifactSidePanel();
+    } else if (inspectorTab === "code") {
+      openArtifactSidePanel("code");
     } else {
-      openArtifactBrowser();
+      openPreviewInspector();
     }
   }
 
@@ -3963,35 +4116,58 @@ export function ChatView({
       revision.messageIndex,
       revision.artifactIndex,
     );
-    setPreviewSelection((current) =>
-      current
-        ? {
-            ...current,
-            artifact: revision.artifact,
-            artifacts: [...revision.artifacts],
-            revision,
-            revisionGroup: choice?.group ?? current.revisionGroup,
-          }
-        : current,
-    );
+    const current = activeArtifactSelection;
+    if (!current) return;
+    const next = {
+      ...current,
+      artifact: revision.artifact,
+      artifacts: [...revision.artifacts],
+      revision,
+      revisionGroup: choice?.group ?? current.revisionGroup,
+    };
+    artifactSelectionsByThreadRef.current.set(activeId, next);
+    setPreviewSelection(next);
   }
 
-  const resolvedPreviewPanelWidth = clampPreviewPanelWidth(previewPanelWidth);
+  const resolvedPreviewPanelWidth = clampPreviewPanelWidth(
+    previewPanelWidth,
+    chatBodyWidth,
+  );
+  const inspectorStacked = chatBodyWidth < INSPECTOR_STACK_THRESHOLD;
   const previewPanelStyle = {
     "--preview-panel-width": `${resolvedPreviewPanelWidth}px`,
   } as CSSProperties;
+  const availablePreviewSources: InspectorPreviewSource[] = [
+    ...(activeArtifactSelection && isPreviewableArtifact(activeArtifactSelection.artifact)
+      ? (["artifact"] as const)
+      : []),
+    ...(folder.trim() || latestRuntimePreview || activePreviewAppPreflight || activePreviewAppStatus
+      ? (["app"] as const)
+      : []),
+    "url",
+  ];
   const visiblePreviewSelection =
-    previewSelection ??
-    (sidePanelOpen && sidePanelMode === "browser"
-      ? (runtimePreviewSelection ?? blankBrowserPreviewSelection())
-      : sidePanelOpen && sidePanelMode === "artifact"
-        ? latestPreviewSelection
-        : null);
+    inspectorTab === "code"
+      ? activeArtifactSelection
+      : activeInspectorPreviewSource === "artifact"
+        ? activeArtifactSelection
+        : activeInspectorPreviewSource === "app"
+          ? (runtimePreviewSelection ?? blankBrowserPreviewSelection())
+          : browserPreviewSelection(activeInspectorBrowserSession);
   const sidePanelVisible = Boolean(
-    sidePanelOpen &&
-    sidePanelMode &&
-    (sidePanelMode === "git" ? canShowGitPanel : visiblePreviewSelection),
+    inspectorOpen &&
+    (inspectorTab === "git" ? canShowGitPanel : visiblePreviewSelection),
   );
+  const inspectorLauncherLabel =
+    inspectorTab === "git"
+      ? "Open Git"
+      : inspectorTab === "code"
+        ? `Open Code: ${activeArtifactSelection?.artifact.filename ?? activeArtifactSelection?.artifact.title ?? "artifact"}`
+        : activeInspectorPreviewSource === "artifact"
+          ? `Open Preview: ${activeArtifactSelection?.artifact.filename ?? activeArtifactSelection?.artifact.title ?? "artifact"}`
+          : activeInspectorPreviewSource === "app"
+            ? "Open Preview: App"
+            : "Open Preview: URL";
   const sidePanelAlreadyOpen =
     sidePanelOpenRef.current && sidePanelVisible && !previewPanelClosing;
 
@@ -4000,11 +4176,11 @@ export function ChatView({
   }, [sidePanelVisible]);
 
   useEffect(() => {
-    if (!sidePanelVisible || sidePanelMode === "git") setActivePreviewSurface(null);
-  }, [sidePanelMode, sidePanelVisible]);
+    if (!sidePanelVisible || inspectorTab === "git") setActivePreviewSurface(null);
+  }, [inspectorTab, sidePanelVisible]);
 
   function resizePreviewPanel(width: number) {
-    setPreviewPanelWidth(clampPreviewPanelWidth(width));
+    setPreviewPanelWidth(clampPreviewPanelWidth(width, chatBodyWidth));
   }
 
   function startPreviewResize(event: PointerEvent<HTMLDivElement>) {
@@ -4049,7 +4225,7 @@ export function ChatView({
       resizePreviewPanel(PREVIEW_PANEL_MIN_WIDTH);
     } else if (event.key === "End") {
       event.preventDefault();
-      resizePreviewPanel(maxPreviewPanelWidth());
+      resizePreviewPanel(maxPreviewPanelWidth(chatBodyWidth));
     }
   }
 
@@ -5874,7 +6050,7 @@ export function ChatView({
         sandbox: turnSandbox,
         computerUse: turnComputerUse,
         previewSurface:
-          sidePanelVisible && sidePanelMode !== "git"
+          sidePanelVisible && inspectorTab !== "git"
             ? activePreviewSurface
             : null,
         activeAgentId: turnActiveAgentId,
@@ -6285,37 +6461,11 @@ export function ChatView({
   function sendArtifactFixPrompt(prompt: string) {
     const text = prompt.trim();
     if (!text) return;
-    if (busy && !activeMediaTarget) {
-      enqueueQueuedMessage(activeId, { content: text });
-      setChatNotice({ tone: "info", message: "Artifact fix prompt queued." });
-      return;
-    }
-    if (busy || activeMediaTarget) {
-      setInput((current) =>
-        current.trimEnd() ? `${current.trimEnd()}\n${text}` : text,
-      );
-      setChatNotice({
-        tone: "info",
-        message: "Artifact fix prompt is waiting in the composer.",
-      });
-      return;
-    }
-    const selectedModel = effectiveModel.trim();
-    if (!selectedModel) {
-      setInput((current) =>
-        current.trimEnd() ? `${current.trimEnd()}\n${text}` : text,
-      );
-      setProvidersOpen(true);
-      setChatNotice({
-        tone: "error",
-        message:
-          "Artifact fix prompt is waiting in the composer. Choose a model before sending.",
-      });
-      return;
-    }
-    setInput("");
-    setPendingAttachments([]);
-    void runTurnAndDrain(appendUserTurn(messages, text), selectedModel);
+    enqueueQueuedMessage(activeId, { content: text });
+    setChatNotice({
+      tone: "info",
+      message: "Fix prepared in the editable message queue.",
+    });
   }
 
   function executePlan(messageIndex: number, planMessage: ChatMessage) {
@@ -6993,50 +7143,92 @@ export function ChatView({
     streamPreviewControlActivity ??
     recentPreviewControlActivity;
   const canOpenArtifactPanel = Boolean(
-    latestPreviewSelection ||
-    (sidePanelMode === "artifact" && previewSelection),
+    activeArtifactSelection,
   );
-  const sidePanelModeSwitcher = (
+
+  function openPreviewInspector() {
+    rememberInspectorInvoker();
+    if (activeInspectorPreviewSource === "artifact" && !canOpenArtifactPanel) {
+      selectPreviewSource(
+        availablePreviewSources.includes("app") ? "app" : "url",
+      );
+    }
+    setSessionInspectorTab(activeId, "preview");
+  }
+
+  function moveInspectorTabFocus(event: KeyboardEvent<HTMLDivElement>) {
+    if (![
+      "ArrowLeft",
+      "ArrowRight",
+      "Home",
+      "End",
+    ].includes(event.key)) return;
+    const tabs = Array.from(
+      event.currentTarget.querySelectorAll<HTMLButtonElement>(
+        '[role="tab"]:not(:disabled)',
+      ),
+    );
+    const currentIndex = tabs.indexOf(document.activeElement as HTMLButtonElement);
+    if (!tabs.length || currentIndex < 0) return;
+    event.preventDefault();
+    const nextIndex =
+      event.key === "Home"
+        ? 0
+        : event.key === "End"
+          ? tabs.length - 1
+          : (currentIndex + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+    tabs[nextIndex]?.focus();
+    tabs[nextIndex]?.click();
+  }
+
+  const inspectorTabSwitcher = (
     <div
       className="side-panel-switcher"
       role="tablist"
-      aria-label="Side panel mode"
+      aria-label="Inspector"
+      onKeyDown={moveInspectorTabFocus}
     >
+      <button
+        id="inspector-tab-preview"
+        type="button"
+        className={inspectorTab === "preview" ? "active" : ""}
+        role="tab"
+        aria-selected={inspectorTab === "preview"}
+        aria-controls="inspector-panel-preview"
+        tabIndex={inspectorTab === "preview" ? 0 : -1}
+        onClick={openPreviewInspector}
+      >
+        <Eye size={14} />
+        <span>Preview</span>
+      </button>
       {canOpenArtifactPanel && (
         <button
+          id="inspector-tab-code"
           type="button"
-          className={sidePanelMode === "artifact" ? "active" : ""}
+          className={inspectorTab === "code" ? "active" : ""}
           role="tab"
-          aria-selected={sidePanelMode === "artifact"}
-          aria-label="Artifact panel"
-          title="Artifact"
-          onClick={openArtifactSidePanel}
+          aria-selected={inspectorTab === "code"}
+          aria-controls="inspector-panel-code"
+          tabIndex={inspectorTab === "code" ? 0 : -1}
+          onClick={() => openArtifactSidePanel("code")}
         >
           <Code size={14} />
+          <span>Code</span>
         </button>
       )}
-      <button
-        type="button"
-        className={sidePanelMode === "browser" ? "active" : ""}
-        role="tab"
-        aria-selected={sidePanelMode === "browser"}
-        aria-label="Browser panel"
-        title="Browser"
-        onClick={openArtifactBrowser}
-      >
-        <Globe size={14} />
-      </button>
       {canShowGitPanel && (
         <button
+          id="inspector-tab-git"
           type="button"
-          className={sidePanelMode === "git" ? "active" : ""}
+          className={inspectorTab === "git" ? "active" : ""}
           role="tab"
-          aria-selected={sidePanelMode === "git"}
-          aria-label="Git panel"
-          title="Git"
+          aria-selected={inspectorTab === "git"}
+          aria-controls="inspector-panel-git"
+          tabIndex={inspectorTab === "git" ? 0 : -1}
           onClick={openGitPanel}
         >
           <GitBranch size={14} />
+          <span>Git</span>
         </button>
       )}
     </div>
@@ -7044,8 +7236,8 @@ export function ChatView({
 
   messageRowActionsRef.current = {
     openContextMenu,
-    setArtifactPanelTab,
-    startPreviewRuntimeForArtifacts,
+    setInspectorTab: setSessionInspectorTab,
+    preparePreviewRuntimeForArtifacts,
     openPreviewArtifact,
     artifactRevisionChoice,
     executePlan,
@@ -7071,14 +7263,17 @@ export function ChatView({
       className={"chat" + (emptyThread ? " chat-empty" : "")}
       data-testid="chat-shell"
     >
-      <div className="chat-body">
+      <div
+        ref={chatBodyRef}
+        className={`chat-body${inspectorStacked ? " inspector-stacked" : ""}`}
+      >
         <div className="chat-main">
           {!sidePanelVisible && (
             <button
               className="icon-btn preview-open-btn"
               data-testid="open-artifact-browser"
-              title="Open side panel"
-              aria-label="Open side panel"
+              title={inspectorLauncherLabel}
+              aria-label={inspectorLauncherLabel}
               onClick={openSelectedSidePanel}
             >
               <PanelIcon size={16} />
@@ -7102,6 +7297,9 @@ export function ChatView({
               setQuickSummaryOpen(false);
               focusComposerInput();
             }}
+            workspaceLauncher={
+              <WorkspaceLauncherButton folder={folder} variant="quick-summary" />
+            }
           />
           <div
             className="chat-scroll"
@@ -7120,9 +7318,6 @@ export function ChatView({
                     : undefined
                 }
               >
-            workspaceLauncher={
-              <WorkspaceLauncherButton folder={folder} variant="quick-summary" />
-            }
                 {virtualMessages.items.map(({ message: m, index: i, top }) => {
                   const messageIsCompaction = isCompactionCheckpoint(m);
                   const isApprovalMessage = Boolean(m.approval);
@@ -7147,7 +7342,7 @@ export function ChatView({
                       activeRun={activeRun}
                       previewArtifacts={previewArtifactsForMessage(m)}
                       previewAppBusy={previewAppBusy}
-                      previewAppStatus={previewAppStatus}
+                      previewAppStatus={activePreviewAppStatus}
                       toolApproval={toolApproval}
                       actionsRef={messageRowActionsRef}
                     />
@@ -7298,33 +7493,42 @@ export function ChatView({
         </div>
         {sidePanelVisible && (
           <>
-            <div
-              className={`preview-resize-handle${previewResizing ? " dragging" : ""}${previewPanelClosing ? " closing" : ""}${sidePanelAlreadyOpen ? " no-enter" : ""}`}
-              data-testid="preview-resize-handle"
-              role="separator"
-              aria-label="Resize side panel"
-              aria-orientation="vertical"
-              aria-valuemin={PREVIEW_PANEL_MIN_WIDTH}
-              aria-valuemax={maxPreviewPanelWidth()}
-              aria-valuenow={resolvedPreviewPanelWidth}
-              tabIndex={previewPanelClosing ? -1 : 0}
-              onKeyDown={resizePreviewWithKeyboard}
-              onPointerDown={startPreviewResize}
-              onPointerMove={movePreviewResize}
-              onPointerUp={endPreviewResize}
-              onPointerCancel={endPreviewResize}
-            />
-            {sidePanelMode === "git" ? (
-              <GitWorkspacePanel
-                folder={folder}
-                model={effectiveModel}
-                onDraftAction={loadGitActionDraft}
-                closing={previewPanelClosing}
-                noEnterMotion={sidePanelAlreadyOpen}
-                onClose={closeGitPanel}
-                modeSwitcher={sidePanelModeSwitcher}
-                style={previewPanelStyle}
+            {!inspectorStacked && (
+              <div
+                className={`preview-resize-handle${previewResizing ? " dragging" : ""}${previewPanelClosing ? " closing" : ""}${sidePanelAlreadyOpen ? " no-enter" : ""}`}
+                data-testid="preview-resize-handle"
+                role="separator"
+                aria-label="Resize side panel"
+                aria-orientation="vertical"
+                aria-valuemin={PREVIEW_PANEL_MIN_WIDTH}
+                aria-valuemax={maxPreviewPanelWidth(chatBodyWidth)}
+                aria-valuenow={resolvedPreviewPanelWidth}
+                tabIndex={previewPanelClosing ? -1 : 0}
+                onKeyDown={resizePreviewWithKeyboard}
+                onPointerDown={startPreviewResize}
+                onPointerMove={movePreviewResize}
+                onPointerUp={endPreviewResize}
+                onPointerCancel={endPreviewResize}
               />
+            )}
+            {inspectorTab === "git" ? (
+              <div
+                id="inspector-panel-git"
+                className="inspector-git-panel"
+                role="tabpanel"
+                aria-labelledby="inspector-tab-git"
+              >
+                <GitWorkspacePanel
+                  folder={folder}
+                  model={effectiveModel}
+                  onDraftAction={loadGitActionDraft}
+                  closing={previewPanelClosing}
+                  noEnterMotion={sidePanelAlreadyOpen}
+                  onClose={closeGitPanel}
+                  modeSwitcher={inspectorTabSwitcher}
+                  style={previewPanelStyle}
+                />
+              </div>
             ) : (
               visiblePreviewSelection && (
                 <PreviewPanel
@@ -7338,30 +7542,41 @@ export function ChatView({
                   onClose={closePreview}
                   onSelectRevision={selectPreviewRevision}
                   onOpenBrowser={openArtifactBrowser}
-                  onSendArtifactFixPrompt={sendArtifactFixPrompt}
-                  activeTab={
-                    sidePanelMode === "artifact" &&
-                    !visiblePreviewSelection.previewDeferred
-                      ? artifactPanelTab
-                      : undefined
+                  onPrepareArtifactFix={sendArtifactFixPrompt}
+                  fixArtifact={activeArtifactSelection?.artifact}
+                  fixArtifacts={activeArtifactSelection?.artifacts}
+                  fixRevision={activeArtifactSelection?.revision}
+                  activeTab={inspectorTab === "code" ? "code" : "preview"}
+                  onActiveTabChange={(tab) =>
+                    setSessionInspectorTab(activeId, tab)
                   }
-                  onActiveTabChange={
-                    sidePanelMode === "artifact" &&
-                    !visiblePreviewSelection.previewDeferred
-                      ? (tab) => setArtifactPanelTab(activeId, tab)
-                      : undefined
+                  previewSource={activeInspectorPreviewSource}
+                  availablePreviewSources={availablePreviewSources}
+                  onPreviewSourceChange={(source) => {
+                    selectPreviewSource(source);
+                    setSessionInspectorTab(activeId, "preview");
+                  }}
+                  browserSession={activeInspectorPreviewSource === "url" ? activeInspectorBrowserSession : undefined}
+                  onBrowserSessionChange={
+                    activeInspectorPreviewSource === "url" ? updateBrowserSession : undefined
                   }
                   runtimeStatus={
-                    previewAppStatus ??
-                    folderPreviewIdleStatus(activePreviewRuntimeKey, folder)
+                    activeInspectorPreviewSource === "app"
+                      ? (activePreviewAppStatus ??
+                        previewIdleStatus(activePreviewRuntimeKey, folder))
+                      : null
                   }
+                  runtimePreflight={activePreviewAppPreflight}
+                  runtimePreflightBusy={previewAppPreflightBusy}
+                  runtimeStale={activePreviewAppStatus?.stale === true}
+                  onRuntimePreflight={() => void preflightPreviewRuntime()}
                   runtimeBusy={previewAppBusy != null}
                   onRuntimeStart={() => void startPreviewRuntime()}
                   onRuntimeStop={() => void stopPreviewRuntime()}
                   onRuntimeRestart={() => void restartPreviewRuntime()}
                   controlActivity={previewControlActivity}
                   onSurfaceChange={setActivePreviewSurface}
-                  modeSwitcher={sidePanelModeSwitcher}
+                  modeSwitcher={inspectorTabSwitcher}
                   style={previewPanelStyle}
                 />
               )
