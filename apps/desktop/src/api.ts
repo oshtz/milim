@@ -372,7 +372,9 @@ type AttachmentFilePayload = {
   name: string;
   path: string;
   size: number;
-  content: string;
+  mime: string;
+  content?: string;
+  dataUrl?: string;
   truncated: boolean;
 };
 
@@ -381,9 +383,10 @@ function attachmentFromPayload(
 ): Omit<ChatAttachment, "id"> {
   return {
     name: payload.name,
-    mime: inferAttachmentMime(payload.name),
+    mime: payload.mime || inferAttachmentMime(payload.name),
     size: payload.size,
     content: payload.content,
+    dataUrl: payload.dataUrl,
     truncated: payload.truncated,
     sourcePath: payload.path,
   };
@@ -522,6 +525,15 @@ export async function setActivePreviewTarget(
 export function inferAttachmentMime(name: string): string {
   const ext = name.split(".").pop()?.toLowerCase();
   switch (ext) {
+    case "png":
+      return "image/png";
+    case "jpg":
+    case "jpeg":
+      return "image/jpeg";
+    case "webp":
+      return "image/webp";
+    case "gif":
+      return "image/gif";
     case "md":
     case "markdown":
       return "text/markdown";
@@ -1091,6 +1103,7 @@ export interface ModelCapabilities {
   imageInput?: boolean;
   imageOutput?: boolean;
   videoOutput?: boolean;
+  toolUse?: boolean;
 }
 
 export type ReasoningEffort =
@@ -1211,16 +1224,19 @@ function normalizeModelCapabilities(
   const videoOutput = normalizeModelCapability(
     raw.videoOutput ?? raw.video_output,
   );
+  const toolUse = normalizeModelCapability(raw.toolUse ?? raw.tool_use);
   if (
     typeof imageInput !== "boolean" &&
     typeof imageOutput !== "boolean" &&
-    typeof videoOutput !== "boolean"
+    typeof videoOutput !== "boolean" &&
+    typeof toolUse !== "boolean"
   )
     return undefined;
   return {
     ...(typeof imageInput === "boolean" ? { imageInput } : {}),
     ...(typeof imageOutput === "boolean" ? { imageOutput } : {}),
     ...(typeof videoOutput === "boolean" ? { videoOutput } : {}),
+    ...(typeof toolUse === "boolean" ? { toolUse } : {}),
   };
 }
 

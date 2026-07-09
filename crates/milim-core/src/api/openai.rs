@@ -443,6 +443,8 @@ pub struct ModelCapabilities {
     pub image_output: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub video_output: Option<bool>,
+    #[serde(default, alias = "toolUse", skip_serializing_if = "Option::is_none")]
+    pub tool_use: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

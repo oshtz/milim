@@ -72,6 +72,7 @@ const TRAY_QUIT_ID: &str = "quit";
 const FLUSH_USER_STATE_EVENT: &str = "milim://flush-user-state";
 const FLUSH_USER_STATE_AND_EXIT_EVENT: &str = "milim://flush-user-state-and-exit";
 const MAX_ATTACHMENT_BYTES: u64 = 128 * 1024;
+const MAX_ATTACHMENT_IMAGE_PREVIEW_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_ARTIFACT_PREVIEW_BYTES: usize = 256 * 1024;
 // ponytail: bounded scan, add an index if very large workspaces need complete matching.
 const MAX_WORKSPACE_FILE_SUGGESTION_SCAN: usize = 5_000;
@@ -83,7 +84,11 @@ struct AttachmentFilePayload {
     name: String,
     path: String,
     size: u64,
-    content: String,
+    mime: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content: Option<String>,
+    #[serde(rename = "dataUrl", skip_serializing_if = "Option::is_none")]
+    data_url: Option<String>,
     truncated: bool,
 }
 
@@ -708,37 +713,92 @@ fn read_attachment_file_blocking(
     path: &Path,
     max_bytes: Option<u64>,
 ) -> std::result::Result<AttachmentFilePayload, String> {
+    use base64::Engine;
+
     let metadata =
         std::fs::metadata(path).map_err(|e| format!("failed to read attachment metadata: {e}"))?;
     if !metadata.is_file() {
         return Err("attachment path is not a file".to_string());
     }
-    let limit = max_bytes
-        .unwrap_or(MAX_ATTACHMENT_BYTES)
-        .clamp(1, MAX_ATTACHMENT_BYTES);
     let name = path
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("attachment")
         .to_string();
-    let mut file = File::open(path).map_err(|e| format!("failed to open attachment file: {e}"))?;
-    let mut bytes = Vec::new();
-    file.by_ref()
-        .take(limit + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|e| format!("failed to read attachment file: {e}"))?;
-    let truncated = bytes.len() as u64 > limit;
-    if truncated {
-        bytes.truncate(limit as usize);
+    let mime = attachment_mime_for_path(path).to_string();
+    let mut content = None;
+    let mut data_url = None;
+    let mut truncated = false;
+
+    if attachment_is_image_mime(&mime) {
+        truncated = metadata.len() > MAX_ATTACHMENT_IMAGE_PREVIEW_BYTES;
+        if !truncated {
+            let bytes = fs::read(path).map_err(|e| format!("failed to read attachment file: {e}"))?;
+            let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+            data_url = Some(format!("data:{mime};base64,{encoded}"));
+        }
+    } else if attachment_is_text_like_mime(&mime) {
+        let limit = max_bytes
+            .unwrap_or(MAX_ATTACHMENT_BYTES)
+            .clamp(1, MAX_ATTACHMENT_BYTES);
+        let mut file =
+            File::open(path).map_err(|e| format!("failed to open attachment file: {e}"))?;
+        let mut bytes = Vec::new();
+        file.by_ref()
+            .take(limit + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|e| format!("failed to read attachment file: {e}"))?;
+        truncated = bytes.len() as u64 > limit;
+        if truncated {
+            bytes.truncate(limit as usize);
+        }
+        content = Some(String::from_utf8_lossy(&bytes).into_owned());
     }
-    let content = String::from_utf8_lossy(&bytes).into_owned();
+
     Ok(AttachmentFilePayload {
         name,
         path: path.to_string_lossy().to_string(),
         size: metadata.len(),
+        mime,
         content,
+        data_url,
         truncated,
     })
+}
+
+fn attachment_mime_for_path(path: &Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        "gif" => "image/gif",
+        "md" | "markdown" => "text/markdown",
+        "json" => "application/json",
+        "csv" => "text/csv",
+        "html" | "htm" => "text/html",
+        "css" => "text/css",
+        "js" | "jsx" | "ts" | "tsx" | "rs" | "py" | "go" | "java" | "c" | "cpp" | "h"
+        | "hpp" | "toml" | "yaml" | "yml" | "xml" | "txt" => "text/plain",
+        _ => "application/octet-stream",
+    }
+}
+
+fn attachment_is_image_mime(mime: &str) -> bool {
+    matches!(mime, "image/png" | "image/jpeg" | "image/webp" | "image/gif")
+}
+
+fn attachment_is_text_like_mime(mime: &str) -> bool {
+    mime.starts_with("text/")
+        || matches!(
+            mime,
+            "application/json" | "application/xml" | "application/javascript"
+        )
 }
 
 fn resolve_workspace_attachment_path(
@@ -2875,7 +2935,36 @@ mod artifact_save_tests {
             resolve_workspace_attachment_path(root.to_str().unwrap(), "notes/brief.md").unwrap();
         let payload = read_attachment_file_blocking(&path, Some(MAX_ATTACHMENT_BYTES)).unwrap();
         assert_eq!(payload.name, "brief.md");
-        assert_eq!(payload.content, "hello");
+        assert_eq!(payload.mime, "text/markdown");
+        assert_eq!(payload.content.as_deref(), Some("hello"));
+        assert!(payload.data_url.is_none());
+
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn attachment_reader_returns_image_data_url_without_text() {
+        let root = std::env::temp_dir().join(format!(
+            "milim-image-attachment-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let image = root.join("screen.png");
+        fs::write(&image, [0_u8, 1, 2]).unwrap();
+
+        let payload = read_attachment_file_blocking(&image, Some(MAX_ATTACHMENT_BYTES)).unwrap();
+        assert_eq!(payload.name, "screen.png");
+        assert_eq!(payload.mime, "image/png");
+        assert!(payload.content.is_none());
+        assert_eq!(
+            payload.data_url.as_deref(),
+            Some("data:image/png;base64,AAEC")
+        );
+        assert!(!payload.truncated);
 
         fs::remove_dir_all(root).ok();
     }

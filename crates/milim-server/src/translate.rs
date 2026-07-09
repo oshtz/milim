@@ -5,8 +5,8 @@ use milim_core::api::anthropic::{
 };
 use milim_core::api::ollama::{OllamaChatRequest, OllamaMessage};
 use milim_core::api::openai::{
-    ChatCompletionRequest, ChatMessage, Content, FunctionCall, ReasoningEffort, Tool, ToolCall,
-    ToolFunction,
+    ChatCompletionRequest, ChatMessage, Content, ContentPart, FunctionCall, ImageUrl,
+    ReasoningEffort, Tool, ToolCall, ToolFunction,
 };
 use milim_inference::{CompletionRequest, SamplingParams};
 use serde_json::Value;
@@ -61,13 +61,37 @@ pub fn ollama_to_completion(req: OllamaChatRequest) -> CompletionRequest {
 }
 
 fn ollama_message(m: OllamaMessage) -> ChatMessage {
+    let content = match m.images {
+        Some(images) if !images.is_empty() => {
+            let mut parts = Vec::new();
+            if !m.content.is_empty() {
+                parts.push(ContentPart::Text { text: m.content });
+            }
+            parts.extend(images.into_iter().map(|image| ContentPart::ImageUrl {
+                image_url: ImageUrl {
+                    url: ollama_image_url(image),
+                    detail: None,
+                },
+            }));
+            Content::Parts(parts)
+        }
+        _ => Content::Text(m.content),
+    };
     ChatMessage {
         role: m.role,
-        content: Some(milim_core::api::openai::Content::Text(m.content)),
+        content: Some(content),
         name: None,
         tool_calls: m.tool_calls,
         tool_call_id: None,
         reasoning_content: m.thinking,
+    }
+}
+
+fn ollama_image_url(image: String) -> String {
+    if image.trim_start().starts_with("data:image/") {
+        image
+    } else {
+        format!("data:image/png;base64,{image}")
     }
 }
 
@@ -292,6 +316,26 @@ mod tests {
         assert_eq!(c.sampling.temperature, Some(0.2));
         assert_eq!(c.sampling.max_tokens, Some(64));
         assert_eq!(c.sampling.stop, vec!["<END>".to_string()]);
+    }
+
+    #[test]
+    fn maps_ollama_images_to_multimodal_parts() {
+        let req: OllamaChatRequest = serde_json::from_str(
+            r#"{"model":"llava","messages":[{"role":"user","content":"what is this?","images":["AAAA"]}]}"#,
+        )
+        .unwrap();
+        let c = ollama_to_completion(req);
+        let Some(Content::Parts(parts)) = &c.messages[0].content else {
+            panic!("expected multimodal parts");
+        };
+        assert_eq!(parts.len(), 2);
+        assert!(matches!(parts[0], ContentPart::Text { .. }));
+        match &parts[1] {
+            ContentPart::ImageUrl { image_url } => {
+                assert_eq!(image_url.url, "data:image/png;base64,AAAA");
+            }
+            _ => panic!("expected image part"),
+        }
     }
 
     #[test]

@@ -153,8 +153,7 @@ pub fn attachments_prompt_context(attachments: &[ScheduleAttachment]) -> String 
                 || attachment.mime.to_lowercase().starts_with("image/");
             let body = content.map(ToString::to_string).unwrap_or_else(|| {
                 if image_note {
-                    "[Image preview is available in the desktop UI. No OCR text was extracted.]"
-                        .to_string()
+                    "[Image attachment is available in Milim, but this text-only scheduled prompt cannot receive image pixels.]".to_string()
                 } else {
                     "[No text content available for this attachment.]".to_string()
                 }

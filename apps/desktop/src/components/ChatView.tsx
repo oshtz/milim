@@ -568,7 +568,7 @@ async function browserFileAttachment(file: File): Promise<ChatAttachment> {
     textLike
       ? file.slice(0, MAX_ATTACHMENT_BYTES).text()
       : Promise.resolve(undefined),
-    readBrowserAttachmentDataUrl(file),
+    readBrowserAttachmentDataUrl(file, mime),
   ]);
   return {
     id: attachmentId(),
@@ -579,15 +579,18 @@ async function browserFileAttachment(file: File): Promise<ChatAttachment> {
     dataUrl,
     truncated: textLike
       ? file.size > MAX_ATTACHMENT_BYTES
-      : file.type.startsWith("image/")
+      : mime.startsWith("image/")
         ? file.size > MAX_ATTACHMENT_IMAGE_PREVIEW_BYTES
         : false,
   };
 }
 
-function readBrowserAttachmentDataUrl(file: File): Promise<string | undefined> {
+function readBrowserAttachmentDataUrl(
+  file: File,
+  mime: string,
+): Promise<string | undefined> {
   if (
-    !file.type.startsWith("image/") ||
+    !mime.startsWith("image/") ||
     file.size > MAX_ATTACHMENT_IMAGE_PREVIEW_BYTES
   ) {
     return Promise.resolve(undefined);

@@ -16,7 +16,7 @@ export interface WireChatMessage {
 
 export function attachmentsToPromptContext(
   attachments?: ChatAttachment[],
-  imageNote = "[Image preview is available in the desktop UI. No OCR text was extracted.]",
+  imageNote = "[Image attachment is available in Milim, but this text-only view cannot receive image pixels.]",
 ): string {
   if (!attachments?.length) return "";
   const blocks = attachments.map((attachment) => {
@@ -60,9 +60,12 @@ function imageAttachments(attachments?: ChatAttachment[]): ChatAttachment[] {
 
 function wireImageMessageText(message: ChatMessage): string {
   if (message.approval) return "";
+  const textAttachments = (message.attachments ?? []).filter(
+    (attachment) => !attachment.dataUrl || attachment.content?.trimEnd(),
+  );
   const attachmentContext = attachmentsToPromptContext(
-    message.attachments,
-    "[Image attached as an image_url content part.]",
+    textAttachments,
+    "",
   );
   if (!attachmentContext) return message.content;
   return message.content

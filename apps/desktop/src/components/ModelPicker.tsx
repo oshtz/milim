@@ -8,7 +8,7 @@ import { featureVisibleInMode } from "../ui/features";
 import { useUiPreferences } from "../ui/store";
 import { Bolt, Check, Eye, Image, PlusSquare, Search, Sparkles } from "./icons";
 
-type ModelCap = "vision" | "reasoning" | "fast" | "image" | "video";
+type ModelCap = "vision" | "tools" | "reasoning" | "fast" | "image" | "video";
 
 /** Heuristic capability tags from the model id, plus explicit media metadata. */
 function caps(model: ModelInfo): ModelCap[] {
@@ -16,6 +16,7 @@ function caps(model: ModelInfo): ModelCap[] {
   const s = id.toLowerCase();
   const out: ModelCap[] = [];
   if (model.capabilities?.imageInput) out.push("vision");
+  if (model.capabilities?.toolUse) out.push("tools");
   if (model.capabilities?.imageOutput) out.push("image");
   if (model.capabilities?.videoOutput) out.push("video");
   if (/(vision|llava|pixtral|gpt-4o|gemini|claude-3|claude-opus|claude-sonnet|-vl|qwen2-vl)/.test(s) && !out.includes("vision")) out.push("vision");
@@ -51,6 +52,7 @@ function Memory({ size = 13 }: { size?: number }) {
 
 const CAP_ICON = {
   vision: { node: <Eye size={11} />, title: "Vision" },
+  tools: { node: <Plug size={11} />, title: "Tool use" },
   reasoning: { node: <Sparkles size={11} />, title: "Reasoning" },
   fast: { node: <Bolt size={11} />, title: "Fast" },
   image: { node: <Image size={11} />, title: "Image output" },

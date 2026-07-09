@@ -29,7 +29,7 @@ const message: ChatMessage = {
 const textOnly = wireMessageContent(message);
 assert.match(textOnly, /Read these\./);
 assert.match(textOnly, /hello/);
-assert.match(textOnly, /No OCR text was extracted/);
+assert.match(textOnly, /text-only view cannot receive image pixels/);
 
 const wired = wireMessages([message]);
 assert.equal(wired.length, 1);
@@ -42,8 +42,8 @@ assert.equal(parts.length, 2);
 assert.equal(parts[0].type, "text");
 assert.match(parts[0].text, /Read these\./);
 assert.match(parts[0].text, /hello/);
-assert.match(parts[0].text, /screen\.png/);
-assert.doesNotMatch(parts[0].text, /No OCR text was extracted/);
+assert.doesNotMatch(parts[0].text, /screen\.png/);
+assert.doesNotMatch(parts[0].text, /OCR/);
 assert.equal(parts[1].type, "image_url");
 assert.equal(parts[1].image_url.url, "data:image/png;base64,AAAA");
 

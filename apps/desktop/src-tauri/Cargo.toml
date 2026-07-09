@@ -32,7 +32,7 @@ native-tts-espeak = ["native-tts", "milim-server/native-tts-espeak", "milim-voic
 # enigo (input) + xcap (capture) + image/base64 (encode the screenshot as a
 # data-URI for vision models). Dormant at runtime until the user enables the
 # "Computer" toggle, which is off by default.
-computer-use = ["dep:enigo", "dep:xcap", "dep:image", "dep:base64", "dep:core-graphics"]
+computer-use = ["dep:enigo", "dep:xcap", "dep:image", "dep:core-graphics"]
 
 [dependencies]
 tauri = { version = "2", features = ["unstable", "tray-icon", "macos-private-api"] }
@@ -64,7 +64,7 @@ tokio = { version = "1", features = ["rt"] }
 enigo = { version = "0.6", optional = true }
 xcap = { version = "0.9", features = ["image"], optional = true }
 image = { version = "0.25", optional = true }
-base64 = { version = "0.22", optional = true }
+base64 = "0.22"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-graphics = { version = "0.25", optional = true }

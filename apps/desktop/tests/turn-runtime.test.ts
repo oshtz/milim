@@ -66,6 +66,28 @@ assert.match(
 );
 assert.match(codexAttachmentPrompt, /# Notes/);
 
+const codexImageAttachmentPrompt = codexPromptFromMessages([
+  {
+    role: "user",
+    content: "Look at this.",
+    attachments: [
+      {
+        id: "att-image",
+        name: "screen.png",
+        mime: "image/png",
+        size: 4,
+        dataUrl: "data:image/png;base64,AAAA",
+      },
+    ],
+  },
+]);
+assert.match(codexImageAttachmentPrompt, /Look at this\./);
+assert.match(
+  codexImageAttachmentPrompt,
+  /prompt-string-only runtime cannot receive image pixels/,
+);
+assert.doesNotMatch(codexImageAttachmentPrompt, /OCR/);
+
 const turnMetrics = createTurnMetricsCapture();
 turnMetrics.captureUsage({
   prompt_tokens: 1,

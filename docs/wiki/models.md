@@ -15,12 +15,12 @@ Model routing is provider-agnostic. The provider registry stores enabled remotes
 
 | Kind | Examples | Implements |
 |---|---|---|
-| OpenAI-compatible | OpenAI, OpenRouter, Groq, Ollama, LM Studio, vLLM, custom `/v1` servers | Chat, Responses, legacy completions, model list, embeddings, structured output, and reasoning metadata where provided. |
+| OpenAI-compatible | OpenAI, OpenRouter, Groq, Ollama, LM Studio, vLLM, custom `/v1` servers | Chat, Responses, legacy completions, model list, embeddings, structured output, and reasoning plus vision/tool-use metadata where provided. |
 | Anthropic | Claude Messages API through a stored provider key | Chat, streaming, model routing, token usage. |
 | Gemini | Google Generative Language API | Chat, model discovery, model routing. |
 | Replicate | Remote image/video provider | Media model catalog, schemas, generation status polling. |
 | fal | Remote image/video provider | Queued generation, status polling, normalized media results. |
-| Local API runtimes | Ollama and LM Studio on this machine | Chat, prompt generation, Ollama `keep_alive` lifecycle calls, Responses or completions where the runtime exposes them, model list, embeddings, structured output, and reasoning effort for supported local reasoning models. |
+| Local API runtimes | Ollama and LM Studio on this machine | Chat, prompt generation, Ollama `keep_alive` lifecycle calls, Responses or completions where the runtime exposes them, model list, embeddings, structured output, native vision/tool-use labels where available, and reasoning effort for supported local reasoning models. |
 | Codex and Claude runtime | Installed CLIs, not provider API keys | Resumable agent-style turns with visible tool events and Milim approval modes. |
 
 ## Choose a backend

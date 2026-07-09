@@ -173,6 +173,16 @@ impl RemoteBackend {
         format!("{root}/api/generate")
     }
 
+    fn ollama_show_endpoint(&self) -> String {
+        let base = self.base_url.trim_end_matches('/');
+        let root = base
+            .strip_suffix("/v1")
+            .or_else(|| base.strip_suffix("/api"))
+            .unwrap_or(base)
+            .trim_end_matches('/');
+        format!("{root}/api/show")
+    }
+
     fn lm_studio_api_endpoint(&self, path: &str) -> String {
         let base = self.base_url.trim_end_matches('/');
         let root = base
@@ -208,6 +218,12 @@ impl RemoteBackend {
                 ReasoningEffort::Low | ReasoningEffort::Medium | ReasoningEffort::High
             )
     }
+
+    fn should_use_lm_studio_native_chat(&self, req: &CompletionRequest) -> bool {
+        self.is_lm_studio()
+            && req.reasoning_effort.is_some_and(|e| !e.is_auto())
+            && !request_has_image_parts(req)
+    }
 }
 
 #[derive(Default)]
@@ -238,6 +254,7 @@ fn normalize_model_capabilities(model: &mut Model) {
         image_input: Some(has_modality(&architecture.input_modalities, "image")),
         image_output: Some(has_modality(&architecture.output_modalities, "image")),
         video_output: Some(has_modality(&architecture.output_modalities, "video")),
+        tool_use: None,
     };
     match model.capabilities.as_mut() {
         Some(capabilities) => {
@@ -249,6 +266,9 @@ fn normalize_model_capabilities(model: &mut Model) {
             }
             if capabilities.video_output.is_none() {
                 capabilities.video_output = derived.video_output;
+            }
+            if capabilities.tool_use.is_none() {
+                capabilities.tool_use = derived.tool_use;
             }
         }
         None => model.capabilities = Some(derived),
@@ -276,11 +296,21 @@ impl ModelService for RemoteBackend {
         }
         let mut parsed: ModelsResponse = resp.json().await.map_err(upstream)?;
         if self.is_lm_studio() {
-            if let Ok(reasoning) = self.lm_studio_native_reasoning_metadata().await {
+            if let Ok(metadata) = self.lm_studio_native_metadata().await {
                 for model in &mut parsed.data {
-                    if let Some(meta) = reasoning.get(&model.id).cloned() {
+                    if let Some(meta) = metadata.reasoning.get(&model.id).cloned() {
                         model.reasoning = Some(meta);
                     }
+                    if let Some(capabilities) = metadata.capabilities.get(&model.id).cloned() {
+                        merge_model_capabilities(model, capabilities);
+                    }
+                }
+            }
+        }
+        if self.is_ollama() {
+            for model in &mut parsed.data {
+                if let Ok(Some(capabilities)) = self.ollama_model_capabilities(&model.id).await {
+                    merge_model_capabilities(model, capabilities);
                 }
             }
         }
@@ -325,7 +355,7 @@ impl ModelService for RemoteBackend {
         if self.should_use_lm_studio_responses(&req) {
             return self.stream_lm_studio_responses(req).await;
         }
-        if self.is_lm_studio() && req.reasoning_effort.is_some_and(|e| !e.is_auto()) {
+        if self.should_use_lm_studio_native_chat(&req) {
             return self.stream_lm_studio_native_chat(req).await;
         }
         let body = self.build_body(&req, true);
@@ -438,6 +468,24 @@ impl ModelService for RemoteBackend {
 }
 
 impl RemoteBackend {
+    async fn ollama_model_capabilities(&self, model: &str) -> Result<Option<ModelCapabilities>> {
+        let resp = self
+            .auth(self.client.post(self.ollama_show_endpoint()))
+            .json(&json!({ "model": model }))
+            .send()
+            .await
+            .map_err(upstream)?;
+        if !resp.status().is_success() {
+            return Err(Error::Upstream(format!(
+                "{} POST /api/show -> {}",
+                self.label,
+                resp.status()
+            )));
+        }
+        let parsed: OllamaShowResponse = resp.json().await.map_err(upstream)?;
+        Ok(ollama_capabilities(&parsed.capabilities))
+    }
+
     async fn stream_legacy_completion(&self, req: CompletionRequest) -> Result<EventStream> {
         let body = build_legacy_completion_body(&req, true)?;
         let resp = self
@@ -650,9 +698,7 @@ impl RemoteBackend {
         Ok(Box::pin(stream))
     }
 
-    async fn lm_studio_native_reasoning_metadata(
-        &self,
-    ) -> Result<BTreeMap<String, ModelReasoningMetadata>> {
+    async fn lm_studio_native_metadata(&self) -> Result<LmStudioNativeMetadata> {
         let resp = self
             .auth(self.client.get(self.lm_studio_api_endpoint("models")))
             .send()
@@ -666,8 +712,53 @@ impl RemoteBackend {
             )));
         }
         let parsed: LmStudioNativeModelsResponse = resp.json().await.map_err(upstream)?;
-        Ok(lm_studio_native_reasoning_map(parsed))
+        Ok(lm_studio_native_metadata_map(parsed))
     }
+}
+
+fn merge_model_capabilities(model: &mut Model, incoming: ModelCapabilities) {
+    match model.capabilities.as_mut() {
+        Some(capabilities) => {
+            if capabilities.image_input.is_none() {
+                capabilities.image_input = incoming.image_input;
+            }
+            if capabilities.image_output.is_none() {
+                capabilities.image_output = incoming.image_output;
+            }
+            if capabilities.video_output.is_none() {
+                capabilities.video_output = incoming.video_output;
+            }
+            if capabilities.tool_use.is_none() {
+                capabilities.tool_use = incoming.tool_use;
+            }
+        }
+        None => model.capabilities = Some(incoming),
+    }
+}
+
+#[derive(Deserialize)]
+struct OllamaShowResponse {
+    #[serde(default)]
+    capabilities: Vec<String>,
+}
+
+fn ollama_capabilities(capabilities: &[String]) -> Option<ModelCapabilities> {
+    let has = |needle: &str| {
+        capabilities
+            .iter()
+            .any(|item| item.trim().eq_ignore_ascii_case(needle))
+    };
+    let image_input = has("vision").then_some(true);
+    let tool_use = (has("tools") || has("tool_use") || has("tool-use")).then_some(true);
+    if image_input.is_none() && tool_use.is_none() {
+        return None;
+    }
+    Some(ModelCapabilities {
+        image_input,
+        image_output: None,
+        video_output: None,
+        tool_use,
+    })
 }
 
 #[derive(Deserialize)]
@@ -676,7 +767,7 @@ struct LmStudioNativeModelsResponse {
     models: Vec<LmStudioNativeModel>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 struct LmStudioNativeModel {
     key: String,
     #[serde(default)]
@@ -687,13 +778,17 @@ struct LmStudioNativeModel {
     capabilities: Option<LmStudioCapabilities>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 struct LmStudioLoadedInstance {
     id: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 struct LmStudioCapabilities {
+    #[serde(default)]
+    vision: Option<bool>,
+    #[serde(default)]
+    trained_for_tool_use: Option<bool>,
     #[serde(default)]
     reasoning: Option<LmStudioReasoningCapability>,
 }
@@ -706,27 +801,71 @@ struct LmStudioReasoningCapability {
     default: Option<String>,
 }
 
-fn lm_studio_native_reasoning_map(
-    parsed: LmStudioNativeModelsResponse,
-) -> BTreeMap<String, ModelReasoningMetadata> {
-    let mut out = BTreeMap::new();
+#[derive(Default)]
+struct LmStudioNativeMetadata {
+    reasoning: BTreeMap<String, ModelReasoningMetadata>,
+    capabilities: BTreeMap<String, ModelCapabilities>,
+}
+
+fn lm_studio_native_metadata_map(parsed: LmStudioNativeModelsResponse) -> LmStudioNativeMetadata {
+    let mut out = LmStudioNativeMetadata::default();
     for model in parsed.models {
-        let Some(meta) = model
+        let ids = lm_studio_model_ids(&model);
+        if let Some(meta) = model
             .capabilities
-            .and_then(|cap| cap.reasoning)
+            .as_ref()
+            .and_then(|cap| cap.reasoning.clone())
             .and_then(lm_studio_reasoning_meta)
-        else {
-            continue;
-        };
-        out.insert(model.key.clone(), meta.clone());
-        if let Some(selected) = model.selected_variant {
-            out.insert(selected, meta.clone());
+        {
+            for id in &ids {
+                out.reasoning.insert(id.clone(), meta.clone());
+            }
         }
-        for loaded in model.loaded_instances {
-            out.insert(loaded.id, meta.clone());
+        if let Some(capabilities) = model.capabilities.as_ref().and_then(lm_studio_capabilities) {
+            for id in ids {
+                out.capabilities.insert(id, capabilities.clone());
+            }
         }
     }
     out
+}
+
+fn lm_studio_model_ids(model: &LmStudioNativeModel) -> Vec<String> {
+    let mut out = vec![model.key.clone()];
+    if let Some(selected) = &model.selected_variant {
+        out.push(selected.clone());
+    }
+    out.extend(
+        model
+            .loaded_instances
+            .iter()
+            .map(|loaded| loaded.id.clone()),
+    );
+    out
+}
+
+fn lm_studio_capabilities(capability: &LmStudioCapabilities) -> Option<ModelCapabilities> {
+    if capability.vision.is_none() && capability.trained_for_tool_use.is_none() {
+        return None;
+    }
+    Some(ModelCapabilities {
+        image_input: capability.vision,
+        image_output: None,
+        video_output: None,
+        tool_use: capability.trained_for_tool_use,
+    })
+}
+
+fn request_has_image_parts(req: &CompletionRequest) -> bool {
+    req.messages.iter().any(|message| {
+        matches!(
+            &message.content,
+            Some(Content::Parts(parts))
+                if parts
+                    .iter()
+                    .any(|part| matches!(part, ContentPart::ImageUrl { .. }))
+        )
+    })
 }
 
 fn lm_studio_reasoning_meta(
@@ -1500,7 +1639,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_lm_studio_native_reasoning_metadata() {
+    fn parses_lm_studio_native_metadata() {
         let parsed: LmStudioNativeModelsResponse = serde_json::from_value(json!({
             "models": [
                 {
@@ -1508,6 +1647,8 @@ mod tests {
                     "selected_variant": "google/gemma-4-26b-a4b@q4_k_m",
                     "loaded_instances": [{"id":"google/gemma-4-26b-a4b-loaded"}],
                     "capabilities": {
+                        "vision": true,
+                        "trained_for_tool_use": true,
                         "reasoning": {
                             "allowed_options": ["off", "on"],
                             "default": "on"
@@ -1531,25 +1672,39 @@ mod tests {
         }))
         .unwrap();
 
-        let map = lm_studio_native_reasoning_map(parsed);
-        let gemma = map.get("google/gemma-4-26b-a4b").unwrap();
+        let metadata = lm_studio_native_metadata_map(parsed);
+        let gemma = metadata.reasoning.get("google/gemma-4-26b-a4b").unwrap();
         assert_eq!(
             gemma.supported_efforts,
             vec![ReasoningEffort::None, ReasoningEffort::On]
         );
         assert_eq!(gemma.default_effort, Some(ReasoningEffort::On));
         assert_eq!(gemma.mandatory, Some(false));
-        assert!(map.contains_key("google/gemma-4-26b-a4b@q4_k_m"));
-        assert!(map.contains_key("google/gemma-4-26b-a4b-loaded"));
+        assert!(metadata
+            .reasoning
+            .contains_key("google/gemma-4-26b-a4b@q4_k_m"));
+        assert!(metadata
+            .reasoning
+            .contains_key("google/gemma-4-26b-a4b-loaded"));
+        let capabilities = metadata
+            .capabilities
+            .get("google/gemma-4-26b-a4b-loaded")
+            .unwrap();
+        assert_eq!(capabilities.image_input, Some(true));
+        assert_eq!(capabilities.tool_use, Some(true));
 
-        let deepseek = map.get("deepseek-r1").unwrap();
+        let deepseek = metadata.reasoning.get("deepseek-r1").unwrap();
         assert_eq!(deepseek.supported_efforts, vec![ReasoningEffort::On]);
         assert_eq!(deepseek.mandatory, Some(true));
-        assert!(!map.contains_key("plain"));
+        assert!(!metadata.reasoning.contains_key("plain"));
+        assert_eq!(
+            metadata.capabilities.get("plain").unwrap().image_input,
+            Some(false)
+        );
     }
 
     #[tokio::test]
-    async fn list_models_enriches_lm_studio_native_reasoning_metadata() {
+    async fn list_models_enriches_lm_studio_native_metadata() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let _server = tokio::spawn(async move {
@@ -1568,6 +1723,8 @@ mod tests {
                         "models":[{
                             "key":"deepseek-r1",
                             "capabilities":{
+                                "vision": true,
+                                "trained_for_tool_use": true,
                                 "reasoning":{
                                     "allowed_options":["on"],
                                     "default":"on"
@@ -1591,6 +1748,52 @@ mod tests {
         let reasoning = models[0].reasoning.as_ref().unwrap();
         assert_eq!(reasoning.supported_efforts, vec![ReasoningEffort::On]);
         assert_eq!(reasoning.default_effort, Some(ReasoningEffort::On));
+        let capabilities = models[0].capabilities.as_ref().unwrap();
+        assert_eq!(capabilities.image_input, Some(true));
+        assert_eq!(capabilities.tool_use, Some(true));
+    }
+
+    #[tokio::test]
+    async fn list_models_enriches_ollama_native_capabilities() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let _server = tokio::spawn(async move {
+            for _ in 0..3 {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut buf = vec![0u8; 4096];
+                let n = socket.read(&mut buf).await.unwrap();
+                let req = String::from_utf8_lossy(&buf[..n]);
+                let body = if req.starts_with("GET /v1/models ") {
+                    json!({
+                        "object":"list",
+                        "data":[
+                            {"id":"llava","object":"model","created":0,"owned_by":"ollama"},
+                            {"id":"llama3","object":"model","created":0,"owned_by":"ollama"}
+                        ]
+                    })
+                } else if req.contains(r#""model":"llava""#) {
+                    json!({"capabilities":["completion","vision","tools"]})
+                } else {
+                    json!({"capabilities":["completion"]})
+                }
+                .to_string();
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\nconnection: close\r\ncontent-length: {}\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                socket.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+
+        let backend = RemoteBackend::new("Ollama", format!("http://{addr}/v1"), None);
+        let models = backend.list_models().await.unwrap();
+        let llava = models.iter().find(|model| model.id == "llava").unwrap();
+        let capabilities = llava.capabilities.as_ref().unwrap();
+        assert_eq!(capabilities.image_input, Some(true));
+        assert_eq!(capabilities.tool_use, Some(true));
+        let llama3 = models.iter().find(|model| model.id == "llama3").unwrap();
+        assert!(llama3.capabilities.is_none());
     }
 
     #[test]
@@ -1669,6 +1872,37 @@ mod tests {
         let value = serde_json::to_value(body).unwrap();
         assert!(value.get("reasoning").is_none());
         assert_eq!(value["tools"][0]["name"], "lookup");
+    }
+
+    #[test]
+    fn lm_studio_image_reasoning_skips_text_only_native_chat() {
+        let backend = RemoteBackend::new("LM Studio", "http://localhost:1234/v1", None);
+        let mut req = empty_req();
+        req.model = "google/gemma-4-26b-a4b".into();
+        req.reasoning_effort = Some(ReasoningEffort::On);
+        req.messages = vec![milim_core::api::openai::ChatMessage {
+            role: "user".into(),
+            content: Some(Content::Parts(vec![
+                ContentPart::Text {
+                    text: "look".into(),
+                },
+                ContentPart::ImageUrl {
+                    image_url: milim_core::api::openai::ImageUrl {
+                        url: "data:image/png;base64,AAAA".into(),
+                        detail: None,
+                    },
+                },
+            ])),
+            name: None,
+            tool_calls: None,
+            tool_call_id: None,
+            reasoning_content: None,
+        }];
+
+        assert!(!backend.should_use_lm_studio_native_chat(&req));
+        assert!(!backend.should_use_lm_studio_responses(&req));
+        let body = backend.build_body(&req, true);
+        assert!(body.reasoning_effort.is_none());
     }
 
     #[test]

@@ -337,7 +337,7 @@ function attachmentsToPromptContext(
       .join(" ");
     const content = attachment.content?.trimEnd();
     const imageNote = attachment.dataUrl
-      ? "[Image preview is available in the desktop UI. No OCR text was extracted.]"
+      ? "[Image attachment is available in Milim, but this prompt-string-only runtime cannot receive image pixels.]"
       : "";
     return [
       `--- attachment ${meta} ---`,
