@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createElement, type ComponentType } from "react";
+import { createElement, type ComponentType, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createServer } from "vite";
 import type { ChatMessage, WorkspaceGitStatus } from "../src/api.js";
@@ -15,6 +15,7 @@ type QuickSummaryPanelProps = {
   onOpenGit: () => void;
   onOpenGoal: () => void;
   onFocusComposer: () => void;
+  workspaceLauncher?: ReactNode;
 };
 
 function gitStatus(patch: Partial<WorkspaceGitStatus> = {}): WorkspaceGitStatus {
@@ -186,6 +187,21 @@ try {
     }),
   );
   assert.match(missingRowsMarkup, /data-testid="quick-summary-panel"/);
+
+  const openWithLauncherMarkup = renderToStaticMarkup(
+    createElement(QuickSummaryPanel, {
+      summary: empty,
+      open: true,
+      canOpenGit: false,
+      reserveSidePanelButtonSpace: true,
+      onOpenChange: () => {},
+      onOpenGit: () => {},
+      onOpenGoal: () => {},
+      onFocusComposer: () => {},
+      workspaceLauncher: createElement("span", { "data-testid": "launcher-placeholder" }),
+    }),
+  );
+  assert.match(openWithLauncherMarkup, /data-testid="launcher-placeholder"/);
 } finally {
   await server.close();
 }

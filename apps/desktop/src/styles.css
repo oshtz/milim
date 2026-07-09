@@ -339,6 +339,111 @@ body.sidebar-pointer-dragging .session-section-title {
   cursor: default;
   opacity: 0.78;
 }
+.workspace-launcher-wrap {
+  position: relative;
+  display: grid;
+  place-items: center;
+}
+.workspace-launcher-btn {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--secondary-text);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.workspace-launcher-btn:hover,
+.workspace-launcher-btn.active {
+  background: var(--chip-hover);
+  color: var(--primary-text);
+}
+.workspace-launcher-btn.active {
+  border-color: var(--border-secondary);
+  background: var(--panel-row-active);
+}
+.workspace-launcher-quick-btn {
+  flex: none;
+}
+.menu.workspace-launcher-menu {
+  top: calc(100% + 6px);
+  right: 0;
+  bottom: auto;
+  left: auto;
+  z-index: 100;
+  width: 246px;
+  max-height: min(360px, calc(100vh - 56px));
+  min-height: 0;
+  padding: 7px;
+  border: 1px solid var(--popover-border);
+  border-radius: 7px;
+  background: var(--popover-bg);
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.28), 0 0 0 1px rgba(255, 255, 255, 0.03);
+  backdrop-filter: blur(var(--popover-blur));
+  opacity: 0;
+  overflow-y: auto;
+  pointer-events: none;
+  transform: translateX(4px) scale(0.98);
+  transform-origin: top right;
+  visibility: hidden;
+  transition: opacity 0.16s ease, transform 0.16s ease, visibility 0s linear 0.16s;
+}
+.menu.workspace-launcher-menu.open {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateX(0) scale(1);
+  visibility: visible;
+  transition: opacity 0.16s ease, transform 0.16s ease;
+}
+.workspace-launcher-wrap.quick-summary .menu.workspace-launcher-menu {
+  right: -34px;
+  width: min(286px, calc(100vw - 24px));
+  max-height: min(360px, calc(100vh - var(--titlebar-height) - 112px));
+}
+.workspace-launcher-item {
+  min-height: 32px;
+}
+.workspace-launcher-item:disabled {
+  cursor: default;
+  opacity: 0.52;
+}
+.workspace-launcher-item:disabled:hover {
+  background: transparent;
+}
+.workspace-launcher-icon {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  flex: 0 0 auto;
+  color: var(--secondary-text);
+}
+.workspace-launcher-label {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.workspace-launcher-meta {
+  flex: none;
+  color: var(--accent-light);
+  font-size: 10.5px;
+  font-weight: 650;
+}
+.workspace-launcher-state,
+.workspace-launcher-error {
+  padding: 8px;
+  color: var(--tertiary-text);
+  font-size: 12px;
+  line-height: 1.35;
+}
+.workspace-launcher-error {
+  color: var(--error);
+}
 .update-confirm-modal p {
   margin: 0;
   color: var(--secondary-text);
@@ -2681,7 +2786,7 @@ button.git-row:hover svg {
   border: 0;
   background: transparent;
 }
-.side-panel-switcher button {
+.side-panel-switcher > button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -2696,16 +2801,16 @@ button.git-row:hover svg {
   font-size: 12px;
   cursor: pointer;
 }
-.side-panel-switcher button:hover:not(:disabled) {
+.side-panel-switcher > button:hover:not(:disabled) {
   background: var(--chip-hover);
   color: var(--primary-text);
 }
-.side-panel-switcher button.active {
+.side-panel-switcher > button.active {
   border-color: var(--border-secondary);
   background: var(--panel-row-active);
   color: var(--primary-text);
 }
-.side-panel-switcher button:disabled {
+.side-panel-switcher > button:disabled {
   cursor: default;
   opacity: 0.42;
 }
@@ -2714,8 +2819,9 @@ button.git-row:hover svg {
   top: calc(var(--titlebar-height) + 14px);
   right: 0;
   z-index: 18;
-  --quick-summary-right: 12px;
-  width: min(348px, calc(100% - 16px));
+  --quick-summary-right: 22px;
+  --quick-summary-drawer-width: min(286px, calc(100% - var(--quick-summary-right) - 46px));
+  width: min(382px, calc(100% - 16px));
   pointer-events: none;
 }
 .quick-summary-pull-tab {
@@ -2725,6 +2831,17 @@ button.git-row:hover svg {
   z-index: 2;
   pointer-events: auto;
   transition: right 0.16s ease, background 0.15s ease, color 0.15s ease, opacity 0.16s ease;
+}
+.quick-summary-launcher-slot {
+  position: absolute;
+  top: 0;
+  right: calc(var(--quick-summary-right) + 34px);
+  z-index: 2;
+  pointer-events: auto;
+  transition: right 0.16s ease;
+}
+.quick-summary-pull.expanded .quick-summary-launcher-slot {
+  right: calc(var(--quick-summary-right) + var(--quick-summary-drawer-width) + 4px);
 }
 .quick-summary-pull.with-side-panel-button {
   --quick-summary-right: 50px;
@@ -2736,13 +2853,13 @@ button.git-row:hover svg {
   position: absolute;
   top: 0;
   right: var(--quick-summary-right);
-  width: min(286px, calc(100% - var(--quick-summary-right) - 12px));
+  width: var(--quick-summary-drawer-width);
   max-height: min(360px, calc(100vh - var(--titlebar-height) - 112px));
   min-height: 0;
   border: 1px solid var(--popover-border);
   border-radius: 7px;
   background: var(--popover-bg);
-  box-shadow: var(--popover-shadow);
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.28), 0 0 0 1px rgba(255, 255, 255, 0.03);
   backdrop-filter: blur(var(--popover-blur));
   opacity: 0;
   overflow: hidden;
@@ -4179,7 +4296,9 @@ html[data-dark="true"] .preview-control-cursor {
   .preview-panel,
   .preview-panel.closing,
   .quick-summary-pull-tab,
-  .quick-summary-drawer {
+  .quick-summary-launcher-slot,
+  .quick-summary-drawer,
+  .workspace-launcher-menu {
     animation: none;
     filter: none;
     transform: none;

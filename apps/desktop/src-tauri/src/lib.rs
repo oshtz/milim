@@ -163,10 +163,40 @@ struct HarnessSkillCandidate {
     skill_md: String,
 }
 
+#[derive(serde::Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+struct WorkspaceLauncherPayload {
+    id: String,
+    label: String,
+    available: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    recommended_reason: Option<String>,
+}
+
 #[derive(Clone, Copy, Debug)]
 enum ArtifactOpenTarget {
     File,
     Folder,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WorkspaceLauncherId {
+    Vscode,
+    Zed,
+    FileManager,
+    Terminal,
+    GitBash,
+    Wsl,
+    AndroidStudio,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WorkspaceLauncherPlatform {
+    Windows,
+    Macos,
+    Linux,
 }
 
 #[derive(Debug)]
@@ -174,6 +204,8 @@ struct ArtifactOpenCommandSpec {
     program: String,
     args: Vec<String>,
 }
+
+type WorkspaceLauncherCommandSpec = ArtifactOpenCommandSpec;
 
 #[derive(serde::Serialize, Debug)]
 struct MobileTailscaleStatus {
@@ -1362,6 +1394,51 @@ fn open_artifact_location_blocking(
 }
 
 #[tauri::command]
+async fn list_workspace_launchers(
+    workspace: String,
+) -> std::result::Result<Vec<WorkspaceLauncherPayload>, String> {
+    tokio::task::spawn_blocking(move || list_workspace_launchers_blocking(&workspace))
+        .await
+        .map_err(|e| format!("workspace launcher list task failed: {e}"))?
+}
+
+fn list_workspace_launchers_blocking(
+    workspace: &str,
+) -> std::result::Result<Vec<WorkspaceLauncherPayload>, String> {
+    let root = validate_workspace_launcher_root(workspace)?;
+    Ok(workspace_launcher_ids()
+        .iter()
+        .map(|id| workspace_launcher_payload(&root, *id))
+        .collect())
+}
+
+#[tauri::command]
+async fn open_workspace_launcher(
+    workspace: String,
+    launcher_id: String,
+) -> std::result::Result<(), String> {
+    tokio::task::spawn_blocking(move || open_workspace_launcher_blocking(&workspace, &launcher_id))
+        .await
+        .map_err(|e| format!("workspace launcher task failed: {e}"))?
+}
+
+fn open_workspace_launcher_blocking(
+    workspace: &str,
+    launcher_id: &str,
+) -> std::result::Result<(), String> {
+    let root = validate_workspace_launcher_root(workspace)?;
+    let id = parse_workspace_launcher_id(launcher_id)?;
+    let platform = current_workspace_launcher_platform();
+    let spec = workspace_launcher_command(&root, id, platform)?;
+    let mut cmd = Command::new(&spec.program);
+    cmd.args(&spec.args);
+    milim_core::proc::hide_console(&mut cmd)
+        .spawn()
+        .map_err(|e| format!("failed to open workspace: {e}"))?;
+    Ok(())
+}
+
+#[tauri::command]
 async fn open_external_url(url: String) -> std::result::Result<(), String> {
     tokio::task::spawn_blocking(move || open_external_url_blocking(url))
         .await
@@ -1768,6 +1845,457 @@ fn artifact_open_command(
         program: "xdg-open".to_string(),
         args: vec![target_path.to_string_lossy().to_string()],
     })
+}
+
+fn validate_workspace_launcher_root(workspace: &str) -> std::result::Result<PathBuf, String> {
+    let workspace = workspace.trim();
+    if workspace.is_empty() {
+        return Err("workspace folder is required".to_string());
+    }
+    let root = PathBuf::from(workspace);
+    let metadata =
+        std::fs::metadata(&root).map_err(|e| format!("workspace folder is not available: {e}"))?;
+    if !metadata.is_dir() {
+        return Err("workspace launcher requires a directory".to_string());
+    }
+    Ok(root)
+}
+
+fn workspace_launcher_ids() -> [WorkspaceLauncherId; 7] {
+    [
+        WorkspaceLauncherId::Vscode,
+        WorkspaceLauncherId::Zed,
+        WorkspaceLauncherId::FileManager,
+        WorkspaceLauncherId::Terminal,
+        WorkspaceLauncherId::GitBash,
+        WorkspaceLauncherId::Wsl,
+        WorkspaceLauncherId::AndroidStudio,
+    ]
+}
+
+fn parse_workspace_launcher_id(id: &str) -> std::result::Result<WorkspaceLauncherId, String> {
+    match id.trim() {
+        "vscode" => Ok(WorkspaceLauncherId::Vscode),
+        "zed" => Ok(WorkspaceLauncherId::Zed),
+        "file_manager" => Ok(WorkspaceLauncherId::FileManager),
+        "terminal" => Ok(WorkspaceLauncherId::Terminal),
+        "git_bash" => Ok(WorkspaceLauncherId::GitBash),
+        "wsl" => Ok(WorkspaceLauncherId::Wsl),
+        "android_studio" => Ok(WorkspaceLauncherId::AndroidStudio),
+        _ => Err("unknown workspace launcher".to_string()),
+    }
+}
+
+fn workspace_launcher_id(id: WorkspaceLauncherId) -> &'static str {
+    match id {
+        WorkspaceLauncherId::Vscode => "vscode",
+        WorkspaceLauncherId::Zed => "zed",
+        WorkspaceLauncherId::FileManager => "file_manager",
+        WorkspaceLauncherId::Terminal => "terminal",
+        WorkspaceLauncherId::GitBash => "git_bash",
+        WorkspaceLauncherId::Wsl => "wsl",
+        WorkspaceLauncherId::AndroidStudio => "android_studio",
+    }
+}
+
+fn workspace_launcher_label(
+    id: WorkspaceLauncherId,
+    platform: WorkspaceLauncherPlatform,
+) -> &'static str {
+    match id {
+        WorkspaceLauncherId::Vscode => "VS Code",
+        WorkspaceLauncherId::Zed => "Zed",
+        WorkspaceLauncherId::FileManager => match platform {
+            WorkspaceLauncherPlatform::Macos => "Finder",
+            _ => "File Explorer",
+        },
+        WorkspaceLauncherId::Terminal => "Terminal",
+        WorkspaceLauncherId::GitBash => "Git Bash",
+        WorkspaceLauncherId::Wsl => "WSL",
+        WorkspaceLauncherId::AndroidStudio => "Android Studio",
+    }
+}
+
+fn current_workspace_launcher_platform() -> WorkspaceLauncherPlatform {
+    if cfg!(windows) {
+        WorkspaceLauncherPlatform::Windows
+    } else if cfg!(target_os = "macos") {
+        WorkspaceLauncherPlatform::Macos
+    } else {
+        WorkspaceLauncherPlatform::Linux
+    }
+}
+
+fn workspace_launcher_payload(root: &Path, id: WorkspaceLauncherId) -> WorkspaceLauncherPayload {
+    let platform = current_workspace_launcher_platform();
+    match workspace_launcher_command(root, id, platform) {
+        Ok(_) => WorkspaceLauncherPayload {
+            id: workspace_launcher_id(id).to_string(),
+            label: workspace_launcher_label(id, platform).to_string(),
+            available: true,
+            reason: None,
+            recommended_reason: workspace_launcher_marker_reason(root, id),
+        },
+        Err(reason) => WorkspaceLauncherPayload {
+            id: workspace_launcher_id(id).to_string(),
+            label: workspace_launcher_label(id, platform).to_string(),
+            available: false,
+            reason: Some(reason),
+            recommended_reason: None,
+        },
+    }
+}
+
+fn workspace_launcher_marker_reason(root: &Path, id: WorkspaceLauncherId) -> Option<String> {
+    let marker = match id {
+        WorkspaceLauncherId::Zed => ".zed",
+        WorkspaceLauncherId::Vscode => ".vscode",
+        _ => return None,
+    };
+    root.join(marker)
+        .is_dir()
+        .then(|| format!("Workspace has {marker} settings"))
+}
+
+fn workspace_launcher_command(
+    root: &Path,
+    id: WorkspaceLauncherId,
+    platform: WorkspaceLauncherPlatform,
+) -> std::result::Result<WorkspaceLauncherCommandSpec, String> {
+    workspace_launcher_command_for_platform(root, id, platform, find_program)
+}
+
+fn workspace_launcher_command_for_platform<F>(
+    root: &Path,
+    id: WorkspaceLauncherId,
+    platform: WorkspaceLauncherPlatform,
+    resolver: F,
+) -> std::result::Result<WorkspaceLauncherCommandSpec, String>
+where
+    F: Fn(&str) -> Option<PathBuf>,
+{
+    let path = root.to_string_lossy().to_string();
+    match platform {
+        WorkspaceLauncherPlatform::Windows => {
+            workspace_launcher_windows_command(&path, id, resolver)
+        }
+        WorkspaceLauncherPlatform::Macos => workspace_launcher_macos_command(&path, id, resolver),
+        WorkspaceLauncherPlatform::Linux => workspace_launcher_linux_command(&path, id, resolver),
+    }
+}
+
+fn workspace_launcher_windows_command<F>(
+    path: &str,
+    id: WorkspaceLauncherId,
+    resolver: F,
+) -> std::result::Result<WorkspaceLauncherCommandSpec, String>
+where
+    F: Fn(&str) -> Option<PathBuf>,
+{
+    match id {
+        WorkspaceLauncherId::FileManager => Ok(WorkspaceLauncherCommandSpec {
+            program: "explorer".to_string(),
+            args: vec![path.to_string()],
+        }),
+        WorkspaceLauncherId::Terminal => resolver("wt.exe")
+            .or_else(|| resolver("wt"))
+            .map(|program| WorkspaceLauncherCommandSpec {
+                program: program.to_string_lossy().to_string(),
+                args: vec!["-d".to_string(), path.to_string()],
+            })
+            .ok_or_else(|| "Windows Terminal was not found".to_string()),
+        WorkspaceLauncherId::Vscode => resolver("code.cmd")
+            .or_else(|| resolver("code.exe"))
+            .or_else(|| resolver("code"))
+            .or_else(common_windows_vscode_path)
+            .map(|program| WorkspaceLauncherCommandSpec {
+                program: program.to_string_lossy().to_string(),
+                args: vec![path.to_string()],
+            })
+            .ok_or_else(|| "VS Code command was not found".to_string()),
+        WorkspaceLauncherId::Zed => resolver("zed.exe")
+            .or_else(|| resolver("zed.cmd"))
+            .or_else(|| resolver("zed"))
+            .or_else(common_windows_zed_path)
+            .map(|program| WorkspaceLauncherCommandSpec {
+                program: program.to_string_lossy().to_string(),
+                args: vec![path.to_string()],
+            })
+            .ok_or_else(|| "Zed command was not found".to_string()),
+        WorkspaceLauncherId::GitBash => resolver("git-bash.exe")
+            .or_else(common_windows_git_bash_path)
+            .map(|program| WorkspaceLauncherCommandSpec {
+                program: program.to_string_lossy().to_string(),
+                args: vec![format!("--cd={path}")],
+            })
+            .ok_or_else(|| "Git Bash was not found".to_string()),
+        WorkspaceLauncherId::Wsl => resolver("wsl.exe")
+            .or_else(|| resolver("wsl"))
+            .or_else(common_windows_wsl_path)
+            .map(|program| WorkspaceLauncherCommandSpec {
+                program: program.to_string_lossy().to_string(),
+                args: vec!["--cd".to_string(), path.to_string()],
+            })
+            .ok_or_else(|| "WSL was not found".to_string()),
+        WorkspaceLauncherId::AndroidStudio => resolver("studio64.exe")
+            .or_else(|| resolver("studio.exe"))
+            .or_else(common_windows_android_studio_path)
+            .map(|program| WorkspaceLauncherCommandSpec {
+                program: program.to_string_lossy().to_string(),
+                args: vec![path.to_string()],
+            })
+            .ok_or_else(|| "Android Studio was not found".to_string()),
+    }
+}
+
+fn workspace_launcher_macos_command<F>(
+    path: &str,
+    id: WorkspaceLauncherId,
+    resolver: F,
+) -> std::result::Result<WorkspaceLauncherCommandSpec, String>
+where
+    F: Fn(&str) -> Option<PathBuf>,
+{
+    match id {
+        WorkspaceLauncherId::FileManager => Ok(open_app_spec(path, None)),
+        WorkspaceLauncherId::Terminal => Ok(open_app_spec(path, Some("Terminal"))),
+        WorkspaceLauncherId::Vscode => resolver("code")
+            .map(|program| WorkspaceLauncherCommandSpec {
+                program: program.to_string_lossy().to_string(),
+                args: vec![path.to_string()],
+            })
+            .or_else(|| {
+                macos_app_exists("Visual Studio Code")
+                    .then(|| open_app_spec(path, Some("Visual Studio Code")))
+            })
+            .ok_or_else(|| "VS Code was not found".to_string()),
+        WorkspaceLauncherId::Zed => resolver("zed")
+            .map(|program| WorkspaceLauncherCommandSpec {
+                program: program.to_string_lossy().to_string(),
+                args: vec![path.to_string()],
+            })
+            .or_else(|| macos_app_exists("Zed").then(|| open_app_spec(path, Some("Zed"))))
+            .ok_or_else(|| "Zed was not found".to_string()),
+        WorkspaceLauncherId::AndroidStudio => resolver("studio")
+            .or_else(|| resolver("android-studio"))
+            .map(|program| WorkspaceLauncherCommandSpec {
+                program: program.to_string_lossy().to_string(),
+                args: vec![path.to_string()],
+            })
+            .or_else(|| {
+                macos_app_exists("Android Studio")
+                    .then(|| open_app_spec(path, Some("Android Studio")))
+            })
+            .ok_or_else(|| "Android Studio was not found".to_string()),
+        WorkspaceLauncherId::GitBash => Err("Git Bash is only supported on Windows".to_string()),
+        WorkspaceLauncherId::Wsl => Err("WSL is only supported on Windows".to_string()),
+    }
+}
+
+fn workspace_launcher_linux_command<F>(
+    path: &str,
+    id: WorkspaceLauncherId,
+    resolver: F,
+) -> std::result::Result<WorkspaceLauncherCommandSpec, String>
+where
+    F: Fn(&str) -> Option<PathBuf>,
+{
+    match id {
+        WorkspaceLauncherId::FileManager => resolver("xdg-open")
+            .map(|program| WorkspaceLauncherCommandSpec {
+                program: program.to_string_lossy().to_string(),
+                args: vec![path.to_string()],
+            })
+            .ok_or_else(|| "xdg-open was not found".to_string()),
+        WorkspaceLauncherId::Terminal => linux_terminal_spec(path, resolver),
+        WorkspaceLauncherId::Vscode => resolver("code")
+            .map(|program| WorkspaceLauncherCommandSpec {
+                program: program.to_string_lossy().to_string(),
+                args: vec![path.to_string()],
+            })
+            .ok_or_else(|| "VS Code command was not found".to_string()),
+        WorkspaceLauncherId::Zed => resolver("zed")
+            .map(|program| WorkspaceLauncherCommandSpec {
+                program: program.to_string_lossy().to_string(),
+                args: vec![path.to_string()],
+            })
+            .ok_or_else(|| "Zed command was not found".to_string()),
+        WorkspaceLauncherId::AndroidStudio => resolver("android-studio")
+            .or_else(|| resolver("studio.sh"))
+            .map(|program| WorkspaceLauncherCommandSpec {
+                program: program.to_string_lossy().to_string(),
+                args: vec![path.to_string()],
+            })
+            .ok_or_else(|| "Android Studio was not found".to_string()),
+        WorkspaceLauncherId::GitBash => Err("Git Bash is only supported on Windows".to_string()),
+        WorkspaceLauncherId::Wsl => Err("WSL is only supported on Windows".to_string()),
+    }
+}
+
+fn open_app_spec(path: &str, app_name: Option<&str>) -> WorkspaceLauncherCommandSpec {
+    let mut args = Vec::new();
+    if let Some(app_name) = app_name {
+        args.push("-a".to_string());
+        args.push(app_name.to_string());
+    }
+    args.push(path.to_string());
+    WorkspaceLauncherCommandSpec {
+        program: "open".to_string(),
+        args,
+    }
+}
+
+fn linux_terminal_spec<F>(
+    path: &str,
+    resolver: F,
+) -> std::result::Result<WorkspaceLauncherCommandSpec, String>
+where
+    F: Fn(&str) -> Option<PathBuf>,
+{
+    if let Some(program) = resolver("x-terminal-emulator") {
+        return Ok(WorkspaceLauncherCommandSpec {
+            program: program.to_string_lossy().to_string(),
+            args: vec!["--working-directory".to_string(), path.to_string()],
+        });
+    }
+    if let Some(program) = resolver("gnome-terminal") {
+        return Ok(WorkspaceLauncherCommandSpec {
+            program: program.to_string_lossy().to_string(),
+            args: vec!["--working-directory".to_string(), path.to_string()],
+        });
+    }
+    if let Some(program) = resolver("konsole") {
+        return Ok(WorkspaceLauncherCommandSpec {
+            program: program.to_string_lossy().to_string(),
+            args: vec!["--workdir".to_string(), path.to_string()],
+        });
+    }
+    if let Some(program) = resolver("xfce4-terminal") {
+        return Ok(WorkspaceLauncherCommandSpec {
+            program: program.to_string_lossy().to_string(),
+            args: vec!["--working-directory".to_string(), path.to_string()],
+        });
+    }
+    Err("terminal command was not found".to_string())
+}
+
+fn find_program(name: &str) -> Option<PathBuf> {
+    let direct = PathBuf::from(name);
+    if direct.components().count() > 1 && direct.is_file() {
+        return Some(direct);
+    }
+    let paths = std::env::var_os("PATH")?;
+    let extensions: Vec<String> = if cfg!(windows) && Path::new(name).extension().is_none() {
+        std::env::var_os("PATHEXT")
+            .map(|value| {
+                value
+                    .to_string_lossy()
+                    .split(';')
+                    .filter(|item| !item.trim().is_empty())
+                    .map(|item| item.trim().to_string())
+                    .collect()
+            })
+            .unwrap_or_else(|| {
+                vec![
+                    ".COM".to_string(),
+                    ".EXE".to_string(),
+                    ".BAT".to_string(),
+                    ".CMD".to_string(),
+                ]
+            })
+    } else {
+        vec!["".to_string()]
+    };
+    for dir in std::env::split_paths(&paths) {
+        for ext in &extensions {
+            let candidate = dir.join(format!("{name}{ext}"));
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
+fn env_path(name: &str) -> Option<PathBuf> {
+    std::env::var_os(name).map(PathBuf::from)
+}
+
+fn existing_path(path: PathBuf) -> Option<PathBuf> {
+    path.is_file().then_some(path)
+}
+
+fn common_windows_vscode_path() -> Option<PathBuf> {
+    env_path("LOCALAPPDATA")
+        .map(|root| {
+            root.join("Programs")
+                .join("Microsoft VS Code")
+                .join("Code.exe")
+        })
+        .and_then(existing_path)
+        .or_else(|| {
+            env_path("ProgramFiles")
+                .map(|root| root.join("Microsoft VS Code").join("Code.exe"))
+                .and_then(existing_path)
+        })
+}
+
+fn common_windows_zed_path() -> Option<PathBuf> {
+    env_path("LOCALAPPDATA")
+        .map(|root| root.join("Programs").join("Zed").join("Zed.exe"))
+        .and_then(existing_path)
+}
+
+fn common_windows_git_bash_path() -> Option<PathBuf> {
+    env_path("ProgramFiles")
+        .map(|root| root.join("Git").join("git-bash.exe"))
+        .and_then(existing_path)
+        .or_else(|| {
+            env_path("ProgramFiles(x86)")
+                .map(|root| root.join("Git").join("git-bash.exe"))
+                .and_then(existing_path)
+        })
+}
+
+fn common_windows_wsl_path() -> Option<PathBuf> {
+    env_path("SystemRoot")
+        .map(|root| root.join("System32").join("wsl.exe"))
+        .and_then(existing_path)
+}
+
+fn common_windows_android_studio_path() -> Option<PathBuf> {
+    env_path("ProgramFiles")
+        .map(|root| {
+            root.join("Android")
+                .join("Android Studio")
+                .join("bin")
+                .join("studio64.exe")
+        })
+        .and_then(existing_path)
+        .or_else(|| {
+            env_path("ProgramFiles")
+                .map(|root| {
+                    root.join("Android")
+                        .join("Android Studio")
+                        .join("bin")
+                        .join("studio.exe")
+                })
+                .and_then(existing_path)
+        })
+}
+
+fn macos_app_exists(name: &str) -> bool {
+    let app_name = format!("{name}.app");
+    [
+        PathBuf::from("/Applications").join(&app_name),
+        std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_default()
+            .join("Applications")
+            .join(&app_name),
+    ]
+    .iter()
+    .any(|path| path.is_dir())
 }
 
 #[cfg(feature = "computer-use")]
@@ -2873,6 +3401,8 @@ pub fn run() {
             preview_artifact_file,
             artifact_file_status,
             open_artifact_location,
+            list_workspace_launchers,
+            open_workspace_launcher,
             open_external_url,
             discover_harness_imports,
             voice_type_text,
@@ -3378,6 +3908,133 @@ args=['mcp-obsidian']
             spec.args.iter().any(|arg| arg.contains("open-target.txt")),
             "open command must pass the file path as a process argument"
         );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn workspace_launcher_rejects_invalid_workspace_roots() {
+        assert!(validate_workspace_launcher_root("").is_err());
+
+        let missing = std::env::temp_dir().join(format!(
+            "milim-missing-workspace-launcher-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        assert!(validate_workspace_launcher_root(missing.to_str().unwrap()).is_err());
+
+        let file = std::env::temp_dir().join(format!(
+            "milim-workspace-launcher-file-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&file, "not a dir").unwrap();
+        assert!(validate_workspace_launcher_root(file.to_str().unwrap()).is_err());
+        let _ = std::fs::remove_file(file);
+    }
+
+    #[test]
+    fn workspace_launcher_rejects_unknown_launcher_id() {
+        assert!(parse_workspace_launcher_id("unknown").is_err());
+        assert_eq!(
+            parse_workspace_launcher_id("vscode").unwrap(),
+            WorkspaceLauncherId::Vscode
+        );
+    }
+
+    #[test]
+    fn workspace_launcher_file_manager_command_uses_workspace_arg() {
+        let root = Path::new(r"C:\workspaces\milim");
+        let spec = workspace_launcher_command_for_platform(
+            root,
+            WorkspaceLauncherId::FileManager,
+            WorkspaceLauncherPlatform::Windows,
+            |_| None,
+        )
+        .unwrap();
+        assert_eq!(spec.program, "explorer");
+        assert_eq!(spec.args, vec![r"C:\workspaces\milim".to_string()]);
+    }
+
+    #[test]
+    fn workspace_launcher_editor_command_passes_path_as_arg() {
+        let root = Path::new(r"C:\workspaces\milim");
+        let spec = workspace_launcher_command_for_platform(
+            root,
+            WorkspaceLauncherId::Vscode,
+            WorkspaceLauncherPlatform::Windows,
+            |name| (name == "code.cmd").then(|| PathBuf::from(r"C:\Tools\Code\code.cmd")),
+        )
+        .unwrap();
+        assert_eq!(spec.program, r"C:\Tools\Code\code.cmd");
+        assert_eq!(spec.args, vec![r"C:\workspaces\milim".to_string()]);
+    }
+
+    #[test]
+    fn workspace_launcher_windows_specs_cover_terminal_git_bash_and_wsl() {
+        let root = Path::new(r"C:\workspaces\milim");
+        let resolver = |name: &str| match name {
+            "wt.exe" => Some(PathBuf::from(r"C:\Windows\System32\wt.exe")),
+            "git-bash.exe" => Some(PathBuf::from(r"C:\Program Files\Git\git-bash.exe")),
+            "wsl.exe" => Some(PathBuf::from(r"C:\Windows\System32\wsl.exe")),
+            _ => None,
+        };
+
+        let terminal = workspace_launcher_command_for_platform(
+            root,
+            WorkspaceLauncherId::Terminal,
+            WorkspaceLauncherPlatform::Windows,
+            resolver,
+        )
+        .unwrap();
+        assert_eq!(terminal.program, r"C:\Windows\System32\wt.exe");
+        assert_eq!(
+            terminal.args,
+            vec!["-d".to_string(), r"C:\workspaces\milim".to_string()]
+        );
+
+        let git_bash = workspace_launcher_command_for_platform(
+            root,
+            WorkspaceLauncherId::GitBash,
+            WorkspaceLauncherPlatform::Windows,
+            resolver,
+        )
+        .unwrap();
+        assert_eq!(git_bash.program, r"C:\Program Files\Git\git-bash.exe");
+        assert_eq!(git_bash.args, vec![r"--cd=C:\workspaces\milim".to_string()]);
+
+        let wsl = workspace_launcher_command_for_platform(
+            root,
+            WorkspaceLauncherId::Wsl,
+            WorkspaceLauncherPlatform::Windows,
+            resolver,
+        )
+        .unwrap();
+        assert_eq!(wsl.program, r"C:\Windows\System32\wsl.exe");
+        assert_eq!(
+            wsl.args,
+            vec!["--cd".to_string(), r"C:\workspaces\milim".to_string()]
+        );
+    }
+
+    #[test]
+    fn workspace_launcher_marker_reasons_use_workspace_folders() {
+        let root = std::env::temp_dir().join(format!(
+            "milim-workspace-launcher-markers-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(root.join(".zed")).unwrap();
+        assert_eq!(
+            workspace_launcher_marker_reason(&root, WorkspaceLauncherId::Zed).as_deref(),
+            Some("Workspace has .zed settings")
+        );
+        assert!(workspace_launcher_marker_reason(&root, WorkspaceLauncherId::Vscode).is_none());
         let _ = std::fs::remove_dir_all(root);
     }
 

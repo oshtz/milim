@@ -68,6 +68,7 @@ export function QuickSummaryPanel({
   onOpenGit,
   onOpenGoal,
   onFocusComposer,
+  workspaceLauncher,
 }: {
   summary: QuickSummary;
   open: boolean;
@@ -77,6 +78,7 @@ export function QuickSummaryPanel({
   onOpenGit: () => void;
   onOpenGoal: () => void;
   onFocusComposer: () => void;
+  workspaceLauncher?: ReactNode;
 }) {
   const rows = Array.isArray(summary?.rows) ? summary.rows : [];
   return (
@@ -84,6 +86,9 @@ export function QuickSummaryPanel({
       className={`quick-summary-pull${open ? " expanded" : ""}${reserveSidePanelButtonSpace ? " with-side-panel-button" : ""}`}
       data-testid="quick-summary-panel"
     >
+      {workspaceLauncher && (
+        <div className="quick-summary-launcher-slot">{workspaceLauncher}</div>
+      )}
       {!open && (
         <button
           className="icon-btn quick-summary-pull-tab"

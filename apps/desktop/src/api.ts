@@ -86,6 +86,23 @@ export interface ArtifactWritePreview {
 
 export type ArtifactOpenTarget = "file" | "folder";
 
+export type WorkspaceLauncherId =
+  | "vscode"
+  | "zed"
+  | "file_manager"
+  | "terminal"
+  | "git_bash"
+  | "wsl"
+  | "android_studio";
+
+export interface WorkspaceLauncher {
+  id: WorkspaceLauncherId;
+  label: string;
+  available: boolean;
+  reason?: string | null;
+  recommendedReason?: string | null;
+}
+
 export type PreviewSurfaceKind =
   | "artifact_iframe"
   | "native_browser"
@@ -497,6 +514,26 @@ export async function openArtifactLocation(
       "Opening saved artifacts is only available in the desktop app.",
     );
   await invoke("open_artifact_location", { path, target });
+}
+
+export async function listWorkspaceLaunchers(
+  workspace: string,
+): Promise<WorkspaceLauncher[]> {
+  if (!inTauri || !workspace.trim()) return [];
+  return await invoke<WorkspaceLauncher[]>("list_workspace_launchers", {
+    workspace,
+  });
+}
+
+export async function openWorkspaceLauncher(
+  workspace: string,
+  launcherId: WorkspaceLauncherId,
+): Promise<void> {
+  if (!inTauri)
+    throw new Error(
+      "Opening a workspace in another app is only available in the desktop app.",
+    );
+  await invoke("open_workspace_launcher", { workspace, launcherId });
 }
 
 export async function openExternalUrl(url: string): Promise<void> {

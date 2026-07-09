@@ -6,7 +6,7 @@ title: Desktop app
 summary: Simple and Workbench modes, threads, projects, composer controls, artifacts, plan mode, goals, search, rendering, settings, and slash commands.
 group: Workbench
 order: 30
-updated: 2026-07-08
+updated: 2026-07-09
 ---
 
 The first run can open as Simple or Workbench. Simple keeps the chat core visible with model switching, themes, memory, and voice basics; Workbench exposes project, agent, MCP, media, sandbox, schedule, and computer-use controls. The sidebar Workbench launcher opens Runs, MCP servers, Skills, and Schedules from one persistent place. In both modes, the Tauri process starts the embedded backend, connects persisted MCP servers, refreshes provider models, and runs schedules in the background. Background schedule completions and mobile relay events use shared app notices so they remain visible outside their settings panels. Closing the desktop window hides it to the system tray so those background services keep running; use the tray menu to reopen or quit.
@@ -29,7 +29,7 @@ The first run can open as Simple or Workbench. Simple keeps the chat core visibl
 | Run timeline | Reasoning, compact live tool activity with expandable details, workspace checkpoint notices, memory notices, child-thread activity, and usage metrics. Built-in tool-agent usage updates after each model request completes; account runtimes remain terminal-only unless their CLIs report more. |
 | Run Journal | Searchable goal-attempt history with model/provider, status, excerpts, files, tools, artifacts, and an explicit Attach to composer action. |
 | Error fallback | Root UI render crashes show a reloadable error screen instead of a blank app window. |
-| Context popover | Top-right popover showing compact workspace, active plan/goal, browser, model, and source state for the current thread. |
+| Context popover | Top-right popover showing compact workspace, active plan/goal, browser, model, and source state for the current thread. A launcher beside its button opens the active folder in installed local tools. |
 | Side panel | Switches between detected artifacts, a browser/URL preview, and Git status/actions; artifact revisions and the selected mode persist per thread. |
 
 ## Context menus
@@ -47,7 +47,7 @@ Image attachments are preserved as image content parts for provider chat and ser
 | Control | Behavior |
 |---|---|
 | Model | Pick any discovered chat, account-runtime, or media-capable model. |
-| Folder | Sets the host working folder. Host filesystem, shell, and Git actions refuse to run until a folder is selected. |
+| Folder | Sets the host working folder. Host filesystem, shell, Git actions, and the quick-summary workspace launcher refuse to run until a folder is selected. |
 | Sandbox | Enables Docker-backed command execution through the isolated `run_command` tool. |
 | Computer use | Enables OS-level screen capture plus mouse/keyboard tools when the desktop build includes the feature. |
 | Memory | Adds scoped thread/project memory search as cheap turn context. Durable memory writes use `memory_register` only on explicit remember/save requests or already tool-capable turns. |

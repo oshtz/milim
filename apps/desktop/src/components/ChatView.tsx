@@ -304,6 +304,7 @@ import { QuickSummaryPanel } from "./QuickSummaryPanel";
 import { RunTimeline } from "./RunTimeline";
 
 const ProvidersManager = lazy(() =>
+import { WorkspaceLauncherButton } from "./WorkspaceLauncher";
   import("./ProvidersManager").then((mod) => ({
     default: mod.ProvidersManager,
   })),
@@ -7119,6 +7120,9 @@ export function ChatView({
                     : undefined
                 }
               >
+            workspaceLauncher={
+              <WorkspaceLauncherButton folder={folder} variant="quick-summary" />
+            }
                 {virtualMessages.items.map(({ message: m, index: i, top }) => {
                   const messageIsCompaction = isCompactionCheckpoint(m);
                   const isApprovalMessage = Boolean(m.approval);
