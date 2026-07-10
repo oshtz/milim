@@ -288,7 +288,7 @@ impl ProviderRegistry {
     /// Re-fetch the model list for every enabled provider. Called at startup so
     /// providers populate (or surface a connection error) without a manual
     /// re-save — the T3-style "add a key, models light up" behavior.
-    pub async fn refresh_all(&self) -> Result<()> {
+    pub async fn refresh_all(&self) -> Result<bool> {
         let configs: Vec<Provider> = {
             let r = self.inner.read().await;
             r.iter()
@@ -297,6 +297,7 @@ impl ProviderRegistry {
                 .map(|rt| rt.cfg.clone())
                 .collect()
         };
+        let refreshed = !configs.is_empty();
         for cfg in configs {
             let backend = backend_for(&cfg);
             let (models, pricing, model_context, model_reasoning, model_capabilities, err) =
@@ -342,7 +343,7 @@ impl ProviderRegistry {
             .map(|rt| rt.cfg.clone())
             .collect::<Vec<_>>();
         self.store.save(&snapshot)?;
-        Ok(())
+        Ok(refreshed)
     }
 
     /// Remove a provider. Returns whether one was removed.
@@ -944,6 +945,39 @@ mod tests {
             model_capabilities: BTreeMap::new(),
             last_error: None,
         }
+    }
+
+    #[tokio::test]
+    async fn refresh_all_reports_enabled_chat_provider_work() {
+        let root = std::env::temp_dir().join(format!(
+            "milim-provider-refresh-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mut cfg = provider(
+            "unreachable",
+            ProviderKind::OpenAiCompatible,
+            "not a valid url",
+        );
+        cfg.enabled = false;
+        let registry = ProviderRegistry {
+            inner: Arc::new(RwLock::new(vec![Runtime {
+                backend: backend_for(&cfg),
+                cfg,
+            }])),
+            local: Arc::new(milim_inference::unavailable::UnavailableBackend::new()),
+            store: ProviderStore::open(&root).unwrap(),
+        };
+
+        assert!(!registry.refresh_all().await.unwrap());
+        registry.inner.write().await[0].cfg.enabled = true;
+        assert!(registry.refresh_all().await.unwrap());
+        assert!(registry.list().await[0].last_error.is_some());
+
+        std::fs::remove_dir_all(root).ok();
     }
 
     #[test]

@@ -304,12 +304,13 @@ export interface RunTrace {
 
 const DEFAULT_BASE = "http://127.0.0.1:7377";
 const BASE = DEFAULT_BASE;
-const CODEX_PICKER_TIMEOUT_MS = 1500;
+const ACCOUNT_RUNTIME_PICKER_TIMEOUT_MS = 5000;
 const inTauri =
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
 let tokenPromise: Promise<string | null> | null = null;
 let apiBasePromise: Promise<string> | null = null;
+let startupProviderRefreshPromise: Promise<boolean> | null = null;
 
 async function localApiToken(): Promise<string | null> {
   if (!inTauri) return null;
@@ -325,6 +326,14 @@ async function localApiBaseUrl(): Promise<string> {
 
 export async function apiBaseUrl(): Promise<string> {
   return await localApiBaseUrl();
+}
+
+export function refreshProviderModelsAtStartup(): Promise<boolean> {
+  if (!inTauri) return Promise.resolve(false);
+  startupProviderRefreshPromise ??= invoke<boolean>(
+    "refresh_provider_models",
+  ).catch(() => true);
+  return startupProviderRefreshPromise;
 }
 
 export interface HarnessMcpCandidate {
@@ -1276,45 +1285,61 @@ export function isUsableChatModel(model: string): boolean {
   return id.length > 0 && id !== "mock-echo";
 }
 
-/** Models with their provider (`owned_by`) for grouping in the picker. */
-export async function listModelsDetailed(): Promise<ModelInfo[]> {
+async function listProviderModelsForPicker(): Promise<ModelInfo[]> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 2500);
   try {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 2500);
     const r = await authFetch(`${BASE}/v1/models`, { signal: ctrl.signal });
-    clearTimeout(timer);
+    if (!r.ok) return [];
     const j = await r.json();
-    const localModels = (j.data ?? [])
-      .map(
-        (m: {
-          id: string;
-          owned_by?: string;
-          provider_id?: string;
-          context_length?: number;
-          max_prompt_tokens?: number;
-          max_completion_tokens?: number;
-          reasoning?: unknown;
-          capabilities?: unknown;
-        }) => ({
-          id: m.id,
-          owned_by: m.owned_by ?? "local",
-          provider_id: m.provider_id?.trim() || undefined,
-          context_length: numberOrUndefined(m.context_length),
-          max_prompt_tokens: numberOrUndefined(m.max_prompt_tokens),
-          max_completion_tokens: numberOrUndefined(m.max_completion_tokens),
-          reasoning: normalizeModelReasoning(m.reasoning),
-          capabilities: normalizeModelCapabilities(m.capabilities),
-        }),
-      )
-      .filter((m: ModelInfo) => isUsableChatModel(m.id));
-    const [codexModels, claudeModels] = await Promise.all([
-      listCodexModelsForPicker(),
-      listClaudeModelsForPicker(),
-    ]);
-    return [...qualifyDuplicateProviderModels(localModels), ...codexModels, ...claudeModels];
+    return qualifyDuplicateProviderModels(
+      (j.data ?? [])
+        .map(
+          (m: {
+            id: string;
+            owned_by?: string;
+            provider_id?: string;
+            context_length?: number;
+            max_prompt_tokens?: number;
+            max_completion_tokens?: number;
+            reasoning?: unknown;
+            capabilities?: unknown;
+          }) => ({
+            id: m.id,
+            owned_by: m.owned_by ?? "local",
+            provider_id: m.provider_id?.trim() || undefined,
+            context_length: numberOrUndefined(m.context_length),
+            max_prompt_tokens: numberOrUndefined(m.max_prompt_tokens),
+            max_completion_tokens: numberOrUndefined(m.max_completion_tokens),
+            reasoning: normalizeModelReasoning(m.reasoning),
+            capabilities: normalizeModelCapabilities(m.capabilities),
+          }),
+        )
+        .filter((m: ModelInfo) => isUsableChatModel(m.id)),
+    );
   } catch {
     return [];
+  } finally {
+    clearTimeout(timer);
   }
+}
+
+/** Models with their provider (`owned_by`) for grouping in the picker. */
+export async function listModelsDetailed(): Promise<ModelInfo[]> {
+  const [providerModels, codexModels, claudeModels] = await Promise.all([
+    listProviderModelsForPicker(),
+    listCodexModelsForPicker(),
+    listClaudeModelsForPicker(),
+  ]);
+  return [...providerModels, ...codexModels, ...claudeModels];
+}
+
+export async function loadStartupModels(
+  onModels: (models: ModelInfo[]) => void,
+): Promise<void> {
+  const providerRefresh = refreshProviderModelsAtStartup();
+  onModels(await listModelsDetailed());
+  if (await providerRefresh) onModels(await listModelsDetailed());
 }
 
 function numberOrUndefined(value: unknown): number | undefined {
@@ -1436,7 +1461,10 @@ function normalizeCodexReasoning(
 
 async function listCodexModelsForPicker(): Promise<ModelInfo[]> {
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), CODEX_PICKER_TIMEOUT_MS);
+  const timer = setTimeout(
+    () => ctrl.abort(),
+    ACCOUNT_RUNTIME_PICKER_TIMEOUT_MS,
+  );
   try {
     const account = await getCodexAccount(false, ctrl.signal);
     if (!account.account && account.requiresOpenaiAuth) return [];
@@ -1591,7 +1619,10 @@ export async function getCodexRateLimits(): Promise<unknown> {
 
 async function listClaudeModelsForPicker(): Promise<ModelInfo[]> {
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), CODEX_PICKER_TIMEOUT_MS);
+  const timer = setTimeout(
+    () => ctrl.abort(),
+    ACCOUNT_RUNTIME_PICKER_TIMEOUT_MS,
+  );
   try {
     const status = await getClaudeStatus(ctrl.signal);
     if (!status.available || !status.authenticated) return [];

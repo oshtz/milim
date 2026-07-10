@@ -294,6 +294,10 @@ if (
 }
 
 for (const needle of [
+  "struct DesktopProviders",
+  "async fn refresh_provider_models",
+  ".manage(DesktopProviders(providers))",
+  "providers.refresh_all().await",
   "TrayIconBuilder::with_id",
   ".show_menu_on_left_click(false)",
   "TRAY_OPEN_ID => show_main_window(app)",

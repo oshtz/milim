@@ -56,6 +56,8 @@ struct DesktopApiToken(String);
 
 struct DesktopApiBaseUrl(String);
 
+struct DesktopProviders(Option<Arc<milim_server::providers::ProviderRegistry>>);
+
 struct MobileRelayLocalTarget(String);
 
 struct UserDataState(Arc<milim_storage::UserDataStore>);
@@ -228,6 +230,16 @@ fn api_token(token: tauri::State<'_, DesktopApiToken>) -> String {
 #[tauri::command]
 fn api_base_url(base: tauri::State<'_, DesktopApiBaseUrl>) -> String {
     base.0.clone()
+}
+
+#[tauri::command]
+async fn refresh_provider_models(
+    providers: tauri::State<'_, DesktopProviders>,
+) -> std::result::Result<bool, String> {
+    let Some(providers) = providers.0.clone() else {
+        return Ok(false);
+    };
+    providers.refresh_all().await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -3307,6 +3319,7 @@ pub fn run() {
     tauri::Builder::default()
         .manage(DesktopApiToken(api_key))
         .manage(DesktopApiBaseUrl(api_base))
+        .manage(DesktopProviders(providers))
         .manage(MobileRelayLocalTarget(mobile_local_target))
         .manage(UserDataState(user_data))
         .manage(DesktopPreviewRuntime(preview_runtime))
@@ -3324,14 +3337,6 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 mcp.connect_all().await;
             });
-            // Refresh enabled providers' model lists so they populate on launch.
-            if let Some(providers) = providers {
-                tauri::async_runtime::spawn(async move {
-                    if let Err(e) = providers.refresh_all().await {
-                        eprintln!("provider refresh failed: {e}");
-                    }
-                });
-            }
             if state.schedules.is_some() {
                 let scheduler_state = state.clone();
                 tauri::async_runtime::spawn(async move {
@@ -3399,6 +3404,7 @@ pub fn run() {
             health,
             api_base_url,
             api_token,
+            refresh_provider_models,
             mobile_tailscale_status,
             configure_mobile_tailscale_relay,
             disable_mobile_tailscale_relay,

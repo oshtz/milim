@@ -5,6 +5,11 @@ import { join } from "node:path";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const api = readFileSync(join(root, "src", "api.ts"), "utf8");
+const app = readFileSync(join(root, "src", "App.tsx"), "utf8");
+const chatView = readFileSync(
+  join(root, "src", "components", "ChatView.tsx"),
+  "utf8",
+);
 const picker =
   api.match(
     /async function listCodexModelsForPicker\(\): Promise<ModelInfo\[]> \{[\s\S]*?\n\}\n\nexport interface CodexAccountResponse/,
@@ -22,11 +27,11 @@ const claudeRun =
     /export async function streamClaudeRun\([\s\S]*?\n\): Promise<void> \{/,
   )?.[0] ?? "";
 
-assert.match(api, /const CODEX_PICKER_TIMEOUT_MS = 1500;/);
+assert.match(api, /const ACCOUNT_RUNTIME_PICKER_TIMEOUT_MS = 5000;/);
 assert.ok(picker, "Codex picker function should exist");
 assert.match(
   picker,
-  /const ctrl = new AbortController\(\);[\s\S]*setTimeout\(\(\) => ctrl\.abort\(\), CODEX_PICKER_TIMEOUT_MS\);/,
+  /const ctrl = new AbortController\(\);[\s\S]*ACCOUNT_RUNTIME_PICKER_TIMEOUT_MS/,
 );
 assert.match(picker, /getCodexAccount\(false, ctrl\.signal\)/);
 assert.match(
@@ -45,6 +50,20 @@ assert.match(
   /supported_efforts: \["low", "medium", "high", "xhigh", "max"\]/,
 );
 assert.match(claudePicker, /finally \{[\s\S]*clearTimeout\(timer\);[\s\S]*\}/);
+assert.match(
+  api,
+  /Promise\.all\(\[\s*listProviderModelsForPicker\(\),\s*listCodexModelsForPicker\(\),\s*listClaudeModelsForPicker\(\),\s*\]\)/,
+);
+assert.match(
+  api,
+  /startupProviderRefreshPromise \?\?= invoke<boolean>\(\s*"refresh_provider_models",\s*\)/,
+);
+assert.match(
+  api,
+  /const providerRefresh = refreshProviderModelsAtStartup\(\);\s*onModels\(await listModelsDetailed\(\)\);\s*if \(await providerRefresh\) onModels\(await listModelsDetailed\(\)\);/,
+);
+assert.match(app, /loadStartupModels\(\(models\) =>/);
+assert.match(chatView, /loadStartupModels\(\(nextModels\) =>/);
 assert.match(
   api,
   /export type ReasoningEffort\s*=\s*(?:\|\s*)?"auto"\s*\|\s*"none"\s*\|\s*"minimal"\s*\|\s*"low"\s*\|\s*"medium"\s*\|\s*"high"\s*\|\s*"on"\s*\|\s*"xhigh"\s*\|\s*"max";/,

@@ -35,6 +35,7 @@ import {
   isCliPathWarningMessage,
   isCodexModel,
   listWorkspaceFiles,
+  loadStartupModels,
   listModelsDetailed,
   listMediaModels,
   listProviders,
@@ -3377,10 +3378,15 @@ export function ChatView({
   }
 
   useEffect(() => {
-    listModelsDetailed().then((m) => {
-      setModels(m);
+    let cancelled = false;
+    void loadStartupModels((nextModels) => {
+      if (cancelled) return;
+      setModels(nextModels);
       setModelsLoaded(true);
     });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {

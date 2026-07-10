@@ -12,7 +12,7 @@ import {
   type ReactNode,
 } from "react";
 import { useAgents } from "./agents/store";
-import { deleteThreadTree, listModelsDetailed } from "./api";
+import { deleteThreadTree, listModelsDetailed, loadStartupModels } from "./api";
 import { AutoUpdater } from "./components/AutoUpdater";
 import { ChatView } from "./components/ChatView";
 import { ContextMenuProvider, useContextMenu } from "./components/ContextMenu";
@@ -105,8 +105,20 @@ function OnboardingGate() {
 
   useEffect(() => {
     if (!hydrated || !shouldCheckModels) return;
-    void refreshModelReadiness();
-  }, [hydrated, refreshModelReadiness, shouldCheckModels]);
+    let cancelled = false;
+    void loadStartupModels((models) => {
+      if (cancelled) return;
+      setModelsReady(models.length > 0);
+      setModelsChecked(true);
+    }).catch(() => {
+      if (cancelled) return;
+      setModelsReady(false);
+      setModelsChecked(true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [hydrated, shouldCheckModels]);
 
   if (!hydrated || (shouldCheckModels && !modelsChecked))
     return (
