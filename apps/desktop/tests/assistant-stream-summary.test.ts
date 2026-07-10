@@ -1,4 +1,7 @@
 import { strict as assert } from "node:assert";
+import { createElement, type ComponentType } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { createServer } from "vite";
 import type { ChatStreamPart } from "../src/api.js";
 import { liveWorkGroupSummary } from "../src/lib/streamParts.js";
 
@@ -43,5 +46,66 @@ const reasoningAfterTool = liveWorkGroupSummary({
 });
 assert.equal(reasoningAfterTool?.label, "reasoning...");
 assert.equal(reasoningAfterTool?.status, "running");
+
+const server = await createServer({
+  root: process.cwd(),
+  appType: "custom",
+  logLevel: "silent",
+  server: { middlewareMode: true },
+});
+
+try {
+  const { AssistantMessage } = (await server.ssrLoadModule(
+    "/src/components/AssistantMessage.tsx",
+  )) as {
+    AssistantMessage: ComponentType<{
+      content: string;
+      streamParts: ChatStreamPart[];
+      streaming: boolean;
+    }>;
+  };
+  const streamParts: ChatStreamPart[] = [
+    tool("Ran first command", "done"),
+    { kind: "thinking", content: "first reasoning" },
+    tool("Separator failed", "error"),
+    tool("Ran second command", "done"),
+    { kind: "thinking", content: "latest reasoning" },
+  ];
+  const render = (streaming: boolean) =>
+    renderToStaticMarkup(
+      createElement(AssistantMessage, {
+        content: "",
+        streamParts,
+        streaming,
+      }),
+    );
+
+  const streamingMarkup = render(true);
+  assert.equal(
+    (streamingMarkup.match(/assistant-stream-work-group/g) ?? []).length,
+    2,
+    "streaming should preserve both compacted work groups",
+  );
+  assert.equal(
+    (streamingMarkup.match(/reasoning\.\.\./g) ?? []).length,
+    1,
+    "only the latest work group should render as reasoning",
+  );
+  assert.equal(
+    (streamingMarkup.match(/stream-event-thinking stream-event-running/g) ?? [])
+      .length,
+    1,
+    "only the latest work group should render as running",
+  );
+
+  const completedMarkup = render(false);
+  assert.equal(
+    (completedMarkup.match(/stream-event-running/g) ?? []).length,
+    0,
+    "completed work groups should not render as running",
+  );
+} finally {
+  await server.close();
+}
 
 export {};

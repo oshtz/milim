@@ -453,6 +453,7 @@ function AssistantMessageView({
   return (
     <div className="assistant-stream">
       {displayParts.map((part, index) => {
+        const isLatest = index === displayParts.length - 1;
         if (part.kind === "toolGroup")
           return <StreamToolGroup key={`${part.kind}-${index}`} group={part} />;
         if (part.kind === "workGroup")
@@ -461,10 +462,9 @@ function AssistantMessageView({
               key={`${part.kind}-${index}`}
               group={part}
               durationMs={workGroupCount === 1 ? workDurationMs : undefined}
-              streaming={streaming}
+              streaming={streaming && isLatest}
             />
           );
-        const isLatest = index === displayParts.length - 1;
         if (part.kind === "thinking") {
           const thinking = fallbackThinking || (streaming && isLatest);
           return (
