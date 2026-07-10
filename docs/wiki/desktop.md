@@ -9,7 +9,7 @@ order: 30
 updated: 2026-07-09
 ---
 
-The first run can open as Simple or Workbench. Simple keeps the chat core visible with model switching, themes, memory, and voice basics; Workbench exposes project, agent, MCP, media, sandbox, schedule, and computer-use controls. The sidebar Workbench launcher opens Runs, MCP servers, Skills, and Schedules from one persistent place. In both modes, the Tauri process starts the embedded backend, connects persisted MCP servers, refreshes provider models, and runs schedules in the background. Background schedule completions and mobile relay events use shared app notices so they remain visible outside their settings panels. Closing the desktop window hides it to the system tray so those background services keep running; use the tray menu to reopen or quit.
+The first run can open as Simple or Workbench. Simple keeps the dev chat core visible with model switching, themes, memory, and voice basics; Workbench exposes project, agent, MCP, media, sandbox, schedule, and computer-use controls. The sidebar Workbench launcher opens Runs, MCP servers, Skills, and Schedules from one persistent place. In both modes, the Tauri process starts the embedded backend, connects persisted MCP servers, refreshes provider models, and runs schedules in the background. Background schedule completions and mobile relay events use shared app notices so they remain visible outside their settings panels. Closing the desktop window hides it to the system tray so those background services keep running; use the tray menu to reopen or quit.
 
 ## Interface modes
 
@@ -25,7 +25,7 @@ The first run can open as Simple or Workbench. Simple keeps the chat core visibl
 | Top bar | Theme, update, provider, and global app controls. |
 | Sidebar | Projects, threads, pinned groups, archives, unread state, child threads, five-at-a-time per-section ellipsis toggles, quick switching, and the Workbench launcher for Runs, MCP servers, Skills, and Schedules. |
 | Thread header | Current model, workspace folder, agent, approval, privacy, memory, sandbox, and computer-use state. |
-| Composer | Prompt text, visually highlighted plain-text skill/MCP/file/link tokens, persisted per-thread unsent drafts, thread-local sent-history recall, slash commands, file attachments, voice input, queued sends, and send controls. |
+| Composer | Prompt text, visually highlighted plain-text skill/MCP/file/link tokens, persisted per-thread unsent drafts, thread-local sent-history recall, slash commands, file attachments, voice input, queued sends, send controls, and local repository-aware empty-state starters that prefill without submitting. |
 | Run timeline | Reasoning, compact live tool activity with expandable details, workspace checkpoint notices, memory notices, child-thread activity, and usage metrics. Built-in tool-agent usage updates after each model request completes; account runtimes remain terminal-only unless their CLIs report more. |
 | Run Journal | Searchable goal-attempt history with model/provider, status, excerpts, files, tools, artifacts, and an explicit Attach to composer action. |
 | Error fallback | Root UI render crashes show a reloadable error screen instead of a blank app window. |
@@ -46,7 +46,7 @@ Image attachments are preserved as image content parts for provider chat and ser
 
 | Control | Behavior |
 |---|---|
-| Model | Pick any discovered chat, account-runtime, or media-capable model. |
+| Model | Pick any discovered chat, account-runtime, or media-capable model. The chip shows provider, runtime lane, setup status, capabilities, favorite state, and reasoning effort where supported. |
 | Folder | Sets the host working folder. Host filesystem, shell, Git actions, and the quick-summary workspace launcher refuse to run until a folder is selected. |
 | Sandbox | Enables Docker-backed command execution through the isolated `run_command` tool. |
 | Computer use | Enables OS-level screen capture plus mouse/keyboard tools when the desktop build includes the feature. |

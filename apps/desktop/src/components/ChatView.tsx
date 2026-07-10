@@ -149,6 +149,11 @@ import {
 } from "../lib/artifactRevisions";
 import { hiddenArtifactIdsForMessage } from "../lib/artifactVisibility";
 import {
+  buildEmptyStarterStrip,
+  type EmptyStarterStrip,
+  type EmptyStarterSuggestionIcon,
+} from "../lib/emptyStarterSuggestions";
+import {
   checkpointMessage,
   compactionSummaryOutputCap,
   compactionSummaryMessages,
@@ -160,6 +165,10 @@ import {
   splitCompactionTail,
   validateCompactionCheckpointSummary,
 } from "../lib/contextCompaction";
+import {
+  GIT_STATUS_REFRESH_INTERVAL_MS,
+  shouldRefreshGitStatus,
+} from "../lib/gitRefresh";
 import { reasoningEffortForModel } from "../lib/reasoningEffort";
 import { buildQuickSummary } from "../lib/quickSummary";
 import {
@@ -236,6 +245,8 @@ import {
   type PrepareTurnOutboundOptions,
 } from "../lib/turnContext";
 import {
+  looksLikeMemoryWriteRequest,
+  looksLikeScheduleRequest,
   prepareTurnPromptContext,
   resolveTurnToolApproval,
 } from "../lib/turnPrompt";
@@ -1981,35 +1992,78 @@ function ridgePath(
   return line;
 }
 
-type EmptyStarterAction = {
-  label: string;
-  prompt: string;
-  icon: ReactNode;
-};
+function emptyStarterIcon(icon: EmptyStarterSuggestionIcon): ReactNode {
+  switch (icon) {
+    case "arrow":
+      return <ArrowRight size={13} />;
+    case "git":
+      return <GitBranch size={13} />;
+    case "pencil":
+      return <Pencil size={13} />;
+    case "refresh":
+      return <Refresh size={13} />;
+    default:
+      return <Code size={13} />;
+  }
+}
 
 function EmptyStarterActions({
-  actions,
+  strip,
   onSelect,
 }: {
-  actions: EmptyStarterAction[];
+  strip: EmptyStarterStrip;
   onSelect: (prompt: string) => void;
 }) {
   return (
-    <div className="empty-starter-actions" aria-label="Starter prompts">
-      {actions.map((action) => (
-        <button
-          type="button"
-          className="empty-starter-action"
-          key={action.label}
-          onClick={() => onSelect(action.prompt)}
+    <section
+      className={`empty-starter-strip${strip.context ? " has-context" : ""}${strip.loading ? " loading" : ""}`}
+      data-testid="empty-starter-strip"
+    >
+      {strip.context && (
+        <div
+          className="empty-starter-context"
+          data-testid="empty-starter-context"
+          title={strip.context}
         >
-          <span className="empty-starter-icon" aria-hidden="true">
-            {action.icon}
+          <span className="empty-starter-context-icon" aria-hidden="true">
+            <GitBranch size={12} />
           </span>
-          <span>{action.label}</span>
-        </button>
-      ))}
-    </div>
+          <span>{strip.context}</span>
+        </div>
+      )}
+      <div
+        className="empty-starter-actions"
+        aria-label={strip.loading ? undefined : "Starter prompts"}
+        aria-hidden={strip.loading || undefined}
+      >
+        {strip.loading
+          ? [0, 1, 2].map((index) => (
+              <span className="empty-starter-placeholder" key={index} />
+            ))
+          : strip.suggestions.map((suggestion) => (
+              <button
+                type="button"
+                className="empty-starter-action"
+                data-testid="empty-starter-action"
+                key={suggestion.id}
+                title={`${suggestion.label}: ${suggestion.detail}`}
+                onClick={() => onSelect(suggestion.prompt)}
+              >
+                <span className="empty-starter-icon" aria-hidden="true">
+                  {emptyStarterIcon(suggestion.icon)}
+                </span>
+                <span className="empty-starter-copy">
+                  <span className="empty-starter-label">
+                    {suggestion.label}
+                  </span>
+                  <span className="empty-starter-detail">
+                    {suggestion.detail}
+                  </span>
+                </span>
+              </button>
+            ))}
+      </div>
+    </section>
   );
 }
 
@@ -2728,6 +2782,7 @@ export function ChatView({
     typeof window === "undefined" ? INSPECTOR_STACK_THRESHOLD : window.innerWidth,
   );
   const [gitStatus, setGitStatus] = useState<WorkspaceGitStatus | null>(null);
+  const [gitStatusLoading, setGitStatusLoading] = useState(false);
   const [dismissedPreviewKey, setDismissedPreviewKey] = useState<string | null>(
     null,
   );
@@ -2872,42 +2927,21 @@ export function ChatView({
   const gitPanelChecking = Boolean(folder.trim()) && gitStatus === null;
   const canShowGitPanel =
     canOpenGitPanel || (inspectorTab === "git" && gitPanelChecking);
-  const emptyStarterActions = useMemo<EmptyStarterAction[]>(() => {
-    const hasFolder = Boolean(folder.trim());
-    const hasGitChanges = gitStatus?.state === "ready" && gitStatus.has_changes;
-    return [
-      {
-        label: hasFolder ? "Explore this project" : "Plan from scratch",
-        prompt: hasFolder
-          ? "Explore this project and map the important files, entrypoints, and current risks."
-          : "Help me plan what to build next. Ask me only for the missing context you need.",
-        icon: <Code size={13} />,
-      },
-      {
-        label: "Plan a feature",
-        prompt: hasFolder
-          ? "Plan a focused implementation for a new feature in this project. Start by identifying the files and risks before suggesting edits."
-          : "Help me turn a feature idea into a concrete implementation plan.",
-        icon: <Pencil size={13} />,
-      },
-      {
-        label: hasGitChanges ? "Review current changes" : "Review the code",
-        prompt: hasGitChanges
-          ? "Review the current git changes for bugs, regressions, and missing tests. Prioritize concrete findings."
-          : hasFolder
-            ? "Review this project for the highest-risk bugs or cleanup opportunities. Start with a quick scan before making recommendations."
-            : "Review code I provide for bugs, regressions, and missing tests.",
-        icon: <GitBranch size={13} />,
-      },
-      {
-        label: "Debug a failure",
-        prompt: hasFolder
-          ? "Help me debug a failing test, build, or runtime issue in this project. Start with the smallest relevant check."
-          : "Help me debug a failure. Ask for the error, reproduction steps, and relevant files first.",
-        icon: <Refresh size={13} />,
-      },
-    ];
-  }, [folder, gitStatus?.has_changes, gitStatus?.state]);
+  const gitStatusMatchesActiveFolder =
+    !gitStatus?.folder || previewRuntimeFoldersEqual(gitStatus.folder, folder);
+  const emptyStarterGitStatus = gitStatusMatchesActiveFolder ? gitStatus : null;
+  const emptyStarterStatusLoading =
+    gitStatusLoading ||
+    Boolean(folder.trim() && gitStatus?.folder && !gitStatusMatchesActiveFolder);
+  const emptyStarterStrip = useMemo(
+    () =>
+      buildEmptyStarterStrip(
+        folder,
+        emptyStarterGitStatus,
+        emptyStarterStatusLoading,
+      ),
+    [folder, emptyStarterGitStatus, emptyStarterStatusLoading],
+  );
   const activeAgent = useMemo(
     () => agents.find((agent) => agent.id === activeAgentId) ?? null,
     [activeAgentId, agents],
@@ -3140,6 +3174,7 @@ export function ChatView({
   const queueDrainRef = useRef<Set<string>>(new Set());
   const compactionInFlightRef = useRef(false);
   const messageHeightsRef = useRef<number[]>([]);
+  const gitStatusUpdatedAtRef = useRef<number | null>(null);
   const [previewResizing, setPreviewResizing] = useState(false);
   const [recentThreadSwitcher, setRecentThreadSwitcher] =
     useState<RecentThreadSwitcherState | null>(null);
@@ -3542,17 +3577,55 @@ export function ChatView({
   useEffect(() => {
     let cancelled = false;
     const nextFolder = folder ?? "";
+    gitStatusUpdatedAtRef.current = null;
     setGitStatus(null);
+    setGitStatusLoading(Boolean(nextFolder.trim()));
     void (async () => {
       const workspaceSet = await setWorkspace(nextFolder);
-      if (cancelled || !workspaceSet || !nextFolder.trim()) return;
+      if (cancelled) return;
+      if (!workspaceSet || !nextFolder.trim()) {
+        gitStatusUpdatedAtRef.current = Date.now();
+        setGitStatusLoading(false);
+        return;
+      }
       const nextStatus = await getWorkspaceGitStatus();
-      if (!cancelled) setGitStatus(nextStatus);
+      if (cancelled) return;
+      gitStatusUpdatedAtRef.current = Date.now();
+      setGitStatus(nextStatus);
+      setGitStatusLoading(false);
     })();
     return () => {
       cancelled = true;
     };
   }, [folder]);
+
+  useEffect(() => {
+    if (!folder.trim() || messages.length !== 0) return;
+    let cancelled = false;
+    async function refreshGitStatusIfStale() {
+      if (
+        !documentVisible() ||
+        !shouldRefreshGitStatus(gitStatusUpdatedAtRef.current, Date.now())
+      ) {
+        return;
+      }
+      const nextStatus = await getWorkspaceGitStatus();
+      if (cancelled) return;
+      gitStatusUpdatedAtRef.current = Date.now();
+      if (nextStatus) setGitStatus(nextStatus);
+    }
+    const timer = window.setInterval(
+      () => void refreshGitStatusIfStale(),
+      GIT_STATUS_REFRESH_INTERVAL_MS,
+    );
+    const onVisible = () => void refreshGitStatusIfStale();
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [folder, messages.length]);
 
   // Keep the server's computer-use gate in sync with the toggle.
   useEffect(() => {
@@ -4168,6 +4241,22 @@ export function ChatView({
           : activeInspectorPreviewSource === "app"
             ? "Open Preview: App"
             : "Open Preview: URL";
+  const previewToolsIntent = Boolean(
+    sidePanelVisible &&
+      inspectorTab !== "git" &&
+      activePreviewSurface?.status === "ready" &&
+      activePreviewSurface.capabilities.includes("dom_snapshot"),
+  );
+  const modelToolIntent = Boolean(
+    !planMode &&
+      (folder.trim() ||
+        sandbox ||
+        computerUse ||
+        activeAgentId != null ||
+        previewToolsIntent ||
+        looksLikeScheduleRequest(input) ||
+        (memory && looksLikeMemoryWriteRequest(input))),
+  );
   const sidePanelAlreadyOpen =
     sidePanelOpenRef.current && sidePanelVisible && !previewPanelClosing;
 
@@ -7380,6 +7469,8 @@ export function ChatView({
               <ControlBar
                 models={pickerModels}
                 model={model}
+                providers={providers}
+                toolIntent={modelToolIntent}
                 onModel={(m) => updateThreadSettings(activeId, { model: m })}
                 sandbox={sandbox}
                 onToggleSandbox={() =>
@@ -7485,7 +7576,7 @@ export function ChatView({
             </div>
             {emptyThread && !input.trim() && !activeMediaTarget && (
               <EmptyStarterActions
-                actions={emptyStarterActions}
+                strip={emptyStarterStrip}
                 onSelect={prefillEmptyStarter}
               />
             )}

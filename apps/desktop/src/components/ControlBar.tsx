@@ -2,11 +2,12 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   type ModelInfo,
   type PrivacyMode,
+  type ProviderInfo,
   type RunTrace,
   type ToolApprovalMode,
 } from "../api";
 import { goalChipVisible, type GoalSettings } from "../lib/goals";
-import { modelDisplayName } from "../lib/modelPicker";
+import { modelDevProfile, modelDisplayName } from "../lib/modelPicker";
 import { featureVisibleInMode } from "../ui/features";
 import { useUiPreferences } from "../ui/store";
 import { ChevronDown, Cube, Folder, Lightbulb, Pin } from "./icons";
@@ -63,6 +64,8 @@ function Monitor({ size = 13 }: { size?: number }) {
 export function ControlBar({
   models,
   model,
+  providers,
+  toolIntent,
   onModel,
   sandbox,
   onToggleSandbox,
@@ -86,6 +89,8 @@ export function ControlBar({
 }: {
   models: ModelInfo[];
   model: string;
+  providers?: ProviderInfo[];
+  toolIntent?: boolean;
   onModel: (m: string) => void;
   sandbox: boolean;
   onToggleSandbox: () => void;
@@ -149,6 +154,23 @@ export function ControlBar({
   const goalDetail = goal.status[0].toUpperCase() + goal.status.slice(1);
   const activeModel = models.find((item) => item.id === model);
   const activeModelLabel = activeModel ? modelDisplayName(activeModel) : model;
+  const activeModelProfile = modelDevProfile(activeModel, model, {
+    providers,
+    toolIntent,
+    planMode,
+  });
+  const activeModelRoute = [
+    activeModelProfile.providerLabel,
+    activeModelProfile.laneLabel,
+  ].filter(Boolean).join(" / ");
+  const activeModelDot =
+    activeModelProfile.setupTone === "error"
+      ? "dot-red"
+      : activeModelProfile.setupTone === "warning"
+        ? "dot-yellow"
+        : activeModelProfile.setupTone === "off"
+          ? "dot-off"
+          : "dot-green";
 
   return (
     <div className="control-bar">
@@ -157,15 +179,15 @@ export function ControlBar({
         <div className="chip-wrap">
           <button
             type="button"
-            className="chip"
+            className="chip chip-model"
             data-testid="model-picker-trigger"
             onClick={() => setMenu((m) => (m === "model" ? null : "model"))}
-            title="Choose model"
-            aria-label={`Choose model${activeModelLabel ? `, current model ${activeModelLabel}` : ""}`}
+            title={`${activeModelProfile.routeDetail} ${activeModelProfile.setupDetail}`}
+            aria-label={`Choose model${activeModelLabel ? `, current model ${activeModelLabel}` : ""}, ${activeModelRoute || activeModelProfile.setupLabel}`}
             aria-haspopup="dialog"
             aria-expanded={menu === "model"}
           >
-            <span className="dot dot-green" />
+            <span className={`dot ${activeModelDot}`} />
             <span className="chip-label">{activeModelLabel || "Choose model"}</span>
             <ChevronDown size={12} className="chip-chev" />
           </button>
@@ -173,6 +195,9 @@ export function ControlBar({
             <ModelPicker
               models={models}
               model={model}
+              providers={providers}
+              toolIntent={toolIntent}
+              planMode={planMode}
               onModel={onModel}
               onManageProviders={onManageProviders}
               onManageMcp={onManageMcp}

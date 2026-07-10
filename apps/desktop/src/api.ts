@@ -3135,6 +3135,7 @@ export interface WorkspaceGitStatus {
   changed_file_count: number;
   changed_files: WorkspaceGitFileChange[];
   branches: WorkspaceGitBranch[];
+  recent_commits: WorkspaceGitCommit[];
   message: string | null;
 }
 
@@ -3149,6 +3150,11 @@ export interface WorkspaceGitBranch {
   upstream: string | null;
   ahead: number;
   behind: number;
+}
+
+export interface WorkspaceGitCommit {
+  hash: string;
+  subject: string;
 }
 
 export type WorkspaceGitAction =

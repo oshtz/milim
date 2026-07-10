@@ -4611,6 +4611,7 @@ pub(crate) struct WorkspaceGitStatus {
     changed_file_count: u32,
     changed_files: Vec<WorkspaceGitFileChange>,
     branches: Vec<WorkspaceGitBranch>,
+    recent_commits: Vec<WorkspaceGitCommit>,
     message: Option<String>,
 }
 
@@ -4627,6 +4628,12 @@ pub(crate) struct WorkspaceGitBranch {
     upstream: Option<String>,
     ahead: u32,
     behind: u32,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct WorkspaceGitCommit {
+    hash: String,
+    subject: String,
 }
 
 #[derive(Deserialize)]
@@ -4917,6 +4924,7 @@ fn workspace_git_status_blocking(folder: Option<PathBuf>) -> WorkspaceGitStatus 
     );
     let remote = git_text(&root, &["remote", "get-url", "origin"]);
     let branches = workspace_git_branches(&root, branch.as_deref());
+    let recent_commits = workspace_git_recent_commits(&root);
     let (ahead, behind) = if upstream.is_some() {
         git_text(
             &root,
@@ -4977,6 +4985,7 @@ fn workspace_git_status_blocking(folder: Option<PathBuf>) -> WorkspaceGitStatus 
         changed_file_count,
         changed_files,
         branches,
+        recent_commits,
         message: None,
     }
 }
@@ -5008,8 +5017,34 @@ fn workspace_git_status_message(
         changed_file_count: 0,
         changed_files: Vec::new(),
         branches: Vec::new(),
+        recent_commits: Vec::new(),
         message: Some(message.to_string()),
     }
+}
+
+fn workspace_git_recent_commits(root: &FsPath) -> Vec<WorkspaceGitCommit> {
+    let Ok(output) = git_output(root, &["log", "-n", "5", "--format=%h%x00%s"]) else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| {
+            let (hash, subject) = line.split_once('\0')?;
+            let hash = hash.trim();
+            let subject = subject.trim();
+            if hash.is_empty() || subject.is_empty() {
+                return None;
+            }
+            Some(WorkspaceGitCommit {
+                hash: hash.to_string(),
+                subject: subject.to_string(),
+            })
+        })
+        .collect()
 }
 
 fn workspace_git_branches(root: &FsPath, current: Option<&str>) -> Vec<WorkspaceGitBranch> {

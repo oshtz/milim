@@ -40,6 +40,7 @@ function gitStatus(patch: Partial<WorkspaceGitStatus> = {}): WorkspaceGitStatus 
     changed_file_count: 0,
     changed_files: [],
     branches: [],
+    recent_commits: [],
     message: null,
     ...patch,
   };

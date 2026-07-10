@@ -406,7 +406,7 @@ function latestUserContent(messages: ChatMessage[]): string {
     .find((message) => message.role === "user")?.content ?? "";
 }
 
-function looksLikeMemoryWriteRequest(input: string): boolean {
+export function looksLikeMemoryWriteRequest(input: string): boolean {
   const text = input.toLowerCase();
   if (!text.trim()) return false;
   if (/\b(?:do not|don't|dont|never)\s+(?:remember|memorize|save|store)\b/.test(text)) return false;
@@ -415,7 +415,7 @@ function looksLikeMemoryWriteRequest(input: string): boolean {
     /\b(?:add|put)\b.{0,80}\b(?:to|in)\s+(?:memory|memories)\b/.test(text);
 }
 
-function looksLikeScheduleRequest(input: string): boolean {
+export function looksLikeScheduleRequest(input: string): boolean {
   const text = input.toLowerCase();
   if (!text.trim()) return false;
   const automationWords = /\b(automation|automations|schedule|scheduled|cron|recurring|repeat|periodic|hourly|daily|weekly)\b/;

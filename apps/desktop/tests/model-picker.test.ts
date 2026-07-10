@@ -1,6 +1,7 @@
 import { deepEqual, equal } from "node:assert/strict";
 import type { ModelInfo, ProviderInfo } from "../src/api";
 import {
+  modelDevProfile,
   mergeModelListsForPicker,
   modelPickerGroups,
   providerOwnsModel,
@@ -70,3 +71,123 @@ const providers = [
 equal(providerOwnsModel(providers[1], "provider:prov-b:same-model"), true);
 equal(providerOwnsModel(providers[0], "provider:prov-b:same-model"), false);
 equal(rawModelId("provider:prov-b:same-model"), "same-model");
+
+const profileProviders = [
+  {
+    id: "openai",
+    name: "OpenAI",
+    kind: "openai_compatible",
+    base_url: "https://api.openai.com/v1",
+    enabled: true,
+    has_key: true,
+    models: ["gpt-5"],
+    pricing: { "gpt-5": { prompt: "1.00", completion: "8.00" } },
+  },
+  {
+    id: "missing-key",
+    name: "Anthropic",
+    kind: "anthropic",
+    base_url: "https://api.anthropic.com",
+    enabled: true,
+    has_key: false,
+    models: ["claude-sonnet-4"],
+  },
+  {
+    id: "down",
+    name: "Local LM Studio",
+    kind: "openai_compatible",
+    base_url: "http://127.0.0.1:1234/v1",
+    enabled: true,
+    has_key: false,
+    models: ["qwen2.5-coder"],
+    error: "Connection refused",
+  },
+] satisfies ProviderInfo[];
+
+const providerProfile = modelDevProfile(
+  {
+    id: "gpt-5",
+    owned_by: "OpenAI",
+    provider_id: "openai",
+    context_length: 128000,
+    max_completion_tokens: 16000,
+    capabilities: { toolUse: false },
+  },
+  "gpt-5",
+  { providers: profileProviders, toolIntent: true },
+);
+equal(providerProfile.lane, "milim-tools");
+equal(providerProfile.providerLabel, "OpenAI");
+equal(providerProfile.setupLabel, "Ready");
+deepEqual(providerProfile.detailTags, ["128k ctx", "16k out", "pricing"]);
+
+equal(
+  modelDevProfile(
+    { id: "llama3.2", owned_by: "Ollama" },
+    "llama3.2",
+    { toolIntent: false },
+  ).lane,
+  "plain-chat",
+);
+
+const localProfile = modelDevProfile(
+  { id: "llama3.2", owned_by: "Ollama" },
+  "llama3.2",
+);
+equal(localProfile.providerLabel, "Ollama");
+equal(localProfile.setupLabel, "Available");
+
+equal(
+  modelDevProfile({ id: "codex:gpt-5", owned_by: "Codex" }, "codex:gpt-5").lane,
+  "codex-runtime",
+);
+equal(
+  modelDevProfile(
+    { id: "claude:sonnet", owned_by: "Local Claude CLI" },
+    "claude:sonnet",
+  ).lane,
+  "claude-runtime",
+);
+equal(
+  modelDevProfile(
+    {
+      id: "black-forest-labs/flux-schnell",
+      owned_by: "Replicate media",
+      capabilities: { imageOutput: true },
+    },
+    "black-forest-labs/flux-schnell",
+  ).lane,
+  "media",
+);
+
+const keyNeeded = modelDevProfile(
+  {
+    id: "claude-sonnet-4",
+    owned_by: "Anthropic",
+    provider_id: "missing-key",
+  },
+  "claude-sonnet-4",
+  { providers: profileProviders },
+);
+equal(keyNeeded.setupTone, "warning");
+equal(keyNeeded.setupLabel, "Key needed");
+
+const unreachable = modelDevProfile(
+  {
+    id: "qwen2.5-coder",
+    owned_by: "Local LM Studio",
+    provider_id: "down",
+  },
+  "qwen2.5-coder",
+  { providers: profileProviders },
+);
+equal(unreachable.setupTone, "error");
+equal(unreachable.setupLabel, "Unreachable");
+
+const missingProvider = modelDevProfile(
+  { id: "ghost-model", owned_by: "Ghost", provider_id: "ghost" },
+  "ghost-model",
+  { providers: [] },
+);
+equal(missingProvider.setupTone, "warning");
+equal(missingProvider.setupLabel, "Provider missing");

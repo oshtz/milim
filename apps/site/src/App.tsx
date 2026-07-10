@@ -68,13 +68,13 @@ const quickstartSteps = [
   },
   {
     step: "add a key",
-    title: "Connect a runtime",
+    title: "Connect a model source",
     body: "Add a provider key, sign in to an account runtime, or point milim at Ollama or LM Studio.",
   },
   {
-    step: "chat",
-    title: "Open a thread",
-    body: "Pick a workspace, choose privacy mode, and run chat, tools, memory, or agents from one place.",
+    step: "develop",
+    title: "Start a dev thread",
+    body: "Pick a workspace, ask for an edit or test run, switch models, and keep the same project context.",
   },
 ];
 
@@ -108,7 +108,7 @@ const faqItems = [
 const features = [
   {
     title: "Model choice stays simple",
-    body: "OpenAI-compatible endpoints, Anthropic Messages, Gemini, Ollama, LM Studio, Codex, and Claude Code all fit the same workbench.",
+    body: "Hosted APIs, local runtimes, account runtimes, and media providers all fit the same development thread.",
     wide: true,
   },
   {
@@ -118,7 +118,7 @@ const features = [
   },
   {
     title: "Agents use real tools",
-    body: "Filesystem, shell, sandbox, MCP, Codex, and Claude Code tool use show up as structured runs instead of hidden prompt magic.",
+    body: "Filesystem, shell, sandbox, MCP, account-runtime, and preview-tool activity show up as structured runs instead of hidden prompt magic.",
   },
   {
     title: "Memory lives locally",
@@ -126,7 +126,7 @@ const features = [
   },
   {
     title: "Desktop-first flow",
-    body: "Voice, schedules, generated artifacts, themes, and provider setup sit in one cross-platform desktop shell.",
+    body: "Model switching, generated artifacts, previews, voice, schedules, themes, and provider setup sit in one cross-platform desktop shell.",
   },
 ];
 
@@ -135,7 +135,7 @@ type ChapterKind = "models" | "privacy" | "tools" | "memory";
 const chapters: Array<{ title: string; body: string; kind: ChapterKind }> = [
   {
     title: "Model freedom",
-    body: "Switch between hosted APIs and local runtimes without rebuilding the workflow around one vendor.",
+    body: "Switch between hosted APIs, local runtimes, account runtimes, and media models without rebuilding the thread around one vendor.",
     kind: "models",
   },
   {
@@ -327,9 +327,9 @@ function LandingPage() {
           <HeroBackgroundEffect />
           <div className="hero-copy">
             <h1>milim</h1>
-            <p className="hero-line">A local-first AI workbench for people who use more than one model.</p>
+            <p className="hero-line">A model-agnostic development app for people who use more than one model.</p>
             <p className="hero-subline">
-              Chat, agents, tools, memory, voice, and privacy controls
+              Development chat, instant model switching, tools, memory, artifacts, previews, and privacy controls
               <br className="desktop-copy-break" /> in one MIT-licensed desktop app.{" "}
               <a className="copy-doc-link" href={DOCS_URL}>Read the docs</a>.
             </p>
@@ -348,10 +348,10 @@ function LandingPage() {
             <h2>
               many models.
               <br />
-              one local machine.
+              one dev thread.
             </h2>
             <p>
-              Choose a runtime, open a thread, attach context, run tools, and keep the machine boundary visible.
+              Choose a model, pick a folder, ask for an edit or test, switch models, and keep the project state intact.
             </p>
           </div>
           <div className="feature-grid">
@@ -370,9 +370,9 @@ function LandingPage() {
 
         <section className="story" id="privacy">
           <div className="story-copy">
-            <h2>Route the work without surrendering the machine.</h2>
+            <h2>Switch the model without losing the work.</h2>
             <p>
-              The desktop app embeds the server, stores secrets encrypted on disk, and makes remote boundaries explicit.
+              The desktop app keeps workspace context, memory, previews, artifacts, approvals, and remote boundaries visible.
             </p>
           </div>
           <div className="chapter-stack" id="agents">
@@ -391,7 +391,7 @@ function LandingPage() {
         <section className="quickstart-strip reveal" id="quickstart" aria-labelledby="quickstart-title">
           <div>
             <span className="section-kicker">quickstart</span>
-            <h2 id="quickstart-title">download, connect, chat.</h2>
+            <h2 id="quickstart-title">download, connect, develop.</h2>
           </div>
           <div className="quickstart-steps">
             {quickstartSteps.map((item, index) => (
@@ -641,23 +641,23 @@ function MiniAppShell() {
         </div>
         <section className="mini-stage">
           <div className="mini-sent-message">
-            <p>Gate remote context before it leaves the machine.</p>
+            <p>Run tests, fix the failure, then switch models for review.</p>
           </div>
           <div className="mini-response">
             <div className="mini-stream-event">
               <i />
-              <span>streaming response</span>
-              <code>privacy_gate</code>
+              <span>tool run</span>
+              <code>pnpm test</code>
             </div>
             <p className="mini-stream-text">
-              <span style={{ "--line-width": "39ch" } as CSSProperties}>Stable release aliases stay on GitHub.</span>
-              <span style={{ "--line-width": "44ch" } as CSSProperties}>Remote context passes through redact or block.</span>
-              <span style={{ "--line-width": "37ch" } as CSSProperties}>Memory remains local and encrypted.</span>
+              <span style={{ "--line-width": "39ch" } as CSSProperties}>Workspace context stays attached.</span>
+              <span style={{ "--line-width": "44ch" } as CSSProperties}>Model switches affect the next turn only.</span>
+              <span style={{ "--line-width": "37ch" } as CSSProperties}>Artifacts and previews remain in thread.</span>
             </p>
             <div className="mini-tool-row">
-              <span>privacy gate</span>
-              <span>local memory</span>
-              <span>tool event</span>
+              <span>workspace</span>
+              <span>test output</span>
+              <span>model switch</span>
             </div>
           </div>
           <div className="mini-composer-card">
@@ -677,7 +677,7 @@ function MiniAppShell() {
               </div>
             </div>
             <div className="mini-composer-input">
-              <span>Gate remote context before it leaves the machine.</span>
+              <span>Switch to a faster model and check the fix.</span>
             </div>
             <div className="mini-composer-bar">
               <div className="mini-composer-tools">

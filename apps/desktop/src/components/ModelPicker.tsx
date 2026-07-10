@@ -1,29 +1,18 @@
 import { useMemo, useState } from "react";
 import { createPortal } from "react-dom";
-import type { ModelInfo } from "../api";
-import { modelDisplayName, modelPickerGroups, modelPickerKey } from "../lib/modelPicker";
+import type { ModelInfo, ProviderInfo } from "../api";
+import {
+  modelDevProfile,
+  modelDisplayName,
+  modelPickerGroups,
+  modelPickerKey,
+  type ModelDevCapability,
+} from "../lib/modelPicker";
 import { hasReasoningEffortChoices, normalizeReasoningEffortForModel, REASONING_EFFORT_LABEL, reasoningEffortDisplay, reasoningEffortOptions } from "../lib/reasoningEffort";
 import { useSettings } from "../settings/store";
 import { featureVisibleInMode } from "../ui/features";
 import { useUiPreferences } from "../ui/store";
 import { Bolt, Check, Eye, Image, PlusSquare, Search, Sparkles } from "./icons";
-
-type ModelCap = "vision" | "tools" | "reasoning" | "fast" | "image" | "video";
-
-/** Heuristic capability tags from the model id, plus explicit media metadata. */
-function caps(model: ModelInfo): ModelCap[] {
-  const id = model.id;
-  const s = id.toLowerCase();
-  const out: ModelCap[] = [];
-  if (model.capabilities?.imageInput) out.push("vision");
-  if (model.capabilities?.toolUse) out.push("tools");
-  if (model.capabilities?.imageOutput) out.push("image");
-  if (model.capabilities?.videoOutput) out.push("video");
-  if (/(vision|llava|pixtral|gpt-4o|gemini|claude-3|claude-opus|claude-sonnet|-vl|qwen2-vl)/.test(s) && !out.includes("vision")) out.push("vision");
-  if (model.reasoning || /(r1|reason|qwq|o1|o3|-think|deepseek-r)/.test(s)) out.push("reasoning");
-  if (/(flash|mini|haiku|turbo|instant|nano|0\.5b|1\.5b|-1b|-3b|-8b|small)/.test(s)) out.push("fast");
-  return out;
-}
 
 function Star({ filled }: { filled: boolean }) {
   return (
@@ -50,7 +39,7 @@ function Memory({ size = 13 }: { size?: number }) {
   );
 }
 
-const CAP_ICON = {
+const CAP_ICON: Record<ModelDevCapability, { node: JSX.Element; title: string }> = {
   vision: { node: <Eye size={11} />, title: "Vision" },
   tools: { node: <Plug size={11} />, title: "Tool use" },
   reasoning: { node: <Sparkles size={11} />, title: "Reasoning" },
@@ -76,6 +65,9 @@ function effortMenuPosition(modelId: string, button: HTMLElement, choiceCount: n
 export function ModelPicker({
   models,
   model,
+  providers,
+  toolIntent,
+  planMode,
   onModel,
   onManageProviders,
   onManageMcp,
@@ -84,6 +76,9 @@ export function ModelPicker({
 }: {
   models: ModelInfo[];
   model: string;
+  providers?: ProviderInfo[];
+  toolIntent?: boolean;
+  planMode?: boolean;
   onModel: (id: string) => void;
   onManageProviders: () => void;
   onManageMcp: () => void;
@@ -126,7 +121,12 @@ export function ModelPicker({
               const effort = normalizeReasoningEffortForModel(reasoningEffortByModel[m.id] ?? "auto", m);
               const reasoningChoices = reasoningEffortOptions(m);
               const effortOpen = effortMenu?.modelId === m.id;
-              const modelCaps = caps(m).filter((cap) => cap !== "reasoning" || !hasEffortChoices);
+              const profile = modelDevProfile(m, m.id, {
+                providers,
+                toolIntent,
+                planMode,
+              });
+              const modelCaps = profile.capabilities.filter((cap) => cap !== "reasoning" || !hasEffortChoices);
               return (
                 <div key={modelPickerKey(m)} className={"mp-item" + (m.id === model ? " active" : "") + (effortOpen ? " effort-open" : "")}>
                   <button
@@ -142,6 +142,8 @@ export function ModelPicker({
                   <button
                     type="button"
                     className="mp-pick"
+                    title={`${profile.routeDetail} ${profile.setupDetail}`}
+                    aria-label={`${modelDisplayName(m)}, ${profile.providerLabel}, ${profile.laneLabel}, ${profile.setupLabel}`}
                     onClick={() => {
                       onModel(m.id);
                       onClose();

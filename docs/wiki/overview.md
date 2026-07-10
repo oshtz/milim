@@ -3,19 +3,19 @@ id: overview
 path:
 label: Overview
 title: milim docs wiki
-summary: Start here for the desktop workbench, embedded backend, local API, providers, agents, tools, memory, privacy, voice, media, mobile companion, and release workflow.
+summary: Start here for model-agnostic development, model/provider switching, the embedded backend, local API, providers, agents, tools, memory, privacy, voice, media, mobile companion, and release workflow.
 group: Start
 order: 10
-updated: 2026-07-03
+updated: 2026-07-09
 ---
 
-milim is a local-first AI desktop app with an embedded Rust backend and local HTTP API. The desktop app is a Tauri shell that embeds the same Axum server used by the CLI, then layers Simple and Workbench chat modes, providers, agents, tools, memory, voice, media, a paired mobile companion, update checks, and local persistence on top.
+milim is a model-agnostic software development desktop app with an embedded Rust backend and local HTTP API. The desktop app is a Tauri shell that embeds the same Axum server used by the CLI, then layers dev chat, inline model switching, Simple and Workbench chat modes, providers, agents, tools, memory, voice, media, a paired mobile companion, update checks, and local persistence on top.
 
 ## Start here
 
 | Use case | Read |
 |---|---|
-| First run | Quickstart, then Models, then Desktop app. Stop when you can send a prompt with a selected folder. |
+| First run | Quickstart, then Models, then Desktop app. Stop when you can connect a provider, pick a folder, ask for an edit or test, switch models, and continue the same thread. |
 | Daily workbench | Desktop app, Agents, Memory, and Privacy explain the controls you touch every day. |
 | API integration | API, Models, Config, and Troubleshooting cover compatibility routes and stored state. |
 | Release or support | Release, Config, and Troubleshooting cover build checks, local state, and failure triage. |
@@ -41,4 +41,4 @@ milim is a local-first AI desktop app with an embedded Rust backend and local HT
 
 ## Local-first line
 
-Local-first does not mean local-only. milim can talk to OpenAI, Anthropic, Gemini, OpenRouter, Ollama, LM Studio, Replicate, fal, Codex, and the installed Claude CLI. The important boundary is explicit routing: local API runtimes stay on the machine, and remote sends can pass through the server-side privacy gate before leaving it.
+Local-first does not mean local-only. milim can talk to OpenAI, Anthropic, Gemini, OpenRouter, Ollama, LM Studio, Replicate, fal, Codex, and the installed Claude CLI. The important boundary is explicit routing: local API runtimes stay on the machine, provider models use Milim's tool-agent loop when workspace or tool context is active, Codex and Claude use their account-runtime bridges, and remote sends can pass through the server-side privacy gate before leaving it.

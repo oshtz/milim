@@ -4564,6 +4564,79 @@ async fn workspace_git_status_reports_selected_repo() {
     assert_eq!(v["changed_file_count"], 1);
     assert_eq!(v["changed_files"][0]["status"], "??");
     assert_eq!(v["changed_files"][0]["path"], "note.txt");
+    assert_eq!(v["recent_commits"].as_array().unwrap().len(), 0);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn workspace_git_status_reports_recent_commits_newest_first() {
+    if Command::new("git").arg("--version").output().is_err() {
+        return;
+    }
+
+    let root = unique_temp_path("milim-git-recent-commits");
+    fs::create_dir_all(&root).unwrap();
+    let init = Command::new("git").arg("init").arg(&root).output().unwrap();
+    assert!(init.status.success());
+    for args in [
+        ["config", "user.email", "test@example.com"].as_slice(),
+        ["config", "user.name", "Milim Test"].as_slice(),
+    ] {
+        assert!(Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(args)
+            .output()
+            .unwrap()
+            .status
+            .success());
+    }
+    for (file, contents, subject) in [
+        ("one.txt", "one\n", "first project commit"),
+        ("two.txt", "two\n", "second project commit"),
+    ] {
+        fs::write(root.join(file), contents).unwrap();
+        assert!(Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["add", file])
+            .output()
+            .unwrap()
+            .status
+            .success());
+        assert!(Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["commit", "-m", subject])
+            .output()
+            .unwrap()
+            .status
+            .success());
+    }
+
+    let base = spawn(test_state()).await;
+    let client = reqwest::Client::new();
+    client
+        .post(format!("{base}/workspace"))
+        .json(&json!({ "folder": root }))
+        .send()
+        .await
+        .unwrap();
+    let status: Value = client
+        .get(format!("{base}/workspace/git"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    let commits = status["recent_commits"].as_array().unwrap();
+    assert_eq!(commits.len(), 2);
+    assert_eq!(commits[0]["subject"], "second project commit");
+    assert_eq!(commits[1]["subject"], "first project commit");
+    assert!(!commits[0]["hash"].as_str().unwrap().is_empty());
 
     let _ = fs::remove_dir_all(root);
 }

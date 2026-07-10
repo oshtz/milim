@@ -37,6 +37,27 @@ assert.equal(plain.accountRuntimeMayUseTools, false);
 assert.equal(contextMessagesForTurn(plain, "model")[0].content, "Be terse.");
 assert.equal(contextMessagesForTurn(plain, "agent").some((message) => message.content === "Be terse."), false);
 
+const workspaceProviderTools = buildTurnPromptContext({
+  sessionId: "s-workspace",
+  threadTitle: "Workspace",
+  folder: "C:\\repo",
+  instructions: "",
+  planMode: false,
+  memory: false,
+  conversation: [user("edit files")],
+  memoryHits: [],
+  selectedSkills: [],
+  turnId: "turn-workspace",
+  sandbox: false,
+  computerUse: false,
+  activeAgentId: null,
+  toolApproval: "guarded",
+  toolApprovalGrant: false,
+  experimentalHashlinePatch: false,
+});
+assert.equal(workspaceProviderTools.useTools, true, "provider model plus workspace should use the Milim tool loop");
+assert.equal(workspaceProviderTools.accountRuntimeMayUseTools, false);
+
 const previewTools = buildTurnPromptContext({
   sessionId: "s-preview",
   threadTitle: "Preview",
@@ -208,6 +229,28 @@ const accountRuntime = buildTurnPromptContext({
 });
 assert.equal(accountRuntime.useTools, false);
 assert.equal(accountRuntime.accountRuntimeMayUseTools, true);
+
+const planModeAccountRuntime = buildTurnPromptContext({
+  sessionId: "s4-plan",
+  threadTitle: "Runtime",
+  folder: "C:\\repo",
+  instructions: "",
+  planMode: true,
+  memory: false,
+  conversation: [user("plan edits")],
+  memoryHits: [],
+  selectedSkills: [],
+  turnId: "turn-4-plan",
+  claudeModel: "sonnet",
+  sandbox: true,
+  computerUse: false,
+  activeAgentId: null,
+  toolApproval: "review",
+  toolApprovalGrant: false,
+  experimentalHashlinePatch: false,
+});
+assert.equal(planModeAccountRuntime.useTools, false);
+assert.equal(planModeAccountRuntime.accountRuntimeMayUseTools, false, "plan mode should not start account-runtime tools");
 
 const searched: Array<{ query: string; scopes: unknown[]; limit: number; model?: string }> = [];
 const selectedQueries: Array<{ query: string; limit: number }> = [];

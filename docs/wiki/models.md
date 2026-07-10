@@ -3,13 +3,15 @@ id: models
 path: models
 label: Models
 title: Models and providers
-summary: Provider-agnostic routing across OpenAI-compatible APIs, Anthropic, Gemini, Replicate, fal, Ollama, LM Studio, Codex, and Claude runtime bridges.
+summary: Model-agnostic dev chat routing across OpenAI-compatible APIs, Anthropic, Gemini, Replicate, fal, Ollama, LM Studio, Codex, and Claude runtime bridges.
 group: Workbench
 order: 40
-updated: 2026-07-07
+updated: 2026-07-09
 ---
 
-Model routing is provider-agnostic. The provider registry stores enabled remotes and their model metadata, then the desktop model picker merges local API runtime models, provider models, account runtime models, and media-capable models. Duplicate provider model ids stay provider-scoped in the picker and route back to the selected provider; provider sections with fewer visible models appear first.
+Model routing is provider-agnostic and centered on the active dev thread. The provider registry stores enabled remotes and their model metadata, then the desktop model picker merges local API runtime models, provider models, account runtime models, and media-capable models. Duplicate provider model ids stay provider-scoped in the picker and route back to the selected provider; provider sections with fewer visible models appear first.
+
+The model chip and picker classify the selected model into one runtime lane: plain chat, Milim tools, Codex runtime, Claude runtime, or media. Switching models changes the next turn for the active thread without resetting workspace context, memory, previews, artifacts, approvals, or queued messages.
 
 ## Provider kinds
 
@@ -23,6 +25,16 @@ Model routing is provider-agnostic. The provider registry stores enabled remotes
 | Local API runtimes | Ollama and LM Studio on this machine | Chat, prompt generation, Ollama `keep_alive` lifecycle calls, Responses or completions where the runtime exposes them, model list, embeddings, structured output, native vision/tool-use labels where available, and reasoning effort for supported local reasoning models. |
 | Codex and Claude runtime | Installed CLIs, not provider API keys | Resumable agent-style turns with visible tool events and Milim approval modes. |
 
+## Runtime lanes
+
+| Lane | When it appears | What happens next |
+|---|---|---|
+| Plain chat | No workspace, tool, preview, schedule, agent, or memory-write context is active. | The provider/local model answers directly. |
+| Milim tools | A provider/local model is selected while workspace, sandbox, computer-use, preview tools, schedule intent, active agent, or memory-write intent is active. | The model runs through Milim's tool-agent loop with visible tool events and approval policy. |
+| Codex runtime | A Codex account model is selected. | Milim sends the turn through the Codex account-runtime bridge. |
+| Claude runtime | An installed Claude CLI model is selected. | Milim sends the turn through the Claude CLI bridge. |
+| Media | An image/video model is selected. | Milim uses the media generation flow. |
+
 ## Choose a backend
 
 | Goal | Route | Why |
@@ -31,7 +43,7 @@ Model routing is provider-agnostic. The provider registry stores enabled remotes
 | General reasoning | OpenAI, Anthropic, Gemini, or OpenRouter | Use hosted providers when quality, context length, or latency matters more than staying fully local. |
 | Local reasoning control | Ollama thinking models or LM Studio models with reasoning metadata | Ollama uses `/v1/chat/completions`; LM Studio uses `/api/v1/chat` for advertised native reasoning options without custom tools and `/v1/responses` when Milim function tools are attached. `gpt-oss` still uses `/v1/responses` for `low`, `medium`, and `high` effort. |
 | Media workflow | Replicate, fal, or OpenRouter media models | Use image/video generation from the same milim surface. |
-| Agent coding loop | Codex or Claude runtime | Use account runtimes when you want resumable turns and visible tool events in the thread UI. |
+| Development coding loop | Any capable provider model, Codex runtime, or Claude runtime | Use provider models for Milim's tool loop, or account runtimes when you want their native resumable bridge. |
 
 ## Account runtimes
 

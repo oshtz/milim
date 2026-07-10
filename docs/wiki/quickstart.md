@@ -3,13 +3,13 @@ id: quickstart
 path: quickstart
 label: Quickstart
 title: Quickstart
-summary: Connect a model, pick a workspace folder, run the desktop app or CLI server, and send a first useful prompt.
+summary: Connect a provider or account runtime, pick a workspace folder, ask for an edit or test, switch models inline, and continue the same dev thread.
 group: Start
 order: 20
-updated: 2026-07-03
+updated: 2026-07-09
 ---
 
-Aim for one complete loop first: connect a model, select a workspace folder, send a prompt that needs context, and check that the answer or artifact lands where you expect.
+Aim for one complete loop first: connect a model source, select a workspace folder, ask for an edit or test run, switch models inline, and continue the same thread. Switching models changes the next turn; it does not reset workspace context, memory, previews, artifacts, approvals, or queued messages.
 
 ## First run checklist
 
@@ -19,8 +19,10 @@ Aim for one complete loop first: connect a model, select a workspace folder, sen
 | Choose a surface | Simple is focused chat; Workbench adds project, agent, MCP, media, sandbox, schedules, and computer-use controls. |
 | Add a model source | Configure a hosted provider, start Ollama or LM Studio, or set `MILIM_REMOTE_BASE_URL` for the CLI server path. |
 | Select a workspace | Pick the folder before asking for file reads, shell commands, Git actions, or artifact saves. |
+| Check the model chip | The chip shows provider, runtime lane, setup status, capabilities, favorite state, and reasoning effort where supported. |
 | Set privacy | Use Off for local-only tests, Redact for cautious remote work, and Block when remote sends must fail closed on detected PII. |
-| Send a useful prompt | Ask for a repo map, failing-test diagnosis, or small docs edit. A generic hello only proves chat works. |
+| Send a useful prompt | Ask for a repo map, failing-test diagnosis, small docs edit, or test command. A generic hello only proves chat works. |
+| Switch and continue | Pick another model from the same chip. Provider models use Milim tools when workspace/tool context is active; Codex and Claude use account-runtime bridges. |
 | Verify the result | Check model name, tool timeline, selected folder, artifacts, memory notices, and privacy mode before longer runs. |
 
 ## Desktop app
