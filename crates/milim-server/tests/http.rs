@@ -3,6 +3,7 @@
 //! is the Phase 1 verification gate.
 
 use std::fs;
+use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
@@ -4973,6 +4974,132 @@ async fn workspace_git_action_checkpoint_restores_worktree() {
         .stdout;
     assert_eq!(head_before, head_after);
 
+    let _ = fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn workspace_git_hot_swap_retry_isolated_and_applied() {
+    if Command::new("git").arg("--version").output().is_err() {
+        return;
+    }
+
+    let root = unique_temp_path("milim-git-hot-swap");
+    fs::create_dir_all(&root).unwrap();
+    assert!(Command::new("git")
+        .arg("init")
+        .arg(&root)
+        .output()
+        .unwrap()
+        .status
+        .success());
+    for args in [
+        ["config", "user.email", "test@example.com"].as_slice(),
+        ["config", "user.name", "Test User"].as_slice(),
+    ] {
+        assert!(Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(args)
+            .output()
+            .unwrap()
+            .status
+            .success());
+    }
+    fs::write(root.join("note.txt"), "base\n").unwrap();
+    assert!(Command::new("git")
+        .arg("-C")
+        .arg(&root)
+        .args(["add", "note.txt"])
+        .output()
+        .unwrap()
+        .status
+        .success());
+    assert!(Command::new("git")
+        .arg("-C")
+        .arg(&root)
+        .args(["commit", "-m", "initial"])
+        .output()
+        .unwrap()
+        .status
+        .success());
+
+    let base = spawn(test_state()).await;
+    let client = reqwest::Client::new();
+    client
+        .post(format!("{base}/workspace"))
+        .json(&json!({ "folder": root }))
+        .send()
+        .await
+        .unwrap();
+    let checkpoint: Value = client
+        .post(format!("{base}/workspace/git/action"))
+        .json(&json!({ "action": "checkpoint", "message": "hot-swap-base" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let checkpoint_ref = checkpoint["checkpoint"].as_str().unwrap();
+    let created: Value = client
+        .post(format!("{base}/workspace/git/action"))
+        .json(&json!({ "action": "create_retry_worktree", "checkpoint": checkpoint_ref }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(created["ok"], true, "{created}");
+    let worktree = PathBuf::from(created["worktree"].as_str().unwrap());
+    assert_eq!(
+        fs::read_to_string(worktree.join("note.txt"))
+            .unwrap()
+            .replace("\r\n", "\n"),
+        "base\n"
+    );
+    fs::write(worktree.join("note.txt"), "retry\n").unwrap();
+    fs::write(worktree.join("new.txt"), "new\n").unwrap();
+
+    let applied: Value = client
+        .post(format!("{base}/workspace/git/action"))
+        .json(&json!({
+            "action": "apply_retry_worktree",
+            "checkpoint": checkpoint_ref,
+            "worktree": worktree,
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(applied["ok"], true, "{applied}");
+    assert!(applied["undo_checkpoint"].as_str().is_some());
+    assert_eq!(
+        fs::read_to_string(root.join("note.txt"))
+            .unwrap()
+            .replace("\r\n", "\n"),
+        "retry\n"
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("new.txt"))
+            .unwrap()
+            .replace("\r\n", "\n"),
+        "new\n"
+    );
+
+    let removed: Value = client
+        .post(format!("{base}/workspace/git/action"))
+        .json(&json!({ "action": "remove_retry_worktree", "worktree": worktree }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(removed["ok"], true, "{removed}");
+    assert!(!worktree.exists());
     let _ = fs::remove_dir_all(root);
 }
 

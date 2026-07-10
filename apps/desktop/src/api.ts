@@ -3199,7 +3199,10 @@ export type WorkspaceGitAction =
   | "checkout_branch"
   | "create_branch"
   | "checkpoint"
-  | "restore_checkpoint";
+  | "restore_checkpoint"
+  | "create_retry_worktree"
+  | "apply_retry_worktree"
+  | "remove_retry_worktree";
 
 export interface WorkspaceGitActionResult {
   ok: boolean;
@@ -3213,6 +3216,9 @@ export interface WorkspaceGitActionResult {
   checkpoint?: string;
   root?: string;
   head?: string;
+  worktree?: string;
+  undo_checkpoint?: string;
+  conflicts?: string[];
 }
 
 export async function getWorkspaceGitStatus(): Promise<WorkspaceGitStatus | null> {
@@ -3232,6 +3238,7 @@ export async function runWorkspaceGitAction(
     stage_all?: boolean;
     staged_only?: boolean;
     branch?: string;
+    worktree?: string;
   } = {},
 ): Promise<WorkspaceGitActionResult> {
   const r = await authFetch(`${BASE}/workspace/git/action`, {

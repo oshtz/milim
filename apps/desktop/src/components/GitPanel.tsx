@@ -2047,6 +2047,7 @@ export function GitWorkspacePanel({
   onClose,
   modeSwitcher,
   style,
+  headerNotice,
 }: {
   folder: string;
   model: string;
@@ -2056,6 +2057,7 @@ export function GitWorkspacePanel({
   onClose: () => void;
   modeSwitcher?: ReactNode;
   style?: CSSProperties;
+  headerNotice?: ReactNode;
 }) {
   return (
     <aside
@@ -2077,6 +2079,7 @@ export function GitWorkspacePanel({
         </div>
       </div>
       <div className="git-workspace-scroll">
+        {headerNotice}
         <GitPanel
           folder={folder}
           model={model}

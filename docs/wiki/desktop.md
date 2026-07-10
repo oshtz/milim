@@ -44,6 +44,12 @@ Image attachments are preserved as image content parts for provider chat and ser
 
 ## Session controls
 
+Hot Swap makes the Milim thread canonical rather than any provider session. Selecting a compatible chat model changes the next turn immediately without resetting workspace, memory, artifacts, previews, approvals, goals, or queued messages. A preflight appears only when the target needs context compaction, cannot receive current image/tool context, is unavailable, or has a native Codex/Claude session behind the Milim transcript.
+
+For a stale native session, **Fresh** starts from Milim's complete context while **Resume** keeps the native session and injects turns added since it last completed successfully. The latest assistant response offers **Continue with**, **Review with**, and **Retry with**. Continue and Review prepare editable drafts; Review is read-only for that turn only. Coding retries run from the pre-turn checkpoint in an isolated Git worktree and expose their diff in the Git inspector before it can be applied to the original workspace.
+
+**Undo changes** restores the latest code-changing turn's checkpoint, removes that assistant response, retains the user request, and clears stale account-runtime state.
+
 | Control | Behavior |
 |---|---|
 | Model | Pick any discovered chat, account-runtime, or media-capable model. The chip shows provider, runtime lane, setup status, capabilities, favorite state, and reasoning effort where supported. |

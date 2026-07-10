@@ -44,6 +44,7 @@ type SidebarSession = {
   id: string;
   title: string;
   settings?: { folder?: string };
+  retryWorkspace?: { originalFolder: string };
   parentId?: string;
   archivedAt?: number;
   createdAt: number;
@@ -79,13 +80,23 @@ try {
     projectFolders: [folder],
   };
   const groups = groupSessionsByProjects(
-    [{
-      id: "project-chat",
-      title: "Project chat",
-      settings: { folder },
-      createdAt: now,
-      updatedAt: now,
-    }],
+    [
+      {
+        id: "project-chat",
+        title: "Project chat",
+        settings: { folder },
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        id: "retry-chat",
+        title: "Retry chat",
+        settings: { folder: "C:\\Users\\test\\.milim\\runtime\\hot-swap\\retry" },
+        retryWorkspace: { originalFolder: folder },
+        createdAt: now,
+        updatedAt: now,
+      },
+    ],
     [{
       id: projectSectionId(folder),
       name: "Workspace A",
@@ -96,6 +107,9 @@ try {
     sidebar,
     "",
   );
+
+  const projectGroup = groups.find((group) => group.id === projectSectionId(folder));
+  assert(projectGroup?.sessions.some((session) => session.id === "retry-chat"), "retry worktrees should stay grouped under the original project");
 
   const chats = groups.find((group) => group.id === SIDEBAR_CHATS_SECTION_ID);
   assert(chats, "empty Chats section should render when unfiltered");

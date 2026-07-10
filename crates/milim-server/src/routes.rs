@@ -4649,6 +4649,8 @@ pub(crate) struct WorkspaceGitActionRequest {
     staged_only: bool,
     #[serde(default)]
     branch: Option<String>,
+    #[serde(default)]
+    worktree: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -4667,6 +4669,12 @@ pub(crate) struct WorkspaceGitActionResponse {
     root: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     head: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    worktree: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    undo_checkpoint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    conflicts: Option<Vec<String>>,
 }
 
 #[derive(Debug, Default)]
@@ -4820,7 +4828,7 @@ pub(crate) async fn workspace_git_action(
     State(st): State<AppState>,
     headers: HeaderMap,
     peer: Peer,
-    Json(req): Json<WorkspaceGitActionRequest>,
+    Json(mut req): Json<WorkspaceGitActionRequest>,
 ) -> Result<Response, ApiError> {
     authorize(&st, &headers, peer_addr(peer))?;
     let action = req.action.trim().to_string();
@@ -4837,6 +4845,9 @@ pub(crate) async fn workspace_git_action(
             | "create_branch"
             | "checkpoint"
             | "restore_checkpoint"
+            | "create_retry_worktree"
+            | "apply_retry_worktree"
+            | "remove_retry_worktree"
     ) {
         return Err(ApiError(Error::InvalidRequest(format!(
             "unsupported git action: {action}"
@@ -4844,16 +4855,13 @@ pub(crate) async fn workspace_git_action(
     }
 
     let folder = st.workspace.read().ok().and_then(|g| g.clone());
+    let hot_swap_root = milim_core::paths::Paths::resolve()
+        .root()
+        .join("runtime")
+        .join("hot-swap");
+    req.action = action;
     let result = tokio::task::spawn_blocking(move || {
-        workspace_git_action_blocking(
-            folder,
-            action,
-            req.message,
-            req.checkpoint,
-            req.stage_all,
-            req.staged_only,
-            req.branch,
-        )
+        workspace_git_action_blocking(folder, req, hot_swap_root)
     })
     .await
     .map_err(|e| ApiError(Error::Other(format!("git action task failed: {e}"))))?;
@@ -5230,14 +5238,19 @@ fn parse_git_shortstat(text: &str) -> (u32, u32) {
 
 fn workspace_git_action_blocking(
     folder: Option<PathBuf>,
-    action: String,
-    message: Option<String>,
-    checkpoint: Option<String>,
-    stage_all: bool,
-    staged_only: bool,
-    branch: Option<String>,
+    request: WorkspaceGitActionRequest,
+    hot_swap_root: PathBuf,
 ) -> WorkspaceGitActionResponse {
     const OUTPUT_LIMIT: usize = 24_000;
+    let WorkspaceGitActionRequest {
+        action,
+        message,
+        checkpoint,
+        stage_all,
+        staged_only,
+        branch,
+        worktree,
+    } = request;
 
     let status = workspace_git_status_blocking(folder);
     let Some(root) = status.root.as_ref().map(PathBuf::from) else {
@@ -5257,6 +5270,20 @@ fn workspace_git_action_blocking(
     }
     if action == "restore_checkpoint" {
         return workspace_git_restore_checkpoint_action(&root, checkpoint);
+    }
+    if action == "create_retry_worktree" {
+        return workspace_git_create_retry_worktree_action(&root, checkpoint, &hot_swap_root);
+    }
+    if action == "apply_retry_worktree" {
+        return workspace_git_apply_retry_worktree_action(
+            &root,
+            checkpoint,
+            worktree,
+            &hot_swap_root,
+        );
+    }
+    if action == "remove_retry_worktree" {
+        return workspace_git_remove_retry_worktree_action(&root, worktree, &hot_swap_root);
     }
     if matches!(action.as_str(), "commit" | "commit_push") {
         return workspace_git_commit_action(&root, &action, &status, message, stage_all);
@@ -5380,6 +5407,9 @@ fn workspace_git_action_blocking(
                 checkpoint: None,
                 root: None,
                 head: None,
+                worktree: None,
+                undo_checkpoint: None,
+                conflicts: None,
             }
         }
         Err(e) => workspace_git_action_message(&action, &command, false, &e),
@@ -5830,6 +5860,336 @@ fn workspace_git_restore_checkpoint_action(
     response
 }
 
+fn valid_milim_checkpoint(checkpoint: Option<String>) -> Option<String> {
+    let checkpoint = checkpoint.unwrap_or_default().trim().to_string();
+    if checkpoint.starts_with("refs/milim/checkpoints/") {
+        Some(checkpoint)
+    } else {
+        None
+    }
+}
+
+fn retry_worktree_path(
+    worktree: Option<String>,
+    hot_swap_root: &FsPath,
+) -> Result<PathBuf, String> {
+    let requested = PathBuf::from(worktree.unwrap_or_default());
+    let root = std::fs::canonicalize(hot_swap_root)
+        .map_err(|e| format!("Hot Swap runtime is unavailable: {e}"))?;
+    let path = std::fs::canonicalize(&requested)
+        .map_err(|e| format!("Retry worktree is unavailable: {e}"))?;
+    if path.starts_with(&root) {
+        Ok(path)
+    } else {
+        Err("Retry worktree must be inside Milim's runtime directory.".to_string())
+    }
+}
+
+fn git_common_dir(root: &FsPath) -> Option<PathBuf> {
+    let raw = PathBuf::from(git_text(root, &["rev-parse", "--git-common-dir"])?);
+    std::fs::canonicalize(if raw.is_absolute() {
+        raw
+    } else {
+        root.join(raw)
+    })
+    .ok()
+}
+
+fn workspace_git_create_retry_worktree_action(
+    root: &FsPath,
+    checkpoint: Option<String>,
+    hot_swap_root: &FsPath,
+) -> WorkspaceGitActionResponse {
+    let Some(checkpoint) = valid_milim_checkpoint(checkpoint) else {
+        return workspace_git_action_message(
+            "create_retry_worktree",
+            "git rev-parse --verify <checkpoint>",
+            false,
+            "A Milim workspace checkpoint is required.",
+        );
+    };
+    if let Err(e) = std::fs::create_dir_all(hot_swap_root) {
+        return workspace_git_action_message(
+            "create_retry_worktree",
+            "",
+            false,
+            &format!("Failed to create Hot Swap runtime directory: {e}"),
+        );
+    }
+    let worktree = hot_swap_root.join(gen_id("retry"));
+    let worktree_text = worktree.to_string_lossy().to_string();
+    let args = [
+        "worktree",
+        "add",
+        "--detach",
+        worktree_text.as_str(),
+        checkpoint.as_str(),
+    ];
+    let output = match git_output(root, &args) {
+        Ok(output) => output,
+        Err(e) => {
+            return workspace_git_action_message(
+                "create_retry_worktree",
+                &git_command_text(&args),
+                false,
+                &e,
+            )
+        }
+    };
+    let ok = output.status.success();
+    let mut response = workspace_git_combined_response(
+        "create_retry_worktree",
+        &git_command_text(&args),
+        ok,
+        String::from_utf8_lossy(&output.stdout).to_string(),
+        String::from_utf8_lossy(&output.stderr).to_string(),
+        output.status.code(),
+        if ok {
+            "Retry worktree created.".to_string()
+        } else {
+            output_error_text(&output)
+        },
+    );
+    if ok {
+        response.checkpoint = Some(checkpoint);
+        response.root = Some(root.to_string_lossy().to_string());
+        response.worktree = Some(worktree_text);
+    }
+    response
+}
+
+fn workspace_git_apply_retry_worktree_action(
+    root: &FsPath,
+    checkpoint: Option<String>,
+    worktree: Option<String>,
+    hot_swap_root: &FsPath,
+) -> WorkspaceGitActionResponse {
+    let Some(checkpoint) = valid_milim_checkpoint(checkpoint) else {
+        return workspace_git_action_message(
+            "apply_retry_worktree",
+            "git rev-parse --verify <checkpoint>",
+            false,
+            "A Milim workspace checkpoint is required.",
+        );
+    };
+    if let Err(e) = std::fs::create_dir_all(hot_swap_root) {
+        return workspace_git_action_message("apply_retry_worktree", "", false, &e.to_string());
+    }
+    let worktree = match retry_worktree_path(worktree, hot_swap_root) {
+        Ok(value) => value,
+        Err(message) => {
+            return workspace_git_action_message("apply_retry_worktree", "", false, &message)
+        }
+    };
+    if git_common_dir(root) != git_common_dir(&worktree) {
+        return workspace_git_action_message(
+            "apply_retry_worktree",
+            "",
+            false,
+            "Retry worktree does not belong to the selected repository.",
+        );
+    }
+
+    let retry_status = workspace_git_status_blocking(Some(worktree.clone()));
+    let retry_checkpoint = workspace_git_checkpoint_action(
+        &worktree,
+        &retry_status,
+        Some("hot-swap-retry-result".to_string()),
+    );
+    let Some(retry_ref) = retry_checkpoint.checkpoint else {
+        return workspace_git_action_message(
+            "apply_retry_worktree",
+            "",
+            false,
+            &retry_checkpoint.message,
+        );
+    };
+
+    let diff_args = [
+        "diff",
+        "--binary",
+        checkpoint.as_str(),
+        retry_ref.as_str(),
+        "--",
+    ];
+    let diff = match git_output(&worktree, &diff_args) {
+        Ok(output) if output.status.success() => output.stdout,
+        Ok(output) => {
+            return workspace_git_action_message(
+                "apply_retry_worktree",
+                &git_command_text(&diff_args),
+                false,
+                &output_error_text(&output),
+            )
+        }
+        Err(e) => {
+            return workspace_git_action_message(
+                "apply_retry_worktree",
+                &git_command_text(&diff_args),
+                false,
+                &e,
+            )
+        }
+    };
+    if diff.is_empty() {
+        return workspace_git_action_message(
+            "apply_retry_worktree",
+            &git_command_text(&diff_args),
+            true,
+            "Retry workspace has no changes to apply.",
+        );
+    }
+    let names = git_text(
+        &worktree,
+        &[
+            "diff",
+            "--name-only",
+            checkpoint.as_str(),
+            retry_ref.as_str(),
+            "--",
+        ],
+    )
+    .unwrap_or_default()
+    .lines()
+    .map(str::trim)
+    .filter(|line| !line.is_empty())
+    .map(str::to_string)
+    .collect::<Vec<_>>();
+    let patch_path = hot_swap_root.join(format!("{}.patch", gen_id("apply")));
+    if let Err(e) = std::fs::write(&patch_path, &diff) {
+        return workspace_git_action_message(
+            "apply_retry_worktree",
+            "",
+            false,
+            &format!("Failed to prepare retry patch: {e}"),
+        );
+    }
+    let patch_text = patch_path.to_string_lossy().to_string();
+    let check_args = ["apply", "--check", "--binary", patch_text.as_str()];
+    let check = git_output(root, &check_args);
+    if !matches!(&check, Ok(output) if output.status.success()) {
+        let _ = std::fs::remove_file(&patch_path);
+        let detail = match check {
+            Ok(output) => output_error_text(&output),
+            Err(e) => e,
+        };
+        let mut response = workspace_git_action_message(
+            "apply_retry_worktree",
+            &git_command_text(&check_args),
+            false,
+            &format!("Retry changes conflict with the original workspace: {detail}"),
+        );
+        response.conflicts = Some(names);
+        return response;
+    }
+
+    let original_status = workspace_git_status_blocking(Some(root.to_path_buf()));
+    let undo = workspace_git_checkpoint_action(
+        root,
+        &original_status,
+        Some("before-hot-swap-apply".to_string()),
+    );
+    let Some(undo_ref) = undo.checkpoint else {
+        let _ = std::fs::remove_file(&patch_path);
+        return workspace_git_action_message("apply_retry_worktree", "", false, &undo.message);
+    };
+    let apply_args = ["apply", "--binary", patch_text.as_str()];
+    let output = match git_output(root, &apply_args) {
+        Ok(output) => output,
+        Err(e) => {
+            let _ = std::fs::remove_file(&patch_path);
+            return workspace_git_action_message(
+                "apply_retry_worktree",
+                &git_command_text(&apply_args),
+                false,
+                &e,
+            );
+        }
+    };
+    let _ = std::fs::remove_file(&patch_path);
+    if !output.status.success() {
+        let restored = workspace_git_restore_checkpoint_action(root, Some(undo_ref));
+        return workspace_git_action_message(
+            "apply_retry_worktree",
+            &git_command_text(&apply_args),
+            false,
+            &format!(
+                "Retry apply failed and the original workspace was {}: {}",
+                if restored.ok {
+                    "restored"
+                } else {
+                    "not restored"
+                },
+                output_error_text(&output)
+            ),
+        );
+    }
+    let mut response = workspace_git_combined_response(
+        "apply_retry_worktree",
+        &git_command_text(&apply_args),
+        true,
+        String::from_utf8_lossy(&output.stdout).to_string(),
+        String::from_utf8_lossy(&output.stderr).to_string(),
+        output.status.code(),
+        "Retry changes applied to the original workspace.".to_string(),
+    );
+    response.root = Some(root.to_string_lossy().to_string());
+    response.worktree = Some(worktree.to_string_lossy().to_string());
+    response.undo_checkpoint = Some(undo_ref);
+    response
+}
+
+fn workspace_git_remove_retry_worktree_action(
+    root: &FsPath,
+    worktree: Option<String>,
+    hot_swap_root: &FsPath,
+) -> WorkspaceGitActionResponse {
+    if let Err(e) = std::fs::create_dir_all(hot_swap_root) {
+        return workspace_git_action_message("remove_retry_worktree", "", false, &e.to_string());
+    }
+    let worktree = match retry_worktree_path(worktree, hot_swap_root) {
+        Ok(value) => value,
+        Err(message) => {
+            return workspace_git_action_message("remove_retry_worktree", "", false, &message)
+        }
+    };
+    if git_common_dir(root) != git_common_dir(&worktree) {
+        return workspace_git_action_message(
+            "remove_retry_worktree",
+            "",
+            false,
+            "Retry worktree does not belong to the selected repository.",
+        );
+    }
+    let worktree_text = worktree.to_string_lossy().to_string();
+    let args = ["worktree", "remove", "--force", worktree_text.as_str()];
+    let output = match git_output(root, &args) {
+        Ok(output) => output,
+        Err(e) => {
+            return workspace_git_action_message(
+                "remove_retry_worktree",
+                &git_command_text(&args),
+                false,
+                &e,
+            )
+        }
+    };
+    let ok = output.status.success();
+    workspace_git_combined_response(
+        "remove_retry_worktree",
+        &git_command_text(&args),
+        ok,
+        String::from_utf8_lossy(&output.stdout).to_string(),
+        String::from_utf8_lossy(&output.stderr).to_string(),
+        output.status.code(),
+        if ok {
+            "Retry worktree removed.".to_string()
+        } else {
+            output_error_text(&output)
+        },
+    )
+}
+
 fn append_git_output(stdout: &mut String, stderr: &mut String, output: &Output) {
     stdout.push_str(&String::from_utf8_lossy(&output.stdout));
     stderr.push_str(&String::from_utf8_lossy(&output.stderr));
@@ -5874,6 +6234,9 @@ fn workspace_git_combined_response(
         checkpoint: None,
         root: None,
         head: None,
+        worktree: None,
+        undo_checkpoint: None,
+        conflicts: None,
     }
 }
 
@@ -5935,6 +6298,9 @@ fn workspace_git_diff_action(
         checkpoint: None,
         root: None,
         head: None,
+        worktree: None,
+        undo_checkpoint: None,
+        conflicts: None,
     }
 }
 
@@ -6013,6 +6379,9 @@ fn workspace_git_action_message(
         checkpoint: None,
         root: None,
         head: None,
+        worktree: None,
+        undo_checkpoint: None,
+        conflicts: None,
     }
 }
 

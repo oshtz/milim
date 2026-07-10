@@ -11,6 +11,7 @@ import type {
 } from "../src/api.js";
 import {
   claudeCompactionSummaryRequest,
+  accountRuntimePromptMessages,
   codexCompactionSummaryRequest,
   codexPromptFromMessages,
   createAccountRuntimeEventHandler,
@@ -25,6 +26,24 @@ import {
   runSelectedAccountRuntimeTurn,
   runToolAgentTurn,
 } from "../src/lib/turnRuntime.js";
+
+const runtimeDelta = accountRuntimePromptMessages(
+  [{ role: "system", content: "Context" }],
+  [
+    { id: "u1", role: "user", content: "First" },
+    { id: "a1", role: "assistant", content: "First answer" },
+    { id: "u2", role: "user", content: "Intervening" },
+    { id: "a2", role: "assistant", content: "Other model answer" },
+    { id: "u3", role: "user", content: "Resume" },
+  ],
+  "a1",
+);
+assert.deepEqual(runtimeDelta.map((message) => message.content), [
+  "Context",
+  "Intervening",
+  "Other model answer",
+  "Resume",
+]);
 
 const startedMessages: ChatMessage[][] = [];
 const initialConversation: ChatMessage[] = [{ role: "user", content: "hello" }];

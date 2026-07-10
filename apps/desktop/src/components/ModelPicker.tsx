@@ -73,6 +73,7 @@ export function ModelPicker({
   onManageMcp,
   onManageMemory,
   onClose,
+  showManagementActions = true,
 }: {
   models: ModelInfo[];
   model: string;
@@ -84,6 +85,7 @@ export function ModelPicker({
   onManageMcp: () => void;
   onManageMemory: () => void;
   onClose: () => void;
+  showManagementActions?: boolean;
 }) {
   const favorites = useSettings((s) => s.favorites);
   const favoritesOnly = useSettings((s) => s.favoritesOnly);
@@ -217,7 +219,7 @@ export function ModelPicker({
           <span className="mp-checkbox">{favoritesOnly && <Check size={10} />}</span>
           Favorites only
         </button>
-        <div className="mp-foot-actions">
+        {showManagementActions && <div className="mp-foot-actions">
           <button type="button" className="mp-foot-btn" data-testid="manage-providers" onClick={() => { onClose(); onManageProviders(); }}>
             <PlusSquare size={13} /> Providers
           </button>
@@ -231,7 +233,7 @@ export function ModelPicker({
               <Memory size={13} /> Memory
             </button>
           )}
-        </div>
+        </div>}
       </div>
     </div>
   );

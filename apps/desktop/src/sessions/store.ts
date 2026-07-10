@@ -136,8 +136,12 @@ export interface Session {
   settings?: ThreadSettings;
   accountRuntime?: {
     codexThreadId?: string;
+    codexLastSyncedMessageId?: string;
     claudeSessionId?: string;
+    claudeLastSyncedMessageId?: string;
   };
+  pendingHotSwap?: PendingHotSwap;
+  retryWorkspace?: RetryWorkspace;
   parentId?: string;
   worker?: {
     status: ChildThreadStatus;
@@ -149,6 +153,29 @@ export interface Session {
   createdAt: number;
   updatedAt: number;
   archivedAt?: number;
+}
+
+export type HotSwapAction = "switch" | "continue" | "review" | "retry";
+export type NativeSessionMode = "fresh" | "resume";
+
+export interface PendingHotSwap {
+  fromModel: string;
+  toModel: string;
+  action: Exclude<HotSwapAction, "retry">;
+  nativeSessionMode?: NativeSessionMode;
+  sourceMessageId?: string;
+  createdAt: number;
+}
+
+export interface RetryWorkspace {
+  sourceSessionId: string;
+  sourceMessageId?: string;
+  originalFolder: string;
+  worktreeFolder: string;
+  baseCheckpoint: string;
+  createdAt: number;
+  adoptedAt?: number;
+  applyUndoCheckpoint?: string;
 }
 
 export interface SessionVirtualFile {
@@ -272,9 +299,71 @@ function normalizeAccountRuntime(
     typeof raw.claudeSessionId === "string" && raw.claudeSessionId.trim()
       ? raw.claudeSessionId.trim()
       : undefined;
+  const codexLastSyncedMessageId =
+    codexThreadId &&
+    typeof raw.codexLastSyncedMessageId === "string" &&
+    raw.codexLastSyncedMessageId.trim()
+      ? raw.codexLastSyncedMessageId.trim()
+      : undefined;
+  const claudeLastSyncedMessageId =
+    claudeSessionId &&
+    typeof raw.claudeLastSyncedMessageId === "string" &&
+    raw.claudeLastSyncedMessageId.trim()
+      ? raw.claudeLastSyncedMessageId.trim()
+      : undefined;
   return codexThreadId || claudeSessionId
-    ? { codexThreadId, claudeSessionId }
+    ? {
+        codexThreadId,
+        codexLastSyncedMessageId,
+        claudeSessionId,
+        claudeLastSyncedMessageId,
+      }
     : undefined;
+}
+
+function normalizePendingHotSwap(value: unknown): PendingHotSwap | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const raw = value as Record<string, unknown>;
+  const action = raw.action;
+  if (action !== "switch" && action !== "continue" && action !== "review") return undefined;
+  if (typeof raw.fromModel !== "string" || typeof raw.toModel !== "string") return undefined;
+  const fromModel = raw.fromModel.trim();
+  const toModel = raw.toModel.trim();
+  if (!fromModel || !toModel) return undefined;
+  const nativeSessionMode = raw.nativeSessionMode === "fresh" || raw.nativeSessionMode === "resume"
+    ? raw.nativeSessionMode
+    : undefined;
+  return {
+    fromModel,
+    toModel,
+    action,
+    nativeSessionMode,
+    sourceMessageId: typeof raw.sourceMessageId === "string" && raw.sourceMessageId.trim()
+      ? raw.sourceMessageId.trim()
+      : undefined,
+    createdAt: timestamp(raw.createdAt) ?? Date.now(),
+  };
+}
+
+function normalizeRetryWorkspace(value: unknown): RetryWorkspace | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const raw = value as Record<string, unknown>;
+  const required = ["sourceSessionId", "originalFolder", "worktreeFolder", "baseCheckpoint"] as const;
+  if (required.some((key) => typeof raw[key] !== "string" || !(raw[key] as string).trim())) return undefined;
+  return {
+    sourceSessionId: (raw.sourceSessionId as string).trim(),
+    sourceMessageId: typeof raw.sourceMessageId === "string" && raw.sourceMessageId.trim()
+      ? raw.sourceMessageId.trim()
+      : undefined,
+    originalFolder: (raw.originalFolder as string).trim(),
+    worktreeFolder: (raw.worktreeFolder as string).trim(),
+    baseCheckpoint: (raw.baseCheckpoint as string).trim(),
+    createdAt: timestamp(raw.createdAt) ?? Date.now(),
+    adoptedAt: timestamp(raw.adoptedAt),
+    applyUndoCheckpoint: typeof raw.applyUndoCheckpoint === "string" && raw.applyUndoCheckpoint.trim()
+      ? raw.applyUndoCheckpoint.trim()
+      : undefined,
+  };
 }
 
 function stringValue(value: unknown): string | undefined {
@@ -537,8 +626,12 @@ function folderListFromSessions(sessions: Session[]): string[] {
   return uniqueStrings(
     sessions
       .filter((session) => !session.parentId)
-      .map((session) => session.settings?.folder ?? ""),
+      .map(sessionProjectFolder),
   );
+}
+
+export function sessionProjectFolder(session: Pick<Session, "settings" | "retryWorkspace">): string {
+  return session.retryWorkspace?.originalFolder || session.settings?.folder || "";
 }
 
 function timestamp(value: unknown): number | undefined {
@@ -632,7 +725,7 @@ function visibleSessions(sessions: Session[], projects: Project[]): Session[] {
   const archivedFolders = archivedProjectFolders(projects);
   return sessions.filter((session) => {
     if (session.archivedAt) return false;
-    const folder = normalizeProjectFolder(session.settings?.folder);
+    const folder = normalizeProjectFolder(sessionProjectFolder(session));
     return !folder || !archivedFolders.has(folder);
   });
 }
@@ -657,7 +750,7 @@ function sessionIdsInFolder(sessions: Session[], folder: string): Set<string> {
     sessions
       .filter(
         (session) =>
-          normalizeProjectFolder(session.settings?.folder) === normalized,
+          normalizeProjectFolder(sessionProjectFolder(session)) === normalized,
       )
       .map((session) => session.id),
   );
@@ -964,6 +1057,8 @@ function normalizeSessionArtifacts(session: Session): Session {
     ) ?? (legacyOpen === true ? "preview" : undefined),
     previewRuntime: normalizePreviewRuntime(session.previewRuntime),
     accountRuntime: normalizeAccountRuntime(session.accountRuntime),
+    pendingHotSwap: normalizePendingHotSwap(session.pendingHotSwap),
+    retryWorkspace: normalizeRetryWorkspace(session.retryWorkspace),
     settings: normalizeSettings(session.settings, { pauseRunningGoal: true }),
     messages: messages.map((message) =>
       normalizeMessageArtifacts(normalizePersistedStreamParts(message)),
@@ -1357,6 +1452,9 @@ interface SessionState {
     runtime: Partial<NonNullable<Session["accountRuntime"]>>,
   ) => void;
   clearAccountRuntime: (id: string) => void;
+  clearAccountRuntimeKind: (id: string, kind: "codex" | "claude") => void;
+  setPendingHotSwap: (id: string, pending?: PendingHotSwap) => void;
+  setRetryWorkspace: (id: string, retry?: RetryWorkspace) => void;
   ensureClaudeSessionId: (id: string) => string;
   getSettings: (id: string) => ThreadSettings;
   updateSettings: (id: string, settings: ThreadSettingsPatch) => void;
@@ -1811,7 +1909,7 @@ export const useSessions = create<SessionState>()(
                   (session) =>
                     (session.archivedAt ?? Infinity) <= cutoff ||
                     expiredProjectFolders.has(
-                      normalizeProjectFolder(session.settings?.folder),
+                      normalizeProjectFolder(sessionProjectFolder(session)),
                     ),
                 )
                 .map((session) => session.id),
@@ -2568,6 +2666,53 @@ export const useSessions = create<SessionState>()(
             ),
           })),
 
+        clearAccountRuntimeKind: (id, kind) =>
+          set((st) => ({
+            sessions: st.sessions.map((s) => {
+              if (s.id !== id) return s;
+              const current = s.accountRuntime;
+              if (!current) return s;
+              const accountRuntime = normalizeAccountRuntime(
+                kind === "codex"
+                  ? {
+                      claudeSessionId: current.claudeSessionId,
+                      claudeLastSyncedMessageId: current.claudeLastSyncedMessageId,
+                    }
+                  : {
+                      codexThreadId: current.codexThreadId,
+                      codexLastSyncedMessageId: current.codexLastSyncedMessageId,
+                    },
+              );
+              return { ...s, accountRuntime, updatedAt: Date.now() };
+            }),
+          })),
+
+        setPendingHotSwap: (id, pending) =>
+          set((st) => ({
+            sessions: st.sessions.map((s) =>
+              s.id === id
+                ? {
+                    ...s,
+                    pendingHotSwap: normalizePendingHotSwap(pending),
+                    updatedAt: Date.now(),
+                  }
+                : s,
+            ),
+          })),
+
+        setRetryWorkspace: (id, retry) =>
+          set((st) => ({
+            sessions: st.sessions.map((s) =>
+              s.id === id
+                ? {
+                    ...s,
+                    retryWorkspace: normalizeRetryWorkspace(retry),
+                    updatedAt: Date.now(),
+                  }
+                : s,
+            ),
+          })),
+
         ensureClaudeSessionId: (id) => {
           const existing = get().sessions.find((s) => s.id === id)
             ?.accountRuntime?.claudeSessionId;
@@ -2601,6 +2746,10 @@ export const useSessions = create<SessionState>()(
                     return {
                       ...s,
                       settings: normalizeSettings(merged),
+                      pendingHotSwap:
+                        "model" in settings && settings.model !== s.settings?.model
+                          ? undefined
+                          : s.pendingHotSwap,
                       updatedAt: Date.now(),
                     };
                   })()
@@ -2637,7 +2786,7 @@ export const useSessions = create<SessionState>()(
           state.previewRuntimesByKey,
         );
         for (const session of sessions) {
-          const folder = normalizeProjectFolder(session.settings?.folder);
+          const folder = normalizeProjectFolder(sessionProjectFolder(session));
           if (folder && session.previewRuntime) {
             previewRuntimesByKey[
               previewRuntimeKeyForThread(session.id, folder)
@@ -2665,7 +2814,7 @@ export const useSessions = create<SessionState>()(
           (session) =>
             (session.archivedAt ?? Infinity) > cutoff &&
             !expiredProjectFolders.has(
-              normalizeProjectFolder(session.settings?.folder),
+              normalizeProjectFolder(sessionProjectFolder(session)),
             ),
         );
         const active = ensureVisibleActive(

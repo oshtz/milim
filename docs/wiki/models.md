@@ -15,6 +15,8 @@ On desktop startup, the picker reads the cached catalog while a single live refr
 
 The model chip and picker classify the selected model into one runtime lane: plain chat, Milim tools, Codex runtime, Claude runtime, or media. Switching models changes the next turn for the active thread without resetting workspace context, memory, previews, artifacts, approvals, or queued messages.
 
+Hot Swap assesses the selected target before committing the change. Full-parity swaps stay one-click. Smaller context windows, unsupported image/tool input, unavailable setup, or stale account-runtime history open a preflight. Codex and Claude native sessions record the last Milim message they completed; after another model contributes, the user chooses a fresh canonical handoff or a resumed session with the missing Milim turns injected.
+
 ## Provider kinds
 
 | Kind | Examples | Implements |

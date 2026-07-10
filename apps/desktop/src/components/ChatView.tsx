@@ -130,6 +130,8 @@ import {
   type SessionPreviewRuntime,
   type SessionSidebarState,
   type SessionVirtualFile,
+  type HotSwapAction,
+  type NativeSessionMode,
 } from "../sessions/store";
 import {
   artifactPreviewAutoOpenKey,
@@ -217,6 +219,7 @@ import {
   shouldPollMediaStatus,
 } from "../lib/media";
 import { mergeModelListsForPicker, providerOwnsModel } from "../lib/modelPicker";
+import { assessHotSwap, nativeRuntimeIsStale, type HotSwapAssessment } from "../lib/hotSwap";
 import {
   estimateResponseCostUsd,
   formatResponseMetrics,
@@ -316,6 +319,7 @@ import { PreviewPanel } from "./PreviewPanel";
 import { QuickSummaryPanel } from "./QuickSummaryPanel";
 import { RunTimeline } from "./RunTimeline";
 import { WorkspaceLauncherButton } from "./WorkspaceLauncher";
+import { BatonMenu, BatonTargetSheet, HotSwapPreflightSheet } from "./HotSwapDialogs";
 
 const ProvidersManager = lazy(() =>
   import("./ProvidersManager").then((mod) => ({
@@ -499,6 +503,22 @@ const PREVIEW_PANEL_KEYBOARD_STEP = 32;
 const PREVIEW_PANEL_ANIMATION_MS = 190;
 const MEDIA_CONTEXT_MESSAGE_LIMIT = 10;
 const MEDIA_CONTEXT_CHAR_LIMIT = 1800;
+const HOT_SWAP_CONTINUE_PROMPT =
+  "Continue from the current workspace and thread state. Inspect what is already complete, then finish the active task.";
+const HOT_SWAP_REVIEW_PROMPT =
+  "Review the previous model's response and the current workspace changes for correctness, regressions, and missing verification. Do not edit files; report findings first.";
+
+type BatonRequest = {
+  action: Exclude<HotSwapAction, "switch">;
+  messageIndex: number;
+};
+
+type HotSwapPreflightRequest = {
+  action: HotSwapAction;
+  messageIndex?: number;
+  target: ModelInfo;
+  assessment: HotSwapAssessment;
+};
 const APP_SESSION_ID = (() => {
   try {
     return crypto.randomUUID();
@@ -849,6 +869,11 @@ type MessageRowActions = {
   setEditing: (messageIndex: number | null) => void;
   deleteMessageAt: (messageIndex: number) => void;
   regenerate: () => void;
+  startBaton: (
+    action: Exclude<HotSwapAction, "switch">,
+    messageIndex: number,
+  ) => void;
+  undoTurnChanges: (messageIndex: number) => Promise<void>;
   editResend: (messageIndex: number, text: string) => void;
   editMessageInPlace: (messageIndex: number, text: string) => void;
   approveToolApproval: (messageIndex: number, message: ChatMessage) => void;
@@ -1062,6 +1087,41 @@ function MessageRowView({
           : []),
         ...(isLastAssistant
           ? [
+              {
+                id: "continue-with",
+                label: "Continue with...",
+                icon: <ArrowRight size={13} />,
+                disabled: busy,
+                separatorBefore: true,
+                action: () => actions.startBaton("continue", i),
+              },
+              {
+                id: "review-with",
+                label: "Review with...",
+                icon: <Eye size={13} />,
+                disabled: busy,
+                action: () => actions.startBaton("review", i),
+              },
+              {
+                id: "retry-with",
+                label: "Retry with...",
+                icon: <Refresh size={13} />,
+                disabled:
+                  busy ||
+                  (!folderIsEmpty && !m.workspaceCheckpoint && !m.plan),
+                action: () => actions.startBaton("retry", i),
+              },
+              ...(m.workspaceCheckpoint
+                ? [
+                    {
+                      id: "undo-turn",
+                      label: "Undo turn changes",
+                      icon: <Refresh size={13} />,
+                      disabled: busy,
+                      action: () => void actions.undoTurnChanges(i),
+                    },
+                  ]
+                : []),
               {
                 id: "regenerate",
                 label: "Regenerate",
@@ -1292,6 +1352,17 @@ function MessageRowView({
           </button>
         )}
         {isLastAssistant && !busy && (
+          <>
+            <BatonMenu
+              retryDisabled={!folderIsEmpty && !m.workspaceCheckpoint && !m.plan}
+              onAction={(action) => actions?.startBaton(action, i)}
+            />
+            {m.workspaceCheckpoint && (
+              <button className="msg-act msg-act-text" type="button" onClick={() => void actions?.undoTurnChanges(i)}>Undo changes</button>
+            )}
+          </>
+        )}
+        {isLastAssistant && !busy && (
           <button
             className="msg-act"
             title="Regenerate"
@@ -1417,7 +1488,7 @@ function MessageVirtualRow({
     <div
       ref={rowRef}
       className="message-virtual-row"
-      style={{ transform: `translateY(${top}px)` }}
+      style={{ top: `${top}px` }}
     >
       {children}
     </div>
@@ -2338,6 +2409,7 @@ type ChatSessionSummary = {
   parentId?: string;
   updatedAt: number;
   archivedAt?: number;
+  retryWorkspace?: { originalFolder: string };
 };
 
 type RecentThreadSwitcherState = {
@@ -2414,7 +2486,9 @@ function sameChatSessionSummary(
       summary.model &&
     session.parentId === summary.parentId &&
     usageDateKey(session.updatedAt) === usageDateKey(summary.updatedAt) &&
-    session.archivedAt === summary.archivedAt
+    session.archivedAt === summary.archivedAt &&
+    session.retryWorkspace?.originalFolder ===
+      summary.retryWorkspace?.originalFolder
   );
 }
 
@@ -2445,6 +2519,9 @@ function createChatSessionSummariesSelector() {
         parentId: session.parentId,
         updatedAt: session.updatedAt,
         archivedAt: session.archivedAt,
+        retryWorkspace: session.retryWorkspace
+          ? { originalFolder: session.retryWorkspace.originalFolder }
+          : undefined,
       };
     });
     if (!changed) return previous;
@@ -2792,6 +2869,9 @@ export function ChatView({
   const [goalPrefill, setGoalPrefill] = useState<string | null>(null);
   const [quickSummaryOpen, setQuickSummaryOpen] = useState(false);
   const [chatSearchOpen, setChatSearchOpen] = useState(false);
+  const [batonRequest, setBatonRequest] = useState<BatonRequest | null>(null);
+  const [hotSwapPreflight, setHotSwapPreflight] =
+    useState<HotSwapPreflightRequest | null>(null);
   const [sessionsHydrated, setSessionsHydrated] = useState(() =>
     useSessions.persist.hasHydrated(),
   );
@@ -2825,6 +2905,9 @@ export function ChatView({
   );
   const activeWorker = useSessions(
     (s) => s.sessions.find((x) => x.id === s.activeId)?.worker,
+  );
+  const activeSession = useSessions(
+    (s) => s.sessions.find((x) => x.id === s.activeId),
   );
   const projects = useSessions((s) => s.projects);
   const sidebarState = useSessions((s) => s.sidebar);
@@ -4263,6 +4346,207 @@ export function ChatView({
         looksLikeScheduleRequest(input) ||
         (memory && looksLikeMemoryWriteRequest(input))),
   );
+
+  function hotSwapAssessment(target: ModelInfo): HotSwapAssessment {
+    return assessHotSwap({
+      currentModel: model,
+      target,
+      models: pickerModels,
+      providers,
+      session: activeSession ?? { messages, accountRuntime: undefined },
+      toolRequired:
+        modelToolIntent ||
+        Boolean(folder.trim() || sandbox || computerUse || activeAgentId),
+    });
+  }
+
+  async function prepareRetryWithModel(
+    targetModel: string,
+    messageIndex: number,
+  ): Promise<void> {
+    const source = useSessions.getState().sessions.find((item) => item.id === activeId);
+    const assistant = source?.messages[messageIndex];
+    if (!source || assistant?.role !== "assistant") return;
+    let userIndex = messageIndex - 1;
+    while (userIndex >= 0 && source.messages[userIndex].role !== "user") userIndex -= 1;
+    const userMessage = source.messages[userIndex];
+    if (userIndex < 0 || !userMessage) return;
+
+    let retryFolder = "";
+    const originalFolder = source.settings?.folder?.trim() ?? "";
+    const readOnlyTurn = Boolean(assistant.plan);
+    if (originalFolder && !readOnlyTurn) {
+      if (!assistant.workspaceCheckpoint) {
+        setChatNotice({
+          tone: "error",
+          message: "Clean Retry requires a Git workspace checkpoint for this turn.",
+        });
+        return;
+      }
+      try {
+        await setWorkspace(originalFolder);
+        const result = await runWorkspaceGitAction("create_retry_worktree", {
+          checkpoint: assistant.workspaceCheckpoint.ref,
+        });
+        if (!result.ok || !result.worktree) throw new Error(result.message);
+        retryFolder = result.worktree;
+      } catch (error) {
+        setChatNotice({
+          tone: "error",
+          message: `Retry workspace failed: ${error instanceof Error ? error.message : String(error)}`,
+        });
+        return;
+      }
+    }
+
+    const forkedId = useSessions.getState().forkSession(activeId, userIndex - 1);
+    if (!forkedId) return;
+    useSessions.getState().updateSettings(forkedId, {
+      model: targetModel,
+      ...(retryFolder ? { folder: retryFolder } : {}),
+    });
+    if (retryFolder && assistant.workspaceCheckpoint) {
+      useSessions.getState().setRetryWorkspace(forkedId, {
+        sourceSessionId: activeId,
+        sourceMessageId: assistant.id,
+        originalFolder,
+        worktreeFolder: retryFolder,
+        baseCheckpoint: assistant.workspaceCheckpoint.ref,
+        createdAt: Date.now(),
+      });
+    }
+    setSessionComposerDraft(forkedId, userMessage.content);
+    setInputState(userMessage.content);
+    setPendingAttachments(userMessage.attachments ? [...userMessage.attachments] : []);
+    setBatonRequest(null);
+    setChatNotice({ tone: "info", message: "Retry prepared in an isolated thread." });
+    focusComposer();
+  }
+
+  function commitHotSwap(
+    target: ModelInfo,
+    action: HotSwapAction,
+    messageIndex?: number,
+    nativeSessionMode?: NativeSessionMode,
+  ) {
+    const fromModel = model;
+    const kind = target.id.startsWith("codex:")
+      ? "codex"
+      : target.id.startsWith("claude:")
+        ? "claude"
+        : null;
+    if (kind && nativeSessionMode === "fresh") {
+      useSessions.getState().clearAccountRuntimeKind(activeId, kind);
+    } else if (kind && nativeSessionMode === "resume") {
+      const runtime = useSessions.getState().sessions.find((item) => item.id === activeId)?.accountRuntime;
+      if (kind === "codex" && runtime?.codexThreadId && !runtime.codexLastSyncedMessageId) {
+        useSessions.getState().setAccountRuntime(activeId, {
+          codexLastSyncedMessageId: "__milim_hot_swap_full__",
+        });
+      } else if (kind === "claude" && runtime?.claudeSessionId && !runtime.claudeLastSyncedMessageId) {
+        useSessions.getState().setAccountRuntime(activeId, {
+          claudeLastSyncedMessageId: "__milim_hot_swap_full__",
+        });
+      }
+    }
+    if (action === "retry" && messageIndex != null) {
+      void prepareRetryWithModel(target.id, messageIndex);
+      return;
+    }
+
+    updateThreadSettings(activeId, { model: target.id });
+    if (action === "continue" || action === "review") {
+      useSessions.getState().setPendingHotSwap(activeId, {
+        fromModel,
+        toModel: target.id,
+        action,
+        nativeSessionMode,
+        sourceMessageId:
+          messageIndex == null ? undefined : messages[messageIndex]?.id,
+        createdAt: Date.now(),
+      });
+      setInput(action === "continue" ? HOT_SWAP_CONTINUE_PROMPT : HOT_SWAP_REVIEW_PROMPT);
+      focusComposer();
+    }
+    setBatonRequest(null);
+  }
+
+  function requestHotSwap(
+    targetId: string,
+    action: HotSwapAction = "switch",
+    messageIndex?: number,
+  ) {
+    if (busy || compactionInFlightRef.current || activeWorker || activeAgent?.model) {
+      setChatNotice({ tone: "warning", message: "Wait for the current model-controlled work to finish before switching." });
+      return;
+    }
+    const target = pickerModels.find((item) => item.id === targetId);
+    if (!target) return;
+    if (target.capabilities?.imageOutput || target.capabilities?.videoOutput) {
+      if (action === "switch") updateThreadSettings(activeId, { model: target.id });
+      return;
+    }
+    const assessment = hotSwapAssessment(target);
+    if (assessment.requiresConfirmation) {
+      setBatonRequest(null);
+      setHotSwapPreflight({ action, messageIndex, target, assessment });
+      return;
+    }
+    commitHotSwap(target, action, messageIndex);
+  }
+
+  async function applyRetryWorkspace() {
+    const retry = activeSession?.retryWorkspace;
+    if (!retry || busy) return;
+    if (!window.confirm(`Apply this retry diff to the original workspace?\n\n${retry.originalFolder}`)) return;
+    try {
+      await setWorkspace(retry.originalFolder);
+      const result = await runWorkspaceGitAction("apply_retry_worktree", {
+        checkpoint: retry.baseCheckpoint,
+        worktree: retry.worktreeFolder,
+      });
+      await setWorkspace(retry.worktreeFolder);
+      if (!result.ok) {
+        const conflicts = result.conflicts?.length
+          ? ` Conflicting paths: ${result.conflicts.join(", ")}`
+          : "";
+        throw new Error(`${result.message}${conflicts}`);
+      }
+      useSessions.getState().setRetryWorkspace(activeId, {
+        ...retry,
+        adoptedAt: Date.now(),
+        applyUndoCheckpoint: result.undo_checkpoint,
+      });
+      setChatNotice({ tone: "info", message: result.message });
+    } catch (error) {
+      await setWorkspace(retry.worktreeFolder).catch(() => undefined);
+      setChatNotice({
+        tone: "error",
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  async function discardRetryWorkspace() {
+    const retry = activeSession?.retryWorkspace;
+    if (!retry || busy) return;
+    if (!window.confirm("Discard this retry thread and its isolated worktree?")) return;
+    try {
+      await setWorkspace(retry.originalFolder);
+      const result = await runWorkspaceGitAction("remove_retry_worktree", {
+        worktree: retry.worktreeFolder,
+      });
+      if (!result.ok) throw new Error(result.message);
+      useSessions.getState().remove(activeId);
+      setChatNotice({ tone: "info", message: "Retry worktree discarded." });
+    } catch (error) {
+      await setWorkspace(retry.worktreeFolder).catch(() => undefined);
+      setChatNotice({
+        tone: "error",
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
   const sidePanelAlreadyOpen =
     sidePanelOpenRef.current && sidePanelVisible && !previewPanelClosing;
 
@@ -5565,10 +5849,44 @@ export function ChatView({
         checkpoint: checkpoint.ref,
       });
       if (!result.ok) throw new Error(result.message);
+      useSessions.getState().clearAccountRuntime(activeId);
+      useSessions.getState().setPendingHotSwap(activeId, undefined);
       setChatNotice({
         tone: "info",
         message: "Workspace restored to before this turn.",
       });
+      openGitPanel();
+    } catch (error) {
+      setChatNotice({
+        tone: "error",
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  async function undoTurnChanges(messageIndex: number) {
+    if (busy) return;
+    const latest = sessionMessages(activeId);
+    const assistant = latest[messageIndex];
+    const checkpoint = assistant?.workspaceCheckpoint;
+    if (!checkpoint || assistant.role !== "assistant") return;
+    if (
+      !window.confirm(
+        `Undo this turn's workspace changes and remove its response?\n\n${checkpoint.folder}`,
+      )
+    )
+      return;
+    try {
+      await setWorkspace(checkpoint.folder);
+      const result = await runWorkspaceGitAction("restore_checkpoint", {
+        checkpoint: checkpoint.ref,
+      });
+      if (!result.ok) throw new Error(result.message);
+      setMessages(activeId, latest.slice(0, messageIndex), { autoTitle: false });
+      useSessions.getState().clearAccountRuntime(activeId);
+      useSessions.getState().setPendingHotSwap(activeId, undefined);
+      setChatNotice({ tone: "info", message: "Turn changes undone. The original request is ready to retry." });
+      focusComposer();
       openGitPanel();
     } catch (error) {
       setChatNotice({
@@ -6051,7 +6369,13 @@ export function ChatView({
     const turnMemory = turnSettings.memory;
     const turnActiveAgentId = turnSettings.activeAgentId ?? null;
     const turnToolApproval = turnSettings.toolApproval;
-    const turnPlanMode = turnSettings.planMode;
+    const pendingHotSwap = useSessions
+      .getState()
+      .sessions.find((item) => item.id === id)?.pendingHotSwap;
+    const hotSwapReview =
+      pendingHotSwap?.toModel === turnSetup.model &&
+      pendingHotSwap.action === "review";
+    const turnPlanMode = turnSettings.planMode || hotSwapReview;
     const turnReasoningEffort = reasoningEffortForModel(
       useSettings.getState().reasoningEffortByModel,
       turnModel,
@@ -6118,7 +6442,7 @@ export function ChatView({
     });
     const assistantStart = createTurnAssistantStarter({
       conversation: convo,
-      planMode: turnPlanMode,
+      planMode: turnSettings.planMode,
       setMessages: (nextMessages) =>
         setMessages(id, nextMessages, { autoTitle: autoTitleChats }),
       assistantMessageId,
@@ -6439,6 +6763,20 @@ export function ChatView({
       resultError = errorResult.error;
     } finally {
       const endedAt = Date.now();
+      if (resultStatus === "done" && assistantStart.state.started) {
+        if (codexModel) {
+          store.setAccountRuntime(id, {
+            codexLastSyncedMessageId: assistantMessageId,
+          });
+        } else if (claudeModel) {
+          store.setAccountRuntime(id, {
+            claudeLastSyncedMessageId: assistantMessageId,
+          });
+        }
+      }
+      if (assistantStart.state.started && pendingHotSwap?.toModel === turnModel) {
+        store.setPendingHotSwap(id, undefined);
+      }
       const finalMetrics = assistantStart.state.started
         ? responseMetricsForTurn({
             startedAt,
@@ -6951,6 +7289,27 @@ export function ChatView({
     deleteMessageAt(index);
   }
 
+  async function deleteThreadWithRetryCleanup(sessionId: string) {
+    const session = useSessions.getState().sessions.find((item) => item.id === sessionId);
+    const retry = session?.retryWorkspace;
+    if (retry) {
+      try {
+        await setWorkspace(retry.originalFolder);
+        const result = await runWorkspaceGitAction("remove_retry_worktree", {
+          worktree: retry.worktreeFolder,
+        });
+        if (!result.ok) throw new Error(result.message);
+      } catch (error) {
+        setChatNotice({
+          tone: "error",
+          message: `Retry thread was kept because cleanup failed: ${error instanceof Error ? error.message : String(error)}`,
+        });
+        return;
+      }
+    }
+    useSessions.getState().remove(sessionId);
+  }
+
   function applyMobileRelayEvent(event: MobileRelayEvent) {
     if (event.action === "new_thread") {
       startMobileThread(event);
@@ -6984,12 +7343,23 @@ export function ChatView({
       return;
     }
     if (event.action === "delete_thread") {
-      useSessions.getState().remove(activeOrPayloadThreadId(event.text));
+      void deleteThreadWithRetryCleanup(activeOrPayloadThreadId(event.text));
       return;
     }
     if (event.action === "set_model") {
       const nextModel = event.text.trim();
-      if (nextModel) updateThreadSettings(activeId, { model: nextModel });
+      if (nextModel) {
+        const session = useSessions.getState().sessions.find((item) => item.id === activeId);
+        const kind = nextModel.startsWith("codex:")
+          ? "codex"
+          : nextModel.startsWith("claude:")
+            ? "claude"
+            : null;
+        if (session && kind && nativeRuntimeIsStale(session, kind)) {
+          useSessions.getState().clearAccountRuntimeKind(activeId, kind);
+        }
+        updateThreadSettings(activeId, { model: nextModel });
+      }
       return;
     }
     if (event.action === "attach") {
@@ -7342,6 +7712,9 @@ export function ChatView({
     setEditing,
     deleteMessageAt,
     regenerate,
+    startBaton: (action, messageIndex) =>
+      setBatonRequest({ action, messageIndex }),
+    undoTurnChanges,
     editResend,
     editMessageInPlace,
     approveToolApproval,
@@ -7477,7 +7850,7 @@ export function ChatView({
                 model={model}
                 providers={providers}
                 toolIntent={modelToolIntent}
-                onModel={(m) => updateThreadSettings(activeId, { model: m })}
+                onModel={(m) => requestHotSwap(m)}
                 sandbox={sandbox}
                 onToggleSandbox={() =>
                   updateThreadSettings(activeId, { sandbox: !sandbox })
@@ -7624,6 +7997,28 @@ export function ChatView({
                   onClose={closeGitPanel}
                   modeSwitcher={inspectorTabSwitcher}
                   style={previewPanelStyle}
+                  headerNotice={
+                    activeSession?.retryWorkspace ? (
+                      <div className="hot-swap-retry-banner">
+                        <div>
+                          <strong>Isolated Hot Swap retry</strong>
+                          <span>
+                            {activeSession.retryWorkspace.adoptedAt
+                              ? "Applied to the original workspace; the retry remains available."
+                              : "Review this diff before applying it to the original workspace."}
+                          </span>
+                        </div>
+                        <div className="hot-swap-retry-actions">
+                          <button className="btn-accent" type="button" disabled={busy} onClick={() => void applyRetryWorkspace()}>
+                            Apply to original
+                          </button>
+                          <button className="btn-ghost" type="button" disabled={busy} onClick={() => void discardRetryWorkspace()}>
+                            Discard retry
+                          </button>
+                        </div>
+                      </div>
+                    ) : undefined
+                  }
                 />
               </div>
             ) : (
@@ -7695,6 +8090,52 @@ export function ChatView({
         <RecentThreadSwitcherOverlay
           state={recentThreadSwitcher}
           onSelect={selectRecentThread}
+        />
+      )}
+
+      {batonRequest && (
+        <BatonTargetSheet
+          action={batonRequest.action}
+          models={pickerModels.filter(
+            (item) =>
+              item.id !== model &&
+              !item.capabilities?.imageOutput &&
+              !item.capabilities?.videoOutput,
+          )}
+          model={model}
+          providers={providers}
+          toolIntent={modelToolIntent || Boolean(folder.trim())}
+          onSelect={(target) =>
+            requestHotSwap(
+              target,
+              batonRequest.action,
+              batonRequest.messageIndex,
+            )
+          }
+          onManageProviders={() => {
+            setBatonRequest(null);
+            setProvidersOpen(true);
+          }}
+          onClose={() => setBatonRequest(null)}
+        />
+      )}
+
+      {hotSwapPreflight && (
+        <HotSwapPreflightSheet
+          fromModel={model}
+          targetModel={hotSwapPreflight.target.id}
+          assessment={hotSwapPreflight.assessment}
+          onConfirm={(nativeMode) => {
+            const request = hotSwapPreflight;
+            setHotSwapPreflight(null);
+            commitHotSwap(
+              request.target,
+              request.action,
+              request.messageIndex,
+              nativeMode,
+            );
+          }}
+          onClose={() => setHotSwapPreflight(null)}
         />
       )}
 

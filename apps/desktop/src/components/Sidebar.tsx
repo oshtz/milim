@@ -57,6 +57,7 @@ export type SidebarSessionLike = {
   parentId?: string;
   updatedAt: number;
   archivedAt?: number;
+  retryWorkspace?: { originalFolder: string };
 };
 
 type SidebarSession = Omit<Session, "messages">;
@@ -92,6 +93,10 @@ function uniqueFolders(folders: string[]): string[] {
   return result;
 }
 
+function projectFolderForSession(session: SidebarSessionLike): string {
+  return session.retryWorkspace?.originalFolder || session.settings?.folder?.trim() || "";
+}
+
 function sortBySidebarOrder<T extends SidebarSessionLike>(sessions: T[], sidebar: SessionSidebarState): T[] {
   const order = new Map(sidebar.sessionOrder.map((id, index) => [id, index]));
   return sessions.slice().sort((a, b) => {
@@ -113,7 +118,7 @@ export function groupSessionsByProjects<T extends SidebarSessionLike>(sessions: 
   const matches = (session: SidebarSessionLike) => {
     if (!needle) return true;
     const settings = session.settings;
-    const folder = settings?.folder?.trim() ?? "";
+    const folder = projectFolderForSession(session);
     return [
       session.title,
       settings?.model,
@@ -130,7 +135,7 @@ export function groupSessionsByProjects<T extends SidebarSessionLike>(sessions: 
 
   const isVisibleSession = (session: SidebarSessionLike) => {
     if (session.archivedAt) return false;
-    const folder = session.settings?.folder?.trim() ?? "";
+    const folder = projectFolderForSession(session);
     return !folder || !archivedProjectFolders.has(folder);
   };
   const visibleAllSessions = sessions.filter(isVisibleSession);
@@ -146,7 +151,7 @@ export function groupSessionsByProjects<T extends SidebarSessionLike>(sessions: 
   const normalSessions = visibleSessions.filter((session) => !pinnedSessions.has(session.id));
   const folders = uniqueFolders([
     ...activeProjects.map((project) => project.folder),
-    ...topLevelSessions.map((session) => session.settings?.folder ?? ""),
+    ...topLevelSessions.map(projectFolderForSession),
   ]);
   const pinnedGroups: Array<SessionGroup<T>> = [];
   const projectGroups: Array<SessionGroup<T>> = [];
@@ -163,7 +168,7 @@ export function groupSessionsByProjects<T extends SidebarSessionLike>(sessions: 
     const sectionId = projectSectionId(folder);
     const project = projectByFolder.get(folder);
     const projectSessions = sortBySidebarOrder(
-      normalSessions.filter((session) => session.settings?.folder?.trim() === folder),
+      normalSessions.filter((session) => projectFolderForSession(session) === folder),
       sidebar,
     );
     const folderMatches = !needle ||
@@ -176,7 +181,7 @@ export function groupSessionsByProjects<T extends SidebarSessionLike>(sessions: 
   }
 
   const looseSessions = withChildren(sortBySidebarOrder(
-    normalSessions.filter((session) => !(session.settings?.folder ?? "").trim()),
+    normalSessions.filter((session) => !projectFolderForSession(session)),
     sidebar,
   ));
   const chatGroups: Array<SessionGroup<T>> = [];

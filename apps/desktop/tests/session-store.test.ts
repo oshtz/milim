@@ -377,7 +377,10 @@ useSessions.getState().remove(modelSwitchSession);
 useSessions.getState().switchTo(activeBeforeModelSwitchTest);
 useSessions
   .getState()
-  .setAccountRuntime(first, { codexThreadId: "codex-thread-1" });
+  .setAccountRuntime(first, {
+    codexThreadId: "codex-thread-1",
+    codexLastSyncedMessageId: "assistant-1",
+  });
 equal(
   useSessions.getState().sessions.find((session) => session.id === first)
     ?.accountRuntime?.codexThreadId,
@@ -393,7 +396,10 @@ equal(
 );
 useSessions
   .getState()
-  .setAccountRuntime(first, { codexThreadId: "codex-thread-1" });
+  .setAccountRuntime(first, {
+    codexThreadId: "codex-thread-1",
+    codexLastSyncedMessageId: "assistant-1",
+  });
 const claudeSessionId = useSessions.getState().ensureClaudeSessionId(first);
 equal(
   useSessions.getState().ensureClaudeSessionId(first),
@@ -404,6 +410,33 @@ assert(
   localStorage.getItem("milim.sessions")?.includes("codex-thread-1"),
   "account runtime ids should persist in session storage",
 );
+equal(
+  useSessions.getState().sessions.find((session) => session.id === first)
+    ?.accountRuntime?.codexLastSyncedMessageId,
+  "assistant-1",
+  "account runtime sync cursors should persist with native ids",
+);
+useSessions.getState().setPendingHotSwap(first, {
+  fromModel: "model-a",
+  toModel: "model-b",
+  action: "review",
+  nativeSessionMode: "fresh",
+  createdAt: Date.now(),
+});
+equal(
+  useSessions.getState().sessions.find((session) => session.id === first)
+    ?.pendingHotSwap?.action,
+  "review",
+  "pending Hot Swap action should persist on the thread",
+);
+useSessions.getState().updateSettings(first, { model: "manual-model" });
+equal(
+  useSessions.getState().sessions.find((session) => session.id === first)
+    ?.pendingHotSwap,
+  undefined,
+  "manual model changes should clear pending Baton state",
+);
+useSessions.getState().updateSettings(first, { model: "model-a" });
 useSessions.getState().setMessages(first, [
   { role: "user", content: "transient stream" },
   { role: "assistant", content: "", streamParts: [] },

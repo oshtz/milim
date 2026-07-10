@@ -99,6 +99,48 @@ try {
   assert(markup.includes('title="Tool use"'), "Tool capability badge should render");
   assert(markup.includes("Replicate"), "Picker should render media providers");
   assert(markup.includes("Media"), "Picker should render media lane labels");
+
+  const { BatonMenu, HotSwapPreflightSheet } = (await server.ssrLoadModule(
+    "/src/components/HotSwapDialogs.tsx",
+  )) as {
+    BatonMenu: ComponentType<Record<string, unknown>>;
+    HotSwapPreflightSheet: ComponentType<Record<string, unknown>>;
+  };
+  const batonMarkup = renderToStaticMarkup(
+    createElement(BatonMenu, {
+      retryDisabled: true,
+      onAction: () => {},
+    }),
+  );
+  assert(batonMarkup.includes('data-testid="baton-menu-trigger"'), "Baton actions should collapse under one trigger");
+  assert(batonMarkup.includes("Continue with..."), "Baton menu should offer Continue");
+  assert(batonMarkup.includes("Review with..."), "Baton menu should offer Review");
+  assert(batonMarkup.includes("Retry with..."), "Baton menu should offer Retry");
+  assert(batonMarkup.includes("Needs a Git checkpoint"), "Disabled Retry should explain what it needs");
+
+  const hotSwapMarkup = renderToStaticMarkup(
+    createElement(HotSwapPreflightSheet, {
+      fromModel: "model-a",
+      targetModel: "codex:gpt-5",
+      assessment: {
+        parity: "degraded",
+        requiresConfirmation: true,
+        nativeSessionStale: true,
+        nativeRuntime: "codex",
+        issues: [{
+          code: "native_session_stale",
+          parity: "degraded",
+          title: "Native session is behind",
+          detail: "Choose Fresh or Resume.",
+        }],
+      },
+      onConfirm: () => {},
+      onClose: () => {},
+    }),
+  );
+  assert(hotSwapMarkup.includes("Hot Swap"), "Hot Swap preflight should render");
+  assert(hotSwapMarkup.includes("Fresh"), "Hot Swap should offer a fresh native session");
+  assert(hotSwapMarkup.includes("Resume"), "Hot Swap should offer native-session resume");
 } finally {
   await server.close();
 }

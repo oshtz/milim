@@ -350,10 +350,19 @@ function attachmentsToPromptContext(
   return ["[Attached files]", ...blocks, "[/Attached files]"].join("\n");
 }
 
-function accountRuntimePromptMessages(
+export function accountRuntimePromptMessages(
   contextMessages: ChatMessage[],
   convo: ChatMessage[],
+  lastSyncedMessageId?: string,
 ): ChatMessage[] {
+  if (lastSyncedMessageId) {
+    const index = convo.findIndex((message) => message.id === lastSyncedMessageId);
+    if (index >= 0) {
+      const delta = convo.slice(index + 1).filter((message) => !message.approval);
+      return [...contextMessages, ...delta];
+    }
+    return messagesForModelContext(contextMessages, convo);
+  }
   const latestUser = convo
     .slice()
     .reverse()
@@ -492,6 +501,7 @@ type RunAccountRuntimeTurnParams = {
   toolApproval: ToolApprovalMode;
   toolApprovalGrant: boolean;
   planMode: boolean;
+  lastSyncedMessageId?: string;
   allowClaudeSessionRecovery?: boolean;
   append: (text: string) => void;
   appendThinking: (text: string) => void;
@@ -535,6 +545,7 @@ export async function runAccountRuntimeTurn(
     toolApproval,
     toolApprovalGrant,
     planMode,
+    lastSyncedMessageId,
     allowClaudeSessionRecovery,
     append,
     appendThinking,
@@ -562,7 +573,11 @@ export async function runAccountRuntimeTurn(
   });
   throwIfTurnAborted(signal);
   const outbound = hasNativeHistory
-    ? accountRuntimePromptMessages(contextMessages, prepared.conversation)
+    ? accountRuntimePromptMessages(
+        contextMessages,
+        prepared.conversation,
+        lastSyncedMessageId,
+      )
     : messagesForModelContext(contextMessages, prepared.conversation);
   const events = createAccountRuntimeEventHandler({
     append,
@@ -670,7 +685,9 @@ export async function runSelectedAccountRuntimeTurn({
   claudeModel?: string | null;
   accountRuntime?: {
     codexThreadId?: string | null;
+    codexLastSyncedMessageId?: string | null;
     claudeSessionId?: string | null;
+    claudeLastSyncedMessageId?: string | null;
   } | null;
   setCodexThreadId: (threadId: string) => void;
   appendImage?: (event: AccountRuntimeImageEvent) => void;
@@ -684,6 +701,8 @@ export async function runSelectedAccountRuntimeTurn({
       kind: "codex",
       model: codexModel,
       threadId: accountRuntime?.codexThreadId ?? undefined,
+      lastSyncedMessageId:
+        accountRuntime?.codexLastSyncedMessageId ?? undefined,
       stream: streamCodexRun,
       setThreadId: setCodexThreadId,
       appendImage,
@@ -696,6 +715,8 @@ export async function runSelectedAccountRuntimeTurn({
       model: claudeModel,
       hadSession: Boolean(accountRuntime?.claudeSessionId),
       sessionId: ensureClaudeSessionId(),
+      lastSyncedMessageId:
+        accountRuntime?.claudeLastSyncedMessageId ?? undefined,
       stream: streamClaudeRun,
     });
   }
