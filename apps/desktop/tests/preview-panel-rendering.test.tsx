@@ -24,8 +24,11 @@ type PreviewPanelProps = {
   onBrowserSessionChange?: (session: PreviewBrowserSession) => void;
   runtimeStatus?: PreviewAppStatus | null;
   runtimePreflight?: PreviewAppPreflight | null;
+  runtimeStale?: boolean;
   onRuntimePreflight?: () => void;
   onRuntimeStart?: () => void;
+  onRuntimeStop?: () => void;
+  onRuntimeRestart?: () => void;
   modeSwitcher?: ReactNode;
   controlActivity?: PreviewControlActivity | null;
   onSurfaceChange?: (surface: PreviewSurfaceTarget | null) => void;
@@ -102,6 +105,24 @@ const runtimeStatus: PreviewAppStatus = {
   message: "The app could not compile.",
   preflight: runtimePreflight,
   logs: [{ seq: 1, ts: 1, stream: "stderr", line: "Unexpected token" }],
+};
+
+const readyRuntimeStatus: PreviewAppStatus = {
+  ...runtimeStatus,
+  status: "running",
+  active: true,
+  ready: true,
+  error: null,
+  message: "Running.",
+  url: runtimePreflight.url,
+  logs: [],
+};
+
+const startingRuntimeStatus: PreviewAppStatus = {
+  ...readyRuntimeStatus,
+  status: "starting",
+  ready: false,
+  message: "Starting preview.",
 };
 
 const controlActivity: PreviewControlActivity = {
@@ -202,6 +223,7 @@ try {
   assert(htmlMarkup.includes('id="inspector-panel-preview"'), "Preview panel should expose the linked id");
   assert(htmlMarkup.includes('aria-labelledby="inspector-tab-preview"'), "Preview panel should be labelled by its tab");
   assert(htmlMarkup.includes('data-testid="preview-context-title"'), "Inspector should render a contextual title row");
+  assert(htmlMarkup.includes('data-testid="preview-header"'), "Inspector navigation and context should share one responsive header");
   assert(htmlMarkup.includes("index.html"), "Contextual title should include the artifact name");
 
   const codeMarkup = renderPreviewPanel({ artifact: textArtifact, artifacts: [textArtifact, htmlArtifact], activeTab: "code", onClose: () => {} });
@@ -251,6 +273,51 @@ try {
   assert(runtimeMarkup.includes('aria-label="Run app preview"'), "Runtime should expose an explicit accessible Run action");
   assert(runtimeMarkup.includes('data-testid="preview-prepare-fix"'), "App runtime errors should offer Prepare fix");
   assert(!runtimeMarkup.includes("Quick Fix"), "Legacy Quick Fix copy should be removed");
+
+  const readyRuntimeMarkup = renderPreviewPanel({
+    artifact: urlArtifact,
+    previewSource: "app",
+    runtimeStatus: readyRuntimeStatus,
+    runtimePreflight,
+    onRuntimePreflight: () => {},
+    onRuntimeStart: () => {},
+    onRuntimeStop: () => {},
+    onRuntimeRestart: () => {},
+    onClose: () => {},
+  });
+  assert(!readyRuntimeMarkup.includes('data-testid="preview-managed-runtime"'), "Healthy runtime should give the preview the full content area");
+  assert(readyRuntimeMarkup.includes('data-testid="preview-runtime-status"'), "Healthy runtime should keep a status disclosure");
+  assert(readyRuntimeMarkup.includes('aria-expanded="false"'), "Healthy runtime details should start collapsed");
+  assert(readyRuntimeMarkup.includes('data-testid="preview-runtime-quick-stop"'), "Healthy runtime should keep a one-click Stop action");
+  assert(!readyRuntimeMarkup.includes("Running."), "Healthy runtime should suppress redundant running copy");
+
+  const startingRuntimeMarkup = renderPreviewPanel({
+    artifact: urlArtifact,
+    previewSource: "app",
+    runtimeStatus: startingRuntimeStatus,
+    runtimePreflight,
+    onRuntimeStop: () => {},
+    onRuntimeRestart: () => {},
+    onClose: () => {},
+  });
+  assert(startingRuntimeMarkup.includes('data-testid="preview-managed-runtime"'), "Starting runtime should keep a compact progress surface");
+  assert(!startingRuntimeMarkup.includes('data-testid="preview-runtime-preflight-details"'), "Starting runtime should hide already-reviewed commands");
+  assert(startingRuntimeMarkup.includes("Starting preview."), "Starting runtime should preserve actionable progress copy");
+  assert(startingRuntimeMarkup.includes('data-testid="preview-runtime-stop"'), "Starting runtime should remain stoppable");
+  assert(!startingRuntimeMarkup.includes('data-testid="preview-runtime-restart"'), "Starting runtime should not expose a redundant restart action");
+
+  const staleRuntimeMarkup = renderPreviewPanel({
+    artifact: urlArtifact,
+    previewSource: "app",
+    runtimeStatus: readyRuntimeStatus,
+    runtimePreflight,
+    runtimeStale: true,
+    onRuntimeStop: () => {},
+    onRuntimeRestart: () => {},
+    onClose: () => {},
+  });
+  assert(staleRuntimeMarkup.includes('data-testid="preview-managed-runtime"'), "Disconnected runtime should restore the full status panel");
+  assert(staleRuntimeMarkup.includes('data-testid="preview-runtime-preflight-details"'), "Disconnected runtime should expose its reviewed commands");
 
   const activeMarkup = renderPreviewPanel({ artifact: htmlArtifact, onClose: () => {}, controlActivity });
   assert(activeMarkup.includes('data-testid="preview-control-overlay"'), "Preview overlay should render when activity is supplied");

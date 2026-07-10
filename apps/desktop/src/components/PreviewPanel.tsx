@@ -184,6 +184,8 @@ export function PreviewPanel({
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [logs, setLogs] = useState<PreviewLogEntry[]>([]);
   const [logsOpen, setLogsOpen] = useState(false);
+  const [runtimeDetailsOpen, setRuntimeDetailsOpen] = useState(false);
+  const [runtimePanelFocused, setRuntimePanelFocused] = useState(false);
   const [runtimeLogsClearedAt, setRuntimeLogsClearedAt] = useState(0);
   const [logDrawerHeight, setLogDrawerHeight] = useState(LOG_DRAWER_DEFAULT_HEIGHT);
   const [codeFileListWidth, setCodeFileListWidth] = useState(CODE_SPLIT_DEFAULT_WIDTH);
@@ -200,6 +202,8 @@ export function PreviewPanel({
   const nativeBrowserLabelRef = useRef<string | null>(null);
   const pendingNativeHistoryDeltaRef = useRef<-1 | 1 | null>(null);
   const pendingNativeUrlRef = useRef<string | null>(null);
+  const runtimeStatusTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const runtimePanelRef = useRef<HTMLElement | null>(null);
   const title = artifact.filename ?? artifact.title;
   const source = useMemo(() => artifact.content, [artifact.content]);
   const isUrlPreview = artifact.mime === "text/uri-list";
@@ -247,7 +251,15 @@ export function PreviewPanel({
   const previewSources = availablePreviewSources?.length ? availablePreviewSources : [selectedPreviewSource];
   const previewAvailable = selectedPreviewSource !== "artifact" || isUrlPreview || isPreviewableArtifact(artifact);
   const resolvedRuntimePreflight = runtimePreflight ?? runtimeStatus?.preflight ?? null;
+  const runtimeIsStale = runtimeStale || Boolean(runtimeStatus?.stale);
+  const runtimeHealthy = Boolean(runtimeStatus && previewRuntimeIsHealthy(runtimeStatus, runtimeIsStale));
   const showRuntimeControls = Boolean(runtimeStatus && (onRuntimePreflight || onRuntimeStart || runtimeStatus.active || resolvedRuntimePreflight));
+  const showRuntimePanel = Boolean(
+    showRuntimeControls &&
+    runtimeStatus &&
+    (runtimePanelFocused || runtimeDetailsOpen || !runtimeHealthy),
+  );
+  const previousRuntimeHealthyRef = useRef(runtimeHealthy);
   const contextSource = activeTab === "code" ? "artifact" : selectedPreviewSource;
   const inspectorTitle = activeTab === "code"
     ? title
@@ -271,6 +283,23 @@ export function PreviewPanel({
   function closePanel() {
     onClose();
     window.requestAnimationFrame(() => returnFocusRef.current?.focus({ preventScroll: true }));
+  }
+
+  function focusRuntimeStatusTrigger() {
+    window.requestAnimationFrame(() => runtimeStatusTriggerRef.current?.focus({ preventScroll: true }));
+  }
+
+  function runRuntimeAction(action?: () => void) {
+    action?.();
+    focusRuntimeStatusTrigger();
+  }
+
+  function toggleRuntimeDetails() {
+    if (runtimeHealthy) {
+      setRuntimeDetailsOpen((open) => !open);
+      return;
+    }
+    runtimePanelRef.current?.focus({ preventScroll: true });
   }
 
   function handlePanelKeyDown(event: KeyboardEvent<HTMLElement>) {
@@ -384,6 +413,16 @@ export function PreviewPanel({
   useEffect(() => {
     if (runtimeStatus?.status === "error") setLogsOpen(true);
   }, [runtimeStatus?.status]);
+
+  useEffect(() => {
+    const becameHealthy = !previousRuntimeHealthyRef.current && runtimeHealthy;
+    previousRuntimeHealthyRef.current = runtimeHealthy;
+    if (!runtimeHealthy) {
+      setRuntimeDetailsOpen(false);
+      return;
+    }
+    if (becameHealthy && runtimePanelFocused) focusRuntimeStatusTrigger();
+  }, [runtimeHealthy, runtimePanelFocused]);
 
   useEffect(() => {
     if (isUrlPreview && browserUrl) return;
@@ -728,6 +767,7 @@ export function PreviewPanel({
       onKeyDown={handlePanelKeyDown}
       onContextMenu={openPreviewContextMenu}
     >
+      <div className="preview-header" data-testid="preview-header">
       <div className="preview-toolbar">
         <div className="preview-primary-navigation">
           {modeSwitcher ?? (
@@ -825,7 +865,30 @@ export function PreviewPanel({
             </select>
           </label>
         )}
-        {activeTab === "preview" && runtimeStatus && <PreviewRuntimeBadge status={runtimeStatus} stale={runtimeStale || Boolean(runtimeStatus.stale)} />}
+        {activeTab === "preview" && runtimeStatus && (
+          <div className="preview-runtime-toolbar">
+            <PreviewRuntimeBadge
+              status={runtimeStatus}
+              stale={runtimeIsStale}
+              expanded={showRuntimePanel}
+              collapsible={runtimeHealthy}
+              buttonRef={(element) => { runtimeStatusTriggerRef.current = element; }}
+              onToggle={toggleRuntimeDetails}
+            />
+            {runtimeHealthy && (
+              <button
+                className="preview-action preview-runtime-quick-stop"
+                data-testid="preview-runtime-quick-stop"
+                title="Stop app preview"
+                aria-label="Stop app preview"
+                disabled={runtimeBusy || !onRuntimeStop}
+                onClick={() => runRuntimeAction(onRuntimeStop)}
+              >
+                <Square size={12} />
+              </button>
+            )}
+          </div>
+        )}
         <div className="preview-actions preview-secondary-actions" aria-label="Inspector actions">
           {activeTab === "preview" && previewKind === "html" && !isUrlPreview && (
             <button className="preview-action" title="Reload preview" aria-label="Reload preview" onClick={() => setFrameKey((key) => key + 1)}>
@@ -861,6 +924,7 @@ export function PreviewPanel({
             {!isUrlPreview && <button onClick={downloadSource}><Download size={13} />Download source</button>}
           </div>
         </details>
+      </div>
       </div>
 
       <div
@@ -927,17 +991,20 @@ export function PreviewPanel({
                 </button>
               </div>
             )}
-            {showRuntimeControls && runtimeStatus && (
+            {showRuntimePanel && runtimeStatus && (
               <PreviewRuntimeStatus
                 status={runtimeStatus}
                 preflight={resolvedRuntimePreflight}
                 busy={runtimeBusy}
                 preflightBusy={runtimePreflightBusy}
-                stale={runtimeStale || Boolean(runtimeStatus.stale)}
+                stale={runtimeIsStale}
+                detailsExpanded={runtimeDetailsOpen}
+                sectionRef={(element) => { runtimePanelRef.current = element; }}
+                onFocusChange={setRuntimePanelFocused}
                 onPreflight={onRuntimePreflight}
-                onStart={onRuntimeStart}
-                onStop={onRuntimeStop}
-                onRestart={onRuntimeRestart}
+                onStart={onRuntimeStart ? () => runRuntimeAction(onRuntimeStart) : undefined}
+                onStop={onRuntimeStop ? () => runRuntimeAction(onRuntimeStop) : undefined}
+                onRestart={onRuntimeRestart ? () => runRuntimeAction(onRuntimeRestart) : undefined}
               />
             )}
             {browserError && <div className="preview-browser-error" role="alert">{browserError}</div>}
@@ -1154,13 +1221,40 @@ function previewControlLabel(activity: PreviewControlActivity): string {
   return activity.label;
 }
 
-function PreviewRuntimeBadge({ status, stale }: { status: PreviewAppStatus; stale: boolean }) {
+function PreviewRuntimeBadge({
+  status,
+  stale,
+  expanded,
+  collapsible,
+  buttonRef,
+  onToggle,
+}: {
+  status: PreviewAppStatus;
+  stale: boolean;
+  expanded: boolean;
+  collapsible: boolean;
+  buttonRef: (element: HTMLButtonElement | null) => void;
+  onToggle: () => void;
+}) {
   const label = previewRuntimeLabel(status, stale);
+  const actionLabel = collapsible
+    ? `${expanded ? "Hide" : "Show"} runtime details`
+    : "Focus runtime details";
   return (
-    <span className={`preview-runtime-badge ${previewRuntimeTone(status, stale)}`} role="status" aria-live="polite" title={status.cwd}>
-      <span aria-hidden="true" />
-      {label}
-    </span>
+    <button
+      ref={buttonRef}
+      type="button"
+      className={`preview-runtime-badge ${previewRuntimeTone(status, stale)}`}
+      data-testid="preview-runtime-status"
+      title={`${label}. ${actionLabel}`}
+      aria-label={`App runtime ${label}. ${actionLabel}`}
+      aria-controls="preview-runtime-details"
+      aria-expanded={expanded}
+      onClick={onToggle}
+    >
+      <span className="preview-runtime-badge-dot" aria-hidden="true" />
+      <span className="preview-runtime-badge-label" role="status" aria-live="polite">{label}</span>
+    </button>
   );
 }
 
@@ -1170,6 +1264,9 @@ function PreviewRuntimeStatus({
   busy,
   preflightBusy,
   stale,
+  detailsExpanded,
+  sectionRef,
+  onFocusChange,
   onPreflight,
   onStart,
   onStop,
@@ -1180,6 +1277,9 @@ function PreviewRuntimeStatus({
   busy: boolean;
   preflightBusy: boolean;
   stale: boolean;
+  detailsExpanded: boolean;
+  sectionRef: (element: HTMLElement | null) => void;
+  onFocusChange: (focused: boolean) => void;
   onPreflight?: () => void;
   onStart?: () => void;
   onStop?: () => void;
@@ -1188,13 +1288,21 @@ function PreviewRuntimeStatus({
   const active = previewRuntimeIsActive(status);
   const statusText = previewRuntimeLabel(status, stale);
   const error = runtimeErrorMessage(status);
+  const message = runtimeStatusMessage(status, statusText, error);
   const runRequiresPreflight = Boolean(onPreflight && !preflight);
   return (
     <section
+      ref={sectionRef}
+      id="preview-runtime-details"
       className={`preview-managed-runtime ${previewRuntimeTone(status, stale)}`}
       data-testid="preview-managed-runtime"
       aria-label="App preview runtime"
       aria-busy={busy || preflightBusy}
+      tabIndex={-1}
+      onFocusCapture={() => onFocusChange(true)}
+      onBlurCapture={(event) => {
+        if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) onFocusChange(false);
+      }}
     >
       <div className="preview-managed-runtime-head">
         <div className="preview-managed-runtime-copy">
@@ -1228,15 +1336,17 @@ function PreviewRuntimeStatus({
                 <Square size={12} />
                 <span>Stop</span>
               </button>
-              <button className="preview-runtime-button" data-testid="preview-runtime-restart" aria-label="Restart app preview" disabled={busy || !onRestart || stale} onClick={onRestart}>
-                <Refresh size={13} />
-                <span>Restart</span>
-              </button>
+              {(status.ready || stale || Boolean(error)) && (
+                <button className="preview-runtime-button" data-testid="preview-runtime-restart" aria-label="Restart app preview" disabled={busy || !onRestart || stale} onClick={onRestart}>
+                  <Refresh size={13} />
+                  <span>Restart</span>
+                </button>
+              )}
             </>
           )}
         </div>
       </div>
-      {preflight && (
+      {preflight && (!active || detailsExpanded || stale || Boolean(error)) && (
         <div className="preview-runtime-preflight" data-testid="preview-runtime-preflight-details">
           <dl>
             <div><dt>Scope</dt><dd>{preflight.managed ? "Managed copy" : "Selected folder"}</dd></div>
@@ -1253,7 +1363,7 @@ function PreviewRuntimeStatus({
         </div>
       )}
       {error && <p className="preview-runtime-message error" role="alert">{error}</p>}
-      {!error && status.message && <p className="preview-runtime-message" role="status" aria-live="polite">{status.message}</p>}
+      {message && <p className="preview-runtime-message" role="status" aria-live="polite">{message}</p>}
     </section>
   );
 }
@@ -1836,6 +1946,10 @@ function previewRuntimeIsActive(status: PreviewAppStatus): boolean {
   return status.active ?? (Boolean(status.pid) || status.status === "installing" || status.status === "starting" || status.status === "running");
 }
 
+export function previewRuntimeIsHealthy(status: PreviewAppStatus, stale: boolean): boolean {
+  return previewRuntimeIsActive(status) && Boolean(status.ready) && !stale && !runtimeErrorMessage(status);
+}
+
 function previewRuntimeLabel(status: PreviewAppStatus, stale: boolean): string {
   const base = status.ready
     ? "Ready"
@@ -1866,6 +1980,15 @@ function runtimeErrorMessage(status?: PreviewAppStatus | null): string | null {
   if (!status.error && status.status !== "error") return null;
   const messages = [status.error?.message, status.message].filter((message, index, all): message is string => Boolean(message) && all.indexOf(message) === index);
   return messages.join("\n") || "The app preview runtime failed.";
+}
+
+function runtimeStatusMessage(status: PreviewAppStatus, statusText: string, error: string | null): string | null {
+  const message = error ? "" : status.message?.trim() ?? "";
+  if (!message) return null;
+  const normalize = (value: string) => value.replace(/[.!]+$/, "").trim().toLowerCase();
+  const normalized = normalize(message);
+  if (normalized === normalize(statusText) || (status.ready && normalized === "running")) return null;
+  return message;
 }
 
 function shortFingerprint(fingerprint: string): string {
