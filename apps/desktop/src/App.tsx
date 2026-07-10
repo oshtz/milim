@@ -202,7 +202,7 @@ class AppErrorBoundary extends Component<
                 <h1 id="app-error-title">Milim needs a quick reload.</h1>
                 <p className="app-error-description">
                   The interface stopped unexpectedly. Reload to return to your
-                  workspace—your saved chats and settings will stay put.
+                  workspace. Your saved chats and settings will stay put.
                 </p>
               </div>
 
