@@ -178,7 +178,7 @@ export function ModelPicker({
                             <Sparkles size={11} fill={effort !== "auto" ? "currentColor" : "none"} />
                           </button>
                           {effortOpen && effortMenu && createPortal(
-                            <div className="mp-effort-menu" role="menu" aria-label={`Reasoning effort for ${m.id}`} style={{ left: effortMenu.left, top: effortMenu.top }}>
+                            <div className="mp-effort-menu" data-native-preview-blocker="true" role="menu" aria-label={`Reasoning effort for ${m.id}`} style={{ left: effortMenu.left, top: effortMenu.top }}>
                               {reasoningChoices.map((choice) => {
                                 const display = reasoningEffortDisplay(choice, m);
                                 return (

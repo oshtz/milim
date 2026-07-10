@@ -1589,6 +1589,7 @@ export function GitPanel({
         createPortal(
           <div
             className="git-modal-backdrop"
+            data-native-preview-blocker="true"
             onMouseDown={(event) =>
               event.target === event.currentTarget && setBranchMenuOpen(false)
             }
@@ -1695,6 +1696,7 @@ export function GitPanel({
         createPortal(
           <div
             className="git-modal-backdrop"
+            data-native-preview-blocker="true"
             onMouseDown={(event) =>
               event.target === event.currentTarget && setCommandMenu(null)
             }
@@ -1848,6 +1850,7 @@ export function GitPanel({
         createPortal(
           <div
             className="git-modal-backdrop"
+            data-native-preview-blocker="true"
             onMouseDown={(event) =>
               event.target === event.currentTarget && setDiffResult(null)
             }

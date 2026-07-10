@@ -112,6 +112,7 @@ function OnboardingGate() {
     return (
       <div
         className="onboarding-preflight"
+        data-native-preview-blocker="true"
         data-testid="onboarding-preflight"
       />
     );
@@ -140,7 +141,7 @@ function AppNoticeHost() {
   }, [dismissNotice, notices]);
   if (!notices.length) return null;
   return (
-    <div className="app-notices" aria-live="polite" aria-atomic="false">
+    <div className="app-notices" data-native-preview-blocker="true" aria-live="polite" aria-atomic="false">
       {notices.map((notice) => (
         <div
           key={notice.id}

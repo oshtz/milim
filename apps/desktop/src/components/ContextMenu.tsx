@@ -83,6 +83,7 @@ export function ContextMenuProvider({ children }: { children: ReactNode }) {
         <div
           ref={menuRef}
           className="app-context-menu"
+          data-native-preview-blocker="true"
           data-testid="app-context-menu"
           role="menu"
           aria-label={menu.label ?? "Context menu"}

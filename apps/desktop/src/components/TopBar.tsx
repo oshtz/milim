@@ -186,7 +186,7 @@ export function TopBar() {
         <WindowControls />
       </div>
       {typeof document !== "undefined" && confirmingUpdate && updateInfo && createPortal(
-        <div className="git-modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setConfirmingUpdate(false)}>
+        <div className="git-modal-backdrop" data-native-preview-blocker="true" onMouseDown={(event) => event.target === event.currentTarget && setConfirmingUpdate(false)}>
           <section className="git-modal update-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="update-confirm-title">
             <div className="git-modal-head">
               <span>

@@ -81,7 +81,7 @@ const PREVIEW_PANEL_IDS: Record<PreviewTab, string> = {
   code: "inspector-panel-code",
 };
 const IS_TAURI = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
-const APP_FLOATING_UI_SELECTOR = '[role="dialog"][aria-modal="true"], [role="menu"]:not(.preview-overflow-menu), .preview-overflow[open] .preview-overflow-menu';
+const APP_FLOATING_UI_SELECTOR = '[data-native-preview-blocker="true"], [data-native-preview-blocker="open"][open]';
 const DOM_PREVIEW_CAPABILITIES: PreviewSurfaceCapability[] = ["dom_snapshot", "click", "type", "key", "scroll", "logs", "source"];
 
 export function nativePreviewBlockedByAppUi(root: Pick<ParentNode, "querySelector"> = document): boolean {
@@ -909,7 +909,7 @@ export function PreviewPanel({
             </button>
           )}
         </div>
-        <details className="preview-overflow">
+        <details className="preview-overflow" data-native-preview-blocker="open">
           <summary className="preview-action" title="More inspector actions" aria-label="More inspector actions">
             <MoreHorizontal size={14} />
           </summary>
@@ -1445,6 +1445,7 @@ function NativeArtifactBrowser({
     let removeLayoutListeners: (() => void) | null = null;
     let raf = 0;
     let nativeHidden = false;
+    let appUiVisibilitySync = Promise.resolve();
 
     async function closeWebview() {
       await closeOverlayWebview();
@@ -1488,15 +1489,26 @@ function NativeArtifactBrowser({
         ]).catch(() => undefined);
       }
 
-      async function syncAppUiVisibility() {
-        const blocked = nativePreviewBlockedByAppUi();
-        if (blocked === nativeHidden) return;
-        nativeHidden = blocked;
-        await Promise.all([
-          setNativeWebviewHidden(webviewRef.current, blocked),
-          setNativeWebviewHidden(overlayWindowRef.current, blocked),
-        ]);
-        if (!blocked) void syncBounds(webviewRef.current);
+      function syncAppUiVisibility() {
+        appUiVisibilitySync = appUiVisibilitySync.then(async () => {
+          if (cancelled) return;
+          const blocked = nativePreviewBlockedByAppUi();
+          if (blocked === nativeHidden) return;
+          try {
+            await setNativeWebviewHidden(webviewRef.current, blocked);
+            if (cancelled) return;
+            nativeHidden = blocked;
+            if (!blocked) await syncBounds(webviewRef.current);
+          } catch (error) {
+            if (!cancelled) console.error(`Could not ${blocked ? "hide" : "show"} native preview for app UI.`, error);
+          }
+          try {
+            await setNativeWebviewHidden(overlayWindowRef.current, blocked);
+          } catch (error) {
+            if (!cancelled) console.error(`Could not ${blocked ? "hide" : "show"} native preview activity.`, error);
+          }
+        });
+        return appUiVisibilitySync;
       }
 
       const rect = bounds();
@@ -1546,11 +1558,11 @@ function NativeArtifactBrowser({
         return;
       }
       await syncBounds(webview);
+      appUiObserver = new MutationObserver(() => void syncAppUiVisibility());
+      appUiObserver.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["data-native-preview-blocker", "open"] });
       await syncAppUiVisibility();
       resizeObserver = new ResizeObserver(() => void syncBounds(webview));
       resizeObserver.observe(hostElement);
-      appUiObserver = new MutationObserver(() => void syncAppUiVisibility());
-      appUiObserver.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["aria-modal", "role", "open"] });
       const onWindowLayout = () => void syncBounds(webview);
       window.addEventListener("resize", onWindowLayout);
       window.addEventListener("scroll", onWindowLayout, true);
@@ -1777,7 +1789,13 @@ async function closeNativeWebview<T extends NativeWebviewHandle>(ref: { current:
 
 async function setNativeWebviewHidden(webview: NativeVisibleHandle | null, hidden: boolean) {
   if (!webview) return;
-  await (hidden ? webview.hide() : webview.show()).catch(() => undefined);
+  const updateVisibility = () => hidden ? webview.hide() : webview.show();
+  try {
+    await updateVisibility();
+  } catch {
+    await new Promise((resolve) => window.setTimeout(resolve, 50));
+    await updateVisibility();
+  }
 }
 
 async function waitForNativeCreated(webview: NativeWebviewHandle) {

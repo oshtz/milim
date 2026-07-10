@@ -74,6 +74,7 @@ export function SheetDialog({
   return (
     <div
       className={overlayClassName}
+      data-native-preview-blocker="true"
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) onClose();
       }}

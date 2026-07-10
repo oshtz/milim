@@ -2352,7 +2352,7 @@ function RecentThreadSwitcherOverlay({
   onSelect: (id: string) => void;
 }) {
   return (
-    <div className="recent-thread-switcher" aria-live="polite">
+    <div className="recent-thread-switcher" data-native-preview-blocker="true" aria-live="polite">
       <div
         className="recent-thread-switcher-popover"
         role="listbox"

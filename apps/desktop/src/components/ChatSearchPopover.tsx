@@ -80,7 +80,7 @@ export function ChatSearchPopover({
   }
 
   return (
-    <div className="chat-search-overlay" role="dialog" aria-modal="true" aria-label="Search chats" onKeyDown={handleKeyDown}>
+    <div className="chat-search-overlay" data-native-preview-blocker="true" role="dialog" aria-modal="true" aria-label="Search chats" onKeyDown={handleKeyDown}>
       <div className="chat-search-popover">
         <div className="chat-search-head">
           <Search size={15} />

@@ -43,6 +43,16 @@ const sidebar = readFileSync(
   "utf8",
 );
 const styles = readFileSync(join(root, "src", "styles.css"), "utf8");
+const nativePreviewBlockerFiles = [
+  ["App.tsx", 2],
+  [join("components", "SheetDialog.tsx"), 1],
+  [join("components", "ChatSearchPopover.tsx"), 1],
+  [join("components", "ContextMenu.tsx"), 1],
+  [join("components", "ChatView.tsx"), 1],
+  [join("components", "ModelPicker.tsx"), 1],
+  [join("components", "GitPanel.tsx"), 3],
+  [join("components", "TopBar.tsx"), 1],
+];
 const cargoVersion = cargoToml.match(/^version = "([^"]+)"$/m)?.[1];
 const tauriFeatures =
   cargoToml.match(
@@ -148,6 +158,18 @@ if (previewPanel.includes("URL.createObjectURL(new Blob([previewDocument.source]
   throw new Error(
     "Artifact previews must not use blob object URLs for iframe HTML",
   );
+}
+
+for (const [file, expectedCount] of nativePreviewBlockerFiles) {
+  const source = readFileSync(join(root, "src", file), "utf8");
+  const count = source.match(/data-native-preview-blocker="true"/g)?.length ?? 0;
+  if (count < expectedCount) {
+    throw new Error(`${file} must explicitly mark ${expectedCount} native preview blocker(s), found ${count}`);
+  }
+}
+
+if (!previewPanel.includes('data-native-preview-blocker="open"')) {
+  throw new Error("Inspector overflow must block native preview composition only while open");
 }
 
 for (const needle of [

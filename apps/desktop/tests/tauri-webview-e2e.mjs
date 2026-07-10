@@ -11,6 +11,7 @@ const binary = join(root, "src-tauri", "target", "tauri-verify", "debug", "milim
 const cdpHost = "127.0.0.1";
 const cdpPort = Number(process.env.MILIM_TAURI_E2E_CDP_PORT || 9333);
 const cdpUrl = `http://${cdpHost}:${cdpPort}`;
+const nativePreviewOnly = process.argv.includes("--native-preview-only");
 const screenshots = {
   profiles: join(tmpdir(), "milim-tauri-webview-personalized-profiles.png"),
   settings: join(tmpdir(), "milim-tauri-webview-provider-voice-settings.png"),
@@ -81,7 +82,7 @@ try {
   session = null;
 
   session = await launchTauri(milimHome);
-  consoleErrors.push(...(await runPersistenceAndChat(session.page)));
+  consoleErrors.push(...(await runPersistenceAndChat(session.page, session.child.pid)));
   await session.page.screenshot({ path: screenshots.chat, fullPage: false });
 
   if (consoleErrors.length) {
@@ -138,10 +139,15 @@ async function runProfileSetup(page) {
   return errors;
 }
 
-async function runPersistenceAndChat(page) {
+async function runPersistenceAndChat(page, pid) {
   const errors = collectErrors(page);
   await page.getByTestId("chat-shell").waitFor();
   await dismissOnboardingIfPresent(page);
+  await runNativePreviewOcclusionCheck(page, pid);
+  if (nativePreviewOnly) {
+    console.log("remainingChecks=skipped:native preview only");
+    return errors;
+  }
   await assertAgentOptions(page);
   await assertVoiceSettingsPersisted(page);
   await runModelPickerSurfaceCheck(page);
@@ -175,6 +181,125 @@ async function runPersistenceAndChat(page) {
   await closeAgents(page);
 
   return errors;
+}
+
+async function runNativePreviewOcclusionCheck(page, pid) {
+  await page.locator(".app-notices").waitFor({ state: "hidden", timeout: 8_000 }).catch(() => {});
+  const baseline = wryWebviews(pid);
+  const baselineHandles = new Set(baseline.map((view) => view.handle));
+  const visibleBaselineHandles = new Set(baseline.filter((view) => view.visible).map((view) => view.handle));
+  if (!visibleBaselineHandles.size) {
+    throw new Error(`Expected a visible main WRY_WEBVIEW before preview test, got ${describeWryWebviews(baseline)}`);
+  }
+
+  await page.getByTestId("open-artifact-browser").click();
+  const apiBase = await page.evaluate(() => window.__TAURI_INTERNALS__.invoke("api_base_url"));
+  const input = page.getByTestId("preview-browser-url");
+  await input.fill(new URL("/health", apiBase).toString());
+  await input.press("Enter");
+  await page.getByTestId("preview-native-browser").waitFor();
+  await page.locator(".preview-native-browser-status").waitFor({ state: "hidden", timeout: 10_000 });
+  const preview = await waitForNewVisibleWryWebview(pid, baselineHandles);
+
+  await page.getByTestId("composer-input").fill("/goal");
+  await page.getByTestId("composer-send").click();
+  await page.getByTestId("goal-panel").waitFor();
+  const blockedViews = await waitForWryVisibility(pid, preview.handle, false);
+  if (!blockedViews.some((view) => visibleBaselineHandles.has(view.handle) && view.visible)) {
+    throw new Error(`Native preview blocker hid the main webview: ${describeWryWebviews(blockedViews)}`);
+  }
+
+  await page.getByLabel("Close goal", { exact: true }).click();
+  await waitForWryVisibility(pid, preview.handle, true);
+  await page.getByLabel("Close inspector", { exact: true }).click();
+  await page.getByTestId("open-artifact-browser").waitFor();
+}
+
+async function waitForNewVisibleWryWebview(pid, baselineHandles, timeoutMs = 10_000) {
+  const started = Date.now();
+  let views = [];
+  while (Date.now() - started < timeoutMs) {
+    views = wryWebviews(pid);
+    const preview = views.find((view) => !baselineHandles.has(view.handle) && view.visible);
+    if (preview) return preview;
+    await delay(100);
+  }
+  throw new Error(`Timed out waiting for native preview HWND. views=${describeWryWebviews(views)}`);
+}
+
+async function waitForWryVisibility(pid, handle, visible, timeoutMs = 10_000) {
+  const started = Date.now();
+  let views = [];
+  while (Date.now() - started < timeoutMs) {
+    views = wryWebviews(pid);
+    const target = views.find((view) => view.handle === handle);
+    if (target?.visible === visible) return views;
+    await delay(100);
+  }
+  throw new Error(`Timed out waiting for WRY_WEBVIEW ${handle} visible=${visible}. views=${describeWryWebviews(views)}`);
+}
+
+function wryWebviews(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) throw new Error(`Invalid Tauri PID: ${pid}`);
+  const script = String.raw`
+$source = @'
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+using System.Text;
+
+public static class MilimWryWebviewProbe {
+  private delegate bool EnumWindowsProc(IntPtr hwnd, IntPtr lparam);
+  [DllImport("user32.dll")] private static extern bool EnumWindows(EnumWindowsProc callback, IntPtr lparam);
+  [DllImport("user32.dll")] private static extern bool EnumChildWindows(IntPtr parent, EnumWindowsProc callback, IntPtr lparam);
+  [DllImport("user32.dll")] private static extern IntPtr GetParent(IntPtr hwnd);
+  [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
+  [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr hwnd);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetClassName(IntPtr hwnd, StringBuilder name, int maxCount);
+
+  public static string[] Find(uint pid) {
+    var results = new List<string>();
+    EnumWindows((window, _) => {
+      uint windowPid;
+      GetWindowThreadProcessId(window, out windowPid);
+      if (windowPid != pid || ClassName(window) != "Tauri Window") return true;
+      EnumChildWindows(window, (child, __) => {
+        if (GetParent(child) == window && ClassName(child) == "WRY_WEBVIEW")
+          results.Add(child.ToInt64() + "|" + (IsWindowVisible(child) ? "1" : "0"));
+        return true;
+      }, IntPtr.Zero);
+      return true;
+    }, IntPtr.Zero);
+    return results.ToArray();
+  }
+
+  private static string ClassName(IntPtr hwnd) {
+    var name = new StringBuilder(256);
+    GetClassName(hwnd, name, name.Capacity);
+    return name.ToString();
+  }
+}
+'@
+Add-Type -TypeDefinition $source
+[MilimWryWebviewProbe]::Find(${pid})
+`;
+  const result = spawnSync("powershell", ["-NoProfile", "-Command", script], { encoding: "utf8", timeout: 5_000 });
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    throw new Error(`Native webview probe failed (${result.status}): ${result.stderr || result.stdout}`);
+  }
+  return result.stdout.trim()
+    ? result.stdout.trim().split(/\r?\n/).map((line) => {
+      const [handle, visible] = line.split("|");
+      return { handle, visible: visible === "1" };
+    })
+    : [];
+}
+
+function describeWryWebviews(views) {
+  return views.length
+    ? views.map((view) => `${view.handle}:${view.visible ? "visible" : "hidden"}`).join(" | ")
+    : "none";
 }
 
 async function runModelPickerSurfaceCheck(page) {

@@ -160,6 +160,16 @@ try {
   const renderPreviewPanel = (props: PreviewPanelProps) => renderToStaticMarkup(
     createElement(ContextMenuProvider, null, createElement(PreviewPanel, props)),
   );
+  let blockerSelector = "";
+  nativePreviewBlockedByAppUi({
+    querySelector: ((selector: string) => {
+      blockerSelector = selector;
+      return null;
+    }) as ParentNode["querySelector"],
+  });
+  assert(blockerSelector.includes('[data-native-preview-blocker="true"]'), "Native preview blockers should use an explicit mounted-overlay marker");
+  assert(blockerSelector.includes('[data-native-preview-blocker="open"][open]'), "Native preview blockers should support always-mounted disclosure controls only while open");
+  assert(!blockerSelector.includes('[role="menu"]') && !blockerSelector.includes("aria-modal"), "Native preview blocking should not infer visibility from semantic roles");
   assert(nativePreviewBlockedByAppUi({ querySelector: () => ({}) as Element }), "Native preview should hide behind app modal/menu UI");
   assert(!nativePreviewBlockedByAppUi({ querySelector: () => null }), "Native preview should stay visible without blocking app UI");
   assert(previewSurfaceIsInspectable({
@@ -224,6 +234,7 @@ try {
   assert(htmlMarkup.includes('aria-labelledby="inspector-tab-preview"'), "Preview panel should be labelled by its tab");
   assert(htmlMarkup.includes('data-testid="preview-context-title"'), "Inspector should render a contextual title row");
   assert(htmlMarkup.includes('data-testid="preview-header"'), "Inspector navigation and context should share one responsive header");
+  assert(htmlMarkup.includes('data-native-preview-blocker="open"'), "Inspector overflow should block its native preview only while expanded");
   assert(htmlMarkup.includes("index.html"), "Contextual title should include the artifact name");
 
   const codeMarkup = renderPreviewPanel({ artifact: textArtifact, artifacts: [textArtifact, htmlArtifact], activeTab: "code", onClose: () => {} });
