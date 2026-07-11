@@ -16,6 +16,7 @@ type GlobalShortcutEvent = {
 };
 
 type GlobalShortcutHandler = (event: GlobalShortcutEvent) => void;
+const COMPOSER_HISTORY_NOTICE_MS = 1800;
 
 function isTauriRuntime(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -190,6 +191,7 @@ export function Composer({
   const recordTickRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const applyingHistoryRef = useRef(false);
   const historyDraftRef = useRef("");
+  const historyNoticeTimerRef = useRef<number | null>(null);
   const [recording, setRecording] = useState(false);
   const [recordElapsedMs, setRecordElapsedMs] = useState(0);
   const [transcribing, setTranscribing] = useState(false);
@@ -203,6 +205,7 @@ export function Composer({
   const [workspaceFiles, setWorkspaceFiles] = useState<WorkspaceFileSuggestion[]>([]);
   const [dragOver, setDragOver] = useState(false);
   const [historyIndex, setHistoryIndex] = useState<number | null>(null);
+  const [historyNotice, setHistoryNotice] = useState<string | null>(null);
 
   const voiceProviderLabel =
     voice.provider === "parakeet"
@@ -351,12 +354,16 @@ export function Composer({
       return;
     }
     setHistoryIndex(null);
+    hideHistoryNotice();
   }, [value]);
 
   useEffect(() => {
     historyDraftRef.current = "";
     setHistoryIndex(null);
+    hideHistoryNotice();
   }, [sentHistoryKey]);
+
+  useEffect(() => () => clearHistoryNoticeTimer(), []);
 
   useEffect(() => {
     setSlashFocusIndex(0);
@@ -628,6 +635,30 @@ export function Composer({
     setSlashFocusIndex((index) => (index + step + orderedSuggestions.length) % orderedSuggestions.length);
   }
 
+  function clearHistoryNoticeTimer() {
+    if (historyNoticeTimerRef.current === null) return;
+    window.clearTimeout(historyNoticeTimerRef.current);
+    historyNoticeTimerRef.current = null;
+  }
+
+  function hideHistoryNotice() {
+    clearHistoryNoticeTimer();
+    setHistoryNotice(null);
+  }
+
+  function showHistoryNotice(index: number | null) {
+    clearHistoryNoticeTimer();
+    if (index === null) {
+      setHistoryNotice(null);
+      return;
+    }
+    setHistoryNotice(`History ${sentHistory.length - index} / ${sentHistory.length}`);
+    historyNoticeTimerRef.current = window.setTimeout(() => {
+      setHistoryNotice(null);
+      historyNoticeTimerRef.current = null;
+    }, COMPOSER_HISTORY_NOTICE_MS);
+  }
+
   function recallHistory(direction: ComposerHistoryDirection, target: HTMLTextAreaElement): boolean {
     const currentIndex = historyIndex;
     if (!canNavigateComposerHistory(target.value, target.selectionStart, target.selectionEnd, direction, currentIndex)) return false;
@@ -637,6 +668,7 @@ export function Composer({
     if (currentIndex === null) historyDraftRef.current = target.value;
     applyingHistoryRef.current = next.value !== target.value;
     setHistoryIndex(next.index);
+    showHistoryNotice(next.index);
     setSlashOpen(false);
     setSlashDismissedValue(next.value);
     onChange(next.value);
@@ -1076,10 +1108,11 @@ export function Composer({
         </div>
         <div className="composer-send">
           <span
-            className={"composer-status" + (busy ? " shiny-text" : "")}
+            className={"composer-status" + (historyNotice ? " history" : "") + (busy ? " shiny-text" : "")}
+            data-testid={historyNotice ? "composer-history-status" : undefined}
             role={voiceNotice ? "alert" : "status"}
             aria-live={voiceNotice ? "assertive" : "polite"}
-            title={voiceNotice ?? undefined}
+            title={voiceNotice ?? historyNotice ?? undefined}
             style={voiceNotice ? { color: "var(--error)" } : undefined}
           >
             {voiceNotice ?? (
@@ -1087,6 +1120,8 @@ export function Composer({
                 ? `Recording ${formatRecordElapsed(recordElapsedMs)}`
                 : busy
                   ? "generating..."
+                  : historyNotice
+                    ? historyNotice
                   : mediaActive
                     ? mediaTargetLabel ?? `${mediaKind} mode`
                     : contextTokenLabel

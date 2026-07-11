@@ -13,11 +13,13 @@ const cdpPort = Number(process.env.MILIM_TAURI_E2E_CDP_PORT || 9333);
 const cdpUrl = `http://${cdpHost}:${cdpPort}`;
 const nativePreviewOnly = process.argv.includes("--native-preview-only");
 const zoomOnly = process.argv.includes("--zoom-only");
+const microUiOnly = process.argv.includes("--micro-ui-only");
 const screenshots = {
   profiles: join(tmpdir(), "milim-tauri-webview-personalized-profiles.png"),
   settings: join(tmpdir(), "milim-tauri-webview-provider-voice-settings.png"),
   chat: join(tmpdir(), "milim-tauri-webview-personalized-chat.png"),
   zoom: join(tmpdir(), "milim-tauri-webview-zoom-chip.png"),
+  microUi: join(tmpdir(), "milim-tauri-webview-micro-ui.png"),
   failure: join(tmpdir(), "milim-tauri-webview-failure.png"),
 };
 
@@ -75,11 +77,12 @@ let failure;
 try {
   session = await launchTauri(milimHome);
   await resetFrontendStorage(session.page);
-  if (zoomOnly) {
+  if (zoomOnly || microUiOnly) {
     const errors = collectErrors(session.page);
     await session.page.getByTestId("chat-shell").waitFor();
     await dismissOnboardingIfPresent(session.page);
     await runUiZoomChipCheck(session.page);
+    if (microUiOnly) await runMicroUiCheck(session.page);
     consoleErrors.push(...errors);
   } else {
     consoleErrors.push(...(await runProfileSetup(session.page)));
@@ -1109,6 +1112,63 @@ async function runUiZoomChipCheck(page) {
   await chip.waitFor({ state: "hidden", timeout: 5000 });
 }
 
+async function runMicroUiCheck(page) {
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: async () => undefined },
+    });
+  });
+  await seedChatSearchFixture(page);
+  await page.keyboard.press("Control+K");
+  await page.getByTestId("chat-search-input").fill("volcano ledger");
+  await page.getByTestId("chat-search-result").filter({ hasText: "Older Search Fixture" }).click();
+
+  const message = page.getByTestId("user-message").last();
+  await message.hover();
+  const copy = message.getByTestId("message-copy");
+  await copy.click();
+  await assertAttribute(copy, "title", "Copied");
+
+  const composer = page.getByTestId("composer-input");
+  await composer.fill("");
+  await composer.focus();
+  await page.keyboard.press("ArrowUp");
+  const history = page.getByTestId("composer-history-status");
+  await history.filter({ hasText: "History 1 / 1" }).waitFor();
+  if (!(await composer.inputValue()).includes("volcano ledger phrase")) {
+    throw new Error("Composer history should recall the latest sent message.");
+  }
+  await page.screenshot({ path: screenshots.microUi, fullPage: false });
+  await history.waitFor({ state: "hidden", timeout: 3000 });
+
+  const sidebarHandle = page.getByTestId("sidebar-resize-handle");
+  await sidebarHandle.focus();
+  await page.keyboard.press("ArrowRight");
+  if ((await sidebarHandle.getAttribute("aria-valuenow")) === "248") {
+    throw new Error("Sidebar keyboard resize should change its width.");
+  }
+  await page.keyboard.press("Enter");
+  await assertAttribute(sidebarHandle, "aria-valuenow", "248");
+  await page.keyboard.press("ArrowRight");
+  await sidebarHandle.dblclick();
+  await assertAttribute(sidebarHandle, "aria-valuenow", "248");
+
+  await page.getByTestId("open-artifact-browser").click();
+  const previewHandle = page.getByTestId("preview-resize-handle");
+  await previewHandle.waitFor();
+  await previewHandle.focus();
+  await page.keyboard.press("ArrowLeft");
+  if ((await previewHandle.getAttribute("aria-valuenow")) === "420") {
+    throw new Error("Inspector keyboard resize should change its width.");
+  }
+  await page.keyboard.press("Enter");
+  await assertAttribute(previewHandle, "aria-valuenow", "420");
+  await page.keyboard.press("ArrowLeft");
+  await previewHandle.dblclick();
+  await assertAttribute(previewHandle, "aria-valuenow", "420");
+}
+
 async function closeChatSearch(page) {
   await page.keyboard.press("Escape");
   if (await page.getByTestId("chat-search-input").isVisible().catch(() => false)) {
@@ -1600,6 +1660,7 @@ function printEvidencePaths(milimHome) {
   console.log(`settingsScreenshot=${screenshots.settings}`);
   console.log(`chatScreenshot=${screenshots.chat}`);
   console.log(`zoomScreenshot=${screenshots.zoom}`);
+  console.log(`microUiScreenshot=${screenshots.microUi}`);
   console.log(`failureScreenshot=${screenshots.failure}`);
 }
 

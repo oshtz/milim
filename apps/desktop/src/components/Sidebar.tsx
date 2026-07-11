@@ -16,7 +16,7 @@ import { previewRuntimeKeyForThread } from "../lib/previewRuntimeKeys";
 import { sessionRecencyLabel } from "../lib/sessionRecency.js";
 import { chatExportFilename, sessionExportPayload } from "../lib/threadExport";
 import { featureVisibleInMode } from "../ui/features";
-import { MAX_SIDEBAR_WIDTH, MIN_SIDEBAR_WIDTH, normalizeSidebarWidth, useUiPreferences } from "../ui/store";
+import { DEFAULT_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH, MIN_SIDEBAR_WIDTH, normalizeSidebarWidth, useUiPreferences } from "../ui/store";
 import { GitPanel } from "./GitPanel";
 import { useContextMenu } from "./ContextMenu";
 import { Archive, ArrowUp, Bolt, Calendar, ChevronDown, Cube, Download, FileText, Folder, FolderOpen, Gear, GitBranch, Lightbulb, MoreHorizontal, Pin, Plus, Search, Sidebar as PanelIcon } from "./icons";
@@ -739,6 +739,9 @@ export function Sidebar({
     } else if (event.key === "End") {
       event.preventDefault();
       resizeSidebar(MAX_SIDEBAR_WIDTH);
+    } else if (event.key === "Enter") {
+      event.preventDefault();
+      resizeSidebar(DEFAULT_SIDEBAR_WIDTH);
     }
   }
 
@@ -1189,7 +1192,8 @@ export function Sidebar({
         className={`sidebar-resize-handle${sidebarResizing ? " dragging" : ""}`}
         data-testid="sidebar-resize-handle"
         role="separator"
-        aria-label="Resize thread sidebar"
+        aria-label="Resize thread sidebar; double-click or press Enter to reset"
+        title="Drag to resize; double-click to reset"
         aria-orientation="vertical"
         aria-valuemin={MIN_SIDEBAR_WIDTH}
         aria-valuemax={MAX_SIDEBAR_WIDTH}
@@ -1200,6 +1204,7 @@ export function Sidebar({
         onPointerMove={moveSidebarResize}
         onPointerUp={endSidebarResize}
         onPointerCancel={endSidebarResize}
+        onDoubleClick={() => resizeSidebar(DEFAULT_SIDEBAR_WIDTH)}
       />
     </aside>
   );

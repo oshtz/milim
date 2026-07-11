@@ -287,7 +287,7 @@ import { themeCssVariables } from "../theme/applyTheme";
 import { useTheme } from "../theme/store";
 import { featureVisibleInMode, type FeatureId } from "../ui/features";
 import { shortcutLabel, shortcutMatchesEvent } from "../ui/shortcuts";
-import { useUiPreferences } from "../ui/store";
+import { DEFAULT_PREVIEW_PANEL_WIDTH, useUiPreferences } from "../ui/store";
 import { Composer } from "./Composer";
 import { ControlBar } from "./ControlBar";
 import { GoalPanel, type GoalPanelDraft } from "./GoalPanel";
@@ -941,6 +941,7 @@ function MessageRowView({
   actionsRef,
 }: MessageRowProps) {
   markPerfRender("MessageRow");
+  const [copied, setCopied] = useState(false);
   const actions = actionsRef.current;
   const messageIsCompaction = isCompactionCheckpoint(m);
   const isApprovalMessage = Boolean(m.approval);
@@ -985,6 +986,16 @@ function MessageRowView({
       : [];
   const canStartRuntime =
     runtimeFiles.length > 0 && hasPreviewPackageJson(runtimeFiles);
+  async function copyMessage() {
+    if (!navigator.clipboard) return;
+    try {
+      await navigator.clipboard.writeText(wireMessageContent(m));
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1200);
+    } catch {
+      /* clipboard unavailable */
+    }
+  }
   const openMessageContextMenu = (event: MouseEvent<HTMLDivElement>) => {
     if (!actions) return;
     actions.openContextMenu(
@@ -1045,8 +1056,7 @@ function MessageRowView({
                 id: "copy",
                 label: "Copy",
                 icon: <Copy size={13} />,
-                action: () =>
-                  void navigator.clipboard?.writeText(wireMessageContent(m)),
+                action: () => void copyMessage(),
               },
             ]
           : []),
@@ -1311,12 +1321,13 @@ function MessageRowView({
         {!isApprovalMessage && (
           <button
             className="msg-act"
-            title="Copy"
-            onClick={() =>
-              void navigator.clipboard?.writeText(wireMessageContent(m))
-            }
+            data-testid="message-copy"
+            title={copied ? "Copied" : "Copy"}
+            aria-label={copied ? "Copied" : "Copy message"}
+            aria-live="polite"
+            onClick={() => void copyMessage()}
           >
-            <Copy size={13} />
+            {copied ? <Check size={13} /> : <Copy size={13} />}
           </button>
         )}
         {m.role === "user" && !busy && (
@@ -4605,6 +4616,9 @@ export function ChatView({
     } else if (event.key === "End") {
       event.preventDefault();
       resizePreviewPanel(maxPreviewPanelWidth(chatBodyWidth));
+    } else if (event.key === "Enter") {
+      event.preventDefault();
+      resizePreviewPanel(DEFAULT_PREVIEW_PANEL_WIDTH);
     }
   }
 
@@ -7968,7 +7982,8 @@ export function ChatView({
                 className={`preview-resize-handle${previewResizing ? " dragging" : ""}${previewPanelClosing ? " closing" : ""}${sidePanelAlreadyOpen ? " no-enter" : ""}`}
                 data-testid="preview-resize-handle"
                 role="separator"
-                aria-label="Resize side panel"
+                aria-label="Resize side panel; double-click or press Enter to reset"
+                title="Drag to resize; double-click to reset"
                 aria-orientation="vertical"
                 aria-valuemin={PREVIEW_PANEL_MIN_WIDTH}
                 aria-valuemax={maxPreviewPanelWidth(chatBodyWidth)}
@@ -7979,6 +7994,7 @@ export function ChatView({
                 onPointerMove={movePreviewResize}
                 onPointerUp={endPreviewResize}
                 onPointerCancel={endPreviewResize}
+                onDoubleClick={() => resizePreviewPanel(DEFAULT_PREVIEW_PANEL_WIDTH)}
               />
             )}
             {inspectorTab === "git" ? (

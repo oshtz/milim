@@ -7232,6 +7232,15 @@ html[data-dark="true"] .preview-control-cursor {
 
 .composer-send { display: flex; align-items: center; gap: 10px; }
 .composer-status { font-size: 12px; color: var(--tertiary-text); white-space: nowrap; }
+.composer-status.history {
+  padding: 3px 7px;
+  border: 1px solid var(--border-primary);
+  border-radius: 999px;
+  background: var(--chip-hover);
+  color: var(--primary-text);
+  font-family: var(--mono);
+  font-size: 10.5px;
+}
 .send-btn {
   display: grid;
   place-items: center;

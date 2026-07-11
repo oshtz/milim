@@ -25,7 +25,7 @@ The first run can open as Simple or Workbench. Simple keeps the dev chat core vi
 | Top bar | Theme, update, provider, and global app controls. |
 | Sidebar | Projects, threads, pinned groups, archives, unread state, child threads, five-at-a-time per-section ellipsis toggles, quick switching, and the Workbench launcher for Runs, MCP servers, Skills, and Schedules. |
 | Thread header | Current model, workspace folder, agent, approval, privacy, memory, sandbox, and computer-use state. |
-| Composer | Prompt text, visually highlighted plain-text skill/MCP/file/link tokens, persisted per-thread unsent drafts, thread-local sent-history recall, slash commands, file attachments, voice input, queued sends, send controls, and local repository-aware empty-state starters that prefill without submitting. |
+| Composer | Prompt text, visually highlighted plain-text skill/MCP/file/link tokens, persisted per-thread unsent drafts, thread-local sent-history recall with temporary position feedback, slash commands, file attachments, voice input, queued sends, send controls, and local repository-aware empty-state starters that prefill without submitting. |
 | Run timeline | Reasoning, compact live tool activity with expandable details, workspace checkpoint notices, memory notices, child-thread activity, and usage metrics. Built-in tool-agent usage updates after each model request completes; account runtimes remain terminal-only unless their CLIs report more. |
 | Run Journal | Searchable goal-attempt history with model/provider, status, excerpts, files, tools, artifacts, and an explicit Attach to composer action. |
 | Error fallback | Root UI render crashes show a reloadable error screen instead of a blank app window. |
@@ -92,7 +92,7 @@ Goals are thread-level autonomous runs, not saved agent profiles. A goal stores 
 
 | Feature | Behavior |
 |---|---|
-| Thread actions | Message rows can branch a new thread from that point, delete a visible message, and edit assistant messages in place. Sidebar rows can branch or export a thread. |
+| Thread actions | Message rows can copy with temporary confirmation, branch a new thread from that point, delete a visible message, and edit assistant messages in place. Sidebar rows can branch or export a thread. |
 | Per-chat instructions | The composer can attach instructions to the active thread without changing global app defaults. |
 | Context compaction | Long chats use tokenizer-backed visible checkpoint messages. Future model calls replay the latest checkpoint summary plus newer turns while the full transcript stays visible. `/compact` creates a checkpoint manually, and auto-compaction uses the same path before long sends. Compaction keeps a bounded recent tail verbatim and caps old attachment/tool bodies in summary prompts. Codex and Claude chats with an existing native thread/session skip Milim auto-compaction and send only per-turn context plus the latest user message. Summary generation rejects truncated or oversized outputs instead of saving incomplete checkpoints. Checkpoints record the usage/cost total at compaction time, the summary-generation cost when available, and the top bar separates lifetime usage from usage since the latest checkpoint. |
 | Search operators | Chat search accepts plain text plus `from:user`, `from:assistant`, `in:all`, and `is:archived` filters. |
@@ -100,7 +100,7 @@ Goals are thread-level autonomous runs, not saved agent profiles. A goal stores 
 | Onboarding | First-run setup chooses Simple or Workbench, connects local/hosted/Codex model sources, and can import Claude/Codex MCP servers and skills as disabled Workbench entries. MCP imports preserve `cwd`, non-secret env, and secret placeholders; use Test connection after filling required secrets. |
 | Settings | Settings search returns individual controls, jumps to the matched row, and section navigation shows warning status for incomplete setup. |
 | Theme editor | Themes and custom style settings are persisted with the desktop state. Custom palettes must pass core text contrast checks before saving, low-contrast preset/custom themes are marked in the theme grid, and custom theme cards expose an edit button. |
-| Keyboard shortcuts | App-window shortcuts are configurable; Previous thread defaults to `Ctrl+Tab` on Windows and macOS, switches to the last viewed thread immediately, and shows a compact recent-thread switcher for repeated presses. Ctrl/Cmd `+` and `-` scale the UI and reveal a temporary top-bar control for further adjustments or reset. Voice push-to-talk uses the same press-to-record flow. |
+| Keyboard shortcuts | App-window shortcuts are configurable; Previous thread defaults to `Ctrl+Tab` on Windows and macOS, switches to the last viewed thread immediately, and shows a compact recent-thread switcher for repeated presses. Ctrl/Cmd `+` and `-` scale the UI and reveal a temporary top-bar control for further adjustments or reset. Sidebar and inspector dividers reset on double-click or Enter. Voice push-to-talk uses the same press-to-record flow. |
 | Window close | Closing hides Milim to the system tray; minimize keeps normal taskbar behavior. |
 
 ## Slash commands
