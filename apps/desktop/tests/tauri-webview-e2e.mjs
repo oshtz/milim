@@ -12,10 +12,12 @@ const cdpHost = "127.0.0.1";
 const cdpPort = Number(process.env.MILIM_TAURI_E2E_CDP_PORT || 9333);
 const cdpUrl = `http://${cdpHost}:${cdpPort}`;
 const nativePreviewOnly = process.argv.includes("--native-preview-only");
+const zoomOnly = process.argv.includes("--zoom-only");
 const screenshots = {
   profiles: join(tmpdir(), "milim-tauri-webview-personalized-profiles.png"),
   settings: join(tmpdir(), "milim-tauri-webview-provider-voice-settings.png"),
   chat: join(tmpdir(), "milim-tauri-webview-personalized-chat.png"),
+  zoom: join(tmpdir(), "milim-tauri-webview-zoom-chip.png"),
   failure: join(tmpdir(), "milim-tauri-webview-failure.png"),
 };
 
@@ -73,17 +75,25 @@ let failure;
 try {
   session = await launchTauri(milimHome);
   await resetFrontendStorage(session.page);
-  consoleErrors.push(...(await runProfileSetup(session.page)));
-  await session.page.screenshot({ path: screenshots.profiles, fullPage: false });
-  consoleErrors.push(...(await runProviderAndVoiceSetup(session.page)));
-  await session.page.screenshot({ path: screenshots.settings, fullPage: false });
-  await closeSettings(session.page);
-  await closeSession(session);
-  session = null;
+  if (zoomOnly) {
+    const errors = collectErrors(session.page);
+    await session.page.getByTestId("chat-shell").waitFor();
+    await dismissOnboardingIfPresent(session.page);
+    await runUiZoomChipCheck(session.page);
+    consoleErrors.push(...errors);
+  } else {
+    consoleErrors.push(...(await runProfileSetup(session.page)));
+    await session.page.screenshot({ path: screenshots.profiles, fullPage: false });
+    consoleErrors.push(...(await runProviderAndVoiceSetup(session.page)));
+    await session.page.screenshot({ path: screenshots.settings, fullPage: false });
+    await closeSettings(session.page);
+    await closeSession(session);
+    session = null;
 
-  session = await launchTauri(milimHome);
-  consoleErrors.push(...(await runPersistenceAndChat(session.page, session.child.pid)));
-  await session.page.screenshot({ path: screenshots.chat, fullPage: false });
+    session = await launchTauri(milimHome);
+    consoleErrors.push(...(await runPersistenceAndChat(session.page, session.child.pid)));
+    await session.page.screenshot({ path: screenshots.chat, fullPage: false });
+  }
 
   if (consoleErrors.length) {
     throw new Error(`Console errors during Tauri WebView E2E:\n${consoleErrors.join("\n")}`);
@@ -1021,6 +1031,7 @@ async function runVoiceAndTtsSettingsCheck(page) {
 }
 
 async function runAppShortcutCheck(page) {
+  await runUiZoomChipCheck(page);
   await seedChatSearchFixture(page);
   await page.getByTestId("composer-input").fill("shortcut draft");
   await page.keyboard.press("Control+B");
@@ -1051,6 +1062,51 @@ async function runAppShortcutCheck(page) {
   await expectFocusedTestId(page, "composer-input");
   const value = await page.getByTestId("composer-input").inputValue();
   if (value !== "") throw new Error(`Expected Ctrl+N to clear composer, got "${value}".`);
+}
+
+async function runUiZoomChipCheck(page) {
+  const chip = page.getByTestId("ui-zoom-chip");
+  const value = page.getByTestId("ui-zoom-value");
+  const composer = page.getByTestId("composer-input");
+
+  await page.keyboard.press("Control+=");
+  await chip.waitFor();
+  await value.filter({ hasText: "110%" }).waitFor();
+  await page.screenshot({ path: screenshots.zoom, fullPage: false });
+
+  const increase = page.getByTestId("ui-zoom-increase");
+  for (let step = 0; step < 3; step += 1) await increase.click();
+  await value.filter({ hasText: "140%" }).waitFor();
+  if (!(await increase.isDisabled())) {
+    throw new Error("Zoom in should be disabled at 140%.");
+  }
+
+  await composer.hover();
+  await composer.focus();
+  await delay(3000);
+  await page.keyboard.press("Control+=");
+  await delay(1500);
+  await chip.waitFor();
+
+  const reset = page.getByTestId("ui-zoom-reset");
+  await reset.click();
+  await value.filter({ hasText: "100%" }).waitFor();
+  await page.getByTestId("ui-zoom-decrease").click();
+  await value.filter({ hasText: "90%" }).waitFor();
+  await increase.click();
+  await value.filter({ hasText: "100%" }).waitFor();
+  if (!(await reset.isDisabled())) throw new Error("Zoom reset should be disabled at 100%.");
+
+  await composer.focus();
+  await chip.hover();
+  await delay(4200);
+  await chip.waitFor();
+  await composer.hover();
+  await increase.focus();
+  await delay(4200);
+  await chip.waitFor();
+  await composer.focus();
+  await chip.waitFor({ state: "hidden", timeout: 5000 });
 }
 
 async function closeChatSearch(page) {
@@ -1543,6 +1599,7 @@ function printEvidencePaths(milimHome) {
   console.log(`profilesScreenshot=${screenshots.profiles}`);
   console.log(`settingsScreenshot=${screenshots.settings}`);
   console.log(`chatScreenshot=${screenshots.chat}`);
+  console.log(`zoomScreenshot=${screenshots.zoom}`);
   console.log(`failureScreenshot=${screenshots.failure}`);
 }
 

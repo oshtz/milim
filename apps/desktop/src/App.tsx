@@ -37,8 +37,7 @@ import {
 } from "./sessions/store";
 import { hydrateThemeFromUserState, useTheme } from "./theme/store";
 import { featureVisibleInMode } from "./ui/features";
-import { uiSizeShortcutDelta } from "./ui/shortcuts";
-import { UI_SIZE_STEP, useUiPreferences } from "./ui/store";
+import { useUiPreferences } from "./ui/store";
 
 const SettingsDialog = lazy(() =>
   import("./settings/SettingsDialog").then((mod) => ({
@@ -325,7 +324,6 @@ function AppContent() {
   const sidebarOpen = useUiPreferences((s) => s.sidebarOpen);
   const toggleSidebar = useUiPreferences((s) => s.toggleSidebar);
   const uiSize = useUiPreferences((s) => s.uiSize);
-  const setUiSize = useUiPreferences((s) => s.setUiSize);
   const interfaceMode = useUiPreferences((s) => s.interfaceMode);
   const chatLayoutStyle = useUiPreferences((s) => s.chatLayoutStyle);
   const messageWidth = useUiPreferences((s) => s.messageWidth);
@@ -402,17 +400,6 @@ function AppContent() {
       /* not in tauri */
     }
   }, [uiSize]);
-
-  useEffect(() => {
-    const onKeyDown = (event: globalThis.KeyboardEvent) => {
-      const delta = uiSizeShortcutDelta(event);
-      if (!delta) return;
-      event.preventDefault();
-      setUiSize(useUiPreferences.getState().uiSize + delta * UI_SIZE_STEP);
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
-  }, [setUiSize]);
 
   return (
     <div className={appClassName} onContextMenu={openAppContextMenu}>
