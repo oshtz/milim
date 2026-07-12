@@ -101,8 +101,8 @@ try {
   assert(markup.includes('title="Tool use"'), "Tool capability badge should render");
   assert(markup.includes("Replicate"), "Picker should render media providers");
   assert(markup.includes("Media"), "Picker should render media lane labels");
-  assert(markup.includes("Model picker view"), "Picker should expose the view switch to assistive technology");
-  assert(markup.includes(">Models<") && markup.includes(">Favorites<") && !markup.includes(">Presets<"), "Picker should render only Models and Favorites views");
+  assert(markup.includes(">Favorites only<"), "Picker should render the favorites filter toggle");
+  assert(!markup.includes(">Models<") && !markup.includes(">Presets<"), "Picker should not render redundant model or preset views");
 
   const { BatonMenu, HotSwapPreflightSheet } = (await server.ssrLoadModule(
     "/src/components/HotSwapDialogs.tsx",

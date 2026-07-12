@@ -11339,35 +11339,6 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 }
 .mp-search { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-bottom: 1px solid var(--border-primary); color: var(--tertiary-text); }
 .mp-search input { flex: 1; background: none; border: none; outline: none; color: var(--primary-text); font: inherit; font-size: 13px; }
-.mp-view-switch {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 2px;
-  width: 218px;
-  padding: 2px;
-  border: 1px solid var(--border-primary);
-  border-radius: 8px;
-  background: var(--panel-muted-bg);
-}
-.mp-view-switch button {
-  min-height: 24px;
-  padding: 3px 8px;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--tertiary-text);
-  font: inherit;
-  font-size: 11px;
-  font-weight: 600;
-  cursor: pointer;
-}
-.mp-view-switch button:hover { color: var(--primary-text); }
-.mp-view-switch button.on {
-  background: var(--chip-hover);
-  color: var(--primary-text);
-  box-shadow: 0 1px 3px color-mix(in srgb, black 18%, transparent);
-}
-.mp-view-switch button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .mp-list { flex: 1; overflow-y: auto; padding: 4px; }
 .mp-empty { padding: 14px; text-align: center; color: var(--tertiary-text); font-size: 12.5px; }
 .mp-group { margin-bottom: 4px; }
@@ -11623,7 +11594,7 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
   gap: 2px;
   min-width: 0;
 }
-.mp-foot-btn {
+.mp-foot-toggle, .mp-foot-btn {
   display: flex;
   align-items: center;
   gap: 5px;
@@ -11636,7 +11607,9 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
   cursor: pointer;
   border-radius: 6px;
 }
-.mp-foot-btn:hover { background: var(--chip-hover); color: var(--primary-text); }
+.mp-foot-toggle:hover, .mp-foot-btn:hover { background: var(--chip-hover); color: var(--primary-text); }
+.mp-checkbox { display: grid; place-items: center; width: 14px; height: 14px; border-radius: 4px; border: 1px solid var(--border-secondary); color: var(--accent-contrast); }
+.mp-foot-toggle.on .mp-checkbox { background: var(--accent); border-color: var(--accent); }
 
 /* ---- Chat search popover ---- */
 .chat-search-overlay {
@@ -11907,7 +11880,7 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
   .ui-sv,
   .mp-item,
   .mp-cap,
-  .mp-view-switch button,
+  .mp-foot-toggle,
   .mp-foot-btn,
   .chat-search-close,
   .chat-search-result,

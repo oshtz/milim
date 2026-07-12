@@ -100,12 +100,6 @@ export function ModelPicker({
   const groups = useMemo<Array<[string, ModelInfo[]]>>(() => {
     return modelPickerGroups(models, favorites, favoritesOnly, q);
   }, [models, q, favorites, favoritesOnly]);
-  const pickerView = favoritesOnly ? "favorites" : "models";
-
-  function setPickerView(view: "models" | "favorites") {
-    setFavoritesOnly(view === "favorites");
-  }
-
   return (
     <div className="mp">
       <div className="mp-search">
@@ -226,19 +220,10 @@ export function ModelPicker({
         </>
       </div>
       <div className="mp-foot">
-        <div className="mp-view-switch" role="group" aria-label="Model picker view">
-          {(["models", "favorites"] as const).map((view) => (
-            <button
-              key={view}
-              type="button"
-              className={pickerView === view ? "on" : ""}
-              aria-pressed={pickerView === view}
-              onClick={() => setPickerView(view)}
-            >
-              {view === "models" ? "Models" : "Favorites"}
-            </button>
-          ))}
-        </div>
+        <button type="button" className={"mp-foot-toggle" + (favoritesOnly ? " on" : "")} aria-pressed={favoritesOnly} onClick={() => setFavoritesOnly(!favoritesOnly)}>
+          <span className="mp-checkbox">{favoritesOnly && <Check size={10} />}</span>
+          Favorites only
+        </button>
         {showManagementActions && <div className="mp-foot-actions">
           <button type="button" className="mp-foot-btn" data-testid="manage-providers" onClick={() => { onClose(); onManageProviders(); }}>
             <PlusSquare size={13} /> Providers
