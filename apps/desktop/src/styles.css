@@ -6669,12 +6669,6 @@ html[data-dark="true"] .preview-control-cursor {
 .dot-yellow { background: var(--warning); box-shadow: 0 0 6px var(--warning); }
 
 .context-chip { max-width: min(360px, 45vw); }
-.context-chip-open {
-  border-color: color-mix(in srgb, var(--warning) 58%, transparent);
-}
-.context-chip-open .chip-label {
-  color: var(--warning);
-}
 
 /* model dropdown */
 .menu {
@@ -6807,7 +6801,6 @@ html[data-dark="true"] .preview-control-cursor {
   transition: transform 0.15s, background 0.15s;
 }
 .context-row.context-on .context-icon { color: var(--accent-light); }
-.context-row.context-warning .context-icon { color: var(--warning); }
 .context-row.context-on .context-switch {
   border-color: var(--accent-soft);
   background: var(--accent-15);
@@ -6839,11 +6832,6 @@ html[data-dark="true"] .preview-control-cursor {
   border-color: var(--accent-soft);
   background: var(--accent-15);
   color: var(--accent-light);
-}
-.context-choice-group button.active.warning {
-  border-color: color-mix(in srgb, var(--warning) 58%, transparent);
-  background: color-mix(in srgb, var(--warning) 12%, transparent);
-  color: var(--warning);
 }
 .context-choice-description {
   grid-column: 2 / -1;

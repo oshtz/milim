@@ -136,7 +136,6 @@ export function ControlBar({
     return () => document.removeEventListener("mousedown", onDoc);
   }, [menu]);
 
-  const approvalOpen = toolApproval === "open";
   const contextAccessibleLabel = `Session controls, Sandbox ${sandbox ? "on" : "off"}, Computer ${computerUse ? "on" : "off"}, Memory ${memory ? "on" : "off"}, Privacy ${PRIVACY_LABEL[privacy]}, Tool approval ${TOOL_APPROVAL_LABEL[toolApproval]}`;
   const showGoalChip = goalChipVisible(goal);
   const goalDetail = goal.status[0].toUpperCase() + goal.status.slice(1);
@@ -242,7 +241,7 @@ export function ControlBar({
               type="button"
               className={
                 "chip context-chip" +
-                (approvalOpen ? " context-chip-open" : "")
+                (toolApproval === "open" ? " chip-on" : "")
               }
               data-testid="context-menu-trigger"
               onClick={() =>
@@ -350,12 +349,7 @@ export function ControlBar({
                   </span>
                 </div>
 
-                <div
-                  className={
-                    "context-row context-choice-row" +
-                    (approvalOpen ? " context-warning" : "")
-                  }
-                >
+                <div className="context-row context-choice-row">
                   <span className="context-icon">
                     <Shield size={14} />
                   </span>
@@ -372,11 +366,7 @@ export function ControlBar({
                         type="button"
                         role="radio"
                         aria-checked={toolApproval === value}
-                        className={
-                          toolApproval === value
-                            ? `active${value === "open" ? " warning" : ""}`
-                            : ""
-                        }
+                        className={toolApproval === value ? "active" : ""}
                         title={TOOL_APPROVAL_DESCRIPTION[value]}
                         onClick={() => onToolApproval(value)}
                       >
