@@ -7991,6 +7991,7 @@ export function ChatView({
                 className="inspector-git-panel"
                 role="tabpanel"
                 aria-labelledby="inspector-tab-git"
+                style={previewPanelStyle}
               >
                 <GitWorkspacePanel
                   folder={folder}
