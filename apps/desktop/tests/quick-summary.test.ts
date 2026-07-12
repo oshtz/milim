@@ -118,7 +118,7 @@ assert.equal(row(dirty, "browser").value, "localhost:5180");
 const sourceMessages: ChatMessage[] = [
   {
     role: "user",
-    content: "Context from prior Milim run:\nSource run id: run-1",
+    content: "Review the attached notes",
     attachments: [{ id: "a1", name: "notes.md", mime: "text/markdown", size: 10 }],
   },
   {
@@ -150,18 +150,17 @@ const active = buildQuickSummary({
   gitStatus: gitStatus({ conflicts: 1 }),
   messages: sourceMessages,
   pendingAttachments: [{ id: "p1", name: "todo.txt", mime: "text/plain", size: 4 }],
-  composerText: "Context from prior Milim run:\nSource run id: run-2",
 });
 
 assert.match(row(active, "workspace").value, /1 conflict/);
 assert.equal(row(active, "workspace").tone, "error");
 assert.equal(active.rows.some((item) => item.kind === "plan"), false);
 assert.equal(row(active, "goal").label, "Running goal");
-assert.equal(row(active, "sources").value, "5 sources");
+assert.equal(row(active, "sources").value, "4 sources");
 assert.match(row(active, "sources").meta ?? "", /Pending: todo\.txt/);
 assert.deepEqual(
   active.sources.map((source) => source.kind),
-  ["attachment", "run", "attachment", "artifact", "memory"],
+  ["attachment", "attachment", "artifact", "memory"],
 );
 
 const server = await createServer({

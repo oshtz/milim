@@ -15,6 +15,8 @@ pub struct AgentDef {
     pub name: String,
     #[serde(default)]
     pub system_prompt: String,
+    /// Deprecated compatibility field used only as a fallback by legacy schedules.
+    #[serde(default)]
     pub model: String,
     #[serde(default)]
     pub tool_mode: String,

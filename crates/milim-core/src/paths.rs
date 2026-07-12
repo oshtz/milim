@@ -59,7 +59,7 @@ impl Paths {
         self.root.join("cache")
     }
 
-    /// The local model and voice asset store, `<root>/models` unless overridden.
+    /// The local downloaded model asset store, `<root>/models` unless overridden.
     pub fn models_dir(&self) -> &Path {
         &self.models
     }

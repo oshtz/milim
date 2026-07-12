@@ -103,7 +103,7 @@ assert.deepEqual(
     settings: { model: "settings-model" },
     requireModel,
   }),
-  { ok: true, model: "agent-model" },
+  { ok: true, model: "settings-model" },
 );
 assert.deepEqual(
   resolveTurnModel({
@@ -160,7 +160,7 @@ const setup = resolveTurnSetup({
 });
 assert.equal(setup.ok, true);
 if (setup.ok) {
-  assert.equal(setup.model, "agent-model");
+  assert.equal(setup.model, "thread-model");
   assert.equal(setup.title, "Thread title");
   assert.equal(setup.settings, setupSettings);
   assert.equal(setup.activeAgent?.id, "agent-1");

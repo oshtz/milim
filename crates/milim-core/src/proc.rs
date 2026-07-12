@@ -2,7 +2,7 @@
 //!
 //! On Windows, a GUI-subsystem app (the Tauri desktop shell and its embedded
 //! server) that spawns a console executable — `git`, `node`, `cmd`,
-//! `docker`, MCP servers, voice tools, and other helpers — briefly pops a console
+//! `docker`, MCP servers, and other helpers — briefly pops a console
 //! window for each spawn unless `CREATE_NO_WINDOW` is set. These helpers apply
 //! that flag and are no-ops on other platforms.
 

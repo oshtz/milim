@@ -18,7 +18,6 @@ import {
 
 export type ComposerSendShortcut = "enter" | "modEnter";
 export type ComposerDensity = "comfortable" | "compact";
-export type InterfaceMode = "simple" | "workbench";
 export type ChatLayoutStyle = "transcript" | "bubbles" | "compact";
 export type MessageWidth = "narrow" | "standard" | "wide" | "full";
 export type AvatarStyle = "none" | "initials" | "role";
@@ -48,7 +47,6 @@ interface UiPreferencesState {
   aiThreadNames: boolean;
   aiThreadNameModel: string;
   newChatButtonAtBottom: boolean;
-  interfaceMode: InterfaceMode;
   developerMode: boolean;
   experimentalHashlinePatch: boolean;
   chatLayoutStyle: ChatLayoutStyle;
@@ -58,7 +56,7 @@ interface UiPreferencesState {
   backgroundFit: BackgroundFit;
   backgroundTreatment: BackgroundTreatment;
   gitPanelExpanded: boolean;
-  workbenchExpanded: boolean;
+  toolsExpanded: boolean;
   workspaceLauncherLastUsedByFolder: Record<string, WorkspaceLauncherId>;
   notices: AppNotice[];
   appShortcuts: AppShortcuts;
@@ -73,7 +71,6 @@ interface UiPreferencesState {
   setAiThreadNames: (aiThreadNames: boolean) => void;
   setAiThreadNameModel: (aiThreadNameModel: string) => void;
   setNewChatButtonAtBottom: (newChatButtonAtBottom: boolean) => void;
-  setInterfaceMode: (interfaceMode: InterfaceMode) => void;
   setDeveloperMode: (developerMode: boolean) => void;
   setExperimentalHashlinePatch: (experimentalHashlinePatch: boolean) => void;
   setChatLayoutStyle: (chatLayoutStyle: ChatLayoutStyle) => void;
@@ -83,7 +80,7 @@ interface UiPreferencesState {
   setBackgroundFit: (backgroundFit: BackgroundFit) => void;
   setBackgroundTreatment: (backgroundTreatment: BackgroundTreatment) => void;
   setGitPanelExpanded: (gitPanelExpanded: boolean) => void;
-  setWorkbenchExpanded: (workbenchExpanded: boolean) => void;
+  setToolsExpanded: (toolsExpanded: boolean) => void;
   rememberWorkspaceLauncher: (folder: string, launcherId: WorkspaceLauncherId) => void;
   pushNotice: (notice: { tone: AppNoticeTone; message: string }) => string;
   dismissNotice: (id: string) => void;
@@ -132,10 +129,6 @@ function normalizeAiThreadNameModel(value: unknown): string {
   return typeof value === "string" && value.trim().toLowerCase() !== "mock-echo" ? value.trim() : "";
 }
 
-function normalizeInterfaceMode(value: unknown): InterfaceMode {
-  return value === "workbench" ? "workbench" : "simple";
-}
-
 function normalizeChatLayoutStyle(value: unknown): ChatLayoutStyle {
   return value === "bubbles" || value === "compact" ? value : "transcript";
 }
@@ -178,7 +171,6 @@ export const useUiPreferences = create<UiPreferencesState>()(
       aiThreadNames: false,
       aiThreadNameModel: "",
       newChatButtonAtBottom: false,
-      interfaceMode: "simple",
       developerMode: false,
       experimentalHashlinePatch: false,
       chatLayoutStyle: "transcript",
@@ -188,7 +180,7 @@ export const useUiPreferences = create<UiPreferencesState>()(
       backgroundFit: "cover",
       backgroundTreatment: "clear",
       gitPanelExpanded: false,
-      workbenchExpanded: false,
+      toolsExpanded: false,
       workspaceLauncherLastUsedByFolder: {},
       notices: [],
       appShortcuts: { ...DEFAULT_APP_SHORTCUTS },
@@ -207,7 +199,6 @@ export const useUiPreferences = create<UiPreferencesState>()(
       setAiThreadNames: (aiThreadNames) => set({ aiThreadNames }),
       setAiThreadNameModel: (aiThreadNameModel) => set({ aiThreadNameModel: normalizeAiThreadNameModel(aiThreadNameModel) }),
       setNewChatButtonAtBottom: (newChatButtonAtBottom) => set({ newChatButtonAtBottom }),
-      setInterfaceMode: (interfaceMode) => set({ interfaceMode: normalizeInterfaceMode(interfaceMode) }),
       setDeveloperMode: (developerMode) => set({ developerMode }),
       setExperimentalHashlinePatch: (experimentalHashlinePatch) => set({ experimentalHashlinePatch }),
       setChatLayoutStyle: (chatLayoutStyle) => set({ chatLayoutStyle: normalizeChatLayoutStyle(chatLayoutStyle) }),
@@ -217,7 +208,7 @@ export const useUiPreferences = create<UiPreferencesState>()(
       setBackgroundFit: (backgroundFit) => set({ backgroundFit: normalizeBackgroundFit(backgroundFit) }),
       setBackgroundTreatment: (backgroundTreatment) => set({ backgroundTreatment: normalizeBackgroundTreatment(backgroundTreatment) }),
       setGitPanelExpanded: (gitPanelExpanded) => set({ gitPanelExpanded }),
-      setWorkbenchExpanded: (workbenchExpanded) => set({ workbenchExpanded }),
+      setToolsExpanded: (toolsExpanded) => set({ toolsExpanded }),
       rememberWorkspaceLauncher: (folder, launcherId) =>
         set((state) => ({
           workspaceLauncherLastUsedByFolder: rememberWorkspaceLauncherInHistory(
@@ -269,9 +260,11 @@ export const useUiPreferences = create<UiPreferencesState>()(
       name: "milim.ui",
       storage: createJSONStorage(() => userStateStorage),
       merge: (persisted, current) => {
-        const saved = persisted as (Partial<UiPreferencesState> & { thinkingBlocksOpen?: unknown }) | undefined;
+        const saved = persisted as (Partial<UiPreferencesState> & { thinkingBlocksOpen?: unknown; interfaceMode?: unknown; workbenchExpanded?: unknown }) | undefined;
         const savedState = saved ? { ...saved } : undefined;
         delete savedState?.thinkingBlocksOpen;
+        delete savedState?.interfaceMode;
+        delete savedState?.workbenchExpanded;
         return {
           ...current,
           ...savedState,
@@ -286,7 +279,6 @@ export const useUiPreferences = create<UiPreferencesState>()(
           aiThreadNames: typeof saved?.aiThreadNames === "boolean" ? saved.aiThreadNames : current.aiThreadNames,
           aiThreadNameModel: normalizeAiThreadNameModel(saved?.aiThreadNameModel),
           newChatButtonAtBottom: typeof saved?.newChatButtonAtBottom === "boolean" ? saved.newChatButtonAtBottom : current.newChatButtonAtBottom,
-          interfaceMode: normalizeInterfaceMode(saved?.interfaceMode),
           developerMode: typeof saved?.developerMode === "boolean" ? saved.developerMode : current.developerMode,
           experimentalHashlinePatch: typeof saved?.experimentalHashlinePatch === "boolean" ? saved.experimentalHashlinePatch : current.experimentalHashlinePatch,
           chatLayoutStyle: normalizeChatLayoutStyle(saved?.chatLayoutStyle),
@@ -296,7 +288,12 @@ export const useUiPreferences = create<UiPreferencesState>()(
           backgroundFit: normalizeBackgroundFit(saved?.backgroundFit),
           backgroundTreatment: normalizeBackgroundTreatment(saved?.backgroundTreatment),
           gitPanelExpanded: typeof saved?.gitPanelExpanded === "boolean" ? saved.gitPanelExpanded : current.gitPanelExpanded,
-          workbenchExpanded: typeof saved?.workbenchExpanded === "boolean" ? saved.workbenchExpanded : current.workbenchExpanded,
+          toolsExpanded:
+            typeof saved?.toolsExpanded === "boolean"
+              ? saved.toolsExpanded
+              : typeof (saved as { workbenchExpanded?: unknown } | undefined)?.workbenchExpanded === "boolean"
+                ? Boolean((saved as { workbenchExpanded: boolean }).workbenchExpanded)
+                : current.toolsExpanded,
           workspaceLauncherLastUsedByFolder: normalizeWorkspaceLauncherHistory(saved?.workspaceLauncherLastUsedByFolder),
           notices: [],
           appShortcuts: normalizeAppShortcuts(saved?.appShortcuts),
@@ -314,7 +311,6 @@ export const useUiPreferences = create<UiPreferencesState>()(
         aiThreadNames: state.aiThreadNames,
         aiThreadNameModel: normalizeAiThreadNameModel(state.aiThreadNameModel),
         newChatButtonAtBottom: state.newChatButtonAtBottom,
-        interfaceMode: normalizeInterfaceMode(state.interfaceMode),
         developerMode: state.developerMode,
         experimentalHashlinePatch: state.experimentalHashlinePatch,
         chatLayoutStyle: normalizeChatLayoutStyle(state.chatLayoutStyle),
@@ -324,7 +320,7 @@ export const useUiPreferences = create<UiPreferencesState>()(
         backgroundFit: normalizeBackgroundFit(state.backgroundFit),
         backgroundTreatment: normalizeBackgroundTreatment(state.backgroundTreatment),
         gitPanelExpanded: state.gitPanelExpanded,
-        workbenchExpanded: state.workbenchExpanded,
+        toolsExpanded: state.toolsExpanded,
         workspaceLauncherLastUsedByFolder: normalizeWorkspaceLauncherHistory(state.workspaceLauncherLastUsedByFolder),
         appShortcuts: normalizeAppShortcuts(state.appShortcuts),
       }),

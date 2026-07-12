@@ -23,8 +23,7 @@ import {
 import { modelDisplayName } from "../lib/modelPicker";
 import { useOnboarding, type OnboardingSetupPath, type OnboardingStepId } from "../onboarding/store";
 import { DEFAULT_THREAD_SETTINGS, useSessions } from "../sessions/store";
-import { useUiPreferences, type InterfaceMode } from "../ui/store";
-import { ArrowRight, Bolt, Check, Gear, PlusSquare, Search, Sparkles, X } from "./icons";
+import { ArrowRight, Bolt, Check, PlusSquare, Search, X } from "./icons";
 import { Logo } from "./Logo";
 import { SheetDialog } from "./SheetDialog";
 import { Select, Toggle } from "./ui";
@@ -32,18 +31,10 @@ import { Select, Toggle } from "./ui";
 type StepDefinition = { id: OnboardingStepId; label: string };
 type NoticeTone = "info" | "success" | "warning" | "error";
 
-const SIMPLE_STEPS: StepDefinition[] = [
-  { id: "mode", label: "Style" },
+const STEPS: StepDefinition[] = [
   { id: "model", label: "Model" },
   { id: "defaults", label: "Defaults" },
-  { id: "finish", label: "Ready" },
-];
-
-const WORKBENCH_STEPS: StepDefinition[] = [
-  { id: "mode", label: "Style" },
-  { id: "model", label: "Model" },
-  { id: "defaults", label: "Defaults" },
-  { id: "workbench", label: "Context" },
+  { id: "context", label: "Context" },
   { id: "finish", label: "Ready" },
 ];
 
@@ -73,7 +64,7 @@ function pathLabel(path: OnboardingSetupPath | null): string {
 function stepTitle(step: OnboardingStepId): string {
   if (step === "model") return "Choose the runtime";
   if (step === "defaults") return "Set the ground rules";
-  if (step === "workbench") return "Set the working context";
+  if (step === "context") return "Set the working context";
   if (step === "finish") return "Review setup";
   return "Configure Milim";
 }
@@ -127,12 +118,9 @@ export function OnboardingFlow({ onModelsChanged }: { onModelsChanged?: () => Pr
   const activeId = useSessions((s) => s.activeId);
   const rawThreadSettings = useSessions((s) => s.sessions.find((x) => x.id === s.activeId)?.settings);
   const updateThreadSettings = useSessions((s) => s.updateSettings);
-  const setInterfaceMode = useUiPreferences((s) => s.setInterfaceMode);
-  const interfaceMode = useUiPreferences((s) => s.interfaceMode);
   const threadSettings = useMemo(() => ({ ...DEFAULT_THREAD_SETTINGS, ...rawThreadSettings }), [rawThreadSettings]);
-  const mode = onboarding.selectedMode ?? interfaceMode;
   const selectedModel = threadSettings.model.trim();
-  const [step, setStep] = useState<OnboardingStepId>(() => onboarding.completedSteps.includes("mode") ? "model" : "mode");
+  const [step, setStep] = useState<OnboardingStepId>(() => onboarding.completedSteps.includes("model") ? "defaults" : "model");
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [discovering, setDiscovering] = useState(false);
@@ -149,7 +137,7 @@ export function OnboardingFlow({ onModelsChanged }: { onModelsChanged?: () => Pr
   const [harnessBusy, setHarnessBusy] = useState(false);
   const [harnessNote, setHarnessNote] = useState<{ tone: NoticeTone; message: string } | null>(null);
 
-  const steps = mode === "workbench" ? WORKBENCH_STEPS : SIMPLE_STEPS;
+  const steps = STEPS;
   const currentIndex = Math.max(0, steps.findIndex((item) => item.id === step));
   const selectedModelInfo = models.find((model) => model.id === selectedModel) ?? null;
   const selectedModelReady = Boolean(selectedModelInfo);
@@ -183,7 +171,7 @@ export function OnboardingFlow({ onModelsChanged }: { onModelsChanged?: () => Pr
   useEffect(() => {
     void refreshModels();
     void refreshCodexAccount();
-    onboarding.start(mode);
+    onboarding.start();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -197,16 +185,10 @@ export function OnboardingFlow({ onModelsChanged }: { onModelsChanged?: () => Pr
   }, [step, steps]);
 
   useEffect(() => {
-    if (mode !== "workbench" || !inTauriRuntime()) return;
+    if (!inTauriRuntime()) return;
     void refreshHarnessImports();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode]);
-
-  function chooseMode(nextMode: InterfaceMode) {
-    setInterfaceMode(nextMode);
-    onboarding.setMode(nextMode);
-    setStep("model");
-  }
+  }, []);
 
   async function refreshCodexAccount() {
     try {
@@ -437,7 +419,7 @@ export function OnboardingFlow({ onModelsChanged }: { onModelsChanged?: () => Pr
     }
     const next = steps[Math.min(currentIndex + 1, steps.length - 1)];
     if (step === "defaults") onboarding.markStepComplete("defaults");
-    if (step === "workbench") onboarding.markStepComplete("workbench");
+    if (step === "context") onboarding.markStepComplete("context");
     setStep(next.id);
   }
 
@@ -512,35 +494,6 @@ export function OnboardingFlow({ onModelsChanged }: { onModelsChanged?: () => Pr
         </aside>
 
         <main className="onboarding-content">
-          {step === "mode" && (
-            <section className="onboarding-panel onboarding-split-panel" aria-labelledby="onboarding-mode-title">
-              <OnboardingStory
-                tone="style"
-                title="Start with the right surface."
-                body="Open Milim as a calm chat view or the full workbench. The choice only sets the first run."
-                details={["Local by default", "Editable later"]}
-              />
-              <div className="onboarding-step-body">
-                <div className="onboarding-panel-head">
-                  <h3 id="onboarding-mode-title">Choose a workspace style</h3>
-                  <p>Start focused, or bring the full tool surface into view from day one.</p>
-                </div>
-                <div className="onboarding-choice-grid">
-                  <button className={"onboarding-choice" + (mode === "simple" ? " active" : "")} type="button" onClick={() => chooseMode("simple")}>
-                    <span className="onboarding-choice-icon"><Sparkles size={18} /></span>
-                    <strong>Simple</strong>
-                    <span>A calm chat home with model switching, themes, memory, and voice basics.</span>
-                  </button>
-                  <button className={"onboarding-choice" + (mode === "workbench" ? " active" : "")} type="button" onClick={() => chooseMode("workbench")}>
-                    <span className="onboarding-choice-icon"><Gear size={18} /></span>
-                    <strong>Workbench</strong>
-                    <span>The full builder desk: agents, tools, schedules, MCP, media, sandbox, and project context.</span>
-                  </button>
-                </div>
-              </div>
-            </section>
-          )}
-
           {step === "model" && (
             <section className="onboarding-panel onboarding-split-panel onboarding-model-panel" aria-labelledby="onboarding-model-title">
                 <OnboardingStory
@@ -751,17 +704,17 @@ export function OnboardingFlow({ onModelsChanged }: { onModelsChanged?: () => Pr
             </section>
           )}
 
-          {step === "workbench" && (
-            <section className="onboarding-panel onboarding-split-panel" aria-labelledby="onboarding-workbench-title">
+          {step === "context" && (
+            <section className="onboarding-panel onboarding-split-panel" aria-labelledby="onboarding-context-title">
               <OnboardingStory
                 tone="context"
-                title="Point the workbench at a project."
+                title="Point Milim at a project."
                 body="Folder context, sandbox tools, and computer use stay explicit so Milim only reaches where you allow it."
                 details={[threadSettings.folder || "No folder yet", threadSettings.sandbox ? "Sandbox on" : "Sandbox off"]}
               />
               <div className="onboarding-step-body">
                 <div className="onboarding-panel-head">
-                  <h3 id="onboarding-workbench-title">Personalize workbench context</h3>
+                  <h3 id="onboarding-context-title">Set the working context</h3>
                   <p>Set the project defaults now, then tune agents, MCP, media, and schedules from the main app.</p>
                 </div>
                 <div className="onboarding-workbench-grid">
@@ -831,7 +784,7 @@ export function OnboardingFlow({ onModelsChanged }: { onModelsChanged?: () => Pr
                 tone="ready"
                 title="Setup is ready."
                 body="Milim will open with these defaults. Settings and model/provider managers stay available after onboarding."
-                details={[mode === "workbench" ? "Workbench" : "Simple", selectedModelReady ? "Model ready" : "Model missing"]}
+                details={[threadSettings.folder ? "Project ready" : "No project", selectedModelReady ? "Model ready" : "Model missing"]}
               />
               <div className="onboarding-step-body">
                 <div className="onboarding-panel-head">
@@ -842,12 +795,11 @@ export function OnboardingFlow({ onModelsChanged }: { onModelsChanged?: () => Pr
                   <p className="onboarding-notice error">A selected, reachable chat model is required before setup can finish.</p>
                 )}
                 <div className="onboarding-summary">
-                  <span><strong>Mode</strong>{mode === "workbench" ? "Workbench" : "Simple"}</span>
                   <span><strong>Setup path</strong>{pathLabel(onboarding.selectedSetupPath)}</span>
                   <span><strong>Model</strong>{selectedModelReady ? selectedModel : "Not ready"}</span>
                   <span><strong>Memory</strong>{threadSettings.memory ? "On" : "Off"}</span>
                   <span><strong>Privacy</strong>{privacyLabel(threadSettings.privacy)}</span>
-                  {mode === "workbench" && <span><strong>Folder</strong>{threadSettings.folder || "Not set"}</span>}
+                  <span><strong>Folder</strong>{threadSettings.folder || "Not set"}</span>
                 </div>
               </div>
             </section>

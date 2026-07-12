@@ -166,6 +166,52 @@ deepEqual(
 );
 useSessions
   .getState()
+  .moveQueuedMessage(first, queuedTwo.id, queuedOne.id, "before");
+deepEqual(
+  useSessions
+    .getState()
+    .queuedMessagesBySession[first]?.map((item) => item.id),
+  [queuedTwo.id, queuedOne.id],
+  "queued messages should move before another item",
+);
+const persistedMovedQueue = localStorage.getItem("milim.sessions") ?? "";
+assert(
+  persistedMovedQueue.indexOf(queuedTwo.id) <
+    persistedMovedQueue.indexOf(queuedOne.id),
+  "queued-message order should persist",
+);
+equal(
+  useSessions.getState().queuedMessagesBySession[first]?.[0]?.attachments?.[0]
+    ?.id,
+  "queued-attachment",
+  "moving a queued message should preserve attachments",
+);
+useSessions
+  .getState()
+  .moveQueuedMessage(first, queuedTwo.id, queuedOne.id, "after");
+deepEqual(
+  useSessions
+    .getState()
+    .queuedMessagesBySession[first]?.map((item) => item.id),
+  [queuedOne.id, queuedTwo.id],
+  "queued messages should move after another item",
+);
+const queuedOrderBeforeInvalidMove = snapshot(
+  useSessions.getState().queuedMessagesBySession[first],
+);
+useSessions
+  .getState()
+  .moveQueuedMessage(first, queuedOne.id, queuedOne.id, "before");
+useSessions
+  .getState()
+  .moveQueuedMessage(first, queuedOne.id, "missing", "before");
+deepEqual(
+  useSessions.getState().queuedMessagesBySession[first],
+  queuedOrderBeforeInvalidMove,
+  "invalid queued-message moves should be ignored",
+);
+useSessions
+  .getState()
   .updateQueuedMessage(first, queuedOne.id, { content: "queued edited" });
 equal(
   useSessions.getState().queuedMessagesBySession[first]?.[0]?.content,

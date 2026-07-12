@@ -1360,6 +1360,12 @@ interface SessionState {
     messageId: string,
     patch: Partial<Pick<QueuedMessage, "content" | "attachments">>,
   ) => void;
+  moveQueuedMessage: (
+    id: string,
+    messageId: string,
+    targetId: string,
+    position?: Exclude<SidebarInsertPosition, "inside">,
+  ) => void;
   removeQueuedMessage: (id: string, messageId: string) => void;
   shiftQueuedMessage: (id: string) => QueuedMessage | null;
   clearQueuedMessages: (id: string) => void;
@@ -2049,6 +2055,31 @@ export const useSessions = create<SessionState>()(
             if (nextQueue.length) nextBySession[id] = nextQueue;
             else delete nextBySession[id];
             return { queuedMessagesBySession: nextBySession };
+          }),
+
+        moveQueuedMessage: (id, messageId, targetId, position = "before") =>
+          set((st) => {
+            const queue = st.queuedMessagesBySession[id];
+            if (
+              !queue ||
+              messageId === targetId ||
+              !queue.some((message) => message.id === messageId) ||
+              !queue.some((message) => message.id === targetId)
+            )
+              return {};
+            const order = moveInOrder(
+              queue.map((message) => message.id),
+              messageId,
+              targetId,
+              position,
+            );
+            const byId = new Map(queue.map((message) => [message.id, message]));
+            return {
+              queuedMessagesBySession: {
+                ...st.queuedMessagesBySession,
+                [id]: order.map((messageId) => byId.get(messageId)!),
+              },
+            };
           }),
 
         removeQueuedMessage: (id, messageId) =>

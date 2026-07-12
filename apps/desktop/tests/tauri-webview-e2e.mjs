@@ -16,7 +16,7 @@ const zoomOnly = process.argv.includes("--zoom-only");
 const microUiOnly = process.argv.includes("--micro-ui-only");
 const screenshots = {
   profiles: join(tmpdir(), "milim-tauri-webview-personalized-profiles.png"),
-  settings: join(tmpdir(), "milim-tauri-webview-provider-voice-settings.png"),
+  settings: join(tmpdir(), "milim-tauri-webview-provider-settings.png"),
   chat: join(tmpdir(), "milim-tauri-webview-personalized-chat.png"),
   zoom: join(tmpdir(), "milim-tauri-webview-zoom-chip.png"),
   microUi: join(tmpdir(), "milim-tauri-webview-micro-ui.png"),
@@ -81,13 +81,13 @@ try {
     const errors = collectErrors(session.page);
     await session.page.getByTestId("chat-shell").waitFor();
     await dismissOnboardingIfPresent(session.page);
-    await runUiZoomChipCheck(session.page);
+    await runUiZoomShortcutCheck(session.page);
     if (microUiOnly) await runMicroUiCheck(session.page);
     consoleErrors.push(...errors);
   } else {
     consoleErrors.push(...(await runProfileSetup(session.page)));
     await session.page.screenshot({ path: screenshots.profiles, fullPage: false });
-    consoleErrors.push(...(await runProviderAndVoiceSetup(session.page)));
+    consoleErrors.push(...(await runProviderSetup(session.page)));
     await session.page.screenshot({ path: screenshots.settings, fullPage: false });
     await closeSettings(session.page);
     await closeSession(session);
@@ -162,19 +162,24 @@ async function runPersistenceAndChat(page, pid) {
     return errors;
   }
   await assertAgentOptions(page);
-  await assertVoiceSettingsPersisted(page);
+  await openSettings(page);
+  await assertAppShortcutsPersisted(page);
+  await closeSettings(page);
   await runModelPickerSurfaceCheck(page);
   await runAppShortcutCheck(page);
 
   await runSlashAndAttachmentCheck(page);
+  await runContextDrawerCheck(page);
+  await runMemoryLibraryCheck(page);
   await runContextMenuChromeCheck(page);
 
   if (await hasChatModel(page)) {
     await selectAgent(page, "Prompt Enhancer");
+    await switchModelWhileAgentActive(page, "Prompt Enhancer");
     await page.getByTestId("composer-input").fill("hello from personalized profile");
     await page.getByTestId("composer-send").click();
     await page.getByTestId("assistant-message").last().waitFor({ timeout: 60_000 });
-    await page.getByTestId("assistant-message").last().locator(".msg-text").waitFor({ timeout: 60_000 });
+    await runMessagePopoverLayerCheck(page);
     await runMessageContextMenuCheck(page);
     if (process.env.MILIM_TAURI_E2E_ARTIFACTS === "1") {
       await runArtifactCheck(page);
@@ -761,8 +766,27 @@ async function runSlashAndAttachmentCheck(page) {
   await page.getByTestId("composer-send").click();
   await page.getByTestId("context-menu-trigger").waitFor();
   await page.getByTestId("context-menu-trigger").click();
-  const privacyRow = page.locator(".context-row", { hasText: "Private mode" });
-  await privacyRow.locator(".context-value", { hasText: "Redact" }).waitFor();
+  const privacyRedact = page.locator('[role="radiogroup"][aria-label="Privacy"] [role="radio"]', { hasText: "Redact" });
+  await assertAttribute(privacyRedact, "aria-checked", "true");
+  await page.getByTestId("composer-input").click();
+
+  await page.getByTestId("composer-input").fill("/privacy");
+  await page.getByTestId("composer-send").click();
+  await page.getByTestId("context-menu-trigger").click();
+  await assertAttribute(privacyRedact, "aria-checked", "true");
+  await page.getByTestId("composer-input").click();
+
+  await page.getByTestId("composer-input").fill("/approval open");
+  await page.getByTestId("composer-send").click();
+  await page.getByTestId("context-menu-trigger").click();
+  const approvalOpen = page.locator('[role="radiogroup"][aria-label="Tool approval"] [role="radio"]', { hasText: "Open" });
+  await assertAttribute(approvalOpen, "aria-checked", "true");
+  await page.getByTestId("composer-input").click();
+
+  await page.getByTestId("composer-input").fill("/approval nope");
+  await page.getByTestId("composer-send").click();
+  await page.getByTestId("context-menu-trigger").click();
+  await assertAttribute(approvalOpen, "aria-checked", "true");
   await page.getByTestId("composer-input").click();
 
   const attachmentPath = join(tmpdir(), `milim-e2e-attachment-${Date.now()}.txt`);
@@ -792,6 +816,42 @@ async function runSlashAndAttachmentCheck(page) {
   }
 }
 
+async function runMemoryLibraryCheck(page) {
+  await page.getByTestId("context-menu-trigger").click();
+  await page.getByText("Manage memory", { exact: true }).click();
+  await page.getByRole("heading", { name: "Memory" }).waitFor();
+  await page.getByRole("tab", { name: "Personal" }).waitFor();
+  await page.getByRole("tab", { name: "Project" }).waitFor();
+  await page.getByLabel("Search memories").waitFor();
+  await page.getByText("Show archived", { exact: true }).waitFor();
+  await page.getByLabel("Close memory manager").click();
+}
+
+async function runContextDrawerCheck(page) {
+  await page.getByLabel("Open context").click();
+  await page.getByLabel("Thread context").waitFor();
+  await page.getByLabel("Thread context").getByText("Model", { exact: true }).waitFor();
+  if (await page.locator(".topbar-model, .topbar-usage, .topbar-limit").count()) {
+    throw new Error("Detailed model and usage status should not render in the title bar.");
+  }
+  await page.getByLabel("Close context").click();
+}
+
+async function switchModelWhileAgentActive(page, agentName) {
+  await page.getByTestId("model-picker-trigger").click();
+  const candidates = page.locator(".mp-item:not(.active) .mp-pick");
+  for (let index = 0; index < await candidates.count(); index += 1) {
+    const candidate = candidates.nth(index);
+    const label = await candidate.getAttribute("aria-label");
+    if (!label || label.includes("Media")) continue;
+    await candidate.click();
+    await assertAttribute(page.getByTestId("agent-switcher"), "aria-label", `Persona, current ${agentName}`);
+    return;
+  }
+  await page.keyboard.press("Escape");
+  console.log("agentModelSwitchCheck=skipped:no alternate chat model");
+}
+
 async function runContextMenuChromeCheck(page) {
   await page.keyboard.press("Escape").catch(() => {});
   await page.getByTestId("composer-input").click({ button: "right" });
@@ -818,6 +878,30 @@ async function runMessageContextMenuCheck(page) {
   await menu.getByText("Edit and resend").waitFor();
   await page.keyboard.press("Escape");
   await menu.waitFor({ state: "hidden" });
+}
+
+async function runMessagePopoverLayerCheck(page) {
+  const trigger = page.getByTestId("baton-menu-trigger").last();
+  await trigger.waitFor({ timeout: 60_000 });
+  await trigger.click();
+  const popover = page.getByRole("menu", { name: "Model handoff actions" });
+  await popover.waitFor();
+  const layers = await page.evaluate(() => {
+    const popoverElement = document.querySelector(".baton-menu-popover");
+    const sidebar = document.querySelector(".sidebar");
+    if (!(popoverElement instanceof HTMLElement) || !(sidebar instanceof HTMLElement)) return null;
+    return {
+      parentIsBody: popoverElement.parentElement === document.body,
+      popover: Number.parseInt(getComputedStyle(popoverElement).zIndex, 10),
+      sidebar: Number.parseInt(getComputedStyle(sidebar).zIndex, 10),
+    };
+  });
+  if (!layers?.parentIsBody) throw new Error("Expected message popover to render directly under document.body");
+  if (!Number.isFinite(layers.popover) || !Number.isFinite(layers.sidebar) || layers.popover <= layers.sidebar) {
+    throw new Error(`Expected message popover above sidebar, got popover=${layers.popover} sidebar=${layers.sidebar}`);
+  }
+  await page.keyboard.press("Escape");
+  await popover.waitFor({ state: "hidden" });
 }
 
 async function runArtifactContextMenuCheck(page, card) {
@@ -858,7 +942,7 @@ async function clearAttachments(page) {
   await page.getByTestId("composer-input").fill("");
 }
 
-async function runProviderAndVoiceSetup(page) {
+async function runProviderSetup(page) {
   const errors = collectErrors(page);
   await page.getByTestId("chat-shell").waitFor();
 
@@ -899,17 +983,6 @@ async function runProviderAndVoiceSetup(page) {
   }
 
   await openSettings(page);
-  await page.getByTestId("settings-section-audio").click();
-  await setSwitch(page.getByTestId("voice-enabled-toggle"), true, "voice enabled");
-  await page.getByTestId("settings-section-audio").getByText("Needs model").waitFor();
-  await setSwitch(page.getByTestId("voice-hotkey-toggle"), true, "voice hotkey");
-  await setSwitch(page.getByTestId("voice-dictation-toggle"), true, "voice dictation");
-  await page.getByTestId("voice-hotkey-shortcut").waitFor();
-  await page.getByTestId("settings-search").fill("hotkey");
-  await page.locator(".settings-search-result", { hasText: "Global push-to-talk" }).click();
-  await page.locator('[data-setting-id="audio-hotkey"].setting-highlight').waitFor();
-  await page.getByTestId("settings-search").fill("");
-  await runVoiceAndTtsSettingsCheck(page);
   await runAppShortcutSettingsCheck(page);
 
   return errors;
@@ -973,22 +1046,11 @@ async function closeProviders(page) {
 
 async function openSettings(page) {
   await page.getByTestId("open-settings").click();
-  await page.getByTestId("settings-section-audio").waitFor();
+  await page.getByTestId("settings-section-app").waitFor();
 }
 
 async function closeSettings(page) {
   await page.getByTestId("close-settings").click();
-}
-
-async function assertVoiceSettingsPersisted(page) {
-  await openSettings(page);
-  await page.getByTestId("settings-section-audio").click();
-  await assertSwitch(page.getByTestId("voice-enabled-toggle"), true, "voice enabled");
-  await assertSwitch(page.getByTestId("voice-hotkey-toggle"), true, "voice hotkey");
-  await assertSwitch(page.getByTestId("voice-dictation-toggle"), true, "voice dictation");
-  await page.getByTestId("voice-hotkey-shortcut").waitFor();
-  await assertAppShortcutsPersisted(page);
-  await closeSettings(page);
 }
 
 async function runAppShortcutSettingsCheck(page) {
@@ -1012,29 +1074,8 @@ function shortcutRow(page, action) {
   return page.locator(".shortcut-recorder-row", { has: page.getByTestId(`app-shortcut-${action}`) });
 }
 
-async function runVoiceAndTtsSettingsCheck(page) {
-  await page.getByTestId("settings-section-audio").click();
-  const vadSwitch = page.locator(".setting-toggle-row", { hasText: "Server speech preflight" }).getByRole("switch");
-  if (await vadSwitch.count()) {
-    await setSwitch(vadSwitch, true, "server speech preflight");
-    await page.getByRole("button", { name: "Native ONNX" }).click();
-    await page.getByText("VAD presets").waitFor();
-    await page.getByText("Silero VAD").waitFor();
-    await page.getByText("Native VAD model path is required.").waitFor();
-  } else {
-    console.log("vadSettingsChecks=skipped:server speech preflight not visible");
-  }
-
-  await page.getByTestId("audio-output-tab").click();
-  const ttsSwitch = page.getByTestId("tts-enabled-toggle");
-  await setSwitch(ttsSwitch, true, "text-to-speech");
-  await page.locator(".tts-provider-grid .stt-card", { hasText: "Command" }).waitFor();
-  await page.locator(".tts-provider-grid .stt-card", { hasText: "OpenAI-compatible TTS" }).waitFor();
-  await page.getByText("TTS command is required.").first().waitFor();
-}
-
 async function runAppShortcutCheck(page) {
-  await runUiZoomChipCheck(page);
+  await runUiZoomShortcutCheck(page);
   await seedChatSearchFixture(page);
   await page.getByTestId("composer-input").fill("shortcut draft");
   await page.keyboard.press("Control+B");
@@ -1067,49 +1108,14 @@ async function runAppShortcutCheck(page) {
   if (value !== "") throw new Error(`Expected Ctrl+N to clear composer, got "${value}".`);
 }
 
-async function runUiZoomChipCheck(page) {
-  const chip = page.getByTestId("ui-zoom-chip");
-  const value = page.getByTestId("ui-zoom-value");
-  const composer = page.getByTestId("composer-input");
-
+async function runUiZoomShortcutCheck(page) {
   await page.keyboard.press("Control+=");
-  await chip.waitFor();
-  await value.filter({ hasText: "110%" }).waitFor();
-  await page.screenshot({ path: screenshots.zoom, fullPage: false });
-
-  const increase = page.getByTestId("ui-zoom-increase");
-  for (let step = 0; step < 3; step += 1) await increase.click();
-  await value.filter({ hasText: "140%" }).waitFor();
-  if (!(await increase.isDisabled())) {
-    throw new Error("Zoom in should be disabled at 140%.");
+  await delay(300);
+  if (await page.getByTestId("ui-zoom-chip").count()) {
+    throw new Error("The simplified title bar should not render zoom controls.");
   }
-
-  await composer.hover();
-  await composer.focus();
-  await delay(3000);
-  await page.keyboard.press("Control+=");
-  await delay(1500);
-  await chip.waitFor();
-
-  const reset = page.getByTestId("ui-zoom-reset");
-  await reset.click();
-  await value.filter({ hasText: "100%" }).waitFor();
-  await page.getByTestId("ui-zoom-decrease").click();
-  await value.filter({ hasText: "90%" }).waitFor();
-  await increase.click();
-  await value.filter({ hasText: "100%" }).waitFor();
-  if (!(await reset.isDisabled())) throw new Error("Zoom reset should be disabled at 100%.");
-
-  await composer.focus();
-  await chip.hover();
-  await delay(4200);
-  await chip.waitFor();
-  await composer.hover();
-  await increase.focus();
-  await delay(4200);
-  await chip.waitFor();
-  await composer.focus();
-  await chip.waitFor({ state: "hidden", timeout: 5000 });
+  await page.screenshot({ path: screenshots.zoom, fullPage: false });
+  await page.keyboard.press("Control+-");
 }
 
 async function runMicroUiCheck(page) {
@@ -1436,7 +1442,7 @@ function collectErrors(page) {
   const expectedFailedResources = [];
   page.on("response", (response) => {
     const url = response.url();
-    if (response.status() === 502 && /\/media\/(?:models|model-schema)\b/.test(url)) {
+    if ([400, 502].includes(response.status()) && /\/media\/(?:models|model-schema)\b/.test(url)) {
       expectedFailedResources.push(url);
     }
   });
@@ -1450,7 +1456,7 @@ function collectErrors(page) {
     ) {
       return;
     }
-    if (text === "Failed to load resource: the server responded with a status of 502 (Bad Gateway)") {
+    if (/^Failed to load resource: the server responded with a status of (?:400 \(Bad Request\)|502 \(Bad Gateway\))$/.test(text)) {
       const responseIndex = expectedFailedResources.findIndex((resourceUrl) => !url || resourceUrl === url);
       if (/\/media\/(?:models|model-schema)\b/.test(url) || responseIndex >= 0) {
         if (responseIndex >= 0) expectedFailedResources.splice(responseIndex, 1);

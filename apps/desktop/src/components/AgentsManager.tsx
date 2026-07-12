@@ -6,7 +6,6 @@ import {
   generateAgentDraft,
   isAgentDraftModel,
   isLegacyAgentAvatar,
-  listModels,
   listSchedules,
   listSkills,
   listTools,
@@ -23,7 +22,7 @@ import {
 import { useSessions } from "../sessions/store";
 import { Calendar, Copy, Plus, Sparkles, Trash, X } from "./icons";
 import { SheetDialog } from "./SheetDialog";
-import { Checkbox, Select } from "./ui";
+import { Checkbox } from "./ui";
 import "./AgentsManager.css";
 
 type Selection = Agent | "new" | null;
@@ -187,10 +186,6 @@ function draftSkillSummary(mode: AgentSkillMode, count: number): string {
   return `${count} selected`;
 }
 
-function agentModelLabel(model: string | null | undefined): string {
-  return model?.trim() || "Use current model";
-}
-
 function agentUsageSummary(isActive: boolean, scheduleCount: number): string {
   const parts = [];
   if (isActive) parts.push("Active chat");
@@ -244,7 +239,6 @@ export function AgentsManager({ onClose }: { onClose: () => void }) {
   const activeAgentId = activeSession?.settings?.activeAgentId ?? null;
 
   const [tools, setTools] = useState<ToolInfo[]>([]);
-  const [models, setModels] = useState<string[]>([]);
   const [schedules, setSchedules] = useState<ScheduleInfo[]>([]);
   const [skills, setSkills] = useState<SkillInfo[]>([]);
   const [bootstrapped, setBootstrapped] = useState(false);
@@ -254,7 +248,6 @@ export function AgentsManager({ onClose }: { onClose: () => void }) {
   const [draftGenerating, setDraftGenerating] = useState(false);
   const [draftError, setDraftError] = useState("");
   const [name, setName] = useState("");
-  const [model, setModel] = useState("");
   const [instructions, setInstructions] = useState("");
   const [enabled, setEnabled] = useState<string[]>([]);
   const [avatar, setAvatar] = useState("");
@@ -271,7 +264,6 @@ export function AgentsManager({ onClose }: { onClose: () => void }) {
   useEffect(() => {
     let alive = true;
     listTools().then((next) => alive && setTools(next));
-    listModels().then((next) => alive && setModels(next));
     listSchedules().then((next) => alive && setSchedules(next));
     listSkills().then((next) => alive && setSkills(next));
     refresh().finally(() => {
@@ -335,7 +327,6 @@ export function AgentsManager({ onClose }: { onClose: () => void }) {
     resetTest();
     if (a === "new") {
       setName("");
-      setModel("");
       setInstructions("");
       setEnabled([]);
       setAvatar("");
@@ -344,7 +335,6 @@ export function AgentsManager({ onClose }: { onClose: () => void }) {
       setEnabledSkills([]);
     } else {
       setName(a.name);
-      setModel(a.model);
       setInstructions(a.system_prompt);
       setEnabled(a.enabled_tools ?? []);
       const storedAvatar = a.avatar ?? "";
@@ -369,7 +359,6 @@ export function AgentsManager({ onClose }: { onClose: () => void }) {
     setConfirmDeleteId(null);
     resetTest();
     setName(starter.name);
-    setModel("");
     setInstructions(starter.systemPrompt);
     setAvatar(starter.avatar);
     setToolMode(starter.toolMode === "custom" && starterTools.length === 0 ? "none" : starter.toolMode);
@@ -386,7 +375,6 @@ export function AgentsManager({ onClose }: { onClose: () => void }) {
     setConfirmDeleteId(null);
     resetTest();
     setName(skill.name);
-    setModel("");
     setInstructions(skill.instructions);
     setAvatar(agentAvatarText({ name: skill.name }));
     setToolMode("all");
@@ -403,7 +391,6 @@ export function AgentsManager({ onClose }: { onClose: () => void }) {
     setConfirmDeleteId(null);
     resetTest();
     setName(`${agent.name} copy`);
-    setModel(agent.model);
     setInstructions(agent.system_prompt);
     setEnabled(agent.enabled_tools ?? []);
     const storedAvatar = agent.avatar ?? "";
@@ -434,9 +421,9 @@ export function AgentsManager({ onClose }: { onClose: () => void }) {
     if (!selectedAgent) return;
     const prompt = testPrompt.trim();
     if (!prompt || testRunning) return;
-    const requestModel = (model || currentThreadModel || models.find(isAgentDraftModel) || "").trim();
+    const requestModel = currentThreadModel.trim();
     if (!requestModel) {
-      setTestError("Choose a model before testing.");
+      setTestError("Choose a model in the current chat before testing.");
       return;
     }
     let output = "";
@@ -486,7 +473,7 @@ export function AgentsManager({ onClose }: { onClose: () => void }) {
     const saved = await saveAgent({
       id,
       name: name.trim(),
-      model,
+      model: "",
       system_prompt: instructions,
       tool_mode: toolMode,
       enabled_tools: toolMode === "custom" ? enabled : [],
@@ -539,11 +526,10 @@ export function AgentsManager({ onClose }: { onClose: () => void }) {
   const selectedUsage = selectedAgent ? agentUsageSummary(selectedAgent.id === activeAgentId, selectedScheduleCount) : "";
   const enabledToolCount = toolMode === "custom" ? enabled.length : toolMode === "all" ? tools.length : 0;
   const editorTitle = sel === "new" ? "New agent" : name.trim() || selectedAgent?.name || "Select an agent";
-  const generationModel = [model, currentThreadModel, ...models].find(isAgentDraftModel) ?? "";
+  const generationModel = isAgentDraftModel(currentThreadModel) ? currentThreadModel : "";
   const canDraftAgent = draftPrompt.trim().length > 0 && Boolean(generationModel) && !draftGenerating;
   const hasDraftContent = Boolean(
     name.trim() ||
-      model.trim() ||
       instructions.trim() ||
       avatar.trim() ||
       enabled.length ||
@@ -552,7 +538,6 @@ export function AgentsManager({ onClose }: { onClose: () => void }) {
       skillMode !== "auto",
   );
   const canTestAgent = Boolean(selectedAgent && testPrompt.trim() && !testRunning);
-  const runtimeModel = (model || currentThreadModel).trim();
   const enabledSkillList = skills.filter((skill) => skill.enabled);
   const deleteNote = selectedScheduleCount
     ? `Click again to delete. ${plural(selectedScheduleCount, "schedule")} will keep a missing agent reference.`
@@ -563,7 +548,7 @@ export function AgentsManager({ onClose }: { onClose: () => void }) {
         <div className="agent-manager-header">
           <div className="agent-manager-title">
             <h2>Agents</h2>
-            <p>Save reusable system prompts, model preferences, avatars, and tool access profiles.</p>
+            <p>Save reusable system prompts, avatars, skills, and tool access profiles.</p>
           </div>
           <div className="agent-manager-header-actions">
             <button className="btn-accent agent-header-action" data-testid="new-agent" type="button" onClick={() => edit("new")}>
@@ -580,7 +565,7 @@ export function AgentsManager({ onClose }: { onClose: () => void }) {
           <aside className="agent-rail" aria-label="Saved agents">
             <div className="agent-rail-summary">
               <span>{agents.length} saved</span>
-              <span>{models.length} models</span>
+              <span>{schedules.length} schedules</span>
             </div>
             <button className="agent-rail-action" type="button" onClick={() => edit("new")}>
               <Plus size={14} />
@@ -603,7 +588,6 @@ export function AgentsManager({ onClose }: { onClose: () => void }) {
                       </span>
                       <span className="agent-card-copy">
                         <span className="agent-card-name">{a.name}</span>
-                        <span className="agent-card-model">{agentModelLabel(a.model)}</span>
                         <span className="agent-card-meta">
                           <span>{agentToolSummary(a)}</span>
                           <span>{agentSkillSummary(a)}</span>
@@ -631,11 +615,6 @@ export function AgentsManager({ onClose }: { onClose: () => void }) {
                 </div>
 
                 <div className="agent-impact-panel" aria-label="Run impact">
-                  <div className="agent-impact-item">
-                    <span>Model</span>
-                    <strong>{runtimeModel || "Run-time model"}</strong>
-                    <em>{model.trim() ? "Overrides thread selection" : currentThreadModel.trim() ? "Uses current thread" : "Chosen when run starts"}</em>
-                  </div>
                   <div className="agent-impact-item">
                     <span>Prompt</span>
                     <strong>{instructions.trim() ? `${instructions.trim().length} chars` : "No system prompt"}</strong>
@@ -692,7 +671,7 @@ export function AgentsManager({ onClose }: { onClose: () => void }) {
                 <section className="agent-editor-section agent-draft-section">
                   <div className="agent-section-head">
                     <h4>Generate</h4>
-                    <span>{draftGenerating ? "Drafting" : generationModel ? agentModelLabel(generationModel) : "Choose a model first"}</span>
+                    <span>{draftGenerating ? "Drafting" : generationModel || "Choose a chat model first"}</span>
                   </div>
                   <div className="agent-draft-panel">
                     <div className="agent-draft-input-row">
@@ -758,20 +737,6 @@ export function AgentsManager({ onClose }: { onClose: () => void }) {
                     </div>
                     <span className="sheet-hint">Leave blank to use the first character of the name.</span>
                   </label>
-                </section>
-
-                <section className="agent-editor-section">
-                  <div className="agent-section-head">
-                    <h4>Model</h4>
-                    <span>{agentModelLabel(model)}</span>
-                  </div>
-                  <Select
-                    value={model}
-                    placeholder="(use current)"
-                    options={[{ label: "(use current)", value: "" }, ...models.map((m) => ({ label: m, value: m }))]}
-                    onChange={setModel}
-                    testId="agent-model-select"
-                  />
                 </section>
 
                 <section className="agent-editor-section">
@@ -952,7 +917,7 @@ export function AgentsManager({ onClose }: { onClose: () => void }) {
                         setTestError("");
                         setTestResult("");
                       }}
-                      placeholder={selectedAgent ? "Ask one short question to check tone and model choice" : "Save this agent before running a preview"}
+                      placeholder={selectedAgent ? "Ask one short question to check the agent's behavior" : "Save this agent before running a preview"}
                     />
                     <button className="btn-ghost agent-test-button" data-testid="test-agent" type="button" disabled={!canTestAgent} onClick={testAgent}>
                       <Sparkles size={14} />
@@ -1002,7 +967,7 @@ export function AgentsManager({ onClose }: { onClose: () => void }) {
                 <p>
                   {agents.length
                     ? "Choose a saved profile from the list, or create another reusable agent."
-                    : "Create a reusable profile with its own system prompt, model preference, avatar, and tool access."}
+                    : "Create a reusable profile with its own system prompt, avatar, skills, and tool access."}
                 </p>
                 <button className="btn-accent agent-header-action" type="button" onClick={() => edit("new")}>
                   <Plus size={14} />

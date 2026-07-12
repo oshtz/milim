@@ -4,9 +4,9 @@ path: models
 label: Models
 title: Models and providers
 summary: Model-agnostic dev chat routing across OpenAI-compatible APIs, Anthropic, Gemini, Replicate, fal, Ollama, LM Studio, Codex, and Claude runtime bridges.
-group: Workbench
+group: Core
 order: 40
-updated: 2026-07-10
+updated: 2026-07-12
 ---
 
 Model routing is provider-agnostic and centered on the active dev thread. The provider registry stores enabled remotes and their model metadata, then the desktop model picker merges local API runtime models, provider models, account runtime models, and media-capable models. Duplicate provider model ids stay provider-scoped in the picker and route back to the selected provider; provider sections with fewer visible models appear first.
@@ -14,6 +14,10 @@ Model routing is provider-agnostic and centered on the active dev thread. The pr
 On desktop startup, the picker reads the cached catalog while a single live refresh checks enabled chat providers. It reads the catalog once more after that refresh completes, without requiring a trip through provider settings. Provider, Codex, and Claude discovery are isolated so a slow or unavailable lane does not suppress successful lanes.
 
 The model chip and picker classify the selected model into one runtime lane: plain chat, Milim tools, Codex runtime, Claude runtime, or media. Switching models changes the next turn for the active thread without resetting workspace context, memory, previews, artifacts, approvals, or queued messages.
+
+## Favorites and reasoning effort
+
+Favorites are the only model shortcut. The picker switches between Models and Favorites, and each model keeps its own persisted reasoning-effort choice. Agents do not pin models, so changing the thread model keeps the active Agent enabled and changes the model used by its next interactive run.
 
 Hot Swap assesses the selected target before committing the change. Full-parity swaps stay one-click. Smaller context windows, unsupported image/tool input, unavailable setup, or stale account-runtime history open a preflight. Codex and Claude native sessions record the last Milim message they completed; after another model contributes, the user chooses a fresh canonical handoff or a resumed session with the missing Milim turns injected.
 

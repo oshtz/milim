@@ -19,7 +19,7 @@ Configuration is intentionally local. The desktop app embeds the server, stores 
 | Server config | `~/.milim/config/server.json` for standalone CLI/server use. |
 | Identity key | `~/.milim/identity/master.key`. |
 | Provider records | SQLite storage with encrypted secret fields. |
-| Runtime assets | Milim runtime directory for voice, TTS, and related downloaded assets. |
+| Runtime assets | Milim runtime directory for downloaded model and media-related assets. Previously downloaded voice assets are left untouched but no longer used. |
 | Schedules | `schedules.db` under the Milim root. |
 | Agents and child threads | `agents.db` and `threads.db` under the Milim root. |
 
@@ -49,7 +49,6 @@ The remaining storage work is:
 $env:MILIM_WHISPER_MODEL = "C:\models\ggml-base.bin"
 cargo build --manifest-path apps/desktop/src-tauri/Cargo.toml --features whisper
 cargo build --manifest-path apps/desktop/src-tauri/Cargo.toml --features native-vad
-cargo build --manifest-path apps/desktop/src-tauri/Cargo.toml --features native-tts
 ```
 
 ## Narrow resets

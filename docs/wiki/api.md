@@ -3,7 +3,7 @@ id: api
 path: api
 label: API
 title: HTTP API surface
-summary: OpenAI-compatible, Anthropic-compatible, Ollama-compatible, providers, audio, media, workspace, MCP, agents, threads, memory, privacy, skills, schedules, mobile, and account runtime routes.
+summary: OpenAI-compatible, Anthropic-compatible, Ollama-compatible, providers, media, workspace, MCP, agents, threads, memory, privacy, skills, schedules, mobile, and account runtime routes.
 group: Reference
 order: 90
 updated: 2026-07-11
@@ -34,13 +34,11 @@ Root aliases are also mounted for OpenAI chat, completions, models, and embeddin
 | Area | Routes |
 |---|---|
 | Provider registry | `GET/POST /providers`, `GET /providers/discover`, `DELETE /providers/{id}` |
-| Audio | `POST /audio/transcriptions`, `POST /audio/vad`, `POST /audio/speech`, `POST /audio/setup/check`, Piper/Kokoro/VAD preset installs, and Piper executable install routes |
 | Media | `GET /media/models`, `GET /media/model-schema`, `GET /media/status`, `POST /media/generate` |
 | Workspace | `GET/POST /workspace`, `GET /workspace/git`, `POST /workspace/git/action` (`diff`, sync, commit, checkpoint, restore checkpoint, create/apply/remove Hot Swap retry worktree) |
 | Managed preview apps | `GET /preview-apps/{runtime_id}`, `POST /preview-apps/{runtime_id}/stage`, `POST /preview-apps/{runtime_id}/start`, `POST /preview-apps/{runtime_id}/stop`, `POST /preview-apps/{runtime_id}/restart`, `GET /preview-apps/{runtime_id}/logs` |
 | MCP | `GET /mcp/tools`, `POST /mcp/call`, `GET/POST /mcp/servers`, `POST /mcp/servers/test`, `POST /mcp/servers/{id}/test`, `DELETE /mcp/servers/{id}` |
 | Agents | `POST /agents/run`, `GET/POST /agents`, `GET/PUT/DELETE /agents/{id}`, `POST /agents/{id}/run` |
-| Run journal | `GET/POST /runs`, `GET/PUT/DELETE /runs/{id}` |
 | Threads | `GET /threads/{id}` (`include_events=true&event_limit=N` returns `event_count` and `events_truncated`), `DELETE /threads/{id}`, `GET /threads/{id}/children`, `GET /threads/{id}/events`, `POST /threads/{id}/stop` |
 | Memory | `POST /memory/ingest`, `POST /memory/search`, `POST /memory/register`, `POST /memory/graph/search`, `GET /memory/scopes`, `GET /memory/nodes` |
 | Privacy | `POST /privacy/scan`, `GET/POST /privacy/mode` |
@@ -53,7 +51,9 @@ Root aliases are also mounted for OpenAI chat, completions, models, and embeddin
 
 `http_fetch` accepts public HTTP(S) destinations only, validates every redirect, applies DNS/address checks, and limits transfer time and body size. It rejects loopback, private, link-local, multicast, and metadata-service addresses.
 
-`POST /schedules` and `PUT /schedules/{id}` accept an optional `attachments` array using the desktop chat attachment shape (`id`, `name`, `mime`, `size`, `content`, `truncated`, `sourcePath`). Saved attachment content is appended to the scheduled prompt each time the automation fires. `GET /schedules/events` drains completed background run results for the desktop to land as local threads.
+`POST /schedules` and `PUT /schedules/{id}` require a `model` for deterministic unattended execution and accept an optional `attachments` array using the desktop chat attachment shape (`id`, `name`, `mime`, `size`, `content`, `truncated`, `sourcePath`). Existing stored schedules may have an empty model for compatibility; the runner falls back to their linked Agent's deprecated model, and editing persists that fallback. If neither exists, a visible schedule error is recorded. Saved attachment content is appended to the scheduled prompt each time the automation fires. `GET /schedules/events` drains completed background run results for the desktop to land as local threads.
+
+The built-in `memory_register` tool accepts `content`, optional `title`, and optional `scope` (`personal` or `project`). The lower-level `/memory/*` HTTP routes remain compatible with scoped node records.
 
 ## msk-v1 keys
 

@@ -21,7 +21,7 @@ mod translate;
 
 use std::future::Future;
 use std::net::SocketAddr;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::routing::{delete, get, post, put};
 use axum::Router;
@@ -82,26 +82,6 @@ pub fn build_router(state: AppState) -> Router {
         // Model listing (OpenAI + Ollama)
         .route("/v1/models", get(routes::openai_models))
         .route("/models", get(routes::openai_models))
-        .route("/audio/transcriptions", post(routes::audio_transcriptions))
-        .route("/audio/vad", post(routes::audio_vad))
-        .route("/audio/speech", post(routes::audio_speech))
-        .route("/audio/setup/check", post(routes::audio_setup_check))
-        .route(
-            "/audio/piper/presets/download",
-            post(routes::audio_piper_preset_download),
-        )
-        .route(
-            "/audio/kokoro/presets/download",
-            post(routes::audio_kokoro_preset_download),
-        )
-        .route(
-            "/audio/vad/presets/download",
-            post(routes::audio_vad_preset_download),
-        )
-        .route(
-            "/audio/piper/executable/install",
-            post(routes::audio_piper_executable_install),
-        )
         // Provider registry (OpenAI-compatible remotes)
         .route(
             "/providers",
@@ -165,14 +145,6 @@ pub fn build_router(state: AppState) -> Router {
         .route("/anthropic/v1/messages", post(routes::anthropic_messages))
         .route("/anthropic/messages", post(routes::anthropic_messages))
         .route("/v1/messages", post(routes::anthropic_messages))
-        // Local run journal
-        .route("/runs", get(routes::runs_list).post(routes::run_create))
-        .route(
-            "/runs/{id}",
-            get(routes::run_get)
-                .put(routes::run_update)
-                .delete(routes::run_delete),
-        )
         // Codex app-server bridge (separate from OpenAI-compatible providers)
         .route("/codex/account", get(routes::codex_account))
         .route("/codex/login/device", post(routes::codex_login_device))
@@ -506,7 +478,6 @@ async fn fire_schedule(
     index: usize,
 ) -> bool {
     const MAX_RUN: std::time::Duration = std::time::Duration::from_secs(15 * 60);
-    let started = Instant::now();
     let workspace = schedule.workspace.as_deref().and_then(|value| {
         std::fs::canonicalize(value)
             .ok()
@@ -520,15 +491,27 @@ async fn fire_schedule(
         .as_deref()
         .and_then(|id| state.agents.as_ref()?.get(id).ok().flatten());
     let mut messages = Vec::new();
-    let mut model = "default".to_string();
+    let mut model = schedule.model.trim().to_string();
     if let Some(agent) = &agent {
         if !agent.system_prompt.is_empty() {
             messages.push(ChatMessage::text("system", agent.system_prompt.clone()));
         }
         messages.extend(agent_skill_messages(&state, agent, &prompt));
-        if !agent.model.is_empty() {
+        if model.is_empty() && !agent.model.trim().is_empty() {
             model = agent.model.clone();
         }
+    }
+    if model.is_empty() {
+        state.schedule_runs.push(state::ScheduleRunEvent {
+            id: format!("{}-{now_unix}-{index}", schedule.id),
+            schedule_id: schedule.id,
+            schedule_name: schedule.name,
+            prompt: schedule.prompt,
+            response: "Schedule error: no model is configured. Edit this schedule and choose a model before it can run.".to_string(),
+            model,
+            ran_at: now_unix,
+        });
+        return true;
     }
     messages.push(ChatMessage::text("user", prompt));
     let tools = agent
@@ -542,28 +525,8 @@ async fn fire_schedule(
     .await
     .map_err(|_| milim_core::Error::Other("scheduled run timed out after 15 minutes".into()))
     .and_then(|result| result);
-    let elapsed = started.elapsed().as_millis() as i64;
-    let run_id = format!("run-schedule-{}-{now_unix}-{index}", schedule.id);
-
     match result {
         Ok(outcome) => {
-            if let Some(journal) = &state.run_journal {
-                let _ = journal.upsert(&milim_storage::RunJournalEntry {
-                    id: run_id,
-                    created_at_ms: now_unix * 1000,
-                    updated_at_ms: now_unix * 1000 + elapsed,
-                    status: "done".to_string(),
-                    kind: "schedule".to_string(),
-                    title: schedule.name.clone(),
-                    goal: schedule.prompt.clone(),
-                    model: model.clone(),
-                    duration_ms: Some(elapsed),
-                    input_excerpt: journal_excerpt(&schedule.prompt),
-                    output_excerpt: journal_excerpt(&outcome.message.text_content()),
-                    tools: outcome.steps.iter().map(|step| step.name.clone()).collect(),
-                    ..Default::default()
-                });
-            }
             state.schedule_runs.push(state::ScheduleRunEvent {
                 id: format!("{}-{now_unix}-{index}", schedule.id),
                 schedule_id: schedule.id,
@@ -576,35 +539,10 @@ async fn fire_schedule(
             true
         }
         Err(error) => {
-            if let Some(journal) = &state.run_journal {
-                let _ = journal.upsert(&milim_storage::RunJournalEntry {
-                    id: run_id,
-                    created_at_ms: now_unix * 1000,
-                    updated_at_ms: now_unix * 1000 + elapsed,
-                    status: "error".to_string(),
-                    kind: "schedule".to_string(),
-                    title: schedule.name.clone(),
-                    goal: schedule.prompt.clone(),
-                    model,
-                    duration_ms: Some(elapsed),
-                    input_excerpt: journal_excerpt(&schedule.prompt),
-                    error: Some(error.to_string()),
-                    ..Default::default()
-                });
-            }
             tracing::warn!("schedule {} failed: {error}", schedule.id);
             false
         }
     }
-}
-
-fn journal_excerpt(text: &str) -> String {
-    const MAX: usize = 4000;
-    let mut out: String = text.chars().take(MAX).collect();
-    if text.chars().count() > MAX {
-        out.push_str("\n[truncated]");
-    }
-    out
 }
 
 /// Run the background scheduler loop (checks for due schedules every 30s).
@@ -680,5 +618,63 @@ mod tests {
             avatar: String::new(),
         };
         assert!(routes::scheduled_agent_registry(&state, &agent).is_empty());
+    }
+
+    #[tokio::test]
+    async fn legacy_schedule_falls_back_to_saved_agent_model() {
+        let agents = milim_agents::AgentStore::new(Database::open_in_memory().unwrap()).unwrap();
+        let agent = agents
+            .create(
+                "Legacy",
+                "test-echo",
+                "",
+                "none",
+                Vec::new(),
+                "none",
+                Vec::new(),
+                "",
+            )
+            .unwrap();
+        let state = AppState::new(Arc::new(TestBackend::new()), ServerConfiguration::default())
+            .with_agents(agents);
+        let schedule = milim_automation::Schedule {
+            id: "legacy-schedule".to_string(),
+            name: "Legacy schedule".to_string(),
+            cron: "0 0 * * * *".to_string(),
+            agent_id: Some(agent.id),
+            model: String::new(),
+            prompt: "hello".to_string(),
+            attachments: Vec::new(),
+            enabled: true,
+            workspace: None,
+            created_unix: 0,
+            last_run: None,
+        };
+
+        assert!(fire_schedule(state.clone(), schedule, 10, 0).await);
+        let events = state.schedule_runs.take();
+        assert_eq!(events[0].model, "test-echo");
+    }
+
+    #[tokio::test]
+    async fn schedule_without_any_model_records_visible_error() {
+        let state = AppState::new(Arc::new(TestBackend::new()), ServerConfiguration::default());
+        let schedule = milim_automation::Schedule {
+            id: "missing-model".to_string(),
+            name: "Missing model".to_string(),
+            cron: "0 0 * * * *".to_string(),
+            agent_id: None,
+            model: String::new(),
+            prompt: "hello".to_string(),
+            attachments: Vec::new(),
+            enabled: true,
+            workspace: None,
+            created_unix: 0,
+            last_run: None,
+        };
+
+        assert!(fire_schedule(state.clone(), schedule, 10, 0).await);
+        let events = state.schedule_runs.take();
+        assert!(events[0].response.contains("no model is configured"));
     }
 }

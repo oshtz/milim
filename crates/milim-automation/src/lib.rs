@@ -50,6 +50,9 @@ pub struct Schedule {
     /// Agent to run (None ⇒ the generic loop).
     #[serde(default)]
     pub agent_id: Option<String>,
+    /// Model used for this unattended run. Empty only for legacy schedules.
+    #[serde(default)]
+    pub model: String,
     /// The user message to send on each fire.
     pub prompt: String,
     /// Optional file context appended when the schedule fires.
@@ -74,6 +77,7 @@ pub struct ScheduleUpdate<'a> {
     pub name: &'a str,
     pub cron: &'a str,
     pub agent_id: Option<String>,
+    pub model: &'a str,
     pub prompt: &'a str,
     pub attachments: Vec<ScheduleAttachment>,
     pub enabled: bool,
@@ -115,6 +119,11 @@ pub const SCHEDULE_MIGRATIONS: &[Migration] = &[
               UPDATE schedules
               SET created_unix = COALESCE(CAST(strftime('%s', created_at) AS INTEGER), CAST(strftime('%s', 'now') AS INTEGER))
               WHERE created_unix = 0;",
+    },
+    Migration {
+        version: 4,
+        name: "schedule_model",
+        sql: "ALTER TABLE schedules ADD COLUMN model TEXT NOT NULL DEFAULT '';",
     },
 ];
 
@@ -246,12 +255,37 @@ impl ScheduleStore {
         enabled: bool,
         workspace: Option<String>,
     ) -> Result<Schedule> {
+        self.create_with_model_context(
+            name,
+            cron,
+            agent_id,
+            "",
+            prompt,
+            attachments,
+            enabled,
+            workspace,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_with_model_context(
+        &self,
+        name: &str,
+        cron: &str,
+        agent_id: Option<String>,
+        model: &str,
+        prompt: &str,
+        attachments: Vec<ScheduleAttachment>,
+        enabled: bool,
+        workspace: Option<String>,
+    ) -> Result<Schedule> {
         validate_cron(cron)?;
         let schedule = Schedule {
             id: uuid::Uuid::new_v4().to_string(),
             name: name.to_string(),
             cron: cron.to_string(),
             agent_id,
+            model: model.trim().to_string(),
             prompt: prompt.to_string(),
             attachments: normalize_attachments(attachments),
             enabled,
@@ -269,11 +303,11 @@ impl ScheduleStore {
             .map_err(|e| Error::Other(format!("schedule attachments json: {e}")))?;
         db.conn()
             .execute(
-                "INSERT INTO schedules (id, name, cron, agent_id, prompt, attachments_json, enabled, workspace, created_unix, last_run)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                "INSERT INTO schedules (id, name, cron, agent_id, model, prompt, attachments_json, enabled, workspace, created_unix, last_run)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
                  ON CONFLICT(id) DO UPDATE SET
                    name=excluded.name, cron=excluded.cron, agent_id=excluded.agent_id,
-                   prompt=excluded.prompt, attachments_json=excluded.attachments_json,
+                   model=excluded.model, prompt=excluded.prompt, attachments_json=excluded.attachments_json,
                    enabled=excluded.enabled, workspace=excluded.workspace,
                    created_unix=excluded.created_unix, last_run=excluded.last_run",
                 params![
@@ -281,6 +315,7 @@ impl ScheduleStore {
                     s.name,
                     s.cron,
                     s.agent_id,
+                    s.model,
                     s.prompt,
                     attachments_json,
                     s.enabled as i64,
@@ -301,6 +336,7 @@ impl ScheduleStore {
             name: update.name.to_string(),
             cron: update.cron.to_string(),
             agent_id: update.agent_id,
+            model: update.model.trim().to_string(),
             prompt: update.prompt.to_string(),
             attachments: normalize_attachments(update.attachments),
             enabled: update.enabled,
@@ -317,7 +353,7 @@ impl ScheduleStore {
         let conn = db.conn();
         let mut stmt = conn
             .prepare(
-                "SELECT id, name, cron, agent_id, prompt, attachments_json, enabled, workspace, created_unix, last_run
+                "SELECT id, name, cron, agent_id, model, prompt, attachments_json, enabled, workspace, created_unix, last_run
                  FROM schedules ORDER BY created_at DESC",
             )
             .map_err(sqlite)?;
@@ -375,12 +411,13 @@ fn row_to_schedule(r: &rusqlite::Row) -> rusqlite::Result<Schedule> {
         name: r.get(1)?,
         cron: r.get(2)?,
         agent_id: r.get(3)?,
-        prompt: r.get(4)?,
-        attachments: parse_attachments_json(r.get::<_, String>(5)?),
-        enabled: r.get::<_, i64>(6)? != 0,
-        workspace: r.get(7)?,
-        created_unix: r.get(8)?,
-        last_run: r.get(9)?,
+        model: r.get(4)?,
+        prompt: r.get(5)?,
+        attachments: parse_attachments_json(r.get::<_, String>(6)?),
+        enabled: r.get::<_, i64>(7)? != 0,
+        workspace: r.get(8)?,
+        created_unix: r.get(9)?,
+        last_run: r.get(10)?,
     })
 }
 
@@ -459,9 +496,25 @@ mod tests {
     fn create_list_delete() {
         let s = store();
         let sched = s.create("hourly", "0 0 * * * *", None, "tick").unwrap();
+        assert!(sched.model.is_empty());
         assert_eq!(s.list().unwrap().len(), 1);
         assert!(s.delete(&sched.id).unwrap());
         assert!(s.list().unwrap().is_empty());
+    }
+
+    #[test]
+    fn legacy_schedules_migrate_with_empty_model() {
+        let db = Database::open_in_memory().unwrap();
+        db.migrate(&SCHEDULE_MIGRATIONS[..3]).unwrap();
+        db.conn()
+            .execute(
+                "INSERT INTO schedules (id, name, cron, prompt) VALUES ('legacy', 'Legacy', '0 0 * * * *', 'tick')",
+                [],
+            )
+            .unwrap();
+
+        let store = ScheduleStore::new(db).unwrap();
+        assert!(store.list().unwrap()[0].model.is_empty());
     }
 
     #[test]
@@ -524,10 +577,11 @@ mod tests {
     fn schedule_execution_context_round_trips() {
         let store = store();
         let schedule = store
-            .create_with_context(
+            .create_with_model_context(
                 "daily",
                 "0 0 9 * * *",
                 Some("agent-1".to_string()),
+                "provider/model",
                 "check",
                 Vec::new(),
                 false,
@@ -536,6 +590,7 @@ mod tests {
             .unwrap();
         let loaded = store.list().unwrap().remove(0);
         assert_eq!(loaded.workspace.as_deref(), Some("C:\\repo"));
+        assert_eq!(loaded.model, "provider/model");
         assert_eq!(loaded.created_unix, schedule.created_unix);
         assert!(!loaded.enabled);
     }

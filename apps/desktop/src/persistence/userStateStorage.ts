@@ -18,7 +18,6 @@ const SYNCED_SETTINGS_KEY = "milim.settings";
 const SESSIONS_KEY = "milim.sessions";
 const THEME_ID_KEY = "milim.themeId";
 const MOBILE_URL_BASE_KEY = "milim.mobile.urlBase";
-const SECRET_SETTINGS_FIELDS = ["openAiApiKey", "ttsOpenAiApiKey"] as const;
 const DEFERRED_WRITE_DELAY_MS = 150;
 const DEFERRED_WRITE_MAX_LATENCY_MS = 3_000;
 const FLUSH_USER_STATE_EVENT = "milim://flush-user-state";
@@ -98,17 +97,9 @@ function sanitizeSyncedSettings(value: string): string {
     const parsed = JSON.parse(value);
     const root = asRecord(parsed);
     const state = asRecord(root?.state);
-    const voice = asRecord(state?.voice);
-    if (!voice) return value;
-
-    let changed = false;
-    for (const field of SECRET_SETTINGS_FIELDS) {
-      if (voice[field] !== undefined && voice[field] !== "") {
-        voice[field] = "";
-        changed = true;
-      }
-    }
-    return changed ? JSON.stringify(parsed) : value;
+    if (!state || !("voice" in state)) return value;
+    delete state.voice;
+    return JSON.stringify(parsed);
   } catch {
     return value;
   }

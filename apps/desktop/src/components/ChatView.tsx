@@ -11,7 +11,7 @@ import {
   type KeyboardEvent,
   type MouseEvent,
   type MutableRefObject,
-  type PointerEvent,
+  type PointerEvent as ReactPointerEvent,
   type ReactNode,
   type SetStateAction,
 } from "react";
@@ -54,13 +54,11 @@ import {
   restartPreviewApp,
   runWorkspaceGitAction,
   saveArtifactFile,
-  saveRunJournalEntry,
   searchGraphMemory,
   selectSkills,
   setComputerUse,
   setPrivacyMode,
   setWorkspace,
-  speakText,
   startPreviewApp,
   stopChildThread,
   stopPreviewApp,
@@ -100,11 +98,9 @@ import {
   type PreviewAppStatus,
   type PreviewAppStartOptions,
   type PreviewSurfaceTarget,
-  type PrivacyMode,
   type ProviderInfo,
   type ReasoningEffort,
   type RunStep,
-  type RunJournalEntry,
   type RunTrace,
   type SavedArtifactFile,
   type ScheduleRunEvent,
@@ -285,11 +281,11 @@ import { flushDeferredUserStateWrites } from "../persistence/userStateStorage";
 import { useSettings, type MediaSettings } from "../settings/store";
 import { themeCssVariables } from "../theme/applyTheme";
 import { useTheme } from "../theme/store";
-import { featureVisibleInMode, type FeatureId } from "../ui/features";
 import { shortcutLabel, shortcutMatchesEvent } from "../ui/shortcuts";
 import { DEFAULT_PREVIEW_PANEL_WIDTH, useUiPreferences } from "../ui/store";
 import { Composer } from "./Composer";
 import { ControlBar } from "./ControlBar";
+import type { ModelPickerSelection } from "./ModelPicker";
 import { GoalPanel, type GoalPanelDraft } from "./GoalPanel";
 import {
   ArrowRight,
@@ -301,11 +297,11 @@ import {
   GitBranch,
   Globe,
   Image,
+  MoreHorizontal,
   Pencil,
   Refresh,
   Sidebar as PanelIcon,
   Trash,
-  Volume2,
   X,
 } from "./icons";
 import { groupSessionsByProjects } from "./Sidebar";
@@ -332,14 +328,10 @@ const McpManager = lazy(() =>
 const MemoryManager = lazy(() =>
   import("./MemoryManager").then((mod) => ({ default: mod.MemoryManager })),
 );
-const RunJournalManager = lazy(() =>
-  import("./RunJournalManager").then((mod) => ({ default: mod.RunJournalManager })),
-);
 const Markdown = lazy(() =>
   import("./Markdown").then((mod) => ({ default: mod.Markdown })),
 );
 
-const TOOL_APPROVAL_ORDER: ToolApprovalMode[] = ["review", "guarded", "open"];
 
 const inTauri =
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -518,6 +510,7 @@ type HotSwapPreflightRequest = {
   messageIndex?: number;
   target: ModelInfo;
   assessment: HotSwapAssessment;
+  selection: ModelPickerSelection;
 };
 const APP_SESSION_ID = (() => {
   try {
@@ -537,61 +530,6 @@ function attachmentId(): string {
       "att-" + Math.random().toString(36).slice(2) + Date.now().toString(36)
     );
   }
-}
-
-const RUN_JOURNAL_EXCERPT_LIMIT = 4000;
-
-function runJournalExcerpt(text: string, limit = RUN_JOURNAL_EXCERPT_LIMIT): string {
-  const trimmed = text.trim();
-  if (trimmed.length <= limit) return trimmed;
-  return `${trimmed.slice(0, limit)}\n[truncated]`;
-}
-
-function runJournalTitle(text: string): string {
-  return runJournalExcerpt(text, 160).split(/\r?\n/)[0]?.trim() || "Untitled run";
-}
-
-function lastUserMessage(messages: ChatMessage[]): ChatMessage | null {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].role === "user") return messages[i];
-  }
-  return null;
-}
-
-function parseRunStepArgs(step: RunStep): Record<string, unknown> | null {
-  if (!step.arguments) return null;
-  try {
-    const parsed = JSON.parse(step.arguments);
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
-  } catch {
-    return null;
-  }
-}
-
-function journalFilesFromRun(run: RunTrace | null): string[] {
-  const files = new Set<string>();
-  for (const step of run?.steps ?? []) {
-    if (!["write_file", "edit_file", "patch_file"].includes(step.name)) continue;
-    const args = parseRunStepArgs(step);
-    const path = args?.path ?? args?.file_path;
-    if (typeof path === "string" && path.trim()) files.add(path.trim());
-  }
-  return [...files];
-}
-
-function journalToolsFromMessage(message: ChatMessage | undefined, run: RunTrace | null): string[] {
-  const tools = new Set<string>();
-  for (const step of run?.steps ?? []) tools.add(step.name);
-  for (const part of message?.streamParts ?? []) {
-    if (part.kind === "event" && part.eventType === "tool" && part.name) tools.add(part.name);
-  }
-  return [...tools];
-}
-
-function journalArtifactsFromMessage(message: ChatMessage | undefined): string[] {
-  return (message?.artifacts ?? [])
-    .map((artifact) => artifact.saved?.path || artifact.filename || artifact.title || artifact.id)
-    .filter((value): value is string => Boolean(value));
 }
 
 async function browserFileAttachment(file: File): Promise<ChatAttachment> {
@@ -861,7 +799,6 @@ type MessageRowActions = {
     artifactIndex: number,
   ) => ArtifactRevisionChoice | undefined;
   executePlan: (messageIndex: number, message: ChatMessage) => void;
-  speakMessage: (messageIndex: number, text: string) => Promise<void>;
   restoreWorkspaceCheckpoint: (
     checkpoint: WorkspaceCheckpoint,
   ) => Promise<void>;
@@ -913,7 +850,6 @@ type MessageRowProps = {
   busy: boolean;
   activeMediaTargetPresent: boolean;
   folderIsEmpty: boolean;
-  ttsReady: boolean;
   activeRun?: RunTrace | null;
   previewArtifacts?: ChatArtifact[];
   previewAppBusy: "start" | "stop" | "restart" | null;
@@ -932,7 +868,6 @@ function MessageRowView({
   busy,
   activeMediaTargetPresent,
   folderIsEmpty,
-  ttsReady,
   activeRun,
   previewArtifacts,
   previewAppBusy,
@@ -1008,19 +943,6 @@ function MessageRowView({
                 label: "Execute plan",
                 icon: <ArrowRight size={13} />,
                 action: () => actions.executePlan(i, m),
-              },
-            ]
-          : []),
-        ...(m.role === "assistant" &&
-        !messageIsCompaction &&
-        m.content &&
-        ttsReady
-          ? [
-              {
-                id: "speak",
-                label: "Speak",
-                icon: <Volume2 size={13} />,
-                action: () => void actions.speakMessage(i, m.content),
               },
             ]
           : []),
@@ -1283,19 +1205,6 @@ function MessageRowView({
             <span>Execute plan</span>
           </button>
         )}
-        {m.role === "assistant" &&
-          !messageIsCompaction &&
-          m.content &&
-          ttsReady && (
-            <button
-              className="msg-act"
-              title="Speak"
-              aria-label="Speak"
-              onClick={() => void actions?.speakMessage(i, m.content)}
-            >
-              <Volume2 size={13} />
-            </button>
-          )}
         {m.workspaceCheckpoint && !busy && (
           <button
             className="msg-act"
@@ -1399,7 +1308,6 @@ const MessageRow = memo(
     prev.busy === next.busy &&
     prev.activeMediaTargetPresent === next.activeMediaTargetPresent &&
     prev.folderIsEmpty === next.folderIsEmpty &&
-    prev.ttsReady === next.ttsReady &&
     prev.activeRun === next.activeRun &&
     prev.previewArtifacts === next.previewArtifacts &&
     prev.previewAppBusy === next.previewAppBusy &&
@@ -2154,51 +2062,198 @@ function queuedAttachmentLabel(count: number): string {
   return count === 1 ? "1 attachment" : `${count} attachments`;
 }
 
+type QueuedDropTarget = {
+  id: string;
+  position: "before" | "after";
+};
+
+type QueuedPointerDrag = {
+  id: string;
+  pointerId: number;
+  startX: number;
+  startY: number;
+  active: boolean;
+};
+
+const QUEUED_DRAG_THRESHOLD = 4;
+
 function QueuedMessageTray({
   items,
   busy,
-  onRun,
+  canActivate,
+  interruptingMessageId,
+  openContextMenu,
+  onActivate,
   onEdit,
+  onMove,
   onRemove,
 }: {
   items: QueuedMessage[];
   busy: boolean;
-  onRun: () => void;
+  canActivate: boolean;
+  interruptingMessageId?: string;
+  openContextMenu: (
+    event: MouseEvent,
+    items: ContextMenuItem[],
+    label?: string,
+  ) => boolean;
+  onActivate: (item: QueuedMessage) => void;
   onEdit: (item: QueuedMessage) => void;
+  onMove: (
+    messageId: string,
+    targetId: string,
+    position: "before" | "after",
+  ) => void;
   onRemove: (id: string) => void;
 }) {
+  const pointerDragRef = useRef<QueuedPointerDrag | null>(null);
+  const dropTargetRef = useRef<QueuedDropTarget | null>(null);
+  const [draggingId, setDraggingId] = useState<string | null>(null);
+  const [dropTarget, setDropTarget] = useState<QueuedDropTarget | null>(null);
+  const [reorderStatus, setReorderStatus] = useState("");
+
   if (items.length === 0) return null;
+
+  function setQueuedDropTarget(target: QueuedDropTarget | null) {
+    dropTargetRef.current = target;
+    setDropTarget(target);
+  }
+
+  function clearQueuedDrag() {
+    pointerDragRef.current = null;
+    setDraggingId(null);
+    setQueuedDropTarget(null);
+  }
+
+  function dropTargetAt(clientX: number, clientY: number, sourceId: string) {
+    const element = document.elementFromPoint(clientX, clientY);
+    const row =
+      element instanceof Element
+        ? element.closest<HTMLElement>("[data-queued-message-id]")
+        : null;
+    const id = row?.dataset.queuedMessageId;
+    if (!row || !id || id === sourceId) return null;
+    const rect = row.getBoundingClientRect();
+    return {
+      id,
+      position: clientY > rect.top + rect.height / 2 ? "after" : "before",
+    } as QueuedDropTarget;
+  }
+
+  function startQueuedDrag(
+    event: ReactPointerEvent<HTMLButtonElement>,
+    id: string,
+  ) {
+    if (
+      event.button !== 0 ||
+      items.length < 2 ||
+      Boolean(interruptingMessageId)
+    )
+      return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    pointerDragRef.current = {
+      id,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      active: false,
+    };
+  }
+
+  function moveQueuedDrag(event: ReactPointerEvent<HTMLButtonElement>) {
+    const drag = pointerDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const moved = Math.hypot(
+      event.clientX - drag.startX,
+      event.clientY - drag.startY,
+    );
+    if (!drag.active && moved < QUEUED_DRAG_THRESHOLD) return;
+    if (!drag.active) {
+      drag.active = true;
+      setDraggingId(drag.id);
+    }
+    event.preventDefault();
+    setQueuedDropTarget(dropTargetAt(event.clientX, event.clientY, drag.id));
+  }
+
+  function endQueuedDrag(event: ReactPointerEvent<HTMLButtonElement>) {
+    const drag = pointerDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    if (drag.active) {
+      event.preventDefault();
+      const target =
+        dropTargetAt(event.clientX, event.clientY, drag.id) ??
+        dropTargetRef.current;
+      if (target) {
+        onMove(drag.id, target.id, target.position);
+        const nextItems = items.filter((item) => item.id !== drag.id);
+        const targetIndex = nextItems.findIndex(
+          (item) => item.id === target.id,
+        );
+        const nextIndex =
+          targetIndex + (target.position === "after" ? 1 : 0) + 1;
+        setReorderStatus(
+          `Queued message moved to position ${nextIndex} of ${items.length}.`,
+        );
+      }
+    }
+    if (event.currentTarget.hasPointerCapture(event.pointerId))
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    clearQueuedDrag();
+  }
+
+  function moveQueuedWithKeyboard(
+    event: KeyboardEvent<HTMLButtonElement>,
+    item: QueuedMessage,
+    index: number,
+  ) {
+    if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+    event.preventDefault();
+    const targetIndex = index + (event.key === "ArrowUp" ? -1 : 1);
+    const target = items[targetIndex];
+    if (!target) return;
+    onMove(
+      item.id,
+      target.id,
+      event.key === "ArrowUp" ? "before" : "after",
+    );
+    setReorderStatus(
+      `Queued message moved to position ${targetIndex + 1} of ${items.length}.`,
+    );
+  }
+
   return (
     <div className="queued-tray" data-testid="queued-message-tray">
-      <div className="queued-tray-head">
-        <span>
-          {items.length === 1
-            ? "1 queued message"
-            : `${items.length} queued messages`}
-        </span>
-        {!busy && (
-          <button
-            className="queued-run"
-            type="button"
-            onClick={onRun}
-            data-testid="queued-run"
-          >
-            <ArrowRight size={13} />
-            <span>{items.length === 1 ? "Run next" : "Run queue"}</span>
-          </button>
-        )}
-      </div>
       <div className="queued-list">
         {items.map((item, index) => {
           const text = item.content.trim();
           const attachmentCount = item.attachments?.length ?? 0;
+          const rowDrop = dropTarget?.id === item.id ? dropTarget : null;
+          const interrupting = interruptingMessageId === item.id;
           return (
             <div
-              className="queued-item"
+              className={`queued-item${draggingId === item.id ? " dragging" : ""}${rowDrop ? ` drag-over drop-${rowDrop.position}` : ""}`}
               data-testid="queued-message"
+              data-queued-message-id={item.id}
               key={item.id}
             >
-              <span className="queued-index">{index + 1}</span>
+              <button
+                className="queued-drag-handle"
+                type="button"
+                aria-label={`Reorder queued message ${index + 1} of ${items.length}`}
+                disabled={items.length < 2 || Boolean(interruptingMessageId)}
+                onPointerDown={(event) => startQueuedDrag(event, item.id)}
+                onPointerMove={moveQueuedDrag}
+                onPointerUp={endQueuedDrag}
+                onPointerCancel={(event) => {
+                  if (event.currentTarget.hasPointerCapture(event.pointerId))
+                    event.currentTarget.releasePointerCapture(event.pointerId);
+                  clearQueuedDrag();
+                }}
+                onKeyDown={(event) =>
+                  moveQueuedWithKeyboard(event, item, index)
+                }
+              />
               <span
                 className="queued-copy"
                 title={text || queuedAttachmentLabel(attachmentCount)}
@@ -2211,27 +2266,63 @@ function QueuedMessageTray({
                 </span>
               )}
               <button
-                className="queued-action"
+                className="queued-activate"
                 type="button"
-                title="Edit queued message"
-                aria-label="Edit queued message"
-                onClick={() => onEdit(item)}
+                title={
+                  canActivate
+                    ? busy
+                      ? "Interrupt the current response and run this message"
+                      : "Run this queued message next"
+                    : "Choose a chat model to run queued messages"
+                }
+                disabled={!canActivate || Boolean(interruptingMessageId)}
+                onClick={() => onActivate(item)}
               >
-                <Pencil size={12} />
+                <ArrowRight size={12} />
+                <span>
+                  {interrupting ? "Interrupting..." : busy ? "Interrupt" : "Run"}
+                </span>
               </button>
               <button
                 className="queued-action"
                 type="button"
                 title="Remove queued message"
                 aria-label="Remove queued message"
+                disabled={Boolean(interruptingMessageId)}
                 onClick={() => onRemove(item.id)}
               >
-                <X size={12} />
+                <Trash size={12} />
+              </button>
+              <button
+                className="queued-action"
+                type="button"
+                title="More queued message actions"
+                aria-label="More queued message actions"
+                disabled={Boolean(interruptingMessageId)}
+                onClick={(event) =>
+                  openContextMenu(
+                    event,
+                    [
+                      {
+                        id: "edit",
+                        label: "Edit queued message",
+                        icon: <Pencil size={13} />,
+                        action: () => onEdit(item),
+                      },
+                    ],
+                    "Queued message actions",
+                  )
+                }
+              >
+                <MoreHorizontal size={13} />
               </button>
             </div>
           );
         })}
       </div>
+      <span className="queued-reorder-status" role="status" aria-live="polite">
+        {reorderStatus}
+      </span>
     </div>
   );
 }
@@ -2808,7 +2899,6 @@ export function ChatView({
   composerDraft,
   gitPanelRequest = 0,
   mcpManagerRequest = 0,
-  runJournalRequest = 0,
   onComposerDraftConsumed,
   skillsRevision = 0,
 }: {
@@ -2817,7 +2907,6 @@ export function ChatView({
   composerDraft?: { id: number; text: string } | null;
   gitPanelRequest?: number;
   mcpManagerRequest?: number;
-  runJournalRequest?: number;
   onComposerDraftConsumed?: (id: number) => void;
   skillsRevision?: number;
 }) {
@@ -2831,7 +2920,6 @@ export function ChatView({
   const [providersOpen, setProvidersOpen] = useState(false);
   const [mcpOpen, setMcpOpen] = useState(false);
   const [memoryOpen, setMemoryOpen] = useState(false);
-  const [runJournalOpen, setRunJournalOpen] = useState(false);
   const [skills, setSkills] = useState<SkillInfo[]>([]);
   const [composerTools, setComposerTools] = useState<ToolInfo[]>([]);
   const [editing, setEditing] = useState<number | null>(null);
@@ -2846,7 +2934,6 @@ export function ChatView({
   >({});
   const [mediaSchemaLoading, setMediaSchemaLoading] = useState(false);
   const [mediaError, setMediaError] = useState<string | null>(null);
-  const [speakingIndex, setSpeakingIndex] = useState<number | null>(null);
   const [pendingAttachments, setPendingAttachments] = useState<
     ChatAttachment[]
   >([]);
@@ -2883,6 +2970,9 @@ export function ChatView({
   const [batonRequest, setBatonRequest] = useState<BatonRequest | null>(null);
   const [hotSwapPreflight, setHotSwapPreflight] =
     useState<HotSwapPreflightRequest | null>(null);
+  const [queueInterrupts, setQueueInterrupts] = useState<
+    Record<string, string>
+  >({});
   const [sessionsHydrated, setSessionsHydrated] = useState(() =>
     useSessions.persist.hasHydrated(),
   );
@@ -2923,6 +3013,16 @@ export function ChatView({
   const projects = useSessions((s) => s.projects);
   const sidebarState = useSessions((s) => s.sidebar);
   const generatingSessionIds = useSessions((s) => s.generatingSessionIds);
+  const liveWorkerSessionIdsKey = useSessions((s) =>
+    s.sessions
+      .filter(
+        (session) =>
+          session.worker?.status === "queued" ||
+          session.worker?.status === "running",
+      )
+      .map((session) => session.id)
+      .join("\0"),
+  );
   const queuedMessages = useSessions(
     (s) => s.queuedMessagesBySession[s.activeId] ?? EMPTY_QUEUE,
   );
@@ -2953,6 +3053,7 @@ export function ChatView({
   const updateThreadSettings = useSessions((s) => s.updateSettings);
   const switchToSession = useSessions((s) => s.switchTo);
   const enqueueQueuedMessage = useSessions((s) => s.enqueueQueuedMessage);
+  const moveQueuedMessage = useSessions((s) => s.moveQueuedMessage);
   const removeQueuedMessage = useSessions((s) => s.removeQueuedMessage);
   const rawThreadSettings = useSessions(
     (s) => s.sessions.find((x) => x.id === s.activeId)?.settings,
@@ -2968,7 +3069,6 @@ export function ChatView({
     [rawThreadSettings],
   );
   const agents = useAgents((s) => s.agents);
-  const voice = useSettings((s) => s.voice);
   const mediaSettings = useSettings((s) => s.media);
   const setMediaSettings = useSettings((s) => s.setMediaSettings);
   const previewPanelWidth = useUiPreferences((s) => s.previewPanelWidth);
@@ -2976,7 +3076,6 @@ export function ChatView({
   const appShortcuts = useUiPreferences((s) => s.appShortcuts);
   const toggleSidebar = useUiPreferences((s) => s.toggleSidebar);
   const autoTitleChats = useUiPreferences((s) => s.autoTitleChats);
-  const interfaceMode = useUiPreferences((s) => s.interfaceMode);
   const experimentalHashlinePatch = useUiPreferences(
     (s) => s.experimentalHashlinePatch,
   );
@@ -2984,12 +3083,6 @@ export function ChatView({
   const backgroundFit = useUiPreferences((s) => s.backgroundFit);
   const backgroundTreatment = useUiPreferences((s) => s.backgroundTreatment);
   const pushNotice = useUiPreferences((s) => s.pushNotice);
-  const showMcp = featureVisibleInMode("mcp", interfaceMode);
-  const showMemoryManager = featureVisibleInMode(
-    "memoryManager",
-    interfaceMode,
-  );
-  const showMedia = featureVisibleInMode("media", interfaceMode);
   const {
     model,
     instructions,
@@ -3052,7 +3145,7 @@ export function ChatView({
     () => summarizeMilimUsage(sessionSummaries, projects),
     [projects, sessionSummaries],
   );
-  const effectiveModel = activeWorker?.model || activeAgent?.model || model;
+  const effectiveModel = activeWorker?.model || model;
   const quickSummary = useMemo(
     () =>
       buildQuickSummary({
@@ -3065,7 +3158,6 @@ export function ChatView({
         gitStatus,
         messages,
         pendingAttachments,
-        composerText: input,
         previewUrl: activePreviewRuntime?.url ?? null,
       }),
     [
@@ -3074,7 +3166,6 @@ export function ChatView({
       folder,
       gitStatus,
       goal,
-      input,
       memory,
       messages,
       pendingAttachments,
@@ -3087,15 +3178,8 @@ export function ChatView({
     [providers],
   );
   const mediaModelEntries = useMemo(
-    () =>
-      showMedia
-        ? mediaModelsForPicker(
-            enabledMediaProviders,
-            mediaSettings,
-            mediaCatalog,
-          )
-        : [],
-    [enabledMediaProviders, mediaSettings, mediaCatalog, showMedia],
+    () => mediaModelsForPicker(enabledMediaProviders, mediaSettings, mediaCatalog),
+    [enabledMediaProviders, mediaSettings, mediaCatalog],
   );
 
   function persistPreviewRuntimeStatus(status: PreviewAppStatus) {
@@ -3202,21 +3286,17 @@ export function ChatView({
     [models, mediaModelEntries],
   );
   const activeMediaTarget = useMemo(
-    () =>
-      showMedia
-        ? resolveActiveMediaTarget(
-            effectiveModel,
-            enabledMediaProviders,
-            mediaSettings,
-            mediaCatalog,
-          )
-        : null,
+    () => resolveActiveMediaTarget(
+      effectiveModel,
+      enabledMediaProviders,
+      mediaSettings,
+      mediaCatalog,
+    ),
     [
       effectiveModel,
       enabledMediaProviders,
       mediaSettings,
       mediaCatalog,
-      showMedia,
     ],
   );
   const activeWorkerRunning =
@@ -3234,9 +3314,6 @@ export function ChatView({
   );
   const childThreadLiveIdsRef = useRef<Map<string, Set<string>>>(new Map());
   const childThreadEventsRef = useRef<Map<string, ThreadEvent[]>>(new Map());
-  const speechRef = useRef<{ audio: HTMLAudioElement; url: string } | null>(
-    null,
-  );
   const previewResizeStartRef = useRef<{
     clientX: number;
     width: number;
@@ -3506,7 +3583,7 @@ export function ChatView({
   }, []);
 
   useEffect(() => {
-    if (!showMedia || enabledMediaProviders.length === 0) {
+    if (enabledMediaProviders.length === 0) {
       setMediaCatalog({});
       return;
     }
@@ -3542,7 +3619,6 @@ export function ChatView({
     };
   }, [
     enabledMediaProviders.map((provider) => provider.id).join("\u0000"),
-    showMedia,
   ]);
 
   useEffect(() => {
@@ -3643,11 +3719,6 @@ export function ChatView({
   }, [mcpManagerRequest]);
 
   useEffect(() => {
-    if (!runJournalRequest) return;
-    setRunJournalOpen(true);
-  }, [runJournalRequest]);
-
-  useEffect(() => {
     return () => {
       if (previewCloseTimeoutRef.current != null) {
         window.clearTimeout(previewCloseTimeoutRef.current);
@@ -3657,7 +3728,6 @@ export function ChatView({
         window.clearTimeout(stopShortcutConfirmTimerRef.current);
         stopShortcutConfirmTimerRef.current = null;
       }
-      stopSpeech(false);
       const store = useSessions.getState();
       generationControllersRef.current.forEach((controller, id) => {
         controller.abort();
@@ -3737,19 +3807,6 @@ export function ChatView({
     void setPrivacyMode(privacy);
   }, [privacy]);
 
-  const cyclePrivacy = () => {
-    const next: PrivacyMode =
-      privacy === "off" ? "redact" : privacy === "redact" ? "block" : "off";
-    updateThreadSettings(activeId, { privacy: next });
-  };
-
-  const cycleToolApproval = () => {
-    const idx = TOOL_APPROVAL_ORDER.indexOf(toolApproval);
-    updateThreadSettings(activeId, {
-      toolApproval: TOOL_APPROVAL_ORDER[(idx + 1) % TOOL_APPROVAL_ORDER.length],
-    });
-  };
-
   function setPlanModeActive(active: boolean): boolean {
     updateThreadSettings(activeId, { planMode: active });
     setChatNotice(
@@ -3778,12 +3835,6 @@ export function ChatView({
     () => modelContextBudget(effectiveModel.trim(), pickerModels),
     [effectiveModel, pickerModels],
   );
-
-  const ttsReady =
-    voice.ttsEnabled &&
-    (voice.ttsProvider === "piper"
-      ? Boolean(voice.piperCommand.trim() && voice.piperModelPath.trim())
-      : Boolean(voice.ttsCommand.trim()));
 
   function artifactRevisionChoice(messageIndex: number, artifactIndex: number) {
     return artifactRevisionsByOccurrence.get(
@@ -4019,15 +4070,6 @@ export function ChatView({
 
   function prefillEmptyStarter(prompt: string) {
     setInput(prompt);
-    focusComposerInput();
-  }
-
-  function attachRunJournalContext(text: string) {
-    setInput((current) =>
-      current.trimEnd() ? `${current.trimEnd()}\n\n${text}` : text,
-    );
-    setRunJournalOpen(false);
-    setChatNotice({ tone: "info", message: "Run context attached to composer." });
     focusComposerInput();
   }
 
@@ -4347,16 +4389,16 @@ export function ChatView({
       activePreviewSurface?.status === "ready" &&
       activePreviewSurface.capabilities.includes("dom_snapshot"),
   );
-  const modelToolIntent = Boolean(
+  const contextualModelToolIntent = Boolean(
     !planMode &&
       (folder.trim() ||
         sandbox ||
         computerUse ||
-        activeAgentId != null ||
         previewToolsIntent ||
         looksLikeScheduleRequest(input) ||
         (memory && looksLikeMemoryWriteRequest(input))),
   );
+  const modelToolIntent = contextualModelToolIntent || Boolean(!planMode && activeAgentId != null);
 
   function hotSwapAssessment(target: ModelInfo): HotSwapAssessment {
     return assessHotSwap({
@@ -4365,9 +4407,7 @@ export function ChatView({
       models: pickerModels,
       providers,
       session: activeSession ?? { messages, accountRuntime: undefined },
-      toolRequired:
-        modelToolIntent ||
-        Boolean(folder.trim() || sandbox || computerUse || activeAgentId),
+      toolRequired: contextualModelToolIntent || Boolean(activeAgentId && activeAgent?.tool_mode !== "none"),
     });
   }
 
@@ -4439,6 +4479,7 @@ export function ChatView({
     action: HotSwapAction,
     messageIndex?: number,
     nativeSessionMode?: NativeSessionMode,
+    _selection: ModelPickerSelection = { model: target.id },
   ) {
     const fromModel = model;
     const kind = target.id.startsWith("codex:")
@@ -4464,7 +4505,6 @@ export function ChatView({
       void prepareRetryWithModel(target.id, messageIndex);
       return;
     }
-
     updateThreadSettings(activeId, { model: target.id });
     if (action === "continue" || action === "review") {
       useSessions.getState().setPendingHotSwap(activeId, {
@@ -4483,27 +4523,27 @@ export function ChatView({
   }
 
   function requestHotSwap(
-    targetId: string,
+    selection: ModelPickerSelection,
     action: HotSwapAction = "switch",
     messageIndex?: number,
   ) {
-    if (busy || compactionInFlightRef.current || activeWorker || activeAgent?.model) {
+    if (busy || compactionInFlightRef.current || activeWorker) {
       setChatNotice({ tone: "warning", message: "Wait for the current model-controlled work to finish before switching." });
       return;
     }
-    const target = pickerModels.find((item) => item.id === targetId);
+    const target = pickerModels.find((item) => item.id === selection.model);
     if (!target) return;
     if (target.capabilities?.imageOutput || target.capabilities?.videoOutput) {
-      if (action === "switch") updateThreadSettings(activeId, { model: target.id });
+      if (action === "switch") commitHotSwap(target, action, messageIndex, undefined, selection);
       return;
     }
     const assessment = hotSwapAssessment(target);
     if (assessment.requiresConfirmation) {
       setBatonRequest(null);
-      setHotSwapPreflight({ action, messageIndex, target, assessment });
+      setHotSwapPreflight({ action, messageIndex, target, assessment, selection });
       return;
     }
-    commitHotSwap(target, action, messageIndex);
+    commitHotSwap(target, action, messageIndex, undefined, selection);
   }
 
   async function applyRetryWorkspace() {
@@ -4573,7 +4613,7 @@ export function ChatView({
     setPreviewPanelWidth(clampPreviewPanelWidth(width, chatBodyWidth));
   }
 
-  function startPreviewResize(event: PointerEvent<HTMLDivElement>) {
+  function startPreviewResize(event: ReactPointerEvent<HTMLDivElement>) {
     if (event.button !== 0) return;
     event.preventDefault();
     previewResizeStartRef.current = {
@@ -4584,13 +4624,13 @@ export function ChatView({
     event.currentTarget.setPointerCapture(event.pointerId);
   }
 
-  function movePreviewResize(event: PointerEvent<HTMLDivElement>) {
+  function movePreviewResize(event: ReactPointerEvent<HTMLDivElement>) {
     const start = previewResizeStartRef.current;
     if (!start) return;
     resizePreviewPanel(start.width + start.clientX - event.clientX);
   }
 
-  function endPreviewResize(event: PointerEvent<HTMLDivElement>) {
+  function endPreviewResize(event: ReactPointerEvent<HTMLDivElement>) {
     if (!previewResizeStartRef.current) return;
     previewResizeStartRef.current = null;
     setPreviewResizing(false);
@@ -5018,6 +5058,26 @@ export function ChatView({
         runTurn(convo, selectedModel, {}, targetSessionId),
     });
   }
+
+  useEffect(() => {
+    const interruptedSessionIds = Object.keys(queueInterrupts);
+    if (interruptedSessionIds.length === 0) return;
+    const generating = new Set(generatingSessionIds);
+    const liveWorkers = new Set(
+      liveWorkerSessionIdsKey ? liveWorkerSessionIdsKey.split("\0") : [],
+    );
+    const ready = interruptedSessionIds.filter(
+      (sessionId) =>
+        !generating.has(sessionId) && !liveWorkers.has(sessionId),
+    );
+    if (ready.length === 0) return;
+    setQueueInterrupts((current) => {
+      const next = { ...current };
+      for (const sessionId of ready) delete next[sessionId];
+      return next;
+    });
+    for (const sessionId of ready) void drainQueuedMessages(sessionId);
+  }, [generatingSessionIds, liveWorkerSessionIdsKey, queueInterrupts]);
 
   async function runTurnAndDrain(
     convo: ChatMessage[],
@@ -5504,39 +5564,6 @@ export function ChatView({
     startApprovedGoalRun(sessionId, selectedModel);
   }
 
-  function stopSpeech(clearState = true) {
-    if (!speechRef.current) return;
-    speechRef.current.audio.pause();
-    URL.revokeObjectURL(speechRef.current.url);
-    speechRef.current = null;
-    if (clearState) setSpeakingIndex(null);
-  }
-
-  async function speakMessage(index: number, text: string) {
-    if (!ttsReady || !text.trim()) return;
-    if (speakingIndex === index) {
-      stopSpeech();
-      return;
-    }
-    stopSpeech();
-    setSpeakingIndex(index);
-    try {
-      const blob = await speakText(text, voice);
-      const url = URL.createObjectURL(blob);
-      const audio = new Audio(url);
-      speechRef.current = { audio, url };
-      audio.onended = () => stopSpeech();
-      audio.onerror = () => stopSpeech();
-      await audio.play();
-    } catch (e) {
-      stopSpeech();
-      setChatNotice({
-        tone: "error",
-        message: `Text-to-speech failed: ${e instanceof Error ? e.message : String(e)}`,
-      });
-    }
-  }
-
   async function handleSaveArtifact(
     messageIndex: number,
     artifact: ChatArtifact,
@@ -5742,23 +5769,6 @@ export function ChatView({
     }
   }
 
-  function slashCommandFeature(id: string): FeatureId | null {
-    switch (id) {
-      case "folder":
-        return "workspace";
-      case "sandbox":
-      case "nosandbox":
-        return "sandbox";
-      case "computer":
-      case "nocomputer":
-        return "computerUse";
-      case "agent":
-        return "agents";
-      default:
-        return null;
-    }
-  }
-
   function exportSessionById(
     sessionId = activeId,
     format: ThreadExportFormat = "json",
@@ -5925,14 +5935,6 @@ export function ChatView({
   }
 
   function runSlashCommand(id: string, argument: string): boolean {
-    const feature = slashCommandFeature(id);
-    if (feature && !featureVisibleInMode(feature, interfaceMode)) {
-      setChatNotice({
-        tone: "info",
-        message: "Switch to Workbench mode to use that command.",
-      });
-      return true;
-    }
     const arg = argument.trim();
     switch (id) {
       case "plan": {
@@ -6032,7 +6034,7 @@ export function ChatView({
         if (arg === "off" || arg === "redact" || arg === "block") {
           updateThreadSettings(activeId, { privacy: arg });
         } else {
-          updateThreadSettings(activeId, { privacy: "redact" });
+          setChatNotice({ tone: "info", message: "Use /privacy off, /privacy redact, or /privacy block." });
         }
         return true;
       }
@@ -6040,7 +6042,7 @@ export function ChatView({
         if (arg === "review" || arg === "guarded" || arg === "open") {
           updateThreadSettings(activeId, { toolApproval: arg });
         } else {
-          cycleToolApproval();
+          setChatNotice({ tone: "info", message: "Use /approval review, /approval guarded, or /approval open." });
         }
         return true;
       }
@@ -6539,39 +6541,9 @@ export function ChatView({
       };
     }
     const toolApprovalGrant = toolApprovalDecision.grant;
-    const latestUser = lastUserMessage(convo);
-    const journalKind = codexModel
-      ? "account/codex"
-      : claudeModel
-        ? "account/claude"
-        : useTools
-          ? (turnActiveAgentId ? "agent" : "tools")
-          : "chat";
-    const journalEntry: RunJournalEntry = {
-      id: `run-${turnId}`,
-      created_at_ms: startedAt,
-      updated_at_ms: startedAt,
-      status: "running",
-      kind: journalKind,
-      title: runJournalTitle(latestUser?.content || turnTitle),
-      goal: latestUser?.content || turnTitle,
-      session_id: id,
-      user_message_id: latestUser?.id ?? null,
-      assistant_message_id: assistantMessageId,
-      model: turnModel,
-      workspace: turnFolder.trim() || null,
-      input_excerpt: runJournalExcerpt(latestUser?.content || ""),
-      output_excerpt: "",
-      files: [],
-      tools: [],
-      artifacts: [],
-      tags: [],
-    };
-    const journalStart = saveRunJournalEntry(journalEntry).catch(() => null);
     const toolContext = {
       ...promptContext.toolContext,
       tool_approval_grant: toolApprovalGrant,
-      journal_id: journalEntry.id,
     };
     const createWorkspaceCheckpoint = () =>
       checkpointWorkspaceBeforeTurn({
@@ -6824,25 +6796,6 @@ export function ChatView({
         flushUserState: () => flushDeferredUserStateWrites("milim.sessions"),
         signal: controller.signal,
       });
-      const finalMessages = sessionMessages(id, assistantStart.state.activeConversation);
-      const assistantMessage = finalMessages.find((message) => message.id === assistantMessageId);
-      await journalStart;
-      void saveRunJournalEntry({
-        ...journalEntry,
-        updated_at_ms: endedAt,
-        status: resultStatus,
-        provider: finalMetrics?.provider ?? null,
-        duration_ms: finalMetrics?.durationMs ?? endedAt - startedAt,
-        prompt_tokens: finalMetrics?.usage?.prompt_tokens ?? null,
-        completion_tokens: finalMetrics?.usage?.completion_tokens ?? null,
-        total_tokens: finalMetrics?.usage?.total_tokens ?? null,
-        cost_usd: finalMetrics?.costUsd ?? null,
-        output_excerpt: runJournalExcerpt(assistantMessage?.content ?? ""),
-        error: resultError ?? null,
-        files: journalFilesFromRun(runRef.current),
-        tools: journalToolsFromMessage(assistantMessage, runRef.current),
-        artifacts: journalArtifactsFromMessage(assistantMessage),
-      });
     }
     return {
       status: resultStatus,
@@ -6972,25 +6925,28 @@ export function ChatView({
     void runTurnAndDrain(convo);
   }
 
-  function stop() {
+  async function stopSessionRun(sessionId: string) {
     const session = useSessions
       .getState()
-      .sessions.find((item) => item.id === activeId);
+      .sessions.find((item) => item.id === sessionId);
     if (
       session?.worker?.status === "queued" ||
       session?.worker?.status === "running"
     ) {
-      void stopChildThread(activeId)
-        .then((thread) => useSessions.getState().updateChildThread(thread))
-        .catch((error) =>
-          setChatNotice({
-            tone: "error",
-            message: `Worker stop failed: ${error instanceof Error ? error.message : String(error)}`,
-          }),
-        );
+      const thread = await stopChildThread(sessionId);
+      useSessions.getState().updateChildThread(thread);
       return;
     }
-    generationControllersRef.current.get(activeId)?.abort();
+    generationControllersRef.current.get(sessionId)?.abort();
+  }
+
+  function stop() {
+    void stopSessionRun(activeId).catch((error) =>
+      setChatNotice({
+        tone: "error",
+        message: `Worker stop failed: ${error instanceof Error ? error.message : String(error)}`,
+      }),
+    );
   }
 
   function focusComposer() {
@@ -7213,8 +7169,15 @@ export function ChatView({
     );
   }
 
-  function runQueuedMessages() {
-    if (busy) return;
+  function promoteQueuedMessage(messageId: string) {
+    const first =
+      useSessions.getState().queuedMessagesBySession[activeId]?.[0]?.id;
+    if (first && first !== messageId)
+      moveQueuedMessage(activeId, messageId, first, "before");
+  }
+
+  function activateQueuedMessage(item: QueuedMessage) {
+    if (queueInterrupts[activeId]) return;
     if (activeMediaTarget) {
       setChatNotice({
         tone: "error",
@@ -7224,7 +7187,28 @@ export function ChatView({
     }
     const selectedModel = requireChatModel();
     if (!selectedModel) return;
-    void drainQueuedMessages(activeId, selectedModel);
+    promoteQueuedMessage(item.id);
+    if (!busy) {
+      void drainQueuedMessages(activeId, selectedModel);
+      return;
+    }
+    const sessionId = activeId;
+    setQueueInterrupts((current) => ({
+      ...current,
+      [sessionId]: item.id,
+    }));
+    void stopSessionRun(sessionId).catch((error) => {
+      setQueueInterrupts((current) => {
+        if (current[sessionId] !== item.id) return current;
+        const next = { ...current };
+        delete next[sessionId];
+        return next;
+      });
+      setChatNotice({
+        tone: "error",
+        message: `Interrupt failed: ${error instanceof Error ? error.message : String(error)}`,
+      });
+    });
   }
 
   function editQueuedMessage(item: QueuedMessage) {
@@ -7720,7 +7704,6 @@ export function ChatView({
     openPreviewArtifact,
     artifactRevisionChoice,
     executePlan,
-    speakMessage,
     restoreWorkspaceCheckpoint,
     forkThreadAt,
     setEditing,
@@ -7820,7 +7803,6 @@ export function ChatView({
                       busy={busy}
                       activeMediaTargetPresent={Boolean(activeMediaTarget)}
                       folderIsEmpty={!folder.trim()}
-                      ttsReady={ttsReady}
                       activeRun={activeRun}
                       previewArtifacts={previewArtifactsForMessage(m)}
                       previewAppBusy={previewAppBusy}
@@ -7880,9 +7862,9 @@ export function ChatView({
                 planMode={planMode}
                 onTogglePlanMode={() => setPlanModeActive(!planMode)}
                 privacy={privacy}
-                onCyclePrivacy={cyclePrivacy}
+                onPrivacy={(next) => updateThreadSettings(activeId, { privacy: next })}
                 toolApproval={toolApproval}
-                onCycleToolApproval={cycleToolApproval}
+                onToolApproval={(next) => updateThreadSettings(activeId, { toolApproval: next })}
                 onManageProviders={() => setProvidersOpen(true)}
                 onManageMcp={() => setMcpOpen(true)}
                 onManageMemory={() => setMemoryOpen(true)}
@@ -7911,8 +7893,14 @@ export function ChatView({
               <QueuedMessageTray
                 items={queuedMessages}
                 busy={busy}
-                onRun={runQueuedMessages}
+                canActivate={!activeMediaTarget}
+                interruptingMessageId={queueInterrupts[activeId]}
+                openContextMenu={openContextMenu}
+                onActivate={activateQueuedMessage}
                 onEdit={editQueuedMessage}
+                onMove={(messageId, targetId, position) =>
+                  moveQueuedMessage(activeId, messageId, targetId, position)
+                }
                 onRemove={(id) => removeQueuedMessage(activeId, id)}
               />
               <Composer
@@ -8149,6 +8137,7 @@ export function ChatView({
               request.action,
               request.messageIndex,
               nativeMode,
+              request.selection,
             );
           }}
           onClose={() => setHotSwapPreflight(null)}
@@ -8166,7 +8155,7 @@ export function ChatView({
           />
         )}
 
-        {mcpOpen && showMcp && (
+        {mcpOpen && (
           <McpManager
             onClose={() => {
               setMcpOpen(false);
@@ -8175,19 +8164,8 @@ export function ChatView({
           />
         )}
 
-        {memoryOpen && showMemoryManager && (
+        {memoryOpen && (
           <MemoryManager onClose={() => setMemoryOpen(false)} />
-        )}
-
-        {runJournalOpen && (
-          <RunJournalManager
-            onClose={() => setRunJournalOpen(false)}
-            onAttach={attachRunJournalContext}
-            onOpenSession={(sessionId) => {
-              switchToSession(sessionId);
-              setRunJournalOpen(false);
-            }}
-          />
         )}
 
         {goalPanelOpen && (

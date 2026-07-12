@@ -3,20 +3,20 @@ id: overview
 path:
 label: Overview
 title: milim docs wiki
-summary: Start here for model-agnostic development, model/provider switching, the embedded backend, local API, providers, agents, tools, memory, privacy, voice, media, mobile companion, and release workflow.
+summary: Start here for model-agnostic development, model/provider switching, the embedded backend, local API, providers, agents, tools, memory, privacy, media, mobile companion, and release workflow.
 group: Start
 order: 10
 updated: 2026-07-09
 ---
 
-milim is a model-agnostic software development desktop app with an embedded Rust backend and local HTTP API. The desktop app is a Tauri shell that embeds the same Axum server used by the CLI, then layers dev chat, inline model switching, Simple and Workbench chat modes, providers, agents, tools, memory, voice, media, a paired mobile companion, update checks, and local persistence on top.
+milim is a model-agnostic software development desktop app with an embedded Rust backend and local HTTP API. The desktop app is a Tauri shell that embeds the same Axum server used by the CLI, then layers dev chat, inline model switching, providers, model-agnostic Agents, tools, Personal/Project memory, media, a paired mobile companion, update checks, and local persistence on top.
 
 ## Start here
 
 | Use case | Read |
 |---|---|
 | First run | Quickstart, then Models, then Desktop app. Stop when you can connect a provider, pick a folder, ask for an edit or test, switch models, and continue the same thread. |
-| Daily workbench | Desktop app, Agents, Memory, and Privacy explain the controls you touch every day. |
+| Daily app | Desktop app, Agents, Memory, and Privacy explain the controls you touch every day. |
 | API integration | API, Models, Config, and Troubleshooting cover compatibility routes and stored state. |
 | Release or support | Release, Config, and Troubleshooting cover build checks, local state, and failure triage. |
 
@@ -24,7 +24,7 @@ milim is a model-agnostic software development desktop app with an embedded Rust
 
 | Part | Boundary |
 |---|---|
-| Desktop app | Tauri 2, Vite, React, TypeScript, Simple/Workbench UI modes, persisted UI state, and per-launch bearer auth. |
+| Desktop app | Tauri 2, Vite, React, TypeScript, one unified workbench, persisted UI state, and per-launch bearer auth. |
 | Embedded server | Axum HTTP server with OpenAI, Anthropic, Ollama, provider, workspace, agent, memory, MCP, media, mobile, and privacy routes. |
 | Local data | Provider records, settings, threads, memories, schedules, and runtime state live under the Milim home directory. |
 | Remote traffic | Hosted chat, embeddings, media, Codex, and installed Claude CLI calls pass through explicit routing and the privacy gate. |

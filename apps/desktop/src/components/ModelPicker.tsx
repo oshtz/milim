@@ -10,8 +10,6 @@ import {
 } from "../lib/modelPicker";
 import { hasReasoningEffortChoices, normalizeReasoningEffortForModel, REASONING_EFFORT_LABEL, reasoningEffortDisplay, reasoningEffortOptions } from "../lib/reasoningEffort";
 import { useSettings } from "../settings/store";
-import { featureVisibleInMode } from "../ui/features";
-import { useUiPreferences } from "../ui/store";
 import { Bolt, Check, Eye, Image, PlusSquare, Search, Sparkles } from "./icons";
 
 function Star({ filled }: { filled: boolean }) {
@@ -49,6 +47,9 @@ const CAP_ICON: Record<ModelDevCapability, { node: JSX.Element; title: string }>
 } as const;
 
 type EffortMenuState = { modelId: string; left: number; top: number };
+export type ModelPickerSelection = {
+  model: string;
+};
 
 function effortMenuPosition(modelId: string, button: HTMLElement, choiceCount: number): EffortMenuState {
   const edge = 8;
@@ -80,7 +81,7 @@ export function ModelPicker({
   providers?: ProviderInfo[];
   toolIntent?: boolean;
   planMode?: boolean;
-  onModel: (id: string) => void;
+  onModel: (selection: ModelPickerSelection) => void;
   onManageProviders: () => void;
   onManageMcp: () => void;
   onManageMemory: () => void;
@@ -93,32 +94,41 @@ export function ModelPicker({
   const setFavoritesOnly = useSettings((s) => s.setFavoritesOnly);
   const reasoningEffortByModel = useSettings((s) => s.reasoningEffortByModel);
   const setModelReasoningEffort = useSettings((s) => s.setModelReasoningEffort);
-  const interfaceMode = useUiPreferences((s) => s.interfaceMode);
   const [q, setQ] = useState("");
   const [effortMenu, setEffortMenu] = useState<EffortMenuState | null>(null);
-  const showMcp = featureVisibleInMode("mcp", interfaceMode);
-  const showMemoryManager = featureVisibleInMode("memoryManager", interfaceMode);
 
   const groups = useMemo<Array<[string, ModelInfo[]]>>(() => {
     return modelPickerGroups(models, favorites, favoritesOnly, q);
   }, [models, q, favorites, favoritesOnly]);
+  const pickerView = favoritesOnly ? "favorites" : "models";
+
+  function setPickerView(view: "models" | "favorites") {
+    setFavoritesOnly(view === "favorites");
+  }
 
   return (
     <div className="mp">
       <div className="mp-search">
         <Search size={14} />
-        <input autoFocus aria-label="Search models" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search models..." />
+        <input
+          autoFocus
+          aria-label="Search models"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder={favoritesOnly ? "Search favorites..." : "Search models..."}
+        />
       </div>
       <div className="mp-list" onScroll={() => effortMenu && setEffortMenu(null)}>
-        {groups.length === 0 && (
-          <div className="mp-empty" role="status">
-            {favoritesOnly ? "No favorites yet." : "No models - add a provider."}
-          </div>
-        )}
-        {groups.map(([label, ms]) => (
-          <div key={label} className="mp-group">
-            <div className="mp-group-head">{label}</div>
-            {ms.map((m) => {
+        <>
+            {groups.length === 0 && (
+              <div className="mp-empty" role="status">
+                {favoritesOnly ? "No favorites yet." : "No models - add a provider."}
+              </div>
+            )}
+            {groups.map(([label, ms]) => (
+              <div key={label} className="mp-group">
+                <div className="mp-group-head">{label}</div>
+                {ms.map((m) => {
               const hasEffortChoices = hasReasoningEffortChoices(m);
               const effort = normalizeReasoningEffortForModel(reasoningEffortByModel[m.id] ?? "auto", m);
               const reasoningChoices = reasoningEffortOptions(m);
@@ -147,7 +157,7 @@ export function ModelPicker({
                     title={`${profile.routeDetail} ${profile.setupDetail}`}
                     aria-label={`${modelDisplayName(m)}, ${profile.providerLabel}, ${profile.laneLabel}, ${profile.setupLabel}`}
                     onClick={() => {
-                      onModel(m.id);
+                      onModel({ model: m.id });
                       onClose();
                     }}
                   >
@@ -210,29 +220,35 @@ export function ModelPicker({
                   )}
                 </div>
               );
-            })}
-          </div>
-        ))}
+                })}
+              </div>
+            ))}
+        </>
       </div>
       <div className="mp-foot">
-        <button type="button" className={"mp-foot-toggle" + (favoritesOnly ? " on" : "")} aria-pressed={favoritesOnly} onClick={() => setFavoritesOnly(!favoritesOnly)}>
-          <span className="mp-checkbox">{favoritesOnly && <Check size={10} />}</span>
-          Favorites only
-        </button>
+        <div className="mp-view-switch" role="group" aria-label="Model picker view">
+          {(["models", "favorites"] as const).map((view) => (
+            <button
+              key={view}
+              type="button"
+              className={pickerView === view ? "on" : ""}
+              aria-pressed={pickerView === view}
+              onClick={() => setPickerView(view)}
+            >
+              {view === "models" ? "Models" : "Favorites"}
+            </button>
+          ))}
+        </div>
         {showManagementActions && <div className="mp-foot-actions">
           <button type="button" className="mp-foot-btn" data-testid="manage-providers" onClick={() => { onClose(); onManageProviders(); }}>
             <PlusSquare size={13} /> Providers
           </button>
-          {showMcp && (
-            <button type="button" className="mp-foot-btn" onClick={() => { onClose(); onManageMcp(); }}>
-              <Plug size={13} /> MCP
-            </button>
-          )}
-          {showMemoryManager && (
-            <button type="button" className="mp-foot-btn" onClick={() => { onClose(); onManageMemory(); }}>
-              <Memory size={13} /> Memory
-            </button>
-          )}
+          <button type="button" className="mp-foot-btn" onClick={() => { onClose(); onManageMcp(); }}>
+            <Plug size={13} /> MCP
+          </button>
+          <button type="button" className="mp-foot-btn" onClick={() => { onClose(); onManageMemory(); }}>
+            <Memory size={13} /> Memory
+          </button>
         </div>}
       </div>
     </div>

@@ -90,6 +90,8 @@ equal(modelPicker.includes("createPortal("), true, "model picker should render t
 equal(modelPicker.includes("setModelReasoningEffort"), true, "model picker selector should persist the global per-model effort");
 equal(modelPicker.includes("hasReasoningEffortChoices(m)"), true, "model picker should hide auto-only reasoning controls");
 equal(modelPicker.includes("cap !== \"reasoning\" || !hasEffortChoices"), true, "model picker should avoid duplicate reasoning icons");
+equal(modelPicker.includes('pickerView === view'), true, "model picker should expose persisted exclusive views");
+equal(modelPicker.includes("preset"), false, "model picker should keep Favorites as the only model shortcut");
 equal(
   modelPicker.indexOf("className={\"mp-star\"") < modelPicker.indexOf("className=\"mp-pick\""),
   true,

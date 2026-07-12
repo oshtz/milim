@@ -214,8 +214,6 @@ async fn serve(port: Option<u16>, expose: bool) -> anyhow::Result<()> {
             milim_server::companion::MobileCompanionBridge::default(),
         ));
     state = configure_auth(state, paths.root(), &auth_config)?;
-    state = attach_whisper_transcriber(state);
-    state = attach_native_vad(state);
 
     // Enable memory/RAG if its database can be opened.
     let memory_db = paths.root().join("memory.db");
@@ -272,50 +270,6 @@ async fn serve(port: Option<u16>, expose: bool) -> anyhow::Result<()> {
         .await
         .context("server error")?;
     Ok(())
-}
-
-#[cfg(feature = "whisper")]
-fn attach_whisper_transcriber(mut state: AppState) -> AppState {
-    state = state.with_transcriber_factory(Arc::new(|path: String| {
-        milim_voice::WhisperTranscriber::from_model_file(path)
-            .map(|transcriber| Arc::new(transcriber) as Arc<dyn milim_voice::Transcriber>)
-    }));
-
-    match milim_voice::WhisperTranscriber::from_default_env() {
-        Ok(Some(transcriber)) => {
-            tracing::info!("voice transcription enabled via MILIM_WHISPER_MODEL");
-            state = state.with_transcriber(Arc::new(transcriber));
-        }
-        Ok(None) => {}
-        Err(e) => tracing::warn!("voice transcription disabled: {e}"),
-    }
-
-    state
-}
-
-#[cfg(not(feature = "whisper"))]
-fn attach_whisper_transcriber(state: AppState) -> AppState {
-    if non_empty_env("MILIM_WHISPER_MODEL").is_some() {
-        tracing::warn!(
-            "MILIM_WHISPER_MODEL is set, but this binary was built without the `whisper` feature"
-        );
-    }
-
-    state
-}
-
-#[cfg(feature = "native-vad")]
-fn attach_native_vad(mut state: AppState) -> AppState {
-    state = state.with_vad_factory(Arc::new(|path: String| {
-        milim_voice::NativeSileroVoiceActivityDetector::new(path)
-            .map(|detector| Arc::new(detector) as Arc<dyn milim_voice::VoiceActivityDetector>)
-    }));
-    state
-}
-
-#[cfg(not(feature = "native-vad"))]
-fn attach_native_vad(state: AppState) -> AppState {
-    state
 }
 
 fn configure_auth(

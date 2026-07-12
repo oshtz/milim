@@ -31,8 +31,6 @@
     "core:webview:allow-webview-close",
     "core:webview:allow-webview-hide",
     "core:webview:allow-webview-show",
-    "dialog:default",
-    "global-shortcut:allow-register",
-    "global-shortcut:allow-unregister"
+    "dialog:default"
   ]
 }

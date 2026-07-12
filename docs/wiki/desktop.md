@@ -3,34 +3,34 @@ id: desktop
 path: desktop
 label: Desktop app
 title: Desktop app
-summary: Simple and Workbench modes, threads, projects, composer controls, artifacts, plan mode, goals, search, rendering, settings, and slash commands.
-group: Workbench
+summary: Unified threads, projects, composer controls, artifacts, plan mode, goals, search, rendering, settings, and slash commands.
+group: Core
 order: 30
-updated: 2026-07-11
+updated: 2026-07-12
 ---
 
-The first run can open as Simple or Workbench. Simple keeps the dev chat core visible with model switching, themes, memory, and voice basics; Workbench exposes project, agent, MCP, media, sandbox, schedule, and computer-use controls. The sidebar Workbench launcher opens Runs, MCP servers, Skills, and Schedules from one persistent place. In both modes, the Tauri process starts the embedded backend, connects persisted MCP servers, and runs schedules in the background. The model picker loads cached models while one startup task refreshes enabled chat providers, then reconciles automatically; Codex and Claude discovery remain independent from provider availability. Background schedule completions and mobile relay events use shared app notices so they remain visible outside their settings panels. Closing the desktop window hides it to the system tray so those background services keep running; use the tray menu to reopen or quit.
+Milim has one model-agnostic workbench. Project, Agent, MCP, media, memory, sandbox, schedule, and computer-use features are always discoverable, with advanced tools collapsed until needed. The sidebar Tools launcher opens MCP servers, Skills, and Schedules from one persistent place. The Tauri process starts the embedded backend, connects persisted MCP servers, and runs schedules in the background. The model picker loads cached models while one startup task refreshes enabled chat providers, then reconciles automatically; Codex and Claude discovery remain independent from provider availability. Background schedule completions and mobile relay events use shared app notices so they remain visible outside their settings panels. Closing the desktop window hides it to the system tray so those background services keep running; use the tray menu to reopen or quit.
 
 ## Interface modes
 
 | Mode | Visible surface |
 |---|---|
-| Simple | Chat, model switching, themes, memory, and voice basics. |
-| Workbench | Simple plus workspace/Git, agents, skills, MCP, schedules with attached file context and visible result threads, media, sandbox, computer use, and the memory manager. |
+| Unified workbench | Chat plus workspace/Git, Agents, skills, MCP, schedules with attached file context and visible result threads, media, sandbox, computer use, and Personal/Project memory. |
 
-## Workbench map
+## App map
 
 | Area | Role |
 |---|---|
 | Top bar | Theme, update, provider, and global app controls. |
-| Sidebar | Projects, threads, pinned groups, archives, unread state, child threads, five-at-a-time per-section ellipsis toggles, quick switching, and the Workbench launcher for Runs, MCP servers, Skills, and Schedules. |
-| Thread header | Current model, workspace folder, agent, approval, privacy, memory, sandbox, and computer-use state. |
-| Composer | Prompt text, visually highlighted plain-text skill/MCP/file/link tokens, persisted per-thread unsent drafts, thread-local sent-history recall with temporary position feedback, slash commands, file attachments, voice input, queued sends, send controls, and local repository-aware empty-state starters that prefill without submitting. |
+| Sidebar | Projects, threads, pinned groups, archives, unread state, child threads, five-at-a-time per-section ellipsis toggles, quick switching, and the Tools launcher for MCP servers, Skills, and Schedules. |
+| Thread header | The model chip is the sole model selector. The Session chip names only non-default states; its menu uses explicit Privacy and Approval choices instead of cycling. |
+| Composer | Prompt text, visually highlighted plain-text skill/MCP/file/link tokens, persisted per-thread unsent drafts, thread-local sent-history recall with temporary position feedback, slash commands, file attachments, an interruptible and reorderable queued-send tray, send controls, and local repository-aware empty-state starters that prefill without submitting. |
 | Run timeline | Reasoning, compact live tool activity with expandable details, workspace checkpoint notices, memory notices, child-thread activity, and usage metrics. Built-in tool-agent usage updates after each model request completes; account runtimes remain terminal-only unless their CLIs report more. |
-| Run Journal | Searchable goal-attempt history with model/provider, status, excerpts, files, tools, artifacts, and an explicit Attach to composer action. |
 | Error fallback | Root UI render crashes show a reloadable error screen instead of a blank app window. |
-| Context popover | Top-right popover showing compact workspace, active plan/goal, browser, model, and source state for the current thread. A launcher beside its button opens the active folder in installed local tools. |
+| Context popover | Top-right popover showing workspace, active plan/goal, browser, model, sources, thread usage, and provider quota. Live quota is fetched only while this drawer is open. A launcher beside its button opens the active folder in installed local tools. |
 | Inspector | One Preview / Code / Git surface. Preview selects between a sandboxed Artifact, an explicitly run App, and a memory-only manual URL when those sources exist; Code keeps the chosen artifact revision and sibling files; Git appears only for repositories. |
+
+Messages sent while a response is running enter a compact per-thread queue above the composer. Drag the handle or focus it and press Up/Down to reorder pending messages. **Interrupt** stops the current response, preserves its partial output, and runs the selected row next; **Run** does the same prioritization when the thread is idle. Remaining messages continue in their reordered sequence, while failed or stopped queued runs leave later messages pending. Delete stays inline and Edit is available from the row's overflow menu.
 
 ## Context menus
 
@@ -94,13 +94,13 @@ Goals are thread-level autonomous runs, not saved agent profiles. A goal stores 
 |---|---|
 | Thread actions | Message rows can copy with temporary confirmation, branch a new thread from that point, delete a visible message, and edit assistant messages in place. Sidebar rows can branch or export a thread. |
 | Per-chat instructions | The composer can attach instructions to the active thread without changing global app defaults. |
-| Context compaction | Long chats use tokenizer-backed visible checkpoint messages. Future model calls replay the latest checkpoint summary plus newer turns while the full transcript stays visible. `/compact` creates a checkpoint manually, and auto-compaction uses the same path before long sends. Compaction keeps a bounded recent tail verbatim and caps old attachment/tool bodies in summary prompts. Codex and Claude chats with an existing native thread/session skip Milim auto-compaction and send only per-turn context plus the latest user message. Summary generation rejects truncated or oversized outputs instead of saving incomplete checkpoints. Checkpoints record the usage/cost total at compaction time, the summary-generation cost when available, and the top bar separates lifetime usage from usage since the latest checkpoint. |
+| Context compaction | Long chats use tokenizer-backed visible checkpoint messages. Future model calls replay the latest checkpoint summary plus newer turns while the full transcript stays visible. `/compact` creates a checkpoint manually, and auto-compaction uses the same path before long sends. Compaction keeps a bounded recent tail verbatim and caps old attachment/tool bodies in summary prompts. Codex and Claude chats with an existing native thread/session skip Milim auto-compaction and send only per-turn context plus the latest user message. Summary generation rejects truncated or oversized outputs instead of saving incomplete checkpoints. Checkpoints record the usage/cost total at compaction time; detailed thread usage lives in Context and response metrics stay on messages. |
 | Search operators | Chat search accepts plain text plus `from:user`, `from:assistant`, `in:all`, and `is:archived` filters. |
 | Auto thread titles | New chats get first-message titles by default. Optional AI names run after the first reply and need a compatible provider chat model when the chat uses Codex, Claude, or media models. |
-| Onboarding | First-run setup chooses Simple or Workbench, connects local/hosted/Codex model sources, and can import Claude/Codex MCP servers and skills as disabled Workbench entries. MCP imports preserve `cwd`, non-secret env, and secret placeholders; use Test connection after filling required secrets. |
+| Onboarding | First-run setup follows Model, Defaults, optional Context, and Ready. It connects local/hosted/Codex model sources and can import Claude/Codex MCP servers and skills as disabled entries. MCP imports preserve `cwd`, non-secret env, and secret placeholders; use Test connection after filling required secrets. |
 | Settings | Settings search returns individual controls, jumps to the matched row, and section navigation shows warning status for incomplete setup. |
 | Theme editor | Themes and custom style settings are persisted with the desktop state. Custom palettes must pass core text contrast checks before saving, low-contrast preset/custom themes are marked in the theme grid, and custom theme cards expose an edit button. |
-| Keyboard shortcuts | App-window shortcuts are configurable; Previous thread defaults to `Ctrl+Tab` on Windows and macOS, switches to the last viewed thread immediately, and shows a compact recent-thread switcher for repeated presses. Ctrl/Cmd `+` and `-` scale the UI and reveal a temporary top-bar control for further adjustments or reset. Sidebar and inspector dividers reset on double-click or Enter. Voice push-to-talk uses the same press-to-record flow. |
+| Keyboard shortcuts | App-window shortcuts are configurable; Previous thread defaults to `Ctrl+Tab` on Windows and macOS, switches to the last viewed thread immediately, and shows a compact recent-thread switcher for repeated presses. Ctrl/Cmd `+` and `-` scale the UI. Sidebar and inspector dividers reset on double-click or Enter. |
 | Window close | Closing hides Milim to the system tray; minimize keeps normal taskbar behavior. |
 
 ## Slash commands
@@ -116,6 +116,8 @@ Goals are thread-level autonomous runs, not saved agent profiles. A goal stores 
 | `/memory` and `/nomemory` | Enable or disable scoped memory. |
 | `/privacy redact` | Set the outbound privacy gate to `off`, `redact`, or `block`. |
 | `/approval guarded` | Set tool approval to `review`, `guarded`, or `open`. |
+
+Calling `/privacy` or `/approval` without one of those valid arguments shows usage help and leaves the current state unchanged.
 | `/agent none` | Switch to a named agent by id/name, or clear the active agent. |
 | `/compact` | Summarize prior context into a visible checkpoint and start future model calls from that summary. |
 | `/export` | Download the active thread as a Milim JSON export. Use `/export md` for Markdown. |

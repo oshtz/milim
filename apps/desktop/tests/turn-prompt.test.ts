@@ -8,8 +8,13 @@ function user(content: string): ChatMessage {
 
 assert.equal(folderLabel("C:\\Users\\USER\\Documents\\DEV\\milim"), "milim");
 assert.deepEqual(memoryScopes("thread-1", " C:\\work "), [
-  { kind: "thread", locator: "thread-1" },
+  { kind: "global", locator: "personal" },
   { kind: "project", locator: "C:\\work" },
+  { kind: "thread", locator: "thread-1" },
+]);
+assert.deepEqual(memoryScopes("thread-1", ""), [
+  { kind: "global", locator: "personal" },
+  { kind: "thread", locator: "thread-1" },
 ]);
 
 const plain = buildTurnPromptContext({
@@ -206,7 +211,8 @@ const explicitMemoryWrite = buildTurnPromptContext({
 assert.equal(explicitMemoryWrite.useTools, true, "explicit memory writes should enable the agent tool path");
 assert.equal(explicitMemoryWrite.runMemoryContext.memory_enabled, true);
 assert.match(explicitMemoryWrite.memoryMessages[0].content, /memory_register/);
-assert.equal(contextMessagesForTurn(explicitMemoryWrite, "agent").some((message) => message.content.includes("Current thread memory scope")), true);
+assert.match(explicitMemoryWrite.memoryMessages[0].content, /scope=personal/);
+assert.match(explicitMemoryWrite.memoryMessages[0].content, /Do not create new thread-scoped memories/);
 
 const accountRuntime = buildTurnPromptContext({
   sessionId: "s4",
@@ -289,8 +295,9 @@ assert.equal(searched[0].query, "remember this with attachments");
 assert.equal(searched[0].limit, 5);
 assert.equal(searched[0].model, "local-model");
 assert.deepEqual(searched[0].scopes, [
-  { kind: "thread", locator: "s5" },
+  { kind: "global", locator: "personal" },
   { kind: "project", locator: "C:\\repo" },
+  { kind: "thread", locator: "s5" },
 ]);
 assert.equal(selectedQueries.length, 0, "custom agent skills should not call auto skill selection");
 assert.match(prepared.memoryMessages[0].content, /Memory body/);

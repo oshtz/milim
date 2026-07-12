@@ -3,7 +3,7 @@ id: troubleshooting
 path: troubleshooting
 label: Troubleshooting
 title: Troubleshooting
-summary: Fix missing models, setup errors, workspace tool refusal, sandbox failures, privacy blocks, MCP disconnects, voice setup, computer use, and busy ports.
+summary: Fix missing models, setup errors, workspace tool refusal, sandbox failures, privacy blocks, MCP disconnects, computer use, and busy ports.
 group: Reference
 order: 120
 updated: 2026-07-01
@@ -19,7 +19,7 @@ Start with the current base URL and selected model. Most local issues are either
 | Does `/v1/models` list the expected model? | If no, fix provider discovery, local runtime startup, or model id before testing chat. |
 | Is a workspace folder selected? | If no, file, shell, artifact-save, and workspace tools should refuse to run. |
 | Is privacy mode blocking the request? | If yes, switch to `redact`, remove the detected value, or use a local runtime. |
-| Is the optional runtime installed? | Voice, TTS, media, sandbox, computer use, Codex, and Claude each have separate setup. |
+| Is the optional runtime installed? | Media, sandbox, computer use, Codex, and Claude each have separate setup. |
 
 ## Common symptoms
 
@@ -37,7 +37,6 @@ Start with the current base URL and selected model. Most local issues are either
 | Computer use is unavailable | Build with the `computer-use` feature and enable the `/computer` gate. |
 | MCP tools disappeared | Check `/mcp/servers` or the MCP Servers sheet. Imported servers stay disabled and secret-looking env values become required placeholders; fill them and use Test connection before enabling. |
 | Privacy block error | The server detected PII before a remote send. Use Redact, Off, or a local runtime. |
-| Voice setup fails | Confirm native feature flags, model files, and runtime preset installs. |
 | Desktop port is busy | The embedded server falls back to a free loopback port and the UI asks Tauri for the actual API base URL. |
 
 ## Next reading path
@@ -45,6 +44,6 @@ Start with the current base URL and selected model. Most local issues are either
 | If you are | Read |
 |---|---|
 | New user | Quickstart, Models, then Desktop app. |
-| Daily operator | Agents, Memory, Privacy, then Voice/media/mobile. |
+| Daily operator | Agents, Memory, Privacy, then Media/mobile. |
 | Integrator | API, Config, and Overview source links. |
 | Release work | Release and verification, then Troubleshooting. |

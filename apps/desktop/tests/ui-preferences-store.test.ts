@@ -67,7 +67,7 @@ equal(useUiPreferences.getState().autoTitleChats, true, "new chats should auto-t
 equal(useUiPreferences.getState().aiThreadNames, false, "AI thread names should default off");
 equal(useUiPreferences.getState().aiThreadNameModel, "", "AI thread naming should default to the chat model");
 equal(useUiPreferences.getState().newChatButtonAtBottom, false, "new chat button should default to top");
-equal(useUiPreferences.getState().interfaceMode, "simple", "interface mode should default to simple");
+equal("interfaceMode" in useUiPreferences.getState(), false, "obsolete interface mode should not be exposed");
 equal(useUiPreferences.getState().developerMode, false, "developer mode should default off");
 equal(useUiPreferences.getState().experimentalHashlinePatch, false, "hashline patching should default off");
 equal(useUiPreferences.getState().chatLayoutStyle, "transcript", "chat layout should default to transcript");
@@ -160,9 +160,6 @@ useUiPreferences.getState().setNewChatButtonAtBottom(true);
 equal(useUiPreferences.getState().newChatButtonAtBottom, true, "new chat button placement should update");
 equal(persistedUiState().newChatButtonAtBottom, true, "new chat button placement should be persisted");
 
-useUiPreferences.getState().setInterfaceMode("workbench");
-equal(useUiPreferences.getState().interfaceMode, "workbench", "interface mode should update");
-
 useUiPreferences.getState().setDeveloperMode(true);
 equal(useUiPreferences.getState().developerMode, true, "developer mode should update");
 
@@ -222,7 +219,6 @@ useUiPreferences.setState({
   aiThreadNames: false,
   aiThreadNameModel: "",
   newChatButtonAtBottom: false,
-  interfaceMode: "simple",
   developerMode: false,
   experimentalHashlinePatch: false,
   chatLayoutStyle: "transcript",
@@ -250,7 +246,7 @@ equal(useUiPreferences.getState().autoTitleChats, false, "auto-title should rehy
 equal(useUiPreferences.getState().aiThreadNames, true, "AI thread names should rehydrate");
 equal(useUiPreferences.getState().aiThreadNameModel, "persisted-title-model", "AI thread name model should rehydrate");
 equal(useUiPreferences.getState().newChatButtonAtBottom, true, "new chat button placement should rehydrate");
-equal(useUiPreferences.getState().interfaceMode, "workbench", "interface mode should rehydrate");
+equal("interfaceMode" in useUiPreferences.getState(), false, "obsolete persisted interface mode should be ignored");
 equal(useUiPreferences.getState().developerMode, true, "developer mode should rehydrate");
 equal(useUiPreferences.getState().experimentalHashlinePatch, true, "hashline patching should rehydrate");
 equal(useUiPreferences.getState().chatLayoutStyle, "compact", "chat layout should rehydrate");

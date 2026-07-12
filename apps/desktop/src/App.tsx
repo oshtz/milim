@@ -36,7 +36,6 @@ import {
   useSessions,
 } from "./sessions/store";
 import { hydrateThemeFromUserState, useTheme } from "./theme/store";
-import { featureVisibleInMode } from "./ui/features";
 import { useUiPreferences } from "./ui/store";
 
 const SettingsDialog = lazy(() =>
@@ -315,7 +314,6 @@ function AppContent() {
   const [skillsRevision, setSkillsRevision] = useState(0);
   const [schedulesOpen, setSchedulesOpen] = useState(false);
   const [mcpManagerRequest, setMcpManagerRequest] = useState(0);
-  const [runJournalRequest, setRunJournalRequest] = useState(0);
   const [composerDraft, setComposerDraft] = useState<{
     id: number;
     text: string;
@@ -324,14 +322,12 @@ function AppContent() {
   const sidebarOpen = useUiPreferences((s) => s.sidebarOpen);
   const toggleSidebar = useUiPreferences((s) => s.toggleSidebar);
   const uiSize = useUiPreferences((s) => s.uiSize);
-  const interfaceMode = useUiPreferences((s) => s.interfaceMode);
   const chatLayoutStyle = useUiPreferences((s) => s.chatLayoutStyle);
   const messageWidth = useUiPreferences((s) => s.messageWidth);
   const avatarStyle = useUiPreferences((s) => s.avatarStyle);
   const codeBlockTheme = useUiPreferences((s) => s.codeBlockTheme);
   const backgroundFit = useUiPreferences((s) => s.backgroundFit);
   const backgroundTreatment = useUiPreferences((s) => s.backgroundTreatment);
-  const showSchedules = featureVisibleInMode("schedules", interfaceMode);
   const appClassName = [
     "app",
     `chat-layout-${chatLayoutStyle}`,
@@ -387,10 +383,6 @@ function AppContent() {
   }
 
   useEffect(() => {
-    if (!showSchedules) setSchedulesOpen(false);
-  }, [showSchedules]);
-
-  useEffect(() => {
     if (!inTauri) return;
     try {
       void getCurrentWebview()
@@ -412,7 +404,6 @@ function AppContent() {
           onManageSkills={() => setSkillsOpen(true)}
           onManageSchedules={() => setSchedulesOpen(true)}
           onManageMcp={() => setMcpManagerRequest((value) => value + 1)}
-          onOpenRunJournal={() => setRunJournalRequest((value) => value + 1)}
           onGitAction={(text) => setComposerDraft({ id: Date.now(), text })}
           onOpenGitPanel={() => setGitPanelRequest((value) => value + 1)}
         />
@@ -424,7 +415,6 @@ function AppContent() {
             composerDraft={composerDraft}
             gitPanelRequest={gitPanelRequest}
             mcpManagerRequest={mcpManagerRequest}
-            runJournalRequest={runJournalRequest}
             skillsRevision={skillsRevision}
             onComposerDraftConsumed={(id) =>
               setComposerDraft((current) =>
@@ -446,7 +436,7 @@ function AppContent() {
             }}
           />
         )}
-        {schedulesOpen && showSchedules && (
+        {schedulesOpen && (
           <SchedulesManager onClose={() => setSchedulesOpen(false)} />
         )}
       </Suspense>

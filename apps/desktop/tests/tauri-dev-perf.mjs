@@ -281,7 +281,6 @@ async function enablePerfAndBypassOnboarding(page) {
       state: {
         version: 1,
         status: "completed",
-        selectedMode: "simple",
         selectedSetupPath: null,
         completedSteps: ["finish"],
         developerShowOnboarding: false,

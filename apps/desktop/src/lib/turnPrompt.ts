@@ -45,8 +45,9 @@ export function folderLabel(folder: string): string {
 }
 
 export function memoryScopes(threadId: string, folder: string): MemoryScopeRef[] {
-  const scopes: MemoryScopeRef[] = [{ kind: "thread", locator: threadId }];
+  const scopes: MemoryScopeRef[] = [{ kind: "global", locator: "personal" }];
   if (folder.trim()) scopes.push({ kind: "project", locator: folder.trim() });
+  scopes.push({ kind: "thread", locator: threadId });
   return scopes;
 }
 
@@ -111,7 +112,7 @@ export function buildTurnPromptContext({
   const memoryWriteEnabled = memory && !planMode && !codexModel && !claudeModel && (nonMemoryTools || looksLikeMemoryWriteRequest(userText));
   const memorySystem = memory && !planMode
     ? [
-        memoryWriteEnabled ? memoryInstructions(sessionId, threadTitle, folder) : "",
+        memoryWriteEnabled ? memoryInstructions(folder) : "",
         memoryContextBlock(memoryHits),
       ].filter(Boolean).join("\n\n")
     : "";
@@ -387,14 +388,17 @@ function memoryContextBlock(items: MemoryHit[]): string {
   ].join("\n");
 }
 
-function memoryInstructions(threadId: string, threadTitle: string, folder: string): string {
+function memoryInstructions(folder: string): string {
+  const defaultScope = folder.trim() ? "project" : "personal";
   const project = folder.trim()
-    ? `Current project memory scope: label="${folderLabel(folder)}", locator="${folder.trim()}".`
-    : "No project folder is selected; use thread memory only.";
+    ? `Project means the current workspace: "${folderLabel(folder)}".`
+    : "No project folder is selected, so project memory is unavailable.";
   return [
     "You can register durable local memories with the memory_register tool.",
     "Only save concise facts, decisions, preferences, project conventions, or unresolved tasks that are likely useful later.",
-    `Current thread memory scope: label="${threadTitle || "Current thread"}", locator="${threadId}".`,
+    "Use scope=personal for preferences or facts that should follow the user across projects; use scope=project for workspace-specific context.",
+    "Pass content and, when useful, a short title. Do not create new thread-scoped memories.",
+    `Default to scope=${defaultScope} when the user does not specify one.`,
     project,
   ].join("\n");
 }

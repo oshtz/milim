@@ -12,7 +12,7 @@
     "test:brand-cleanup": "node tests/brand-cleanup.test.mjs",
     "test:selectors": "node tests/zustand-selector-lint.test.mjs",
     "test:store": "node tests/run-ts-test.mjs tests/session-store.test.ts tests/session-startup-hydration.test.ts tests/thread-titles.test.ts tests/sidebar-groups.test.ts tests/thread-export.test.ts tests/preview-runtime-keys.test.ts",
-    "test:settings": "node tests/run-ts-test.mjs tests/settings-store.test.ts tests/settings-appearance-rendering.test.tsx",
+    "test:settings": "node tests/run-ts-test.mjs tests/settings-store.test.ts tests/settings-appearance-rendering.test.tsx && node tests/agent-schedule-models.test.mjs",
     "test:assistant-stream": "node tests/run-ts-test.mjs tests/assistant-stream-grouping.test.ts tests/assistant-stream-summary.test.ts tests/attachment-wire.test.ts tests/hot-swap.test.ts tests/preview-activity.test.ts tests/turn-events.test.ts tests/turn-queue.test.ts tests/turn-prompt.test.ts tests/turn-runtime.test.ts tests/turn-stream.test.ts",
     "test:context-compaction": "node tests/run-ts-test.mjs tests/context-compaction.test.ts tests/turn-context.test.ts",
     "test:reasoning": "node tests/run-ts-test.mjs tests/reasoning-effort.test.ts tests/model-picker.test.ts tests/model-picker-rendering.test.tsx",
@@ -38,8 +38,6 @@
     "verify:release": "npm run package:release && npm run release:portable && npm run release:manifest && npm run verify:release-manifest && npm run verify:release-launch",
     "verify:release-launch": "node scripts/smoke-release-binary.mjs",
     "verify": "npm run build && npm run test:copy && npm run test:brand-cleanup && npm run test:selectors && npm run test:store && npm run test:settings && npm run test:assistant-stream && npm run test:context-compaction && npm run test:reasoning && npm run test:ui-preferences && npm run test:onboarding && npm run test:user-state-storage && npm run test:update && npm run test:api-models && npm run test:git-refresh && npm run test:media && npm run test:mobile-companion && npm run test:artifacts && npm run test:computer-use && npm run verify:release-workflow && npm run test:tauri-config",
-    "verify:native-vad": "cargo test --manifest-path ../../Cargo.toml -p milim-server --features native-vad audio_vad_native_provider",
-    "verify:native-tts": "cargo test --manifest-path ../../Cargo.toml -p milim-server --features native-tts audio_speech_native_kokoro_provider",
     "verify:tauri": "node tests/run-tauri-smoke.mjs",
     "verify:tauri-webview": "npm run verify:tauri && npm run test:tauri-webview",
     "verify:tester-ready": "npm run verify && npm run verify:release && npm run verify:tauri-webview"
@@ -47,7 +45,6 @@
   "dependencies": {
     "@tauri-apps/api": "^2.1.1",
     "@tauri-apps/plugin-dialog": "^2.7.1",
-    "@tauri-apps/plugin-global-shortcut": "^2",
     "highlight.js": "^11.11.1",
     "js-tiktoken": "^1.0.21",
     "lowlight": "^3.3.0",

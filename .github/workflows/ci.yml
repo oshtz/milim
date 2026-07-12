@@ -85,5 +85,3 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: 20
-      - run: npm --prefix apps/desktop run verify:native-vad
-      - run: npm --prefix apps/desktop run verify:native-tts

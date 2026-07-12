@@ -3,13 +3,13 @@ id: memory
 path: memory
 label: Memory
 title: Memory and RAG
-summary: Classic RAG, scoped graph memory, cheap context injection, manual memory management, and explicit tool-registered memories.
+summary: Personal and Project semantic memory, cheap context injection, archive recovery, and explicit tool-registered memories.
 group: Local data
 order: 60
-updated: 2026-07-05
+updated: 2026-07-12
 ---
 
-Memory is scoped on purpose. Thread memory is narrow, project memory follows a workspace, and global memory is for durable preferences or facts that should apply everywhere.
+The normal memory library has two scopes. **Personal** follows you across projects; **Project** is bound to the active workspace folder. Existing thread-scoped memories remain searchable in their original thread and can be moved into Personal or Project from the library's Legacy view.
 
 When Memory is enabled, normal chat turns search scoped memory and inject only the retrieved hits as model context. That recall path does not force the agent/tool loop by itself. Durable writes use `memory_register` only when the user explicitly asks to remember/save/store context, or when the turn is already running through a tool-capable agent path.
 
@@ -18,19 +18,18 @@ When Memory is enabled, normal chat turns search scoped memory and inject only t
 | System | Route | Behavior |
 |---|---|---|
 | Classic RAG | `/memory/ingest` and `/memory/search` | Embeds text through the configured embedding-capable provider and retrieves nearby memories. |
-| Scoped graph memory | `/memory/register` and `/memory/graph/search` | Stores nodes with kind, title, body, confidence, source, archive status, and scope. |
-| Memory manager | `/memory/scopes`, `/memory/nodes`, node update/delete/archive routes | Lists, searches, creates, edits, archives, restores, and deletes graph memory nodes. |
-| Agent memory tool | `memory_register` | Lets explicit memory-write or already tool-capable runs save concise facts, decisions, preferences, or project context. |
+| Scoped semantic memory | `/memory/register` and `/memory/graph/search` | Retains the compatible lower-level node API used by retrieval and legacy data. |
+| Memory library | `/memory/scopes`, `/memory/nodes`, node update/delete/archive routes | Searches, adds, edits, archives, restores, permanently deletes, and moves legacy entries. |
+| Agent memory tool | `memory_register` | Saves `content` plus an optional `title` to `personal` or `project`; it defaults to Project when a folder exists and Personal otherwise. |
 
 ## Scopes
 
 | Scope | Use it for |
 |---|---|
-| Thread | Decisions that only matter inside the current conversation. |
+| Personal | Durable preferences and facts that should follow you across projects. |
 | Project | Repo conventions, architecture decisions, and product facts tied to one workspace folder. |
-| Global | Durable preferences and facts that should follow you across projects. |
 
-Project memory requires an active project folder. Thread memory requires an active thread id. The server rejects missing scope locators rather than guessing.
+Project memory requires an active project folder. Each enabled turn searches Personal and Project memory, plus legacy memories from that same thread, and injects at most five relevant entries. New thread-scoped memories are not created.
 
 ## Remote embedding boundary
 
@@ -40,7 +39,7 @@ Embeddings follow the selected provider route. Local Ollama or LM Studio embeddi
 
 Plan mode disables memory search and memory writes. Planning remains read-only: the assistant can inspect context, but it cannot register durable memory while the plan is still unapproved.
 
-## Register graph memory
+## Register memory over HTTP
 
 ```bash Register a project memory
 curl http://127.0.0.1:7377/memory/register \

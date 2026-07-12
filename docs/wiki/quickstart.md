@@ -16,7 +16,7 @@ Aim for one complete loop first: connect a model source, select a workspace fold
 | Step | What to check |
 |---|---|
 | Install or run | Use a release build for normal use. Use `pnpm -C apps/desktop tauri dev` only when working on the app. |
-| Choose a surface | Simple is focused chat; Workbench adds project, agent, MCP, media, sandbox, schedules, and computer-use controls. |
+| Choose a model | The model chip is the sole selector; Favorites and per-model reasoning effort keep frequent choices close. |
 | Add a model source | Configure a hosted provider, start Ollama or LM Studio, or set `MILIM_REMOTE_BASE_URL` for the CLI server path. |
 | Select a workspace | Pick the folder before asking for file reads, shell commands, Git actions, or artifact saves. |
 | Check the model chip | The chip shows provider, runtime lane, setup status, capabilities, favorite state, and reasoning effort where supported. |
@@ -35,7 +35,7 @@ pnpm -C apps/desktop tauri dev
 
 The desktop app embeds the server in-process. There is no separate `milim serve` process for normal desktop use.
 
-On first run, pick Simple or Workbench. The choice only sets the initial visible surface and can be changed later.
+On first run, follow Model, Defaults, optional Context, and Ready. Advanced tools remain available from the unified app and the sidebar Tools launcher.
 
 ## CLI server
 

@@ -5,12 +5,14 @@ import {
   createSchedule,
   deleteSchedule,
   inferAttachmentMime,
+  listModels,
   listSchedules,
   pickAttachmentFiles,
   updateSchedule,
   type ChatAttachment,
   type ScheduleInfo,
 } from "../api";
+import { useSessions } from "../sessions/store";
 import { Calendar, Paperclip, Plus, Trash, X } from "./icons";
 import { SheetDialog } from "./SheetDialog";
 import { Select, Toggle } from "./ui";
@@ -101,6 +103,14 @@ function cronFields(cron: string): string[] {
 function agentLabel(agentId: string | null | undefined, agents: Array<{ id: string; name: string }>): string {
   if (!agentId) return "Default agent";
   return agents.find((a) => a.id === agentId)?.name ?? agentId;
+}
+
+function scheduleModel(schedule: ScheduleInfo): string {
+  return ((schedule as ScheduleInfo & { model?: string }).model ?? "").trim();
+}
+
+function effectiveScheduleModel(schedule: ScheduleInfo, agents: Array<{ id: string; model: string }>): string {
+  return scheduleModel(schedule) || agents.find((agent) => agent.id === schedule.agent_id)?.model?.trim() || "";
 }
 
 function plural(value: number, unit: string): string {
@@ -417,12 +427,16 @@ export function SchedulesManager({ onClose }: { onClose: () => void }) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const agents = useAgents((s) => s.agents);
   const refreshAgents = useAgents((s) => s.refresh);
+  const activeSession = useSessions((s) => s.sessions.find((session) => session.id === s.activeId));
+  const currentThreadModel = activeSession?.settings?.model?.trim() ?? "";
 
   const [schedules, setSchedules] = useState<ScheduleInfo[]>([]);
+  const [models, setModels] = useState<string[]>([]);
   const [sel, setSel] = useState<Selection>(null);
   const [name, setName] = useState("");
   const [cron, setCron] = useState("");
   const [agentId, setAgentId] = useState("");
+  const [model, setModel] = useState("");
   const [prompt, setPrompt] = useState("");
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
   const [enabled, setEnabled] = useState(true);
@@ -432,8 +446,15 @@ export function SchedulesManager({ onClose }: { onClose: () => void }) {
 
   useEffect(() => {
     void listSchedules().then(setSchedules);
+    void listModels().then(setModels);
     void refreshAgents();
   }, [refreshAgents]);
+
+  useEffect(() => {
+    if (!sel || sel === "new" || model || scheduleModel(sel)) return;
+    const fallback = agents.find((agent) => agent.id === sel.agent_id)?.model?.trim();
+    if (fallback) setModel(fallback);
+  }, [agents, model, sel]);
 
   async function refresh() {
     setSchedules(await listSchedules());
@@ -447,6 +468,7 @@ export function SchedulesManager({ onClose }: { onClose: () => void }) {
       setName("");
       setCron(DEFAULT_CRON);
       setAgentId("");
+      setModel(currentThreadModel);
       setPrompt("");
       setAttachments([]);
       setEnabled(true);
@@ -454,6 +476,7 @@ export function SchedulesManager({ onClose }: { onClose: () => void }) {
       setName(s.name);
       setCron(s.cron);
       setAgentId(s.agent_id ?? "");
+      setModel(effectiveScheduleModel(s, agents));
       setPrompt(s.prompt);
       setAttachments(s.attachments ?? []);
       setEnabled(s.enabled);
@@ -467,6 +490,7 @@ export function SchedulesManager({ onClose }: { onClose: () => void }) {
     setName(preset.name);
     setCron(preset.cron);
     setAgentId("");
+    setModel(currentThreadModel);
     setPrompt(preset.prompt);
     setAttachments([]);
     setEnabled(true);
@@ -501,30 +525,28 @@ export function SchedulesManager({ onClose }: { onClose: () => void }) {
 
   async function save() {
     const cronStatus = validateCron(cron);
-    if (!name.trim() || !cron.trim() || !prompt.trim() || !cronStatus.valid) return;
+    if (!name.trim() || !cron.trim() || !model.trim() || !prompt.trim() || !cronStatus.valid) return;
     setBusy(true);
     setNote(null);
     setConfirmDeleteId(null);
     const agent_id = agentId || null;
+    const payload = {
+      name: name.trim(),
+      cron: normalizeCron(cron),
+      agent_id,
+      model: model.trim(),
+      prompt: prompt.trim(),
+      attachments,
+    };
     const saved =
       sel && sel !== "new"
         ? await updateSchedule({
+            ...payload,
             id: sel.id,
-            name: name.trim(),
-            cron: normalizeCron(cron),
-            agent_id,
-            prompt: prompt.trim(),
-            attachments,
             enabled,
             last_run: sel.last_run ?? null,
           })
-        : await createSchedule({
-            name: name.trim(),
-            cron: normalizeCron(cron),
-            agent_id,
-            prompt: prompt.trim(),
-            attachments,
-          });
+        : await createSchedule(payload);
 
     const finalSchedule = saved && saved.enabled !== enabled ? await updateSchedule({ ...saved, enabled }) : saved;
     setBusy(false);
@@ -555,6 +577,13 @@ export function SchedulesManager({ onClose }: { onClose: () => void }) {
     () => [{ label: "Default agent", value: "" }, ...agents.map((a) => ({ label: a.name, value: a.id }))],
     [agents],
   );
+  const modelOptions = useMemo(
+    () =>
+      Array.from(new Set([model, currentThreadModel, ...models].map((value) => value.trim()).filter(Boolean))).map(
+        (value) => ({ label: value, value }),
+      ),
+    [currentThreadModel, model, models],
+  );
   const cronStatus = useMemo(() => validateCron(cron), [cron]);
   const activeCount = schedules.filter((s) => s.enabled).length;
   const selectedSchedule = sel && sel !== "new" ? sel : null;
@@ -566,7 +595,7 @@ export function SchedulesManager({ onClose }: { onClose: () => void }) {
   const hasDraftContent = Boolean(
     name.trim() || prompt.trim() || attachments.length > 0 || agentId || !enabled || normalizeCron(cron) !== DEFAULT_CRON,
   );
-  const formComplete = Boolean(name.trim() && cron.trim() && prompt.trim());
+  const formComplete = Boolean(name.trim() && cron.trim() && model.trim() && prompt.trim());
   const formReady = formComplete && cronStatus.valid;
   const isDirty =
     sel === "new"
@@ -576,6 +605,7 @@ export function SchedulesManager({ onClose }: { onClose: () => void }) {
             (name !== selectedSchedule.name ||
               normalizeCron(cron) !== normalizeCron(selectedSchedule.cron) ||
               (agentId || "") !== (selectedSchedule.agent_id ?? "") ||
+              model.trim() !== scheduleModel(selectedSchedule) ||
               prompt !== selectedSchedule.prompt ||
               currentAttachmentFingerprint !== selectedAttachmentFingerprint ||
               enabled !== selectedSchedule.enabled),
@@ -585,9 +615,11 @@ export function SchedulesManager({ onClose }: { onClose: () => void }) {
   const editorTone: "ready" | "warning" | "off" | "draft" =
     !formComplete || !cronStatus.valid ? "warning" : enabled ? "ready" : "off";
   const editorReadinessTitle =
-    !formComplete ? "Needs details" : !cronStatus.valid ? "Fix cadence" : enabled ? "Ready to run" : "Paused";
-  const editorReadinessBody = !formComplete
-    ? "Add a name, cadence, and prompt before saving."
+    !model.trim() ? "Needs model" : !formComplete ? "Needs details" : !cronStatus.valid ? "Fix cadence" : enabled ? "Ready to run" : "Paused";
+  const editorReadinessBody = !model.trim()
+    ? "Choose the model this unattended run should use."
+    : !formComplete
+      ? "Add a name, cadence, and prompt before saving."
     : !cronStatus.valid
       ? cronStatus.message
       : enabled
@@ -660,6 +692,7 @@ export function SchedulesManager({ onClose }: { onClose: () => void }) {
                         <span className="schedule-row-cron">{s.cron}</span>
                         <span className="schedule-row-meta">
                           <span>{agentLabel(s.agent_id, agents)}</span>
+                          <span>{effectiveScheduleModel(s, agents) || "Model missing"}</span>
                           <span>{attachmentSummary(s.attachments)}</span>
                           <span>{lastRunLabel(s.last_run)}</span>
                         </span>
@@ -740,10 +773,17 @@ export function SchedulesManager({ onClose }: { onClose: () => void }) {
 
                 <section className="schedule-editor-section">
                   <div className="schedule-section-head">
-                    <h4>Agent</h4>
-                    <span>{agentLabel(agentId, agents)}</span>
+                    <h4>Execution</h4>
+                    <span>{model || "Model required"}</span>
                   </div>
-                  <Select value={agentId} placeholder="Default agent" options={agentOptions} onChange={setAgentId} />
+                  <div className="schedule-field">
+                    <span>Model</span>
+                    <Select value={model} placeholder="Choose model" options={modelOptions} onChange={setModel} testId="schedule-model-select" />
+                  </div>
+                  <div className="schedule-field">
+                    <span>Agent</span>
+                    <Select value={agentId} placeholder="Default agent" options={agentOptions} onChange={setAgentId} />
+                  </div>
                 </section>
 
                 <section className="schedule-editor-section schedule-prompt-section">

@@ -1,7 +1,9 @@
 import { createElement, type ComponentType } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { createServer } from "vite";
-import type { ModelInfo, ProviderInfo } from "../src/api.js";
+import type { ModelInfo, ProviderInfo, ReasoningEffort } from "../src/api.js";
 
 type ModelPickerProps = {
   models: ModelInfo[];
@@ -9,7 +11,7 @@ type ModelPickerProps = {
   providers?: ProviderInfo[];
   toolIntent?: boolean;
   planMode?: boolean;
-  onModel: (id: string) => void;
+  onModel: (selection: { model: string; source: "model" | "preset"; reasoningEffort?: ReasoningEffort }) => void;
   onManageProviders: () => void;
   onManageMcp: () => void;
   onManageMemory: () => void;
@@ -99,6 +101,8 @@ try {
   assert(markup.includes('title="Tool use"'), "Tool capability badge should render");
   assert(markup.includes("Replicate"), "Picker should render media providers");
   assert(markup.includes("Media"), "Picker should render media lane labels");
+  assert(markup.includes("Model picker view"), "Picker should expose the view switch to assistive technology");
+  assert(markup.includes(">Models<") && markup.includes(">Favorites<") && !markup.includes(">Presets<"), "Picker should render only Models and Favorites views");
 
   const { BatonMenu, HotSwapPreflightSheet } = (await server.ssrLoadModule(
     "/src/components/HotSwapDialogs.tsx",
@@ -113,10 +117,13 @@ try {
     }),
   );
   assert(batonMarkup.includes('data-testid="baton-menu-trigger"'), "Baton actions should collapse under one trigger");
-  assert(batonMarkup.includes("Continue with..."), "Baton menu should offer Continue");
-  assert(batonMarkup.includes("Review with..."), "Baton menu should offer Review");
-  assert(batonMarkup.includes("Retry with..."), "Baton menu should offer Retry");
-  assert(batonMarkup.includes("Needs a Git checkpoint"), "Disabled Retry should explain what it needs");
+  assert(!batonMarkup.includes("Model handoff actions"), "Closed Baton actions should not leave a hidden menu in the message layout");
+  const hotSwapSource = readFileSync(resolve(process.cwd(), "src/components/HotSwapDialogs.tsx"), "utf8");
+  const styles = readFileSync(resolve(process.cwd(), "src/styles.css"), "utf8");
+  assert(hotSwapSource.includes("createPortal("), "Baton actions should render through a body portal");
+  assert(hotSwapSource.includes('className="baton-menu-popover message-popover-layer"'), "Baton actions should use the shared message popover layer");
+  assert(hotSwapSource.includes("Continue with...") && hotSwapSource.includes("Review with...") && hotSwapSource.includes("Retry with..."), "Baton menu should offer all handoff actions");
+  assert(styles.includes(".message-popover-layer") && styles.includes("z-index: 1200 !important"), "Message popovers should render above the sidebar layer");
 
   const hotSwapMarkup = renderToStaticMarkup(
     createElement(HotSwapPreflightSheet, {

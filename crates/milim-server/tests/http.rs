@@ -10,20 +10,12 @@ use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
-use axum::body::Bytes;
-use axum::http::HeaderMap;
-use axum::routing::{get, post};
-use axum::{Json, Router};
 use futures::StreamExt;
 use milim_core::api::openai::{DeltaFunction, DeltaToolCall, Model, ReasoningEffort, Usage};
 use milim_core::config::ServerConfiguration;
 use milim_inference::test_backend::TestBackend;
 use milim_inference::{CompletionRequest, DeltaEvent, EventStream, ModelService, StreamEvent};
 use milim_server::AppState;
-use milim_voice::{
-    Transcriber, TranscriptionInput, TranscriptionOutput, VoiceActivityDetector,
-    VoiceActivityInput, VoiceActivityOutput,
-};
 use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -849,10 +841,9 @@ impl ModelService for MemoryToolBackend {
                     ..Default::default()
                 }));
                 for frag in [
-                    "{\"scope_kind\":\"thread\",",
-                    "\"kind\":\"decision\",",
+                    "{\"scope\":\"personal\",",
                     "\"title\":\"Remember memory breadcrumbs\",",
-                    "\"body\":\"Show a breadcrumb when an agent registers memory.\"}"
+                    "\"content\":\"Show a breadcrumb when an agent registers memory.\"}"
                 ] {
                     yield Ok(StreamEvent::Delta(DeltaEvent {
                         tool_calls: vec![DeltaToolCall {
@@ -925,6 +916,7 @@ impl ModelService for ScheduleToolBackend {
                 for frag in [
                     "{\"name\":\"OSS Maintainer Orchestrator\",",
                     "\"cron\":\"0 */5 * * * *\",",
+                    "\"model\":\"test-schedule\",",
                     "\"prompt\":\"Check the maintainer queue and report actionable changes.\"}"
                 ] {
                     yield Ok(StreamEvent::Delta(DeltaEvent {
@@ -961,288 +953,6 @@ impl ModelService for ScheduleToolBackend {
             .into_iter()
             .map(|value| vec![value.len().max(1) as f32])
             .collect())
-    }
-}
-
-fn wav_16khz(samples: &[i16]) -> Vec<u8> {
-    let data_len = samples.len() as u32 * 2;
-    let mut bytes = Vec::with_capacity(44 + data_len as usize);
-    bytes.extend_from_slice(b"RIFF");
-    bytes.extend_from_slice(&(36 + data_len).to_le_bytes());
-    bytes.extend_from_slice(b"WAVE");
-    bytes.extend_from_slice(b"fmt ");
-    bytes.extend_from_slice(&16u32.to_le_bytes());
-    bytes.extend_from_slice(&1u16.to_le_bytes());
-    bytes.extend_from_slice(&1u16.to_le_bytes());
-    bytes.extend_from_slice(&16_000u32.to_le_bytes());
-    bytes.extend_from_slice(&32_000u32.to_le_bytes());
-    bytes.extend_from_slice(&2u16.to_le_bytes());
-    bytes.extend_from_slice(&16u16.to_le_bytes());
-    bytes.extend_from_slice(b"data");
-    bytes.extend_from_slice(&data_len.to_le_bytes());
-    for sample in samples {
-        bytes.extend_from_slice(&sample.to_le_bytes());
-    }
-    bytes
-}
-
-async fn spawn_remote_stt(expected_body: Vec<u8>) -> String {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let expected = Arc::new(expected_body);
-    tokio::spawn(async move {
-        let app = Router::new().route(
-            "/transcribe",
-            post({
-                let expected = Arc::clone(&expected);
-                move |headers: HeaderMap, body: Bytes| {
-                    let expected = Arc::clone(&expected);
-                    async move {
-                        assert_eq!(
-                            headers.get("content-type").and_then(|v| v.to_str().ok()),
-                            Some("audio/wav")
-                        );
-                        assert_eq!(body.as_ref(), expected.as_slice());
-                        Json(json!({ "text": "remote transcript" }))
-                    }
-                }
-            }),
-        );
-        axum::serve(listener, app).await.unwrap();
-    });
-    format!("http://{addr}/transcribe")
-}
-
-async fn spawn_openai_stt(expected_model: &'static str, expected_key: &'static str) -> String {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move {
-        let app = Router::new().route(
-            "/audio/transcriptions",
-            post(move |headers: HeaderMap, body: Bytes| async move {
-                let content_type = headers
-                    .get("content-type")
-                    .and_then(|v| v.to_str().ok())
-                    .unwrap_or_default();
-                let auth = headers
-                    .get("authorization")
-                    .and_then(|v| v.to_str().ok())
-                    .unwrap_or_default();
-                let body = String::from_utf8_lossy(&body);
-                assert!(content_type.starts_with("multipart/form-data"));
-                assert_eq!(auth, format!("Bearer {expected_key}"));
-                assert!(body.contains("name=\"model\""));
-                assert!(body.contains(expected_model));
-                assert!(body.contains("name=\"file\""));
-                Json(json!({ "text": "openai transcript" }))
-            }),
-        );
-        axum::serve(listener, app).await.unwrap();
-    });
-    format!("http://{addr}/audio/transcriptions")
-}
-
-async fn spawn_openai_tts(expected_model: &'static str, expected_key: &'static str) -> String {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move {
-        let app = Router::new().route(
-            "/audio/speech",
-            post(
-                move |headers: HeaderMap, Json(body): Json<Value>| async move {
-                    let auth = headers
-                        .get("authorization")
-                        .and_then(|v| v.to_str().ok())
-                        .unwrap_or_default();
-                    assert_eq!(auth, format!("Bearer {expected_key}"));
-                    assert_eq!(body["model"], expected_model);
-                    assert_eq!(body["input"], "hello from openai tts");
-                    assert_eq!(body["voice"], "coral");
-                    assert_eq!(body["response_format"], "wav");
-                    let speed = body["speed"].as_f64().unwrap();
-                    assert!((speed - 1.2).abs() < 0.001);
-                    (
-                        [(reqwest::header::CONTENT_TYPE.as_str(), "audio/wav")],
-                        Bytes::from_static(b"RIFF-openai-tts-wav"),
-                    )
-                },
-            ),
-        );
-        axum::serve(listener, app).await.unwrap();
-    });
-    format!("http://{addr}/audio/speech")
-}
-
-async fn spawn_piper_preset_files() -> String {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move {
-        let app = Router::new()
-            .route(
-                "/voice.onnx",
-                get(|| async { Bytes::from_static(b"piper-model") }),
-            )
-            .route(
-                "/voice.onnx.json",
-                get(|| async { Bytes::from_static(br#"{"audio":{"sample_rate":22050}}"#) }),
-            );
-        axum::serve(listener, app).await.unwrap();
-    });
-    format!("http://{addr}")
-}
-
-async fn spawn_kokoro_preset_files() -> String {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move {
-        let app = Router::new()
-            .route(
-                "/onnx/model_q8f16.onnx",
-                get(|| async { Bytes::from_static(b"kokoro-model") }),
-            )
-            .route(
-                "/config.json",
-                get(|| async { Bytes::from_static(br#"{"vocab":{"h":50}}"#) }),
-            )
-            .route(
-                "/voices/af_alloy.bin",
-                get(|| async { Bytes::from_static(b"kokoro-voice") }),
-            );
-        axum::serve(listener, app).await.unwrap();
-    });
-    format!("http://{addr}")
-}
-
-async fn spawn_vad_preset_files() -> String {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move {
-        let app = Router::new().route(
-            "/silero_vad.onnx",
-            get(|| async { Bytes::from_static(b"silero-vad-model") }),
-        );
-        axum::serve(listener, app).await.unwrap();
-    });
-    format!("http://{addr}")
-}
-
-async fn spawn_piper_executable_archive() -> String {
-    const ZIP_BYTES: &[u8] = &[
-        80, 75, 3, 4, 20, 0, 0, 0, 8, 0, 219, 163, 199, 92, 182, 89, 31, 122, 16, 0, 0, 0, 14, 0,
-        0, 0, 15, 0, 0, 0, 112, 105, 112, 101, 114, 47, 112, 105, 112, 101, 114, 46, 101, 120, 101,
-        75, 75, 204, 78, 213, 45, 200, 44, 72, 45, 210, 77, 173, 72, 5, 0, 80, 75, 1, 2, 20, 0, 20,
-        0, 0, 0, 8, 0, 219, 163, 199, 92, 182, 89, 31, 122, 16, 0, 0, 0, 14, 0, 0, 0, 15, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 112, 105, 112, 101, 114, 47, 112, 105, 112, 101,
-        114, 46, 101, 120, 101, 80, 75, 5, 6, 0, 0, 0, 0, 1, 0, 1, 0, 61, 0, 0, 0, 61, 0, 0, 0, 0,
-        0,
-    ];
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move {
-        let app = Router::new().route(
-            "/piper.zip",
-            get(|| async { Bytes::from_static(ZIP_BYTES) }),
-        );
-        axum::serve(listener, app).await.unwrap();
-    });
-    format!("http://{addr}")
-}
-
-fn sse_json_events(body: &str) -> Vec<Value> {
-    body.lines()
-        .filter_map(|line| line.trim().strip_prefix("data:"))
-        .map(|data| serde_json::from_str(data.trim()).unwrap())
-        .collect()
-}
-
-fn fake_parakeet_command(output: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir();
-    #[cfg(windows)]
-    {
-        let path = dir.join(format!("milim-fake-parakeet-{}.cmd", uuid::Uuid::new_v4()));
-        std::fs::write(&path, format!("@echo {output}\r\n")).unwrap();
-        path
-    }
-    #[cfg(not(windows))]
-    {
-        use std::os::unix::fs::PermissionsExt;
-
-        let path = dir.join(format!("milim-fake-parakeet-{}", uuid::Uuid::new_v4()));
-        std::fs::write(&path, format!("#!/bin/sh\necho {output}\n")).unwrap();
-        let mut permissions = std::fs::metadata(&path).unwrap().permissions();
-        permissions.set_mode(0o755);
-        std::fs::set_permissions(&path, permissions).unwrap();
-        path
-    }
-}
-
-fn fake_piper_command(output: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir();
-    #[cfg(windows)]
-    {
-        let path = dir.join(format!("milim-fake-piper-{}.cmd", uuid::Uuid::new_v4()));
-        std::fs::write(
-            &path,
-            format!(
-                "@echo off\r\nset out=\r\n:loop\r\nif \"%1\"==\"\" goto done\r\nif \"%1\"==\"--output_file\" (\r\n  set out=%2\r\n  shift\r\n)\r\nshift\r\ngoto loop\r\n:done\r\nmore > nul\r\necho {output}> \"%out%\"\r\n"
-            ),
-        )
-        .unwrap();
-        path
-    }
-    #[cfg(not(windows))]
-    {
-        use std::os::unix::fs::PermissionsExt;
-
-        let path = dir.join(format!("milim-fake-piper-{}", uuid::Uuid::new_v4()));
-        std::fs::write(
-            &path,
-            format!(
-                "#!/bin/sh\nout=\"\"\nwhile [ \"$#\" -gt 0 ]; do\n  if [ \"$1\" = \"--output_file\" ]; then\n    out=\"$2\"\n    shift\n  fi\n  shift\ndone\ncat > /dev/null\nprintf '{output}' > \"$out\"\n"
-            ),
-        )
-        .unwrap();
-        let mut permissions = std::fs::metadata(&path).unwrap().permissions();
-        permissions.set_mode(0o755);
-        std::fs::set_permissions(&path, permissions).unwrap();
-        path
-    }
-}
-
-struct FixedTranscriber {
-    expected_body: Vec<u8>,
-    text: &'static str,
-}
-
-#[async_trait]
-impl Transcriber for FixedTranscriber {
-    async fn transcribe(
-        &self,
-        input: TranscriptionInput,
-    ) -> milim_core::Result<TranscriptionOutput> {
-        assert_eq!(input.audio, self.expected_body);
-        assert_eq!(input.mime_type.as_deref(), Some("audio/wav"));
-        Ok(TranscriptionOutput {
-            text: self.text.to_string(),
-        })
-    }
-}
-
-struct FixedVad {
-    expected_body: Vec<u8>,
-    is_speech: bool,
-    speech_probability: f32,
-}
-
-#[async_trait]
-impl VoiceActivityDetector for FixedVad {
-    async fn detect(&self, input: VoiceActivityInput) -> milim_core::Result<VoiceActivityOutput> {
-        assert_eq!(input.audio, self.expected_body);
-        assert_eq!(input.mime_type.as_deref(), Some("audio/wav"));
-        Ok(VoiceActivityOutput {
-            is_speech: self.is_speech,
-            speech_probability: self.speech_probability,
-        })
     }
 }
 
@@ -1869,823 +1579,22 @@ async fn lists_models_openai_and_ollama() {
 }
 
 #[tokio::test]
-async fn audio_transcriptions_use_configured_transcriber() {
-    let wav = b"RIFF-test-wav".to_vec();
-    let state = test_state().with_transcriber(Arc::new(FixedTranscriber {
-        expected_body: wav.clone(),
-        text: "dictated text",
-    }));
-    let base = spawn(state).await;
-    let client = reqwest::Client::new();
-
-    let v: Value = client
-        .post(format!("{base}/audio/transcriptions"))
-        .header(reqwest::header::CONTENT_TYPE, "audio/wav")
-        .body(wav)
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-
-    assert_eq!(v["text"], "dictated text");
-}
-
-#[tokio::test]
-async fn audio_transcriptions_without_backend_returns_error_status() {
+async fn audio_routes_are_absent() {
     let base = spawn(test_state()).await;
-    let response = reqwest::Client::new()
-        .post(format!("{base}/audio/transcriptions"))
-        .header(reqwest::header::CONTENT_TYPE, "audio/wav")
-        .body(Vec::from(&b"RIFF-test-wav"[..]))
-        .send()
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), reqwest::StatusCode::NOT_IMPLEMENTED);
-    let v: Value = response.json().await.unwrap();
-    assert!(v["error"].as_str().unwrap().contains("not enabled"));
-}
-
-#[tokio::test]
-async fn audio_transcriptions_can_use_settings_model_path() {
-    let wav = vec![82, 73, 70, 70, 0, 0, 0, 0];
-    let loads = Arc::new(AtomicUsize::new(0));
-    let expected = wav.clone();
-    let state = test_state().with_transcriber_factory({
-        let loads = Arc::clone(&loads);
-        Arc::new(move |path| {
-            assert_eq!(path, "C:/models/ggml-base.en.bin");
-            loads.fetch_add(1, Ordering::SeqCst);
-            Ok(Arc::new(FixedTranscriber {
-                expected_body: expected.clone(),
-                text: "settings transcript",
-            }))
-        })
-    });
-    let base = spawn(state).await;
     let client = reqwest::Client::new();
-
-    for _ in 0..2 {
-        let v: Value = client
-            .post(format!(
-                "{base}/audio/transcriptions?provider=whisper&model_path=C%3A%2Fmodels%2Fggml-base.en.bin"
-            ))
-            .header("Content-Type", "audio/wav")
-            .body(wav.clone())
-            .send()
-            .await
-            .unwrap()
-            .json()
-            .await
-            .unwrap();
-        assert_eq!(v["text"], "settings transcript");
+    for route in [
+        "/audio/transcriptions",
+        "/audio/vad",
+        "/audio/speech",
+        "/audio/setup/check",
+        "/audio/piper/presets/download",
+        "/audio/kokoro/presets/download",
+        "/audio/vad/presets/download",
+        "/audio/piper/executable/install",
+    ] {
+        let response = client.post(format!("{base}{route}")).send().await.unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::NOT_FOUND, "{route}");
     }
-
-    assert_eq!(loads.load(Ordering::SeqCst), 1);
-}
-
-#[tokio::test]
-async fn audio_transcriptions_can_proxy_remote_stt_endpoint() {
-    let wav = b"RIFF-remote-wav".to_vec();
-    let endpoint = spawn_remote_stt(wav.clone()).await;
-    let base = spawn(test_state()).await;
-    let client = reqwest::Client::new();
-    let url = reqwest::Url::parse_with_params(
-        &format!("{base}/audio/transcriptions"),
-        &[("provider", "remote"), ("endpoint", endpoint.as_str())],
-    )
-    .unwrap();
-
-    let v: Value = client
-        .post(url)
-        .header("Content-Type", "audio/wav")
-        .body(wav)
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-
-    assert_eq!(v["text"], "remote transcript");
-}
-
-#[tokio::test]
-async fn audio_transcriptions_can_proxy_openai_compatible_stt() {
-    let endpoint = spawn_openai_stt("gpt-4o-mini-transcribe", "stt-secret").await;
-    let base = spawn(test_state()).await;
-    let client = reqwest::Client::new();
-    let url = reqwest::Url::parse_with_params(
-        &format!("{base}/audio/transcriptions"),
-        &[
-            ("provider", "openai"),
-            ("endpoint", endpoint.as_str()),
-            ("model", "gpt-4o-mini-transcribe"),
-        ],
-    )
-    .unwrap();
-
-    let v: Value = client
-        .post(url)
-        .header("Content-Type", "audio/wav")
-        .header("X-Milim-STT-Api-Key", "stt-secret")
-        .body(Vec::from(&b"RIFF-openai-wav"[..]))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-
-    assert_eq!(v["text"], "openai transcript");
-}
-
-#[tokio::test]
-async fn audio_transcriptions_can_run_parakeet_command() {
-    let command = fake_parakeet_command("parakeet transcript");
-    let base = spawn(test_state()).await;
-    let client = reqwest::Client::new();
-    let url = reqwest::Url::parse_with_params(
-        &format!("{base}/audio/transcriptions"),
-        &[
-            ("provider", "parakeet"),
-            ("command", command.to_string_lossy().as_ref()),
-            ("model", "nvidia/parakeet-tdt-0.6b-v2"),
-        ],
-    )
-    .unwrap();
-
-    let v: Value = client
-        .post(url)
-        .header("Content-Type", "audio/wav")
-        .body(Vec::from(&b"RIFF-parakeet-wav"[..]))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-
-    assert_eq!(v["text"], "parakeet transcript");
-}
-
-#[tokio::test]
-async fn audio_vad_uses_configured_detector() {
-    let wav = wav_16khz(&[9000; 1600]);
-    let state = test_state().with_vad(Arc::new(FixedVad {
-        expected_body: wav.clone(),
-        is_speech: true,
-        speech_probability: 0.87,
-    }));
-    let base = spawn(state).await;
-    let client = reqwest::Client::new();
-
-    let v: Value = client
-        .post(format!("{base}/audio/vad"))
-        .header(reqwest::header::CONTENT_TYPE, "audio/wav")
-        .body(wav)
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-
-    assert_eq!(v["is_speech"], true);
-    assert!((v["speech_probability"].as_f64().unwrap() - 0.87).abs() < 0.001);
-}
-
-#[tokio::test]
-async fn audio_vad_without_backend_returns_error_status() {
-    let base = spawn(test_state()).await;
-    let response = reqwest::Client::new()
-        .post(format!("{base}/audio/vad"))
-        .header(reqwest::header::CONTENT_TYPE, "audio/wav")
-        .body(wav_16khz(&[0; 1600]))
-        .send()
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), reqwest::StatusCode::NOT_IMPLEMENTED);
-    let v: Value = response.json().await.unwrap();
-    assert!(v["error"].as_str().unwrap().contains("not enabled"));
-}
-
-#[tokio::test]
-async fn audio_vad_can_use_energy_provider() {
-    let base = spawn(test_state()).await;
-    let client = reqwest::Client::new();
-    let url = reqwest::Url::parse_with_params(
-        &format!("{base}/audio/vad"),
-        &[("provider", "energy"), ("threshold", "0.01")],
-    )
-    .unwrap();
-
-    let v: Value = client
-        .post(url)
-        .header("Content-Type", "audio/wav")
-        .body(wav_16khz(&[12000; 1600]))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-
-    assert_eq!(v["is_speech"], true);
-    assert_eq!(v["speech_probability"], 1.0);
-}
-
-#[tokio::test]
-async fn audio_vad_can_use_settings_model_path() {
-    let wav = wav_16khz(&[0; 1600]);
-    let loads = Arc::new(AtomicUsize::new(0));
-    let expected = wav.clone();
-    let state = test_state().with_vad_factory({
-        let loads = Arc::clone(&loads);
-        Arc::new(move |path| {
-            assert_eq!(path, "C:/models/silero_vad.onnx");
-            loads.fetch_add(1, Ordering::SeqCst);
-            Ok(Arc::new(FixedVad {
-                expected_body: expected.clone(),
-                is_speech: false,
-                speech_probability: 0.2,
-            }))
-        })
-    });
-    let base = spawn(state).await;
-    let client = reqwest::Client::new();
-
-    for _ in 0..2 {
-        let v: Value = client
-            .post(format!(
-                "{base}/audio/vad?provider=native&model_path=C%3A%2Fmodels%2Fsilero_vad.onnx"
-            ))
-            .header("Content-Type", "audio/wav")
-            .body(wav.clone())
-            .send()
-            .await
-            .unwrap()
-            .json()
-            .await
-            .unwrap();
-        assert_eq!(v["is_speech"], false);
-        assert!((v["speech_probability"].as_f64().unwrap() - 0.2).abs() < 0.001);
-    }
-
-    assert_eq!(loads.load(Ordering::SeqCst), 1);
-}
-
-#[cfg(feature = "native-vad")]
-#[tokio::test]
-async fn audio_vad_native_provider_uses_native_runtime_factory() {
-    let missing =
-        std::env::temp_dir().join(format!("missing-silero-{}.onnx", uuid::Uuid::new_v4()));
-    let state = test_state().with_vad_factory(Arc::new(|path| {
-        milim_voice::NativeSileroVoiceActivityDetector::new(path)
-            .map(|detector| Arc::new(detector) as Arc<dyn VoiceActivityDetector>)
-    }));
-    let base = spawn(state).await;
-    let url = reqwest::Url::parse_with_params(
-        &format!("{base}/audio/vad"),
-        &[
-            ("provider", "native"),
-            ("model_path", missing.to_string_lossy().as_ref()),
-        ],
-    )
-    .unwrap();
-
-    let response = reqwest::Client::new()
-        .post(url)
-        .header("Content-Type", "audio/wav")
-        .body(wav_16khz(&[0; 1600]))
-        .send()
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
-    let v: Value = response.json().await.unwrap();
-    assert!(v["error"]["message"]
-        .as_str()
-        .unwrap()
-        .contains("Native VAD model path was not found"));
-}
-
-#[tokio::test]
-async fn audio_speech_can_run_command_synthesizer() {
-    let command = fake_parakeet_command("RIFF-tts-wav");
-    let base = spawn(test_state()).await;
-    let client = reqwest::Client::new();
-    let url = reqwest::Url::parse_with_params(
-        &format!("{base}/audio/speech"),
-        &[
-            ("provider", "command"),
-            ("command", command.to_string_lossy().as_ref()),
-            ("voice", "alloy"),
-            ("speed", "1.1"),
-        ],
-    )
-    .unwrap();
-
-    let response = client
-        .post(url)
-        .json(&json!({ "input": "hello from tts" }))
-        .send()
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), reqwest::StatusCode::OK);
-    assert_eq!(
-        response
-            .headers()
-            .get(reqwest::header::CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok()),
-        Some("audio/wav")
-    );
-    let body = response.bytes().await.unwrap();
-    assert!(body.starts_with(b"RIFF-tts-wav"));
-}
-
-#[tokio::test]
-async fn audio_speech_can_run_piper_synthesizer() {
-    let command = fake_piper_command("RIFF-piper-wav");
-    let base = spawn(test_state()).await;
-    let client = reqwest::Client::new();
-    let url = reqwest::Url::parse_with_params(
-        &format!("{base}/audio/speech"),
-        &[
-            ("provider", "piper"),
-            ("command", command.to_string_lossy().as_ref()),
-            ("model_path", "voice.onnx"),
-            ("voice", "speaker-1"),
-            ("speed", "1.2"),
-        ],
-    )
-    .unwrap();
-
-    let response = client
-        .post(url)
-        .json(&json!({ "input": "hello from piper" }))
-        .send()
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), reqwest::StatusCode::OK);
-    assert_eq!(
-        response
-            .headers()
-            .get(reqwest::header::CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok()),
-        Some("audio/wav")
-    );
-    let body = response.bytes().await.unwrap();
-    assert!(body.starts_with(b"RIFF-piper-wav"));
-}
-
-#[tokio::test]
-async fn audio_speech_can_proxy_openai_compatible_tts() {
-    let endpoint = spawn_openai_tts("gpt-4o-mini-tts", "tts-secret").await;
-    let base = spawn(test_state()).await;
-    let client = reqwest::Client::new();
-    let url = reqwest::Url::parse_with_params(
-        &format!("{base}/audio/speech"),
-        &[
-            ("provider", "openai"),
-            ("endpoint", endpoint.as_str()),
-            ("model", "gpt-4o-mini-tts"),
-            ("voice", "coral"),
-            ("speed", "1.2"),
-        ],
-    )
-    .unwrap();
-
-    let response = client
-        .post(url)
-        .header("X-Milim-TTS-Api-Key", "tts-secret")
-        .json(&json!({ "input": "hello from openai tts" }))
-        .send()
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), reqwest::StatusCode::OK);
-    assert_eq!(
-        response
-            .headers()
-            .get(reqwest::header::CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok()),
-        Some("audio/wav")
-    );
-    let body = response.bytes().await.unwrap();
-    assert!(body.starts_with(b"RIFF-openai-tts-wav"));
-}
-
-#[tokio::test]
-async fn audio_setup_check_accepts_valid_piper_setup() {
-    let command = fake_piper_command("RIFF-piper-wav");
-    let model_path =
-        std::env::temp_dir().join(format!("milim-piper-model-{}.onnx", uuid::Uuid::new_v4()));
-    std::fs::write(&model_path, b"model").unwrap();
-    let base = spawn(test_state()).await;
-    let client = reqwest::Client::new();
-
-    let response: Value = client
-        .post(format!("{base}/audio/setup/check"))
-        .json(&json!({
-            "kind": "piper",
-            "command": command.to_string_lossy(),
-            "model_path": model_path.to_string_lossy()
-        }))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-
-    let _ = std::fs::remove_file(model_path);
-    assert_eq!(response["ok"], true);
-}
-
-#[tokio::test]
-async fn audio_setup_check_rejects_missing_piper_model() {
-    let command = fake_piper_command("RIFF-piper-wav");
-    let model_path = std::env::temp_dir().join(format!(
-        "milim-missing-piper-model-{}.onnx",
-        uuid::Uuid::new_v4()
-    ));
-    let base = spawn(test_state()).await;
-    let client = reqwest::Client::new();
-
-    let response = client
-        .post(format!("{base}/audio/setup/check"))
-        .json(&json!({
-            "kind": "piper",
-            "command": command.to_string_lossy(),
-            "model_path": model_path.to_string_lossy()
-        }))
-        .send()
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
-    let body: Value = response.json().await.unwrap();
-    assert!(body["error"]["message"]
-        .as_str()
-        .unwrap_or_default()
-        .contains("Piper model path"));
-}
-
-#[tokio::test]
-async fn audio_setup_check_accepts_native_tts_model_and_config() {
-    let model_path = std::env::temp_dir().join(format!(
-        "milim-native-tts-model-{}.onnx",
-        uuid::Uuid::new_v4()
-    ));
-    let config_path = std::env::temp_dir().join(format!(
-        "milim-native-tts-config-{}.json",
-        uuid::Uuid::new_v4()
-    ));
-    std::fs::write(&model_path, b"model").unwrap();
-    std::fs::write(&config_path, b"config").unwrap();
-    let base = spawn(test_state()).await;
-    let client = reqwest::Client::new();
-
-    let response: Value = client
-        .post(format!("{base}/audio/setup/check"))
-        .json(&json!({
-            "kind": "native-tts",
-            "model_path": model_path.to_string_lossy(),
-            "config_path": config_path.to_string_lossy()
-        }))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-
-    let _ = std::fs::remove_file(model_path);
-    let _ = std::fs::remove_file(config_path);
-    assert_eq!(response["ok"], true);
-    assert!(response["message"]
-        .as_str()
-        .unwrap()
-        .contains("Native TTS model found"));
-}
-
-#[tokio::test]
-async fn audio_setup_check_accepts_native_vad_model() {
-    let model_path = std::env::temp_dir().join(format!(
-        "milim-native-vad-model-{}.onnx",
-        uuid::Uuid::new_v4()
-    ));
-    std::fs::write(&model_path, b"model").unwrap();
-    let base = spawn(test_state()).await;
-    let client = reqwest::Client::new();
-
-    let response: Value = client
-        .post(format!("{base}/audio/setup/check"))
-        .json(&json!({
-            "kind": "native-vad",
-            "model_path": model_path.to_string_lossy()
-        }))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-
-    let _ = std::fs::remove_file(model_path);
-    assert_eq!(response["ok"], true);
-    assert!(response["message"]
-        .as_str()
-        .unwrap()
-        .contains("Native VAD model found"));
-}
-
-#[tokio::test]
-async fn audio_speech_native_provider_reports_not_enabled() {
-    let base = spawn(test_state()).await;
-    let client = reqwest::Client::new();
-    let url = reqwest::Url::parse_with_params(
-        &format!("{base}/audio/speech"),
-        &[
-            ("provider", "native"),
-            ("engine", "piper"),
-            ("model_path", "voice.onnx"),
-            ("voice", "0"),
-            ("speed", "1.0"),
-        ],
-    )
-    .unwrap();
-
-    let response = client
-        .post(url)
-        .json(&json!({ "input": "hello native tts" }))
-        .send()
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), reqwest::StatusCode::NOT_IMPLEMENTED);
-    let body: Value = response.json().await.unwrap();
-    assert!(body["error"]
-        .as_str()
-        .unwrap()
-        .contains("native TTS is not enabled"));
-}
-
-#[cfg(not(feature = "native-tts"))]
-#[tokio::test]
-async fn audio_speech_native_kokoro_provider_reports_not_enabled() {
-    let base = spawn(test_state()).await;
-    let client = reqwest::Client::new();
-    let url = reqwest::Url::parse_with_params(
-        &format!("{base}/audio/speech"),
-        &[
-            ("provider", "native"),
-            ("engine", "kokoro"),
-            ("model_path", "kokoro.onnx"),
-            ("voice", "0"),
-            ("speed", "1.0"),
-        ],
-    )
-    .unwrap();
-
-    let response = client
-        .post(url)
-        .json(&json!({ "input": "hello kokoro" }))
-        .send()
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), reqwest::StatusCode::NOT_IMPLEMENTED);
-    let body: Value = response.json().await.unwrap();
-    assert!(body["error"]
-        .as_str()
-        .unwrap()
-        .contains("Kokoro native TTS is not enabled"));
-}
-
-#[cfg(feature = "native-tts")]
-#[tokio::test]
-async fn audio_speech_native_kokoro_provider_routes_to_native_runtime_when_enabled() {
-    let base = spawn(test_state()).await;
-    let client = reqwest::Client::new();
-    let missing_model = std::env::temp_dir().join(format!(
-        "milim-missing-kokoro-{}.onnx",
-        uuid::Uuid::new_v4()
-    ));
-    let url = reqwest::Url::parse_with_params(
-        &format!("{base}/audio/speech"),
-        &[
-            ("provider", "native"),
-            ("engine", "kokoro"),
-            ("model_path", &missing_model.to_string_lossy()),
-            ("voice", "af_alloy"),
-            ("speed", "1.0"),
-        ],
-    )
-    .unwrap();
-
-    let response = client
-        .post(url)
-        .json(&json!({ "input": "hello kokoro" }))
-        .send()
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
-    let body: Value = response.json().await.unwrap();
-    assert!(body["error"]["message"]
-        .as_str()
-        .unwrap()
-        .contains("Native TTS model path was not found"));
-}
-
-#[tokio::test]
-async fn audio_piper_preset_download_streams_progress_and_installs_model_and_config() {
-    let upstream = spawn_piper_preset_files().await;
-    let tmp = std::env::temp_dir().join(format!("milim-piper-download-{}", uuid::Uuid::new_v4()));
-    let base = spawn(test_state().with_models_dir(tmp.clone())).await;
-    let client = reqwest::Client::new();
-
-    let response = client
-        .post(format!("{base}/audio/piper/presets/download"))
-        .json(&json!({
-            "id": "en_US-test-medium",
-            "model_url": format!("{upstream}/voice.onnx"),
-            "config_url": format!("{upstream}/voice.onnx.json")
-        }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(response.status(), reqwest::StatusCode::OK);
-    let body = response.text().await.unwrap();
-    let events = sse_json_events(&body);
-    assert!(
-        events.iter().any(|event| event["phase"] == "model"),
-        "expected model progress event in {body}"
-    );
-    assert!(
-        events.iter().any(|event| event["phase"] == "config"),
-        "expected config progress event in {body}"
-    );
-    let done = events
-        .iter()
-        .find(|event| event["done"] == true)
-        .expect("expected final done event");
-
-    let model_path = std::path::PathBuf::from(done["model_path"].as_str().unwrap());
-    let config_path = std::path::PathBuf::from(done["config_path"].as_str().unwrap());
-    assert_eq!(done["id"], "en_US-test-medium");
-    assert_eq!(std::fs::read(&model_path).unwrap(), b"piper-model");
-    assert_eq!(
-        std::fs::read_to_string(&config_path).unwrap(),
-        r#"{"audio":{"sample_rate":22050}}"#
-    );
-    assert!(model_path.starts_with(tmp.join("voices").join("piper").join("en_US-test-medium")));
-    let _ = std::fs::remove_dir_all(tmp);
-}
-
-#[tokio::test]
-async fn audio_kokoro_preset_download_streams_progress_and_installs_package() {
-    let upstream = spawn_kokoro_preset_files().await;
-    let tmp = std::env::temp_dir().join(format!("milim-kokoro-download-{}", uuid::Uuid::new_v4()));
-    let base = spawn(test_state().with_models_dir(tmp.clone())).await;
-    let client = reqwest::Client::new();
-
-    let response = client
-        .post(format!("{base}/audio/kokoro/presets/download"))
-        .json(&json!({
-            "id": "kokoro-q8f16-af_alloy",
-            "model_url": format!("{upstream}/onnx/model_q8f16.onnx"),
-            "config_url": format!("{upstream}/config.json"),
-            "voice_url": format!("{upstream}/voices/af_alloy.bin"),
-            "voice": "af_alloy"
-        }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(response.status(), reqwest::StatusCode::OK);
-    let body = response.text().await.unwrap();
-    let events = sse_json_events(&body);
-    assert!(
-        events.iter().any(|event| event["phase"] == "model"),
-        "expected model progress event in {body}"
-    );
-    assert!(
-        events.iter().any(|event| event["phase"] == "config"),
-        "expected config progress event in {body}"
-    );
-    assert!(
-        events.iter().any(|event| event["phase"] == "voice"),
-        "expected voice progress event in {body}"
-    );
-    let done = events
-        .iter()
-        .find(|event| event["done"] == true)
-        .expect("expected final done event");
-
-    let model_path = std::path::PathBuf::from(done["model_path"].as_str().unwrap());
-    let config_path = std::path::PathBuf::from(done["config_path"].as_str().unwrap());
-    let voice_path = std::path::PathBuf::from(done["voice_path"].as_str().unwrap());
-    assert_eq!(done["id"], "kokoro-q8f16-af_alloy");
-    assert_eq!(done["voice"], "af_alloy");
-    assert_eq!(std::fs::read(&model_path).unwrap(), b"kokoro-model");
-    assert_eq!(
-        std::fs::read_to_string(&config_path).unwrap(),
-        r#"{"vocab":{"h":50}}"#
-    );
-    assert_eq!(std::fs::read(&voice_path).unwrap(), b"kokoro-voice");
-    let root = tmp
-        .join("voices")
-        .join("kokoro")
-        .join("kokoro-q8f16-af_alloy");
-    assert_eq!(model_path, root.join("onnx").join("model_q8f16.onnx"));
-    assert_eq!(config_path, root.join("config.json"));
-    assert_eq!(voice_path, root.join("voices").join("af_alloy.bin"));
-    let _ = std::fs::remove_dir_all(tmp);
-}
-
-#[tokio::test]
-async fn audio_vad_preset_download_streams_progress_and_installs_model() {
-    let upstream = spawn_vad_preset_files().await;
-    let tmp = std::env::temp_dir().join(format!("milim-vad-download-{}", uuid::Uuid::new_v4()));
-    let base = spawn(test_state().with_models_dir(tmp.clone())).await;
-    let client = reqwest::Client::new();
-
-    let response = client
-        .post(format!("{base}/audio/vad/presets/download"))
-        .json(&json!({
-            "id": "silero-vad",
-            "model_url": format!("{upstream}/silero_vad.onnx")
-        }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(response.status(), reqwest::StatusCode::OK);
-    let body = response.text().await.unwrap();
-    let events = sse_json_events(&body);
-    assert!(
-        events.iter().any(|event| event["phase"] == "model"),
-        "expected model progress event in {body}"
-    );
-    let done = events
-        .iter()
-        .find(|event| event["done"] == true)
-        .expect("expected final done event");
-
-    let model_path = std::path::PathBuf::from(done["model_path"].as_str().unwrap());
-    assert_eq!(done["id"], "silero-vad");
-    assert_eq!(std::fs::read(&model_path).unwrap(), b"silero-vad-model");
-    assert_eq!(
-        model_path,
-        tmp.join("voices")
-            .join("vad")
-            .join("silero-vad")
-            .join("silero_vad.onnx")
-    );
-    let _ = std::fs::remove_dir_all(tmp);
-}
-
-#[tokio::test]
-async fn audio_piper_executable_install_extracts_zip_and_returns_command() {
-    let upstream = spawn_piper_executable_archive().await;
-    let tmp = std::env::temp_dir().join(format!("milim-piper-exe-{}", uuid::Uuid::new_v4()));
-    let base = spawn(test_state().with_models_dir(tmp.clone())).await;
-    let client = reqwest::Client::new();
-
-    let response = client
-        .post(format!("{base}/audio/piper/executable/install"))
-        .json(&json!({
-            "archive_url": format!("{upstream}/piper.zip"),
-            "executable_name": "piper.exe"
-        }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(response.status(), reqwest::StatusCode::OK);
-    let body = response.text().await.unwrap();
-    let events = sse_json_events(&body);
-    assert!(
-        events.iter().any(|event| event["phase"] == "archive"),
-        "expected archive progress event in {body}"
-    );
-    assert!(
-        events.iter().any(|event| event["phase"] == "extract"),
-        "expected extract progress event in {body}"
-    );
-    let done = events
-        .iter()
-        .find(|event| event["done"] == true)
-        .expect("expected final done event");
-    let executable_path = std::path::PathBuf::from(done["executable_path"].as_str().unwrap());
-    assert_eq!(std::fs::read(&executable_path).unwrap(), b"fake-piper-exe");
-    assert!(executable_path.starts_with(tmp.join("tools").join("piper")));
-    let _ = std::fs::remove_dir_all(tmp);
 }
 
 #[tokio::test]
@@ -5497,7 +4406,7 @@ async fn agent_memory_register_streams_breadcrumb_event() {
 
     let nodes: Value = client
         .get(format!(
-            "{base}/memory/nodes?scope_kind=thread&scope_locator=thread-memory-event"
+            "{base}/memory/nodes?scope_kind=global&scope_locator=personal"
         ))
         .send()
         .await
@@ -5851,6 +4760,7 @@ async fn agent_run_can_spawn_waiting_child_thread() {
         .list_children("parent-1", Some(milim_agents::THREAD_STATUS_DONE), 10)
         .unwrap();
     assert_eq!(children.len(), 1);
+    assert_eq!(children[0].model, "child-thread-tool");
     assert_eq!(children[0].summary.as_deref(), Some("child report"));
 }
 
@@ -6418,6 +5328,7 @@ async fn schedules_crud_and_fire_due() {
         )
         .unwrap();
     schedule.created_unix = 0;
+    schedule.model = "test-model".to_string();
     store.upsert(&schedule).unwrap();
     let backend = MessageCaptureBackend::default();
     let seen_messages = backend.seen();
@@ -6473,6 +5384,7 @@ async fn schedules_crud_and_fire_due() {
         .json(&json!({
             "name":"nightly",
             "cron":"0 0 0 * * *",
+            "model":"test-model",
             "prompt":"hi",
             "attachments":[{
                 "id":"att-http",
@@ -6510,6 +5422,7 @@ async fn schedules_crud_and_fire_due() {
             "name": "weekday digest",
             "cron": "0 30 9 * * Mon-Fri",
             "agent_id": "agent-1",
+            "model": "test-model",
             "prompt": "Summarize today's queue",
             "attachments": [{
                 "id": "att-update",
@@ -6542,7 +5455,7 @@ async fn schedules_crud_and_fire_due() {
     // Invalid cron -> 400.
     let bad = client
         .post(format!("{base}/schedules"))
-        .json(&json!({"name":"x","cron":"not-a-cron","prompt":""}))
+        .json(&json!({"name":"x","cron":"not-a-cron","model":"test-model","prompt":""}))
         .send()
         .await
         .unwrap();
@@ -6560,6 +5473,7 @@ async fn schedule_mark_failure_prevents_agent_run() {
         .create("hourly", "0 0 * * * *", None, "must not run")
         .unwrap();
     schedule.created_unix = 0;
+    schedule.model = "test-model".to_string();
     store.upsert(&schedule).unwrap();
     let blocker = Database::open(&db_path).unwrap();
     blocker
@@ -6750,7 +5664,7 @@ async fn named_agent_create_get_run() {
     // Create.
     let created: Value = client
         .post(format!("{base}/agents"))
-        .json(&json!({"name":"Helper","model":"test-echo","system_prompt":"You help."}))
+        .json(&json!({"name":"Helper","model":"legacy-agent-model","system_prompt":"You help."}))
         .send()
         .await
         .unwrap()
@@ -6774,7 +5688,7 @@ async fn named_agent_create_get_run() {
         .json()
         .await
         .unwrap();
-    assert_eq!(got["model"], "test-echo");
+    assert_eq!(got["model"], "legacy-agent-model");
 
     // Run the named agent through the tool loop.
     let run: Value = client
@@ -6787,6 +5701,7 @@ async fn named_agent_create_get_run() {
         .await
         .unwrap();
     assert_eq!(run["object"], "agent.run");
+    assert_eq!(run["model"], "test-echo");
     assert_eq!(run["steps"][0]["name"], "echo");
 
     // Unknown agent -> 404.

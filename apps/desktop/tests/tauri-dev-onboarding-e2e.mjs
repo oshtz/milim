@@ -146,7 +146,7 @@ async function waitForOnboarding(page) {
 
 async function assertStoryActionLayout(page) {
   const metrics = await page.evaluate(() => {
-    const panel = document.querySelector("#onboarding-mode-title")?.closest(".onboarding-panel");
+    const panel = document.querySelector("#onboarding-model-title")?.closest(".onboarding-panel");
     const story = panel?.querySelector(".onboarding-story");
     const action = panel?.querySelector(".onboarding-step-body");
     const wordmark = panel?.querySelector(".onboarding-wordmark");
@@ -163,9 +163,9 @@ async function assertStoryActionLayout(page) {
     };
   });
 
-  if (!metrics) throw new Error("Mode onboarding story/action layout should exist.");
+  if (!metrics) throw new Error("Model onboarding story/action layout should exist.");
   if (!metrics.split || metrics.storyCentered > metrics.limit || metrics.actionCentered > metrics.limit) {
-    throw new Error(`Mode onboarding should use a centered story/action layout: ${JSON.stringify(metrics)}`);
+    throw new Error(`Model onboarding should use a centered story/action layout: ${JSON.stringify(metrics)}`);
   }
 }
 
@@ -204,7 +204,6 @@ async function setOnboardingOverride(page) {
       state: {
         version: 1,
         status: "in_progress",
-        selectedMode: null,
         selectedSetupPath: null,
         completedSteps: [],
         developerShowOnboarding: true,
@@ -226,7 +225,6 @@ async function setOnboardingOverride(page) {
         return (
           state?.version === 1 &&
           state?.status === "in_progress" &&
-          state?.selectedMode == null &&
           state?.selectedSetupPath == null &&
           state?.developerShowOnboarding === true &&
           Array.isArray(state?.completedSteps) &&
@@ -263,7 +261,6 @@ async function restoreOnboardingState(page, previous) {
 }
 
 async function completeOnboarding(page) {
-  await page.locator(".onboarding-choice", { hasText: "Simple" }).click();
   await page.getByRole("heading", { name: "Choose your default model" }).waitFor();
 
   const modelSummary = await page.locator(".onboarding-model-summary").innerText();
@@ -274,6 +271,8 @@ async function completeOnboarding(page) {
 
   await page.getByRole("button", { name: /Continue/ }).click();
   await page.getByRole("heading", { name: "Personalize chat defaults" }).waitFor();
+  await page.getByRole("button", { name: /Continue/ }).click();
+  await page.getByRole("heading", { name: "Set the working context" }).waitFor();
   await page.getByRole("button", { name: /Continue/ }).click();
   await page.getByRole("heading", { name: "Your workspace is ready" }).waitFor();
   await page.getByRole("button", { name: "Start chatting" }).click();

@@ -13,13 +13,13 @@ type ChatNotice = {
   tone: "info" | "warning" | "error";
 };
 
-type AgentModel = Pick<Agent, "id" | "model">;
+type AgentModel = Pick<Agent, "id">;
 
 export function queuedModelForSession(sessionId: string, fallback?: string, agents: AgentModel[] = []): string | null {
   const session = useSessions.getState().sessions.find((item) => item.id === sessionId);
   const settings = useSessions.getState().getSettings(sessionId);
-  const agent = settings.activeAgentId ? agents.find((item) => item.id === settings.activeAgentId) : null;
-  const selected = (session?.worker?.model || agent?.model || settings.model || fallback || "").trim();
+  void agents;
+  const selected = (session?.worker?.model || settings.model || fallback || "").trim();
   return selected || null;
 }
 

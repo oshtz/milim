@@ -15,11 +15,10 @@ import { markPerfRender } from "../lib/perf";
 import { previewRuntimeKeyForThread } from "../lib/previewRuntimeKeys";
 import { sessionRecencyLabel } from "../lib/sessionRecency.js";
 import { chatExportFilename, sessionExportPayload } from "../lib/threadExport";
-import { featureVisibleInMode } from "../ui/features";
 import { DEFAULT_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH, MIN_SIDEBAR_WIDTH, normalizeSidebarWidth, useUiPreferences } from "../ui/store";
 import { GitPanel } from "./GitPanel";
 import { useContextMenu } from "./ContextMenu";
-import { Archive, ArrowUp, Bolt, Calendar, ChevronDown, Cube, Download, FileText, Folder, FolderOpen, Gear, GitBranch, Lightbulb, MoreHorizontal, Pin, Plus, Search, Sidebar as PanelIcon } from "./icons";
+import { Archive, ArrowUp, Bolt, Calendar, ChevronDown, Cube, Download, Folder, FolderOpen, Gear, GitBranch, Lightbulb, MoreHorizontal, Pin, Plus, Search, Sidebar as PanelIcon } from "./icons";
 
 const SIDEBAR_KEYBOARD_STEP = 32;
 const SIDEBAR_DRAG_THRESHOLD = 5;
@@ -252,7 +251,6 @@ export function Sidebar({
   onManageSkills,
   onManageSchedules,
   onManageMcp,
-  onOpenRunJournal,
   onGitAction,
   onOpenGitPanel,
 }: {
@@ -262,7 +260,6 @@ export function Sidebar({
   onManageSkills: () => void;
   onManageSchedules: () => void;
   onManageMcp: () => void;
-  onOpenRunJournal: () => void;
   onGitAction: (text: string) => void;
   onOpenGitPanel: () => void;
 }) {
@@ -288,12 +285,9 @@ export function Sidebar({
   const moveSessionInSidebar = useSessions((s) => s.moveSessionInSidebar);
   const sidebarWidth = useUiPreferences((s) => s.sidebarWidth);
   const setSidebarWidth = useUiPreferences((s) => s.setSidebarWidth);
-  const interfaceMode = useUiPreferences((s) => s.interfaceMode);
   const newChatButtonAtBottom = useUiPreferences((s) => s.newChatButtonAtBottom);
-  const workbenchExpanded = useUiPreferences((s) => s.workbenchExpanded);
-  const setWorkbenchExpanded = useUiPreferences((s) => s.setWorkbenchExpanded);
-  const showWorkbenchControls = featureVisibleInMode("schedules", interfaceMode);
-  const showMcpControls = featureVisibleInMode("mcp", interfaceMode);
+  const toolsExpanded = useUiPreferences((s) => s.toolsExpanded);
+  const setToolsExpanded = useUiPreferences((s) => s.setToolsExpanded);
 
   const [editing, setEditing] = useState<string | null>(null);
   const [projectMenuOpen, setProjectMenuOpen] = useState(false);
@@ -328,18 +322,17 @@ export function Sidebar({
     return () => document.removeEventListener("mousedown", onDoc);
   }, [confirmArchiveId, confirmArchiveProjectId, projectMenuOpen]);
 
-  function openWorkbenchAction(action: () => void) {
+  function openToolsAction(action: () => void) {
     action();
   }
 
-  function renderWorkbenchActions(collapsedRail = false) {
+  function renderToolsActions(collapsedRail = false) {
     const iconSize = collapsedRail ? 15 : 13;
     const buttonClass = collapsedRail ? "icon-btn sidebar-workbench-action" : "sidebar-footer-item sidebar-workbench-action";
     const actions = [
-      { key: "runs", label: "Runs", icon: <FileText size={iconSize} />, action: onOpenRunJournal, visible: true },
-      { key: "mcp", label: "MCP Servers", icon: <Cube size={iconSize} />, action: onManageMcp, visible: showMcpControls },
+      { key: "mcp", label: "MCP Servers", icon: <Cube size={iconSize} />, action: onManageMcp, visible: true },
       { key: "skills", label: "Skills", icon: <Lightbulb size={iconSize} />, action: onManageSkills, visible: true },
-      { key: "schedules", label: "Schedules", icon: <Calendar size={iconSize} />, action: onManageSchedules, visible: showWorkbenchControls },
+      { key: "schedules", label: "Schedules", icon: <Calendar size={iconSize} />, action: onManageSchedules, visible: true },
     ];
     return actions.filter((item) => item.visible).map((item) => (
       <button
@@ -348,8 +341,8 @@ export function Sidebar({
         type="button"
         title={collapsedRail ? item.label : undefined}
         aria-label={collapsedRail ? item.label : undefined}
-        tabIndex={workbenchExpanded ? undefined : -1}
-        onClick={() => openWorkbenchAction(item.action)}
+        tabIndex={toolsExpanded ? undefined : -1}
+        onClick={() => openToolsAction(item.action)}
       >
         {item.icon}
         {!collapsedRail && <span>{item.label}</span>}
@@ -784,15 +777,15 @@ export function Sidebar({
             )}
           </div>
           <div className="sidebar-rail-bottom">
-            <div className={"sidebar-workbench-wrap collapsed" + (workbenchExpanded ? " expanded" : "")}>
-              <div className="sidebar-workbench-reveal collapsed" aria-label="Workbench" aria-hidden={!workbenchExpanded}>
-                <div className="sidebar-workbench-inline collapsed">{renderWorkbenchActions(true)}</div>
+            <div className={"sidebar-workbench-wrap collapsed" + (toolsExpanded ? " expanded" : "")}>
+              <div className="sidebar-workbench-reveal collapsed" aria-label="Tools" aria-hidden={!toolsExpanded}>
+                <div className="sidebar-workbench-inline collapsed">{renderToolsActions(true)}</div>
               </div>
               <button
                 className="icon-btn sidebar-workbench-toggle"
-                title={workbenchExpanded ? "Collapse Workbench" : "Workbench"}
-                onClick={() => setWorkbenchExpanded(!workbenchExpanded)}
-                aria-expanded={workbenchExpanded}
+                title={toolsExpanded ? "Collapse Tools" : "Tools"}
+                onClick={() => setToolsExpanded(!toolsExpanded)}
+                aria-expanded={toolsExpanded}
               >
                 <Bolt size={15} />
               </button>
@@ -1161,24 +1154,24 @@ export function Sidebar({
           )}
         </div>
 
-        {showWorkbenchControls && <GitPanel folder={activeFolder} model={activeModel} onDraftAction={onGitAction} onOpenPanel={onOpenGitPanel} />}
+        <GitPanel folder={activeFolder} model={activeModel} onDraftAction={onGitAction} onOpenPanel={onOpenGitPanel} />
 
         {newChatButtonAtBottom && newChatButton}
 
         <div className="sidebar-footer" aria-label="App controls">
-          <div className={"sidebar-workbench-wrap" + (workbenchExpanded ? " expanded" : "")}>
-            <div className="sidebar-workbench-reveal" aria-label="Workbench" aria-hidden={!workbenchExpanded}>
-              <div className="sidebar-workbench-inline">{renderWorkbenchActions()}</div>
+          <div className={"sidebar-workbench-wrap" + (toolsExpanded ? " expanded" : "")}>
+            <div className="sidebar-workbench-reveal" aria-label="Tools" aria-hidden={!toolsExpanded}>
+              <div className="sidebar-workbench-inline">{renderToolsActions()}</div>
             </div>
             <button
               className="sidebar-footer-item sidebar-workbench-toggle"
-              data-testid="open-workbench"
+              data-testid="open-tools"
               type="button"
-              onClick={() => setWorkbenchExpanded(!workbenchExpanded)}
-              aria-expanded={workbenchExpanded}
+              onClick={() => setToolsExpanded(!toolsExpanded)}
+              aria-expanded={toolsExpanded}
             >
               <Bolt size={14} />
-              <span>Workbench</span>
+              <span>Tools</span>
               <ChevronDown className="sidebar-workbench-caret" size={13} />
             </button>
           </div>

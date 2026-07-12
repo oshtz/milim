@@ -11,12 +11,6 @@ description = "The `milim` command-line interface."
 name = "milim"
 path = "src/main.rs"
 
-[features]
-# Enable local Whisper speech-to-text (heavy build; needs libclang/CMake).
-whisper = ["milim-voice/whisper"]
-# Enable local Silero ONNX voice activity detection through ONNX Runtime.
-native-vad = ["milim-server/native-vad", "milim-voice/native-vad"]
-
 [dependencies]
 milim-core.workspace = true
 milim-inference.workspace = true
@@ -28,7 +22,6 @@ milim-agents.workspace = true
 milim-skills.workspace = true
 milim-automation.workspace = true
 milim-identity.workspace = true
-milim-voice.workspace = true
 tokio.workspace = true
 clap.workspace = true
 reqwest.workspace = true

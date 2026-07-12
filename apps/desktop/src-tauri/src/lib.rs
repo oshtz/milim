@@ -2313,27 +2313,6 @@ fn macos_app_exists(name: &str) -> bool {
     .any(|path| path.is_dir())
 }
 
-#[cfg(feature = "computer-use")]
-#[tauri::command]
-async fn voice_type_text(text: String) -> std::result::Result<usize, String> {
-    let len = text.len();
-    if text.is_empty() {
-        return Ok(0);
-    }
-    tokio::task::spawn_blocking(move || {
-        computer_tools::type_text_input(&text).map_err(|e| format!("voice_type_text: {e}"))?;
-        Ok(len)
-    })
-    .await
-    .map_err(|e| format!("input task failed: {e}"))?
-}
-
-#[cfg(not(feature = "computer-use"))]
-#[tauri::command]
-async fn voice_type_text(_text: String) -> std::result::Result<usize, String> {
-    Err("Active-app dictation requires the desktop app to be built with computer-use.".to_string())
-}
-
 const UPDATE_DIR_NAME: &str = "milim-updates";
 const UPDATE_RECOVERY_ERROR_NAME: &str = "install-error.txt";
 const MAX_UPDATE_PACKAGE_BYTES: usize = 512 * 1024 * 1024;
@@ -3029,9 +3008,6 @@ fn build_state(
     if let Some(registry) = &registry {
         state = state.with_providers(registry.clone());
     }
-    state = attach_whisper_transcriber(state);
-    state = attach_native_vad(state);
-
     #[cfg(feature = "computer-use")]
     {
         state = state.with_computer_use(computer_gate);
@@ -3079,23 +3055,6 @@ fn build_state(
         Err(e) => eprintln!("memory store unavailable: {e}"),
     }
 
-    match milim_storage::Database::open_with_options(
-        &paths.user_db_file(),
-        DatabaseOptions {
-            journal_mode: JournalMode::Delete,
-        },
-    )
-    .and_then(milim_storage::RunJournalStore::new)
-    {
-        Ok(run_journal) => {
-            if let Err(e) = run_journal.mark_stale_running("App exited before this run completed.") {
-                eprintln!("run journal stale cleanup failed: {e}");
-            }
-            state = state.with_run_journal(run_journal);
-        }
-        Err(e) => eprintln!("run journal unavailable: {e}"),
-    }
-
     // Persisted cron schedules, shared by the Schedules sheet and the agent
     // schedule tools used for chat-created automations.
     let schedules_db = paths.root().join("schedules.db");
@@ -3125,50 +3084,6 @@ fn bind_desktop_server_listener(
     listener.set_nonblocking(true)?;
     let addr = listener.local_addr()?;
     Ok((listener, addr))
-}
-
-#[cfg(feature = "whisper")]
-fn attach_whisper_transcriber(mut state: AppState) -> AppState {
-    state = state.with_transcriber_factory(Arc::new(|path: String| {
-        milim_voice::WhisperTranscriber::from_model_file(path)
-            .map(|transcriber| Arc::new(transcriber) as Arc<dyn milim_voice::Transcriber>)
-    }));
-
-    match milim_voice::WhisperTranscriber::from_default_env() {
-        Ok(Some(transcriber)) => {
-            eprintln!("voice transcription enabled via MILIM_WHISPER_MODEL");
-            state = state.with_transcriber(Arc::new(transcriber));
-        }
-        Ok(None) => {}
-        Err(e) => eprintln!("voice transcription unavailable: {e}"),
-    }
-
-    state
-}
-
-#[cfg(not(feature = "whisper"))]
-fn attach_whisper_transcriber(state: AppState) -> AppState {
-    if non_empty_env("MILIM_WHISPER_MODEL").is_some() {
-        eprintln!(
-            "MILIM_WHISPER_MODEL is set, but the desktop app was built without the `whisper` feature"
-        );
-    }
-
-    state
-}
-
-#[cfg(feature = "native-vad")]
-fn attach_native_vad(mut state: AppState) -> AppState {
-    state = state.with_vad_factory(Arc::new(|path: String| {
-        milim_voice::NativeSileroVoiceActivityDetector::new(path)
-            .map(|detector| Arc::new(detector) as Arc<dyn milim_voice::VoiceActivityDetector>)
-    }));
-    state
-}
-
-#[cfg(not(feature = "native-vad"))]
-fn attach_native_vad(state: AppState) -> AppState {
-    state
 }
 
 /// Choose the inference backend: a configured remote, else an explicit
@@ -3334,7 +3249,6 @@ pub fn run() {
         .manage(DesktopPreviewRuntime(preview_runtime))
         .manage(preview_tools_state.clone())
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         // Persist + restore window size/position/maximized across restarts.
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .plugin(preview_webview::init())
@@ -3437,7 +3351,6 @@ pub fn run() {
             open_workspace_launcher,
             open_external_url,
             discover_harness_imports,
-            voice_type_text,
             get_update_platform,
             take_update_recovery_error,
             download_update_file,

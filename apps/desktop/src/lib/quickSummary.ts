@@ -4,6 +4,7 @@ import type {
   WorkspaceGitStatus,
 } from "../api";
 import type { GoalSettings } from "./goals";
+import { formatProviderLimits, formatThreadMetricsBreakdown, latestProviderLimits } from "./usageMetrics.js";
 
 export type QuickSummaryTone = "ready" | "warning" | "error" | "muted";
 export type QuickSummaryRowKind =
@@ -14,12 +15,10 @@ export type QuickSummaryRowKind =
   | "model"
   | "sources"
   | "privacy"
-  | "memory";
-export type QuickSummarySourceKind =
-  | "attachment"
-  | "artifact"
   | "memory"
-  | "run";
+  | "usage"
+  | "limits";
+export type QuickSummarySourceKind = "attachment" | "artifact" | "memory";
 
 export interface QuickSummaryRow {
   kind: QuickSummaryRowKind;
@@ -38,6 +37,7 @@ export interface QuickSummarySource {
 export interface QuickSummary {
   rows: QuickSummaryRow[];
   sources: QuickSummarySource[];
+  model?: string;
 }
 
 export interface BuildQuickSummaryInput {
@@ -50,7 +50,6 @@ export interface BuildQuickSummaryInput {
   gitStatus: WorkspaceGitStatus | null;
   messages: ChatMessage[];
   pendingAttachments?: ChatAttachment[];
-  composerText?: string;
   previewUrl?: string | null;
 }
 
@@ -187,30 +186,18 @@ function attachmentLabel(attachment: ChatAttachment): string {
   return attachment.sourcePath || attachment.name || attachment.id;
 }
 
-function runJournalAttached(text: string): boolean {
-  return /Context from prior Milim run:|Source run id:/i.test(text);
-}
-
 function summarySources(
   messages: ChatMessage[],
   pendingAttachments: ChatAttachment[] = [],
-  composerText = "",
 ): QuickSummarySource[] {
   const sources: QuickSummarySource[] = [];
   const seen = new Set<string>();
   for (const attachment of pendingAttachments) {
     appendSource(sources, seen, "attachment", `Pending: ${attachmentLabel(attachment)}`);
   }
-  if (runJournalAttached(composerText)) {
-    appendSource(sources, seen, "run", "Run journal context");
-  }
-
   for (const message of messages.slice(-12)) {
     for (const attachment of message.attachments ?? []) {
       appendSource(sources, seen, "attachment", attachmentLabel(attachment));
-    }
-    if (runJournalAttached(message.content)) {
-      appendSource(sources, seen, "run", "Run journal context");
     }
     for (const artifact of message.artifacts ?? []) {
       appendSource(
@@ -231,7 +218,7 @@ export function buildQuickSummary(input: BuildQuickSummaryInput): QuickSummary {
   const folder = input.folder.trim();
   const plan = latestPlan(input.messages);
   const goalObjective = input.goal.objective.trim();
-  const sources = summarySources(input.messages, input.pendingAttachments, input.composerText);
+  const sources = summarySources(input.messages, input.pendingAttachments);
   const rows: QuickSummaryRow[] = [workspaceRow(input.gitStatus, folder)];
 
   if (goalObjective) {
@@ -275,6 +262,25 @@ export function buildQuickSummary(input: BuildQuickSummaryInput): QuickSummary {
     tone: input.model.trim() ? undefined : "muted",
   });
 
+  const usage = formatThreadMetricsBreakdown(input.messages);
+  if (usage.label) {
+    rows.push({
+      kind: "usage",
+      label: "Thread usage",
+      value: usage.label,
+      title: usage.title ?? undefined,
+    });
+  }
+
+  const limits = formatProviderLimits(latestProviderLimits(input.messages));
+  if (limits) {
+    rows.push({
+      kind: "limits",
+      label: "Provider quota",
+      value: limits,
+    });
+  }
+
   if (input.privacy && input.privacy !== "off") {
     rows.push({
       kind: "privacy",
@@ -305,5 +311,6 @@ export function buildQuickSummary(input: BuildQuickSummaryInput): QuickSummary {
   return {
     rows,
     sources,
+    model: input.model,
   };
 }

@@ -18,16 +18,6 @@ tauri-build = { version = "2", features = [] }
 
 [features]
 default = ["computer-use"]
-# Local Whisper speech-to-text for the mic path. Requires
-# `MILIM_WHISPER_MODEL=/path/to/ggml-*.bin` at runtime.
-whisper = ["milim-voice/whisper"]
-# Native Silero ONNX VAD through ONNX Runtime. The UI setting remains opt-in.
-native-vad = ["milim-server/native-vad", "milim-voice/native-vad"]
-# Native Piper ONNX TTS through ONNX Runtime. Default desktop builds avoid this
-# heavier dependency; enable with `--features native-tts`.
-native-tts = ["milim-server/native-tts", "milim-voice/native-tts"]
-# Adds GPL-3.0-or-later eSpeak NG phonemization for mainstream Piper voices.
-native-tts-espeak = ["native-tts", "milim-server/native-tts-espeak", "milim-voice/native-tts-espeak"]
 # Screen capture + mouse/keyboard control (the computer-use layer). Pulls in
 # enigo (input) + xcap (capture) + image/base64 (encode the screenshot as a
 # data-URI for vision models). Dormant at runtime until the user enables the
@@ -37,7 +27,6 @@ computer-use = ["dep:enigo", "dep:xcap", "dep:image", "dep:core-graphics"]
 [dependencies]
 tauri = { version = "2", features = ["unstable", "tray-icon", "macos-private-api"] }
 tauri-plugin-dialog = "2"
-tauri-plugin-global-shortcut = "2"
 tauri-plugin-window-state = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -57,7 +46,6 @@ milim-skills = { path = "../../../crates/milim-skills" }
 milim-automation = { path = "../../../crates/milim-automation" }
 milim-sandbox = { path = "../../../crates/milim-sandbox" }
 milim-mcp-client = { path = "../../../crates/milim-mcp-client" }
-milim-voice = { path = "../../../crates/milim-voice" }
 async-trait = "0.1"
 tokio = { version = "1", features = ["rt"] }
 # Computer-use layer (optional; gated by the `computer-use` feature).

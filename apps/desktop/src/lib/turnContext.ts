@@ -111,7 +111,6 @@ export function editResendConversation(
 export function resolveTurnModel({
   selectedModel,
   session,
-  activeAgent,
   settings,
   requireModel,
 }: {
@@ -122,9 +121,7 @@ export function resolveTurnModel({
   requireModel: () => string | null;
 }): TurnModelResolution {
   const configuredModel = (
-    session?.worker?.model ||
-    activeAgent?.model ||
-    settings.model
+    session?.worker?.model || settings.model
   ).trim();
   const model = (selectedModel ?? configuredModel) || requireModel();
   return model

@@ -14,7 +14,6 @@ members = [
     "crates/milim-privacy",
     "crates/milim-sandbox",
     "crates/milim-mcp-client",
-    "crates/milim-voice",
     "crates/milim-cli",
 ]
 
@@ -35,16 +34,11 @@ async-stream = "0.3"
 # http
 axum = "0.8"
 tower-http = { version = "0.6", features = ["cors", "limit", "trace"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "stream", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 bytes = "1"
-flate2 = "1"
-tar = "0.4"
-zip = { version = "2", default-features = false, features = ["deflate"] }
 # serde
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-ort = "2.0.0-rc.12"
-espeak-ng = { version = "0.1.2", default-features = false, features = ["bundled-data-en"] }
 # cli / config
 clap = { version = "4", features = ["derive", "env"] }
 directories = "5"
@@ -56,7 +50,6 @@ thiserror = "2"
 anyhow = "1"
 uuid = { version = "1", features = ["v4"] }
 time = { version = "0.3", features = ["formatting"] }
-hound = "3.5"
 
 # internal crates
 milim-core = { path = "crates/milim-core" }
@@ -71,7 +64,6 @@ milim-skills = { path = "crates/milim-skills" }
 milim-privacy = { path = "crates/milim-privacy" }
 milim-sandbox = { path = "crates/milim-sandbox" }
 milim-mcp-client = { path = "crates/milim-mcp-client" }
-milim-voice = { path = "crates/milim-voice" }
 regex = "1"
 milim-automation = { path = "crates/milim-automation" }
 # storage

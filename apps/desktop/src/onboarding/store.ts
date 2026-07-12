@@ -1,27 +1,24 @@
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 import { userStateStorage } from "../persistence/userStateStorage.js";
-import type { InterfaceMode } from "../ui/store";
 
 export const ONBOARDING_STATE_VERSION = 1;
 export const ONBOARDING_DISMISS_SNOOZE_MS = 24 * 60 * 60 * 1000;
 
 export type OnboardingStatus = "not_started" | "in_progress" | "completed" | "dismissed";
 export type OnboardingSetupPath = "local_detect" | "hosted" | "codex";
-export type OnboardingStepId = "mode" | "model" | "defaults" | "workbench" | "finish";
+export type OnboardingStepId = "model" | "defaults" | "context" | "finish";
 
 interface OnboardingState {
   version: number;
   status: OnboardingStatus;
-  selectedMode: InterfaceMode | null;
   selectedSetupPath: OnboardingSetupPath | null;
   completedSteps: OnboardingStepId[];
   developerShowOnboarding: boolean;
   dismissedAt?: number;
   completedAt?: number;
   startedAt?: number;
-  start: (mode?: InterfaceMode) => void;
-  setMode: (mode: InterfaceMode) => void;
+  start: () => void;
   setSetupPath: (path: OnboardingSetupPath) => void;
   markStepComplete: (step: OnboardingStepId) => void;
   complete: () => void;
@@ -33,7 +30,6 @@ interface OnboardingState {
 const DEFAULT_STATE = {
   version: ONBOARDING_STATE_VERSION,
   status: "not_started" as OnboardingStatus,
-  selectedMode: null,
   selectedSetupPath: null,
   completedSteps: [] as OnboardingStepId[],
   developerShowOnboarding: false,
@@ -45,18 +41,15 @@ function withStep(steps: OnboardingStepId[], step: OnboardingStepId): Onboarding
 
 function normalizeSteps(value: unknown): OnboardingStepId[] {
   if (!Array.isArray(value)) return [];
-  const allowed = new Set<OnboardingStepId>(["mode", "model", "defaults", "workbench", "finish"]);
+  const allowed = new Set<OnboardingStepId>(["model", "defaults", "context", "finish"]);
   const out: OnboardingStepId[] = [];
   for (const item of value) {
-    if (allowed.has(item as OnboardingStepId) && !out.includes(item as OnboardingStepId)) {
-      out.push(item as OnboardingStepId);
+    const normalized = item === "workbench" ? "context" : item;
+    if (allowed.has(normalized as OnboardingStepId) && !out.includes(normalized as OnboardingStepId)) {
+      out.push(normalized as OnboardingStepId);
     }
   }
   return out;
-}
-
-function normalizeMode(value: unknown): InterfaceMode | null {
-  return value === "simple" || value === "workbench" ? value : null;
 }
 
 function normalizeSetupPath(value: unknown): OnboardingSetupPath | null {
@@ -91,20 +84,9 @@ export const useOnboarding = create<OnboardingState>()(
   persist(
     (set) => ({
       ...DEFAULT_STATE,
-      start: (mode) =>
+      start: () =>
         set((state) => ({
           status: "in_progress",
-          selectedMode: mode ?? state.selectedMode,
-          completedSteps: mode ? withStep(state.completedSteps, "mode") : state.completedSteps,
-          startedAt: state.startedAt ?? Date.now(),
-          dismissedAt: undefined,
-          completedAt: undefined,
-        })),
-      setMode: (mode) =>
-        set((state) => ({
-          status: "in_progress",
-          selectedMode: mode,
-          completedSteps: withStep(state.completedSteps, "mode"),
           startedAt: state.startedAt ?? Date.now(),
           dismissedAt: undefined,
           completedAt: undefined,
@@ -163,7 +145,6 @@ export const useOnboarding = create<OnboardingState>()(
           ...saved,
           version: ONBOARDING_STATE_VERSION,
           status: normalizeStatus(saved.status),
-          selectedMode: normalizeMode(saved.selectedMode),
           selectedSetupPath: normalizeSetupPath(saved.selectedSetupPath),
           completedSteps: normalizeSteps(saved.completedSteps),
           developerShowOnboarding: typeof saved.developerShowOnboarding === "boolean" ? saved.developerShowOnboarding : false,
@@ -172,7 +153,6 @@ export const useOnboarding = create<OnboardingState>()(
       partialize: (state) => ({
         version: ONBOARDING_STATE_VERSION,
         status: state.status,
-        selectedMode: state.selectedMode,
         selectedSetupPath: state.selectedSetupPath,
         completedSteps: state.completedSteps,
         developerShowOnboarding: state.developerShowOnboarding,

@@ -1,27 +1,22 @@
 ---
 id: voice-media-mobile
 path: voice-media-mobile
-label: Voice/media/mobile
-title: Voice, media, and mobile
-summary: Speech-to-text, VAD, text-to-speech, media generation, presets, and mobile companion.
+label: Media/mobile
+title: Media and mobile
+summary: Media generation and the mobile companion.
 group: Local data
 order: 80
-updated: 2026-07-03
+updated: 2026-07-12
 ---
 
-These features are optional extensions around the same desktop session. Voice writes into the composer, TTS reads responses back, media routes submit provider jobs, and the mobile companion mirrors desktop threads while sending phone prompts through the desktop session.
+These optional extensions share the same desktop session. Media routes submit provider jobs, and the mobile companion mirrors desktop threads while sending phone prompts through the desktop session. Voice input, dictation, transcription, speech playback, and audio HTTP routes are not part of Milim.
 
 ## Setup paths
 
 | Feature | Setup check |
 |---|---|
-| Speech-to-text | Configure the selected STT provider. Native Whisper builds require `MILIM_WHISPER_MODEL` and the `whisper` feature. |
-| VAD | Native VAD is behind the `native-vad` build feature. |
-| Text-to-speech | Piper and Kokoro presets install runtime assets under the Milim runtime directory. Native TTS is behind the `native-tts` feature. |
 | Media generation | Add Replicate, fal, or OpenRouter media-capable provider credentials. |
 | Mobile companion | Enable the companion bridge, use Tailscale setup or a manual phone URL, pair the phone, then use the phone view to read, switch, and send prompts through desktop threads. |
-
-Voice settings use bounded sliders for recording, VAD threshold, and TTS speed. STT/TTS API keys entered in the voice settings panel are stored machine-local and are not written to synced settings; reveal buttons only affect the current settings view. Global push-to-talk shortcuts are recorded by pressing the desired key combination.
 
 ## Media route
 

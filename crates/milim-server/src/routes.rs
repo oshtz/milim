@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::convert::Infallible;
 use std::net::SocketAddr;
-use std::path::{Component, Path as FsPath, PathBuf};
+use std::path::{Path as FsPath, PathBuf};
 use std::process::{Command, Output};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -12,42 +12,14 @@ use async_trait::async_trait;
 use axum::body::Body;
 use axum::extract::{ConnectInfo, Path, Query, State};
 use axum::http::header::{AUTHORIZATION, CONTENT_TYPE, USER_AGENT};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::HeaderMap;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Response};
 use axum::Json;
 use bytes::Bytes;
-use flate2::read::GzDecoder;
 use futures::{future::join_all, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tokio::io::AsyncWriteExt;
-
-use milim_core::api::anthropic::{self, MessagesRequest, MessagesResponse};
-use milim_core::api::ollama::{
-    OllamaChatRequest, OllamaChatResponse, OllamaMessage, OllamaModelDetails, OllamaModelTag,
-    OllamaTagsResponse,
-};
-use milim_core::api::openai::{
-    ChatCompletionRequest, ChatCompletionResponse, ChatMessage, Choice, Content, ContentPart,
-    FunctionCall, ImageUrl, Model, ModelsResponse, ReasoningEffort, StringOrArray,
-    Tool as OpenAiTool, ToolCall, ToolFunction, Usage,
-};
-use milim_core::Error;
-use milim_inference::remote::RemoteBackend;
-use milim_inference::{
-    CompletionRequest, EventStream, ModelService, SamplingParams, StreamEvent, ToolCallAccumulator,
-};
-use milim_tools::{Tool, ToolEffect, ToolRegistry};
-use milim_voice::{
-    validate_voice_command, validate_voice_model_file, CommandSpeechSynthesizer,
-    EnergyVoiceActivityDetector, OpenAiAudioSpeechSynthesizer, OpenAiAudioTranscriptionTranscriber,
-    ParakeetCommandTranscriber, PiperSpeechSynthesizer, RemoteRawTranscriber, SpeechInput,
-    Synthesizer, Transcriber, TranscriptionInput, VoiceActivityDetector, VoiceActivityInput,
-    DEFAULT_ENERGY_VAD_THRESHOLD, DEFAULT_PARAKEET_MODEL,
-};
-#[cfg(feature = "native-tts")]
-use milim_voice::{NativeKokoroSpeechSynthesizer, NativePiperSpeechSynthesizer};
 
 use crate::auth::authorize;
 use crate::companion::{
@@ -67,6 +39,22 @@ use crate::translate::{
     openai_to_completion,
 };
 use crate::{gen_id, now_unix, rfc3339_now};
+use milim_core::api::anthropic::{self, MessagesRequest, MessagesResponse};
+use milim_core::api::ollama::{
+    OllamaChatRequest, OllamaChatResponse, OllamaMessage, OllamaModelDetails, OllamaModelTag,
+    OllamaTagsResponse,
+};
+use milim_core::api::openai::{
+    ChatCompletionRequest, ChatCompletionResponse, ChatMessage, Choice, Content, ContentPart,
+    FunctionCall, ImageUrl, Model, ModelsResponse, ReasoningEffort, StringOrArray,
+    Tool as OpenAiTool, ToolCall, ToolFunction, Usage,
+};
+use milim_core::Error;
+use milim_inference::remote::RemoteBackend;
+use milim_inference::{
+    CompletionRequest, EventStream, ModelService, SamplingParams, StreamEvent, ToolCallAccumulator,
+};
+use milim_tools::{Tool, ToolEffect, ToolRegistry};
 
 // axum 0.8 routes `Option<T>` through `OptionalFromRequestParts`, which
 // `ConnectInfo` does not implement -- so extract it directly. `serve_listener`
@@ -3416,1205 +3404,6 @@ pub(crate) async fn mcp_call(
         .await
         .map_err(ApiError)?;
     Ok(Json(json!({ "result": result })).into_response())
-}
-
-#[derive(Debug, Deserialize)]
-pub(crate) struct PiperPresetDownloadRequest {
-    id: String,
-    model_url: String,
-    config_url: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub(crate) struct VadPresetDownloadRequest {
-    id: String,
-    model_url: String,
-}
-
-/// POST /audio/vad/presets/download - install a Silero VAD ONNX preset.
-pub(crate) async fn audio_vad_preset_download(
-    State(st): State<AppState>,
-    headers: HeaderMap,
-    peer: Peer,
-    Json(req): Json<VadPresetDownloadRequest>,
-) -> Result<Response, ApiError> {
-    authorize(&st, &headers, peer_addr(peer))?;
-    let id = safe_asset_id(&req.id, "VAD preset id")?;
-    let model_url = validate_download_url(&req.model_url, "VAD model URL")?;
-    let install_dir = st.models_dir.join("voices").join("vad").join(&id);
-    tokio::fs::create_dir_all(&install_dir).await.map_err(|e| {
-        ApiError(Error::Other(format!(
-            "failed to create VAD preset dir: {e}"
-        )))
-    })?;
-
-    let model_name = url_file_name(&model_url, "silero_vad.onnx")?;
-    let model_path = install_dir.join(model_name);
-
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(String, u64, Option<u64>)>();
-    let handle = tokio::spawn(async move {
-        let client = reqwest::Client::new();
-        download_file_with_progress(&client, &model_url, &model_path, "VAD model", "model", &tx)
-            .await?;
-        Ok::<_, ApiError>((id, model_path))
-    });
-
-    let stream = async_stream::stream! {
-        while let Some((phase, downloaded, total)) = rx.recv().await {
-            let data = json!({
-                "phase": phase,
-                "downloaded": downloaded,
-                "total": total,
-            })
-            .to_string();
-            yield Ok::<_, std::convert::Infallible>(Event::default().data(data));
-        }
-
-        let done = match handle.await {
-            Ok(Ok((id, model_path))) => json!({
-                "done": true,
-                "id": id,
-                "model_path": model_path.to_string_lossy(),
-                "message": "VAD preset installed"
-            }),
-            Ok(Err(e)) => json!({ "error": e.0.to_string() }),
-            Err(e) => json!({ "error": format!("VAD install task failed: {e}") }),
-        };
-        yield Ok(Event::default().data(done.to_string()));
-    };
-
-    Ok(Sse::new(stream)
-        .keep_alive(KeepAlive::default())
-        .into_response())
-}
-
-/// POST /audio/piper/presets/download - install a Piper preset model/config.
-pub(crate) async fn audio_piper_preset_download(
-    State(st): State<AppState>,
-    headers: HeaderMap,
-    peer: Peer,
-    Json(req): Json<PiperPresetDownloadRequest>,
-) -> Result<Response, ApiError> {
-    authorize(&st, &headers, peer_addr(peer))?;
-    let id = safe_preset_id(&req.id)?;
-    let model_url = validate_download_url(&req.model_url, "Piper model URL")?;
-    let config_url = validate_download_url(&req.config_url, "Piper config URL")?;
-    let install_dir = st.models_dir.join("voices").join("piper").join(&id);
-    tokio::fs::create_dir_all(&install_dir).await.map_err(|e| {
-        ApiError(Error::Other(format!(
-            "failed to create Piper preset dir: {e}"
-        )))
-    })?;
-
-    let model_name = url_file_name(&model_url, "voice.onnx")?;
-    let config_name = url_file_name(&config_url, "voice.onnx.json")?;
-    let model_path = install_dir.join(model_name);
-    let config_path = install_dir.join(config_name);
-
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(String, u64, Option<u64>)>();
-    let handle = tokio::spawn(async move {
-        let client = reqwest::Client::new();
-        download_file_with_progress(
-            &client,
-            &model_url,
-            &model_path,
-            "Piper model",
-            "model",
-            &tx,
-        )
-        .await?;
-        download_file_with_progress(
-            &client,
-            &config_url,
-            &config_path,
-            "Piper config",
-            "config",
-            &tx,
-        )
-        .await?;
-        Ok::<_, ApiError>((id, model_path, config_path))
-    });
-
-    let stream = async_stream::stream! {
-        while let Some((phase, downloaded, total)) = rx.recv().await {
-            let data = json!({
-                "phase": phase,
-                "downloaded": downloaded,
-                "total": total,
-            })
-            .to_string();
-            yield Ok::<_, std::convert::Infallible>(Event::default().data(data));
-        }
-
-        let done = match handle.await {
-            Ok(Ok((id, model_path, config_path))) => json!({
-                "done": true,
-                "id": id,
-                "model_path": model_path.to_string_lossy(),
-                "config_path": config_path.to_string_lossy(),
-                "message": "Piper preset installed"
-            }),
-            Ok(Err(e)) => json!({ "error": e.0.to_string() }),
-            Err(e) => json!({ "error": format!("Piper install task failed: {e}") }),
-        };
-        yield Ok(Event::default().data(done.to_string()));
-    };
-
-    Ok(Sse::new(stream)
-        .keep_alive(KeepAlive::default())
-        .into_response())
-}
-
-#[derive(Debug, Deserialize)]
-pub(crate) struct KokoroPresetDownloadRequest {
-    id: String,
-    model_url: String,
-    config_url: String,
-    voice_url: String,
-    voice: String,
-}
-
-/// POST /audio/kokoro/presets/download - install a Kokoro model/config/voice package.
-pub(crate) async fn audio_kokoro_preset_download(
-    State(st): State<AppState>,
-    headers: HeaderMap,
-    peer: Peer,
-    Json(req): Json<KokoroPresetDownloadRequest>,
-) -> Result<Response, ApiError> {
-    authorize(&st, &headers, peer_addr(peer))?;
-    let id = safe_asset_id(&req.id, "Kokoro preset id")?;
-    let voice = safe_kokoro_voice_id(&req.voice)?;
-    let model_url = validate_download_url(&req.model_url, "Kokoro model URL")?;
-    let config_url = validate_download_url(&req.config_url, "Kokoro config URL")?;
-    let voice_url = validate_download_url(&req.voice_url, "Kokoro voice URL")?;
-    let install_dir = st.models_dir.join("voices").join("kokoro").join(&id);
-    let onnx_dir = install_dir.join("onnx");
-    let voices_dir = install_dir.join("voices");
-    tokio::fs::create_dir_all(&onnx_dir).await.map_err(|e| {
-        ApiError(Error::Other(format!(
-            "failed to create Kokoro model dir: {e}"
-        )))
-    })?;
-    tokio::fs::create_dir_all(&voices_dir).await.map_err(|e| {
-        ApiError(Error::Other(format!(
-            "failed to create Kokoro voices dir: {e}"
-        )))
-    })?;
-
-    let model_name = url_file_name(&model_url, "model.onnx")?;
-    let model_path = onnx_dir.join(model_name);
-    let config_path = install_dir.join("config.json");
-    let voice_path = voices_dir.join(format!("{voice}.bin"));
-
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(String, u64, Option<u64>)>();
-    let handle = tokio::spawn(async move {
-        let client = reqwest::Client::new();
-        download_file_with_progress(
-            &client,
-            &model_url,
-            &model_path,
-            "Kokoro model",
-            "model",
-            &tx,
-        )
-        .await?;
-        download_file_with_progress(
-            &client,
-            &config_url,
-            &config_path,
-            "Kokoro config",
-            "config",
-            &tx,
-        )
-        .await?;
-        download_file_with_progress(
-            &client,
-            &voice_url,
-            &voice_path,
-            "Kokoro voice",
-            "voice",
-            &tx,
-        )
-        .await?;
-        Ok::<_, ApiError>((id, voice, model_path, config_path, voice_path))
-    });
-
-    let stream = async_stream::stream! {
-        while let Some((phase, downloaded, total)) = rx.recv().await {
-            let data = json!({
-                "phase": phase,
-                "downloaded": downloaded,
-                "total": total,
-            })
-            .to_string();
-            yield Ok::<_, std::convert::Infallible>(Event::default().data(data));
-        }
-
-        let done = match handle.await {
-            Ok(Ok((id, voice, model_path, config_path, voice_path))) => json!({
-                "done": true,
-                "id": id,
-                "voice": voice,
-                "model_path": model_path.to_string_lossy(),
-                "config_path": config_path.to_string_lossy(),
-                "voice_path": voice_path.to_string_lossy(),
-                "message": "Kokoro preset installed"
-            }),
-            Ok(Err(e)) => json!({ "error": e.0.to_string() }),
-            Err(e) => json!({ "error": format!("Kokoro install task failed: {e}") }),
-        };
-        yield Ok(Event::default().data(done.to_string()));
-    };
-
-    Ok(Sse::new(stream)
-        .keep_alive(KeepAlive::default())
-        .into_response())
-}
-
-#[derive(Debug, Deserialize)]
-pub(crate) struct PiperExecutableInstallRequest {
-    #[serde(default)]
-    archive_url: Option<String>,
-    #[serde(default)]
-    executable_name: Option<String>,
-}
-
-/// POST /audio/piper/executable/install - install the platform Piper CLI archive.
-pub(crate) async fn audio_piper_executable_install(
-    State(st): State<AppState>,
-    headers: HeaderMap,
-    peer: Peer,
-    Json(req): Json<PiperExecutableInstallRequest>,
-) -> Result<Response, ApiError> {
-    authorize(&st, &headers, peer_addr(peer))?;
-    let (archive_url, default_executable_name) = match req.archive_url {
-        Some(url) => (
-            validate_download_url(&url, "Piper executable archive URL")?,
-            default_piper_executable_name().to_string(),
-        ),
-        None => default_piper_archive()?,
-    };
-    let executable_name = req
-        .executable_name
-        .map(|name| safe_executable_name(&name))
-        .transpose()?
-        .unwrap_or(default_executable_name);
-
-    let archive_name = url_file_name(&archive_url, "piper.zip")?;
-    let install_name = safe_archive_install_name(&archive_name)?;
-    let install_dir = st.models_dir.join("tools").join("piper").join(install_name);
-    tokio::fs::create_dir_all(&install_dir).await.map_err(|e| {
-        ApiError(Error::Other(format!(
-            "failed to create Piper executable dir: {e}"
-        )))
-    })?;
-    let archive_path = install_dir.join(&archive_name);
-
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(String, u64, Option<u64>)>();
-    let handle = tokio::spawn(async move {
-        let client = reqwest::Client::new();
-        download_file_with_progress(
-            &client,
-            &archive_url,
-            &archive_path,
-            "Piper executable archive",
-            "archive",
-            &tx,
-        )
-        .await?;
-        send_download_progress(&tx, "extract", 0, Some(1));
-        let executable_path = tokio::task::spawn_blocking(move || {
-            extract_piper_archive(&archive_path, &install_dir, &executable_name)
-        })
-        .await
-        .map_err(|e| ApiError(Error::Other(format!("Piper extraction task failed: {e}"))))?
-        .map_err(ApiError)?;
-        send_download_progress(&tx, "extract", 1, Some(1));
-        Ok::<_, ApiError>(executable_path)
-    });
-
-    let stream = async_stream::stream! {
-        while let Some((phase, downloaded, total)) = rx.recv().await {
-            let data = json!({
-                "phase": phase,
-                "downloaded": downloaded,
-                "total": total,
-            })
-            .to_string();
-            yield Ok::<_, std::convert::Infallible>(Event::default().data(data));
-        }
-
-        let done = match handle.await {
-            Ok(Ok(executable_path)) => json!({
-                "done": true,
-                "executable_path": executable_path.to_string_lossy(),
-                "message": "Piper executable installed"
-            }),
-            Ok(Err(e)) => json!({ "error": e.0.to_string() }),
-            Err(e) => json!({ "error": format!("Piper executable install task failed: {e}") }),
-        };
-        yield Ok(Event::default().data(done.to_string()));
-    };
-
-    Ok(Sse::new(stream)
-        .keep_alive(KeepAlive::default())
-        .into_response())
-}
-
-fn safe_preset_id(id: &str) -> Result<String, ApiError> {
-    safe_asset_id(id, "Piper preset id")
-}
-
-fn safe_kokoro_voice_id(id: &str) -> Result<String, ApiError> {
-    let id = id.trim().strip_suffix(".bin").unwrap_or(id.trim());
-    safe_asset_id(id, "Kokoro voice id")
-}
-
-fn safe_asset_id(id: &str, label: &str) -> Result<String, ApiError> {
-    let id = id.trim();
-    if id.is_empty() {
-        return Err(ApiError(Error::InvalidRequest(format!(
-            "{label} is required"
-        ))));
-    }
-    if !id
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
-    {
-        return Err(ApiError(Error::InvalidRequest(format!(
-            "invalid {label}: {id}"
-        ))));
-    }
-    Ok(id.to_string())
-}
-
-fn default_piper_archive() -> Result<(String, String), ApiError> {
-    let asset = match (std::env::consts::OS, std::env::consts::ARCH) {
-        ("windows", "x86_64") => "piper_windows_amd64.zip",
-        ("linux", "x86_64") => "piper_linux_x86_64.tar.gz",
-        ("linux", "aarch64") => "piper_linux_aarch64.tar.gz",
-        ("linux", "arm") => "piper_linux_armv7l.tar.gz",
-        ("macos", "x86_64") => "piper_macos_x64.tar.gz",
-        ("macos", "aarch64") => "piper_macos_aarch64.tar.gz",
-        (os, arch) => {
-            return Err(ApiError(Error::InvalidRequest(format!(
-                "no default Piper executable archive for {os}/{arch}"
-            ))))
-        }
-    };
-    Ok((
-        format!("https://github.com/rhasspy/piper/releases/download/2023.11.14-2/{asset}"),
-        default_piper_executable_name().to_string(),
-    ))
-}
-
-fn default_piper_executable_name() -> &'static str {
-    if cfg!(windows) {
-        "piper.exe"
-    } else {
-        "piper"
-    }
-}
-
-fn safe_executable_name(name: &str) -> Result<String, ApiError> {
-    let name = name.trim();
-    if name.is_empty() || name.contains('/') || name.contains('\\') {
-        return Err(ApiError(Error::InvalidRequest(
-            "Piper executable name must be a single file name".to_string(),
-        )));
-    }
-    Ok(name.to_string())
-}
-
-fn safe_archive_install_name(file_name: &str) -> Result<String, ApiError> {
-    let name = file_name
-        .strip_suffix(".tar.gz")
-        .or_else(|| file_name.strip_suffix(".tgz"))
-        .or_else(|| file_name.strip_suffix(".zip"))
-        .unwrap_or_else(|| {
-            FsPath::new(file_name)
-                .file_stem()
-                .and_then(|stem| stem.to_str())
-                .unwrap_or(file_name)
-        });
-    safe_preset_id(name).map_err(|_| {
-        ApiError(Error::InvalidRequest(format!(
-            "invalid Piper executable archive name: {file_name}"
-        )))
-    })
-}
-
-fn validate_download_url(url: &str, label: &str) -> Result<String, ApiError> {
-    let url = url.trim();
-    let parsed = reqwest::Url::parse(url)
-        .map_err(|e| ApiError(Error::InvalidRequest(format!("{label} is invalid: {e}"))))?;
-    if parsed.scheme() != "http" && parsed.scheme() != "https" {
-        return Err(ApiError(Error::InvalidRequest(format!(
-            "{label} must start with http:// or https://"
-        ))));
-    }
-    Ok(parsed.to_string())
-}
-
-fn url_file_name(url: &str, fallback: &str) -> Result<String, ApiError> {
-    let parsed = reqwest::Url::parse(url).map_err(|e| {
-        ApiError(Error::InvalidRequest(format!(
-            "download URL is invalid: {e}"
-        )))
-    })?;
-    let name = parsed
-        .path_segments()
-        .and_then(|mut segments| segments.next_back())
-        .filter(|segment| !segment.is_empty())
-        .unwrap_or(fallback);
-    let Some(file_name) = FsPath::new(name).file_name() else {
-        return Err(ApiError(Error::InvalidRequest(format!(
-            "invalid download file name: {name}"
-        ))));
-    };
-    Ok(file_name.to_string_lossy().to_string())
-}
-
-fn extract_piper_archive(
-    archive_path: &FsPath,
-    install_dir: &FsPath,
-    executable_name: &str,
-) -> Result<PathBuf, Error> {
-    let archive_name = archive_path
-        .file_name()
-        .map(|name| name.to_string_lossy())
-        .unwrap_or_default();
-    if archive_name.ends_with(".zip") {
-        extract_zip_archive(archive_path, install_dir)?;
-    } else if archive_name.ends_with(".tar.gz") || archive_name.ends_with(".tgz") {
-        extract_tar_gz_archive(archive_path, install_dir)?;
-    } else {
-        return Err(Error::InvalidRequest(format!(
-            "unsupported Piper executable archive format: {archive_name}"
-        )));
-    }
-
-    let executable_path = find_file_named(install_dir, executable_name)?.ok_or_else(|| {
-        Error::InvalidRequest(format!(
-            "Piper executable {executable_name} was not found in the archive"
-        ))
-    })?;
-    mark_executable(&executable_path)?;
-    Ok(executable_path)
-}
-
-fn extract_zip_archive(archive_path: &FsPath, install_dir: &FsPath) -> Result<(), Error> {
-    let file = std::fs::File::open(archive_path)?;
-    let mut archive =
-        zip::ZipArchive::new(file).map_err(|e| Error::InvalidRequest(e.to_string()))?;
-    for index in 0..archive.len() {
-        let mut entry = archive
-            .by_index(index)
-            .map_err(|e| Error::InvalidRequest(e.to_string()))?;
-        let Some(path) = entry.enclosed_name().map(|path| path.to_path_buf()) else {
-            return Err(Error::InvalidRequest(format!(
-                "unsafe archive path: {}",
-                entry.name()
-            )));
-        };
-        let dest = safe_archive_path(install_dir, &path)?;
-        if entry.is_dir() {
-            std::fs::create_dir_all(&dest)?;
-        } else {
-            if let Some(parent) = dest.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            let mut out = std::fs::File::create(&dest)?;
-            std::io::copy(&mut entry, &mut out)?;
-        }
-    }
-    Ok(())
-}
-
-fn extract_tar_gz_archive(archive_path: &FsPath, install_dir: &FsPath) -> Result<(), Error> {
-    let file = std::fs::File::open(archive_path)?;
-    let gz = GzDecoder::new(file);
-    let mut archive = tar::Archive::new(gz);
-    for entry in archive.entries()? {
-        let mut entry = entry?;
-        let path = entry.path()?.to_path_buf();
-        let dest = safe_archive_path(install_dir, &path)?;
-        if entry.header().entry_type().is_dir() {
-            std::fs::create_dir_all(&dest)?;
-        } else {
-            if let Some(parent) = dest.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            entry.unpack(&dest)?;
-        }
-    }
-    Ok(())
-}
-
-fn safe_archive_path(base: &FsPath, path: &FsPath) -> Result<PathBuf, Error> {
-    let mut out = base.to_path_buf();
-    for component in path.components() {
-        match component {
-            Component::CurDir => {}
-            Component::Normal(part) => out.push(part),
-            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
-                return Err(Error::InvalidRequest(format!(
-                    "unsafe archive path: {}",
-                    path.display()
-                )))
-            }
-        }
-    }
-    Ok(out)
-}
-
-fn find_file_named(dir: &FsPath, file_name: &str) -> Result<Option<PathBuf>, Error> {
-    for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.is_dir() {
-            if let Some(found) = find_file_named(&path, file_name)? {
-                return Ok(Some(found));
-            }
-        } else if path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| name == file_name)
-        {
-            return Ok(Some(path));
-        }
-    }
-    Ok(None)
-}
-
-#[cfg(unix)]
-fn mark_executable(path: &FsPath) -> Result<(), Error> {
-    use std::os::unix::fs::PermissionsExt;
-
-    let mut permissions = std::fs::metadata(path)?.permissions();
-    permissions.set_mode(permissions.mode() | 0o755);
-    std::fs::set_permissions(path, permissions)?;
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn mark_executable(_path: &FsPath) -> Result<(), Error> {
-    Ok(())
-}
-
-async fn download_file_with_progress(
-    client: &reqwest::Client,
-    url: &str,
-    dest: &std::path::Path,
-    label: &str,
-    phase: &str,
-    tx: &tokio::sync::mpsc::UnboundedSender<(String, u64, Option<u64>)>,
-) -> Result<(), ApiError> {
-    let resp = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|e| ApiError(Error::Upstream(format!("{label} download failed: {e}"))))?;
-    let status = resp.status();
-    if !status.is_success() {
-        return Err(ApiError(Error::Upstream(format!(
-            "{label} download returned HTTP {status}"
-        ))));
-    }
-    let total = resp.content_length();
-    let tmp = dest.with_extension("part");
-    let mut out = tokio::fs::File::create(&tmp)
-        .await
-        .map_err(|e| ApiError(Error::Other(format!("failed to write {label}: {e}"))))?;
-    let mut stream = resp.bytes_stream();
-    let mut written = 0_u64;
-    let mut last_reported = 0_u64;
-    send_download_progress(tx, phase, 0, total);
-
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk
-            .map_err(|e| ApiError(Error::Upstream(format!("{label} download failed: {e}"))))?;
-        out.write_all(&chunk)
-            .await
-            .map_err(|e| ApiError(Error::Other(format!("failed to write {label}: {e}"))))?;
-        written += chunk.len() as u64;
-        let is_last = total.map(|total| written >= total).unwrap_or(false);
-        if is_last || written.saturating_sub(last_reported) >= 1_000_000 {
-            send_download_progress(tx, phase, written, total);
-            last_reported = written;
-        }
-    }
-
-    if written == 0 {
-        return Err(ApiError(Error::Upstream(format!(
-            "{label} download returned no bytes"
-        ))));
-    }
-    if last_reported != written {
-        send_download_progress(tx, phase, written, total);
-    }
-    out.flush()
-        .await
-        .map_err(|e| ApiError(Error::Other(format!("failed to write {label}: {e}"))))?;
-    drop(out);
-    tokio::fs::rename(&tmp, dest)
-        .await
-        .map_err(|e| ApiError(Error::Other(format!("failed to install {label}: {e}"))))
-}
-
-fn send_download_progress(
-    tx: &tokio::sync::mpsc::UnboundedSender<(String, u64, Option<u64>)>,
-    phase: &str,
-    downloaded: u64,
-    total: Option<u64>,
-) {
-    let _ = tx.send((phase.to_string(), downloaded, total));
-}
-
-// ----- Voice (speech-to-text) -----
-
-#[derive(Debug, Deserialize)]
-pub(crate) struct AudioSetupCheckRequest {
-    kind: String,
-    #[serde(default)]
-    command: Option<String>,
-    #[serde(default)]
-    model_path: Option<String>,
-    #[serde(default)]
-    config_path: Option<String>,
-    #[serde(default)]
-    endpoint: Option<String>,
-    #[serde(default)]
-    model: Option<String>,
-}
-
-/// POST /audio/setup/check - validate local voice executable/model settings.
-pub(crate) async fn audio_setup_check(
-    State(st): State<AppState>,
-    headers: HeaderMap,
-    peer: Peer,
-    Json(request): Json<AudioSetupCheckRequest>,
-) -> Result<Response, ApiError> {
-    authorize(&st, &headers, peer_addr(peer))?;
-    let kind = request.kind.trim();
-    match kind {
-        "parakeet" => {
-            let command = request.command.as_deref().unwrap_or_default();
-            let resolved = validate_voice_command(command).map_err(ApiError)?;
-            Ok(Json(json!({
-                "ok": true,
-                "message": format!("Parakeet command found: {resolved}")
-            }))
-            .into_response())
-        }
-        "tts-command" => {
-            let command = request.command.as_deref().unwrap_or_default();
-            let resolved = validate_voice_command(command).map_err(ApiError)?;
-            Ok(Json(json!({
-                "ok": true,
-                "message": format!("TTS command found: {resolved}")
-            }))
-            .into_response())
-        }
-        "openai-tts" => {
-            let endpoint = request.endpoint.as_deref().unwrap_or_default();
-            let model = request.model.as_deref().unwrap_or_default().trim();
-            let resolved = validate_download_url(endpoint, "OpenAI-compatible TTS endpoint")?;
-            if model.is_empty() {
-                return Err(ApiError(Error::InvalidRequest(
-                    "OpenAI-compatible TTS model is required".to_string(),
-                )));
-            }
-            Ok(Json(json!({
-                "ok": true,
-                "message": format!("OpenAI-compatible TTS endpoint configured: {resolved}; model: {model}")
-            }))
-            .into_response())
-        }
-        "native-tts" => {
-            let model_path = request.model_path.as_deref().unwrap_or_default();
-            let resolved_model =
-                validate_voice_model_file(model_path, "Native TTS model path").map_err(ApiError)?;
-            let message = if let Some(config_path) = request
-                .config_path
-                .as_deref()
-                .filter(|v| !v.trim().is_empty())
-            {
-                let resolved_config =
-                    validate_voice_model_file(config_path, "Native TTS config path")
-                        .map_err(ApiError)?;
-                format!("Native TTS model found: {resolved_model}; config found: {resolved_config}")
-            } else {
-                format!("Native TTS model found: {resolved_model}")
-            };
-            Ok(Json(json!({
-                "ok": true,
-                "message": message
-            }))
-            .into_response())
-        }
-        "native-vad" => {
-            let model_path = request.model_path.as_deref().unwrap_or_default();
-            let resolved =
-                validate_voice_model_file(model_path, "Native VAD model path").map_err(ApiError)?;
-            Ok(Json(json!({
-                "ok": true,
-                "message": format!("Native VAD model found: {resolved}")
-            }))
-            .into_response())
-        }
-        "whisper" => {
-            let model_path = request.model_path.as_deref().unwrap_or_default();
-            let resolved =
-                validate_voice_model_file(model_path, "Whisper model path").map_err(ApiError)?;
-            Ok(Json(json!({
-                "ok": true,
-                "message": format!("Whisper model found: {resolved}")
-            }))
-            .into_response())
-        }
-        "piper" => {
-            let command = request.command.as_deref().unwrap_or_default();
-            let model_path = request.model_path.as_deref().unwrap_or_default();
-            let resolved_command = validate_voice_command(command).map_err(ApiError)?;
-            let resolved_model =
-                validate_voice_model_file(model_path, "Piper model path").map_err(ApiError)?;
-            Ok(Json(json!({
-                "ok": true,
-                "message": format!("Piper command found: {resolved_command}; model found: {resolved_model}")
-            }))
-            .into_response())
-        }
-        _ => Err(ApiError(Error::InvalidRequest(format!(
-            "unknown voice setup check: {kind}"
-        )))),
-    }
-}
-
-#[derive(Debug, Default, Deserialize)]
-pub(crate) struct AudioTranscriptionQuery {
-    provider: Option<String>,
-    model_path: Option<String>,
-    endpoint: Option<String>,
-    model: Option<String>,
-    command: Option<String>,
-}
-
-/// POST /audio/transcriptions - OpenAI-style STT (accepts a WAV body).
-/// Concrete transcription is delegated to an optional backend.
-pub(crate) async fn audio_transcriptions(
-    State(st): State<AppState>,
-    Query(query): Query<AudioTranscriptionQuery>,
-    headers: HeaderMap,
-    peer: Peer,
-    body: axum::body::Bytes,
-) -> Result<Response, ApiError> {
-    authorize(&st, &headers, peer_addr(peer))?;
-    let Some(transcriber) = transcriber_for_audio_request(&st, &query, &headers)? else {
-        return Ok((
-            StatusCode::NOT_IMPLEMENTED,
-            Json(json!({
-                "error": "voice transcription is not enabled in this build - configure a transcriber backend"
-            })),
-        )
-            .into_response());
-    };
-    let out = transcriber
-        .transcribe(TranscriptionInput {
-            audio: body.to_vec(),
-            mime_type: headers
-                .get(CONTENT_TYPE)
-                .and_then(|v| v.to_str().ok())
-                .map(str::to_string),
-        })
-        .await
-        .map_err(ApiError)?;
-    Ok(Json(json!({ "text": out.text })).into_response())
-}
-
-#[derive(Debug, Default, Deserialize)]
-pub(crate) struct AudioVadQuery {
-    provider: Option<String>,
-    model_path: Option<String>,
-    threshold: Option<f32>,
-}
-
-/// POST /audio/vad - classify whether a WAV payload contains speech.
-pub(crate) async fn audio_vad(
-    State(st): State<AppState>,
-    Query(query): Query<AudioVadQuery>,
-    headers: HeaderMap,
-    peer: Peer,
-    body: axum::body::Bytes,
-) -> Result<Response, ApiError> {
-    authorize(&st, &headers, peer_addr(peer))?;
-    let Some(detector) = vad_for_audio_request(&st, &query)? else {
-        return Ok((
-            StatusCode::NOT_IMPLEMENTED,
-            Json(json!({
-                "error": "voice activity detection is not enabled - configure a VAD backend"
-            })),
-        )
-            .into_response());
-    };
-    let out = detector
-        .detect(VoiceActivityInput {
-            audio: body.to_vec(),
-            mime_type: headers
-                .get(CONTENT_TYPE)
-                .and_then(|v| v.to_str().ok())
-                .map(str::to_string),
-        })
-        .await
-        .map_err(ApiError)?;
-    Ok(Json(json!({
-        "is_speech": out.is_speech,
-        "speech_probability": out.speech_probability
-    }))
-    .into_response())
-}
-
-#[derive(Debug, Default, Deserialize)]
-pub(crate) struct AudioSpeechQuery {
-    provider: Option<String>,
-    command: Option<String>,
-    endpoint: Option<String>,
-    model: Option<String>,
-    engine: Option<String>,
-    model_path: Option<String>,
-    config_path: Option<String>,
-    voice: Option<String>,
-    speed: Option<f32>,
-}
-
-#[derive(Debug, Deserialize)]
-pub(crate) struct AudioSpeechRequest {
-    input: String,
-    #[serde(default)]
-    voice: Option<String>,
-    #[serde(default)]
-    speed: Option<f32>,
-}
-
-/// POST /audio/speech - OpenAI-style TTS surface backed by a local command.
-pub(crate) async fn audio_speech(
-    State(st): State<AppState>,
-    Query(query): Query<AudioSpeechQuery>,
-    headers: HeaderMap,
-    peer: Peer,
-    Json(request): Json<AudioSpeechRequest>,
-) -> Result<Response, ApiError> {
-    authorize(&st, &headers, peer_addr(peer))?;
-    let provider = query
-        .provider
-        .as_deref()
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-        .unwrap_or("");
-    if provider == "native" {
-        let engine = query
-            .engine
-            .as_deref()
-            .map(str::trim)
-            .filter(|v| !v.is_empty())
-            .unwrap_or("piper");
-        if engine == "kokoro" {
-            #[cfg(not(feature = "native-tts"))]
-            return Ok((
-                StatusCode::NOT_IMPLEMENTED,
-                Json(json!({
-                    "error": "Kokoro native TTS is not enabled yet"
-                })),
-            )
-                .into_response());
-        }
-        if engine != "piper" && engine != "kokoro" {
-            return Err(ApiError(Error::InvalidRequest(format!(
-                "unknown native TTS engine: {engine}"
-            ))));
-        }
-        let Some(model_path) = query.model_path.as_deref().filter(|v| !v.is_empty()) else {
-            return Err(ApiError(Error::InvalidRequest(
-                "Native TTS model path is required".to_string(),
-            )));
-        };
-        let _config_path = query.config_path.as_deref().filter(|v| !v.is_empty());
-
-        #[cfg(feature = "native-tts")]
-        {
-            let voice = request
-                .voice
-                .as_deref()
-                .map(str::trim)
-                .filter(|v| !v.is_empty())
-                .or_else(|| {
-                    query
-                        .voice
-                        .as_deref()
-                        .map(str::trim)
-                        .filter(|v| !v.is_empty())
-                })
-                .unwrap_or("0")
-                .to_string();
-            let speed = request.speed.or(query.speed).unwrap_or(1.0);
-            let input = SpeechInput {
-                text: request.input,
-                voice: Some(voice.clone()),
-                speed: Some(speed),
-            };
-            let out = if engine == "kokoro" {
-                NativeKokoroSpeechSynthesizer::new(model_path, _config_path, &voice, speed)
-                    .map_err(ApiError)?
-                    .synthesize(input)
-                    .await
-                    .map_err(ApiError)?
-            } else {
-                NativePiperSpeechSynthesizer::new(model_path, _config_path, &voice, speed)
-                    .map_err(ApiError)?
-                    .synthesize(input)
-                    .await
-                    .map_err(ApiError)?
-            };
-            return Response::builder()
-                .header(CONTENT_TYPE, out.mime_type)
-                .body(Body::from(out.audio))
-                .map_err(|e| ApiError(Error::Other(format!("failed to build TTS response: {e}"))));
-        }
-
-        #[cfg(not(feature = "native-tts"))]
-        return Ok((
-            StatusCode::NOT_IMPLEMENTED,
-            Json(json!({
-                "error": format!("native TTS is not enabled in this build (engine: {engine}, model: {model_path})")
-            })),
-        )
-            .into_response());
-    }
-    if provider != "command" && provider != "piper" && provider != "openai" {
-        return Ok((
-            StatusCode::NOT_IMPLEMENTED,
-            Json(json!({
-                "error": "text-to-speech is not enabled - configure a supported TTS backend"
-            })),
-        )
-            .into_response());
-    }
-    let voice = request
-        .voice
-        .as_deref()
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-        .or_else(|| {
-            query
-                .voice
-                .as_deref()
-                .map(str::trim)
-                .filter(|v| !v.is_empty())
-        })
-        .unwrap_or("alloy")
-        .to_string();
-    let speed = request.speed.or(query.speed).unwrap_or(1.0);
-    let input = SpeechInput {
-        text: request.input,
-        voice: Some(voice.clone()),
-        speed: Some(speed),
-    };
-    let out = if provider == "piper" {
-        let Some(command) = query.command.as_deref().filter(|v| !v.is_empty()) else {
-            return Err(ApiError(Error::InvalidRequest(
-                "Piper command is required".to_string(),
-            )));
-        };
-        let Some(model_path) = query.model_path.as_deref().filter(|v| !v.is_empty()) else {
-            return Err(ApiError(Error::InvalidRequest(
-                "Piper model path is required".to_string(),
-            )));
-        };
-        PiperSpeechSynthesizer::new(command, model_path, &voice, speed)
-            .synthesize(input)
-            .await
-            .map_err(ApiError)?
-    } else if provider == "openai" {
-        let Some(endpoint) = query.endpoint.as_deref().filter(|v| !v.is_empty()) else {
-            return Err(ApiError(Error::InvalidRequest(
-                "OpenAI-compatible TTS endpoint is required".to_string(),
-            )));
-        };
-        let Some(model) = query.model.as_deref().filter(|v| !v.is_empty()) else {
-            return Err(ApiError(Error::InvalidRequest(
-                "OpenAI-compatible TTS model is required".to_string(),
-            )));
-        };
-        let api_key = headers
-            .get("X-Milim-TTS-Api-Key")
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_string);
-        OpenAiAudioSpeechSynthesizer::new(endpoint, model, api_key, &voice, speed)
-            .map_err(ApiError)?
-            .synthesize(input)
-            .await
-            .map_err(ApiError)?
-    } else {
-        let Some(command) = query.command.as_deref().filter(|v| !v.is_empty()) else {
-            return Err(ApiError(Error::InvalidRequest(
-                "TTS command is required".to_string(),
-            )));
-        };
-        CommandSpeechSynthesizer::new(command, &voice, speed)
-            .synthesize(input)
-            .await
-            .map_err(ApiError)?
-    };
-    Response::builder()
-        .header(CONTENT_TYPE, out.mime_type)
-        .body(Body::from(out.audio))
-        .map_err(|e| ApiError(Error::Other(format!("failed to build TTS response: {e}"))))
-}
-
-fn transcriber_for_audio_request(
-    st: &AppState,
-    query: &AudioTranscriptionQuery,
-    headers: &HeaderMap,
-) -> Result<Option<Arc<dyn Transcriber>>, ApiError> {
-    let Some(provider) = query.provider.as_deref().filter(|v| !v.is_empty()) else {
-        if let Some(transcriber) = st.transcriber.as_ref() {
-            return Ok(Some(Arc::clone(transcriber)));
-        }
-        return Ok(None);
-    };
-    if provider == "remote" {
-        let Some(endpoint) = query.endpoint.as_deref().filter(|v| !v.is_empty()) else {
-            return Err(ApiError(Error::InvalidRequest(
-                "remote voice input requires an endpoint".to_string(),
-            )));
-        };
-        return Ok(Some(Arc::new(
-            RemoteRawTranscriber::new(endpoint).map_err(ApiError)?,
-        )));
-    }
-
-    if provider == "openai" {
-        let Some(endpoint) = query.endpoint.as_deref().filter(|v| !v.is_empty()) else {
-            return Err(ApiError(Error::InvalidRequest(
-                "OpenAI-compatible voice input requires an endpoint".to_string(),
-            )));
-        };
-        let Some(model) = query.model.as_deref().filter(|v| !v.is_empty()) else {
-            return Err(ApiError(Error::InvalidRequest(
-                "OpenAI-compatible voice input requires a model".to_string(),
-            )));
-        };
-        let api_key = headers
-            .get("x-milim-stt-api-key")
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_string);
-        return Ok(Some(Arc::new(
-            OpenAiAudioTranscriptionTranscriber::new(endpoint, model, api_key).map_err(ApiError)?,
-        )));
-    }
-
-    if provider == "parakeet" {
-        let Some(command) = query.command.as_deref().filter(|v| !v.is_empty()) else {
-            return Err(ApiError(Error::InvalidRequest(
-                "Parakeet voice input requires a command".to_string(),
-            )));
-        };
-        let model = query
-            .model
-            .as_deref()
-            .filter(|v| !v.is_empty())
-            .unwrap_or(DEFAULT_PARAKEET_MODEL);
-        return Ok(Some(Arc::new(ParakeetCommandTranscriber::new(
-            command, model,
-        ))));
-    }
-
-    if provider == "whisper" {
-        let Some(model_path) = query.model_path.as_deref().filter(|v| !v.is_empty()) else {
-            return Err(ApiError(Error::InvalidRequest(
-                "local Whisper voice input requires a model path".to_string(),
-            )));
-        };
-        let Some(factory) = st.transcriber_factory.as_ref() else {
-            return Err(ApiError(Error::InvalidRequest(
-                "local Whisper voice input is not available in this build".to_string(),
-            )));
-        };
-
-        if let Some(transcriber) = st
-            .transcriber_cache
-            .read()
-            .map_err(|_| ApiError(Error::Other("transcriber cache poisoned".to_string())))?
-            .get(model_path)
-            .cloned()
-        {
-            return Ok(Some(transcriber));
-        }
-
-        let transcriber = factory(model_path.to_string()).map_err(ApiError)?;
-        st.transcriber_cache
-            .write()
-            .map_err(|_| ApiError(Error::Other("transcriber cache poisoned".to_string())))?
-            .insert(model_path.to_string(), Arc::clone(&transcriber));
-        return Ok(Some(transcriber));
-    }
-
-    Err(ApiError(Error::InvalidRequest(format!(
-        "voice provider {provider} is not available"
-    ))))
-}
-
-fn vad_for_audio_request(
-    st: &AppState,
-    query: &AudioVadQuery,
-) -> Result<Option<Arc<dyn VoiceActivityDetector>>, ApiError> {
-    let Some(provider) = query.provider.as_deref().filter(|v| !v.is_empty()) else {
-        if let Some(vad) = st.vad.as_ref() {
-            return Ok(Some(Arc::clone(vad)));
-        }
-        return Ok(None);
-    };
-
-    if provider == "energy" {
-        let threshold = query.threshold.unwrap_or(DEFAULT_ENERGY_VAD_THRESHOLD);
-        return Ok(Some(Arc::new(
-            EnergyVoiceActivityDetector::new(threshold).map_err(ApiError)?,
-        )));
-    }
-
-    if provider == "native" || provider == "silero" {
-        let Some(model_path) = query.model_path.as_deref().filter(|v| !v.is_empty()) else {
-            return Err(ApiError(Error::InvalidRequest(
-                "native VAD requires a model path".to_string(),
-            )));
-        };
-        let Some(factory) = st.vad_factory.as_ref() else {
-            return Err(ApiError(Error::InvalidRequest(
-                "native VAD is not available in this build".to_string(),
-            )));
-        };
-
-        if let Some(vad) = st
-            .vad_cache
-            .read()
-            .map_err(|_| ApiError(Error::Other("VAD cache poisoned".to_string())))?
-            .get(model_path)
-            .cloned()
-        {
-            return Ok(Some(vad));
-        }
-
-        let vad = factory(model_path.to_string()).map_err(ApiError)?;
-        st.vad_cache
-            .write()
-            .map_err(|_| ApiError(Error::Other("VAD cache poisoned".to_string())))?
-            .insert(model_path.to_string(), Arc::clone(&vad));
-        return Ok(Some(vad));
-    }
-
-    Err(ApiError(Error::InvalidRequest(format!(
-        "VAD provider {provider} is not available"
-    ))))
 }
 
 // ----- Workspace (host working folder for filesystem/shell tools) -----
@@ -8468,108 +7257,6 @@ fn media_mime_from_url(url: &str) -> Option<&'static str> {
     }
 }
 
-// ----- Run journal -----
-
-#[derive(Deserialize)]
-pub(crate) struct RunJournalListParams {
-    #[serde(default)]
-    q: Option<String>,
-    #[serde(default)]
-    status: Option<String>,
-    #[serde(default)]
-    kind: Option<String>,
-    #[serde(default)]
-    workspace: Option<String>,
-    #[serde(default)]
-    limit: Option<usize>,
-    #[serde(default)]
-    offset: Option<usize>,
-}
-
-fn run_journal_store(st: &AppState) -> Result<&milim_storage::RunJournalStore, ApiError> {
-    st.run_journal.as_deref().ok_or_else(|| {
-        ApiError(Error::InvalidRequest(
-            "run journal is not enabled".to_string(),
-        ))
-    })
-}
-
-/// `GET /runs` — list local goal-attempt journal entries.
-pub(crate) async fn runs_list(
-    State(st): State<AppState>,
-    headers: HeaderMap,
-    peer: Peer,
-    Query(params): Query<RunJournalListParams>,
-) -> Result<Response, ApiError> {
-    authorize(&st, &headers, peer_addr(peer))?;
-    let runs = run_journal_store(&st)?
-        .list(milim_storage::RunJournalQuery {
-            q: params.q.filter(|value| !value.trim().is_empty()),
-            status: params.status.filter(|value| !value.trim().is_empty()),
-            kind: params.kind.filter(|value| !value.trim().is_empty()),
-            workspace: params.workspace.filter(|value| !value.trim().is_empty()),
-            limit: params.limit.unwrap_or(50),
-            offset: params.offset.unwrap_or(0),
-        })
-        .map_err(ApiError)?;
-    Ok(Json(json!({ "runs": runs })).into_response())
-}
-
-/// `GET /runs/{id}` — fetch one journal entry.
-pub(crate) async fn run_get(
-    State(st): State<AppState>,
-    Path(id): Path<String>,
-    headers: HeaderMap,
-    peer: Peer,
-) -> Result<Response, ApiError> {
-    authorize(&st, &headers, peer_addr(peer))?;
-    let run = run_journal_store(&st)?
-        .get(&id)
-        .map_err(ApiError)?
-        .ok_or_else(|| ApiError(Error::ModelNotFound(format!("run {id}"))))?;
-    Ok(Json(json!({ "run": run })).into_response())
-}
-
-/// `POST /runs` — create a journal entry.
-pub(crate) async fn run_create(
-    State(st): State<AppState>,
-    headers: HeaderMap,
-    peer: Peer,
-    Json(entry): Json<milim_storage::RunJournalEntry>,
-) -> Result<Response, ApiError> {
-    authorize(&st, &headers, peer_addr(peer))?;
-    let run = run_journal_store(&st)?.upsert(&entry).map_err(ApiError)?;
-    Ok(Json(json!({ "run": run })).into_response())
-}
-
-/// `PUT /runs/{id}` — update/finalize a journal entry.
-pub(crate) async fn run_update(
-    State(st): State<AppState>,
-    Path(id): Path<String>,
-    headers: HeaderMap,
-    peer: Peer,
-    Json(mut entry): Json<milim_storage::RunJournalEntry>,
-) -> Result<Response, ApiError> {
-    authorize(&st, &headers, peer_addr(peer))?;
-    entry.id = id;
-    let run = run_journal_store(&st)?.upsert(&entry).map_err(ApiError)?;
-    Ok(Json(json!({ "run": run })).into_response())
-}
-
-/// `DELETE /runs/{id}` — delete one journal entry.
-pub(crate) async fn run_delete(
-    State(st): State<AppState>,
-    Path(id): Path<String>,
-    headers: HeaderMap,
-    peer: Peer,
-) -> Result<Response, ApiError> {
-    authorize(&st, &headers, peer_addr(peer))?;
-    Ok(
-        Json(json!({ "deleted": run_journal_store(&st)?.delete(&id).map_err(ApiError)? }))
-            .into_response(),
-    )
-}
-
 // ----- MCP servers (external MCP client connections) -----
 
 #[derive(Deserialize)]
@@ -8698,83 +7385,11 @@ struct AgentRunResponse {
     stopped_at_limit: bool,
 }
 
-fn journal_now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as i64)
-        .unwrap_or_default()
-}
-
-fn run_journal_excerpt(text: &str) -> String {
-    const MAX: usize = 4000;
-    let mut out: String = text.chars().take(MAX).collect();
-    if text.chars().count() > MAX {
-        out.push_str("\n[truncated]");
-    }
-    out
-}
-
-fn run_journal_goal(messages: &[ChatMessage]) -> String {
-    messages
-        .iter()
-        .rev()
-        .find(|message| message.role == "user")
-        .map(ChatMessage::text_content)
-        .unwrap_or_else(|| "Agent run".to_string())
-}
-
-// ponytail: helper mirrors RunJournalEntry fields; wrap it only if another writer appears.
-#[allow(clippy::too_many_arguments)]
-fn write_agent_journal(
-    st: &AppState,
-    journal_id: Option<String>,
-    status: &str,
-    kind: &str,
-    goal: String,
-    model: String,
-    started_at_ms: i64,
-    duration_ms: i64,
-    output: String,
-    error: Option<String>,
-    steps: Vec<milim_agents::ToolStep>,
-) {
-    if journal_id.is_some() {
-        return;
-    }
-    let Some(journal) = &st.run_journal else {
-        return;
-    };
-    let title = run_journal_excerpt(&goal)
-        .lines()
-        .next()
-        .unwrap_or("Agent run")
-        .chars()
-        .take(160)
-        .collect::<String>();
-    let _ = journal.upsert(&milim_storage::RunJournalEntry {
-        id: format!("run-agent-{}", uuid::Uuid::new_v4().simple()),
-        created_at_ms: started_at_ms,
-        updated_at_ms: journal_now_ms(),
-        status: status.to_string(),
-        kind: kind.to_string(),
-        title,
-        goal: goal.clone(),
-        model,
-        duration_ms: Some(duration_ms),
-        input_excerpt: run_journal_excerpt(&goal),
-        output_excerpt: run_journal_excerpt(&output),
-        error,
-        tools: steps.into_iter().map(|step| step.name).collect(),
-        ..Default::default()
-    });
-}
-
 #[derive(Debug, Clone, Default)]
 struct AgentMemoryContext {
     enabled: bool,
     model: String,
     thread_id: Option<String>,
-    thread_label: Option<String>,
     project_locator: Option<String>,
     project_label: Option<String>,
     message_id: Option<String>,
@@ -8901,7 +7516,6 @@ fn memory_context_from_request(req: &ChatCompletionRequest, model: String) -> Ag
         enabled: bool_extra(req, "memory_enabled"),
         model,
         thread_id: string_extra(req, "thread_id"),
-        thread_label: string_extra(req, "thread_label"),
         project_locator: string_extra(req, "project_locator"),
         project_label: string_extra(req, "project_label"),
         message_id: string_extra(req, "message_id"),
@@ -9098,22 +7712,10 @@ struct MemoryRegisterTool {
 #[serde(deny_unknown_fields)]
 struct MemoryRegisterArgs {
     #[serde(default)]
-    scope_kind: Option<String>,
-    #[serde(default = "default_memory_node_kind")]
-    kind: String,
-    title: String,
+    scope: Option<String>,
+    content: String,
     #[serde(default)]
-    body: String,
-    #[serde(default = "default_memory_confidence")]
-    confidence: f32,
-}
-
-fn default_memory_node_kind() -> String {
-    "fact".to_string()
-}
-
-fn default_memory_confidence() -> f32 {
-    0.85
+    title: Option<String>,
 }
 
 #[async_trait]
@@ -9127,27 +7729,23 @@ impl Tool for MemoryRegisterTool {
     }
 
     fn description(&self) -> &str {
-        "Register a concise durable memory in the current thread or project graph. Use this only for facts, decisions, preferences, and project context that will likely help future turns."
+        "Save concise durable context to Personal or Project memory. Use this only for facts, decisions, preferences, and project context likely to help future turns."
     }
 
     fn input_schema(&self) -> Value {
         json!({
             "type": "object",
             "properties": {
-                "scope_kind": {
+                "scope": {
                     "type": "string",
-                    "enum": ["thread", "project"],
-                    "description": "Where to store the memory. Use project for repository/workspace facts and thread for conversation-specific facts."
+                    "enum": ["personal", "project"],
+                    "description": "Where to store the memory. Defaults to project when a workspace folder exists, otherwise personal."
                 },
-                "kind": {
-                    "type": "string",
-                    "description": "Memory kind such as fact, decision, preference, task, file, or entity."
-                },
-                "title": { "type": "string", "description": "Short human-readable title." },
-                "body": { "type": "string", "description": "One or two sentences with the useful durable context." },
-                "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+                "content": { "type": "string", "description": "One or two sentences with the useful durable context." },
+                "title": { "type": "string", "description": "Optional short human-readable title." }
             },
-            "required": ["title"]
+            "required": ["content"],
+            "additionalProperties": false
         })
     }
 
@@ -9155,21 +7753,37 @@ impl Tool for MemoryRegisterTool {
         let args: MemoryRegisterArgs = serde_json::from_value(args).map_err(|e| {
             Error::InvalidRequest(format!("invalid memory_register arguments: {e}"))
         })?;
-        let scope_kind = args
-            .scope_kind
+        let content = trim_required_tool_arg(args.content, "content")?;
+        let title = args
+            .title
             .as_deref()
             .map(str::trim)
             .filter(|value| !value.is_empty())
+            .map(ToString::to_string)
+            .unwrap_or_else(|| {
+                content
+                    .lines()
+                    .next()
+                    .unwrap_or("Memory")
+                    .chars()
+                    .take(80)
+                    .collect()
+            });
+        let requested_scope = args
+            .scope
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_ascii_lowercase)
             .unwrap_or_else(|| {
                 if self.context.project_locator.is_some() {
-                    "project"
+                    "project".to_string()
                 } else {
-                    "thread"
+                    "personal".to_string()
                 }
-            })
-            .to_ascii_lowercase();
+            });
 
-        let (locator, label) = match scope_kind.as_str() {
+        let (scope_kind, locator, label) = match requested_scope.as_str() {
             "project" => {
                 let locator = self.context.project_locator.clone().ok_or_else(|| {
                     Error::InvalidRequest(
@@ -9181,22 +7795,16 @@ impl Tool for MemoryRegisterTool {
                     .project_label
                     .clone()
                     .unwrap_or_else(|| locator.clone());
-                (locator, label)
+                ("project".to_string(), locator, label)
             }
-            "thread" => {
-                let locator = self.context.thread_id.clone().ok_or_else(|| {
-                    Error::InvalidRequest("thread memory requires an active thread id".to_string())
-                })?;
-                let label = self
-                    .context
-                    .thread_label
-                    .clone()
-                    .unwrap_or_else(|| "Current thread".to_string());
-                (locator, label)
-            }
+            "personal" => (
+                "global".to_string(),
+                "personal".to_string(),
+                "Personal".to_string(),
+            ),
             _ => {
                 return Err(Error::InvalidRequest(
-                    "memory_register scope_kind must be thread or project".to_string(),
+                    "memory_register scope must be personal or project".to_string(),
                 ))
             }
         };
@@ -9211,10 +7819,10 @@ impl Tool for MemoryRegisterTool {
                     locator,
                 },
                 milim_memory::MemoryNodeInput {
-                    kind: args.kind,
-                    title: args.title,
-                    body: args.body,
-                    confidence: args.confidence,
+                    kind: "fact".to_string(),
+                    title,
+                    body: content,
+                    confidence: 0.85,
                     source: "agent".to_string(),
                 },
                 Vec::new(),
@@ -9487,9 +8095,6 @@ impl Tool for ChildThreadSpawnTool {
             let agent = store
                 .get(agent_id)?
                 .ok_or_else(|| Error::ModelNotFound(format!("agent {agent_id}")))?;
-            if explicit_model.is_none() && !agent.model.trim().is_empty() {
-                model = agent.model;
-            }
             if !agent.system_prompt.trim().is_empty() {
                 system_prompt = Some(agent.system_prompt);
             }
@@ -9776,6 +8381,7 @@ struct ScheduleCreateToolArgs {
     attachments: Vec<milim_automation::ScheduleAttachment>,
     #[serde(default)]
     agent_id: Option<String>,
+    model: String,
     #[serde(default = "default_true")]
     enabled: bool,
 }
@@ -9793,6 +8399,8 @@ struct ScheduleUpdateToolArgs {
     attachments: Option<Vec<milim_automation::ScheduleAttachment>>,
     #[serde(default)]
     agent_id: Option<Value>,
+    #[serde(default)]
+    model: Option<String>,
     #[serde(default)]
     enabled: Option<bool>,
 }
@@ -9877,9 +8485,10 @@ impl Tool for ScheduleCreateTool {
                     }
                 },
                 "agent_id": { "type": ["string", "null"], "description": "Optional named agent id. Omit for the default agent." },
+                "model": { "type": "string", "description": "Model id for unattended runs." },
                 "enabled": { "type": "boolean", "description": "Whether the automation should start enabled. Defaults to true." }
             },
-            "required": ["name", "cron", "prompt"],
+            "required": ["name", "cron", "prompt", "model"],
             "additionalProperties": false
         })
     }
@@ -9891,10 +8500,12 @@ impl Tool for ScheduleCreateTool {
         let name = trim_required_tool_arg(args.name, "name")?;
         let cron = trim_required_tool_arg(args.cron, "cron")?;
         let prompt = trim_required_tool_arg(args.prompt, "prompt")?;
-        let schedule = self.store.create_with_context(
+        let model = trim_required_tool_arg(args.model, "model")?;
+        let schedule = self.store.create_with_model_context(
             &name,
             &cron,
             trim_optional_agent_id(args.agent_id),
+            &model,
             &prompt,
             args.attachments,
             args.enabled,
@@ -9945,6 +8556,7 @@ impl Tool for ScheduleUpdateTool {
                     }
                 },
                 "agent_id": { "type": ["string", "null"], "description": "Named agent id, or null to clear." },
+                "model": { "type": "string", "description": "Model id for unattended runs." },
                 "enabled": { "type": "boolean" }
             },
             "required": ["id"],
@@ -9973,6 +8585,11 @@ impl Tool for ScheduleUpdateTool {
             .map(|value| trim_required_tool_arg(value, "prompt"))
             .transpose()?
             .unwrap_or_else(|| current.prompt.clone());
+        let model = args
+            .model
+            .map(|value| trim_required_tool_arg(value, "model"))
+            .transpose()?
+            .unwrap_or_else(|| current.model.clone());
         let attachments = args
             .attachments
             .unwrap_or_else(|| current.attachments.clone());
@@ -9991,6 +8608,7 @@ impl Tool for ScheduleUpdateTool {
             name: &name,
             cron: &cron,
             agent_id,
+            model: &model,
             prompt: &prompt,
             attachments,
             enabled: args.enabled.unwrap_or(current.enabled),
@@ -10093,16 +8711,12 @@ pub(crate) async fn agents_run(
     let model = req.model.clone();
     let want_stream = req.wants_stream();
     let reasoning_effort = req.reasoning_effort;
-    let journal_id = string_extra(&req, "journal_id");
     let agent_config = agent_run_config_from_request(&req);
     let tool_policy = tool_run_policy_from_request(&req);
     let memory = memory_context_from_request(&req, model.clone());
     let workspace_unavailable = desktop_workspace_unavailable(&st);
     let mut messages = req.messages;
     add_workspace_notice_if_needed(&mut messages, workspace_unavailable);
-    let journal_goal = run_journal_goal(&messages);
-    let started_at_ms = journal_now_ms();
-    let started = Instant::now();
 
     if want_stream {
         let tools =
@@ -10121,7 +8735,7 @@ pub(crate) async fn agents_run(
     }
 
     let tools = agent_registry_with_memory(&st, Some(memory), &tool_policy);
-    let outcome = match milim_agents::run_agent_with_config(
+    let outcome = milim_agents::run_agent_with_config(
         st.service.as_ref(),
         &tools,
         &model,
@@ -10130,39 +8744,7 @@ pub(crate) async fn agents_run(
         agent_config,
     )
     .await
-    {
-        Ok(outcome) => outcome,
-        Err(e) => {
-            write_agent_journal(
-                &st,
-                journal_id,
-                "error",
-                "agent",
-                journal_goal,
-                model,
-                started_at_ms,
-                started.elapsed().as_millis() as i64,
-                String::new(),
-                Some(e.to_string()),
-                Vec::new(),
-            );
-            return Err(ApiError(e));
-        }
-    };
-
-    write_agent_journal(
-        &st,
-        journal_id,
-        "done",
-        "agent",
-        journal_goal,
-        model.clone(),
-        started_at_ms,
-        started.elapsed().as_millis() as i64,
-        outcome.message.text_content(),
-        None,
-        outcome.steps.clone(),
-    );
+    .map_err(ApiError)?;
 
     Ok(Json(AgentRunResponse {
         id: gen_id("agentrun"),
@@ -10266,7 +8848,6 @@ pub(crate) async fn agent_run_by_id(
     let want_stream = req.wants_stream();
     let requested_model = req.model.clone();
     let reasoning_effort = req.reasoning_effort;
-    let journal_id = string_extra(&req, "journal_id");
     let agent_config = agent_run_config_from_request(&req);
     let tool_policy = tool_run_policy_from_request(&req);
     let memory = memory_context_from_request(&req, requested_model.clone());
@@ -10283,19 +8864,12 @@ pub(crate) async fn agent_run_by_id(
         .unwrap_or_default();
     messages.extend(crate::agent_skill_messages(&st, &agent, &skill_query));
     messages.extend(req.messages);
-    let model = if agent.model.is_empty() {
-        requested_model
-    } else {
-        agent.model.clone()
-    };
+    let model = requested_model;
     let memory = AgentMemoryContext {
         model: model.clone(),
         ..memory
     };
     add_workspace_notice_if_needed(&mut messages, desktop_workspace_unavailable(&st));
-    let journal_goal = run_journal_goal(&messages);
-    let started_at_ms = journal_now_ms();
-    let started = Instant::now();
 
     if want_stream {
         let tools = std::sync::Arc::new(agent_registry_for_mode(
@@ -10325,7 +8899,7 @@ pub(crate) async fn agent_run_by_id(
         Some(memory),
         &tool_policy,
     );
-    let outcome = match milim_agents::run_agent_with_config(
+    let outcome = milim_agents::run_agent_with_config(
         st.service.as_ref(),
         &tools,
         &model,
@@ -10334,39 +8908,7 @@ pub(crate) async fn agent_run_by_id(
         agent_config,
     )
     .await
-    {
-        Ok(outcome) => outcome,
-        Err(e) => {
-            write_agent_journal(
-                &st,
-                journal_id,
-                "error",
-                "agent",
-                journal_goal,
-                model,
-                started_at_ms,
-                started.elapsed().as_millis() as i64,
-                String::new(),
-                Some(e.to_string()),
-                Vec::new(),
-            );
-            return Err(ApiError(e));
-        }
-    };
-
-    write_agent_journal(
-        &st,
-        journal_id,
-        "done",
-        "agent",
-        journal_goal,
-        model.clone(),
-        started_at_ms,
-        started.elapsed().as_millis() as i64,
-        outcome.message.text_content(),
-        None,
-        outcome.steps.clone(),
-    );
+    .map_err(ApiError)?;
 
     Ok(Json(AgentRunResponse {
         id: gen_id("agentrun"),
@@ -10614,6 +9156,7 @@ pub(crate) struct CreateScheduleRequest {
     cron: String,
     #[serde(default)]
     agent_id: Option<String>,
+    model: String,
     #[serde(default)]
     prompt: String,
     #[serde(default)]
@@ -10626,6 +9169,7 @@ pub(crate) struct UpdateScheduleRequest {
     cron: String,
     #[serde(default)]
     agent_id: Option<String>,
+    model: String,
     #[serde(default)]
     prompt: String,
     #[serde(default)]
@@ -10679,10 +9223,11 @@ pub(crate) async fn schedule_create(
         ))
     })?;
     let schedule = store
-        .create_with_context(
+        .create_with_model_context(
             &req.name,
             &req.cron,
             req.agent_id,
+            &trim_required_tool_arg(req.model, "model").map_err(ApiError)?,
             &req.prompt,
             req.attachments,
             true,
@@ -10708,12 +9253,14 @@ pub(crate) async fn schedule_update(
         ))
     })?;
     let current = find_schedule(store, &id).map_err(ApiError)?;
+    let model = trim_required_tool_arg(req.model, "model").map_err(ApiError)?;
     let schedule = store
         .update(milim_automation::ScheduleUpdate {
             id: &id,
             name: &req.name,
             cron: &req.cron,
             agent_id: req.agent_id,
+            model: &model,
             prompt: &req.prompt,
             attachments: req.attachments,
             enabled: req.enabled,

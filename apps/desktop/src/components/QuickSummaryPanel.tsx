@@ -1,5 +1,7 @@
-import type { ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { getCodexRateLimits, isCodexModel } from "../api";
 import type { QuickSummary, QuickSummaryRow } from "../lib/quickSummary";
+import { codexLimitsFromRateLimitPayload, formatProviderLimits } from "../lib/usageMetrics";
 import { FileText, Folder, Globe, Paperclip, Sparkles, X } from "./icons";
 
 function toneClass(tone?: QuickSummaryRow["tone"]): string {
@@ -81,6 +83,40 @@ export function QuickSummaryPanel({
   workspaceLauncher?: ReactNode;
 }) {
   const rows = Array.isArray(summary?.rows) ? summary.rows : [];
+  const [liveQuota, setLiveQuota] = useState("");
+  const model = summary?.model?.trim() ?? "";
+
+  useEffect(() => {
+    if (!open || !isCodexModel(model)) {
+      setLiveQuota("");
+      return;
+    }
+    let cancelled = false;
+    let timer: ReturnType<typeof setInterval> | undefined;
+    const refresh = async () => {
+      try {
+        const value = formatProviderLimits(codexLimitsFromRateLimitPayload(await getCodexRateLimits()));
+        if (!cancelled) setLiveQuota(value ?? "");
+      } catch {
+        if (!cancelled) setLiveQuota("");
+      }
+    };
+    void refresh();
+    timer = setInterval(() => void refresh(), 60_000);
+    return () => {
+      cancelled = true;
+      if (timer) clearInterval(timer);
+    };
+  }, [model, open]);
+
+  const displayRows = useMemo(() => {
+    if (!liveQuota) return rows;
+    const quota: QuickSummaryRow = { kind: "limits", label: "Provider quota", value: liveQuota };
+    const index = rows.findIndex((row) => row.kind === "limits");
+    if (index >= 0) return rows.map((row, rowIndex) => rowIndex === index ? quota : row);
+    const modelIndex = rows.findIndex((row) => row.kind === "model");
+    return [...rows.slice(0, modelIndex + 1), quota, ...rows.slice(modelIndex + 1)];
+  }, [liveQuota, rows]);
   return (
     <div
       className={`quick-summary-pull${open ? " expanded" : ""}${reserveSidePanelButtonSpace ? " with-side-panel-button" : ""}`}
@@ -121,7 +157,7 @@ export function QuickSummaryPanel({
           </button>
         </div>
         <div className="quick-summary-scroll">
-          {rows.map((row) => (
+          {displayRows.map((row) => (
             <ContextRow
               key={row.kind}
               row={row}

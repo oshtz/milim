@@ -199,12 +199,8 @@ equal(
   "mobile URL base should read back as a plain URL",
 );
 assert(
-  !dbValues.get("milim.settings")?.includes("legacy-stt-secret"),
-  "legacy STT API key should not be imported into DB",
-);
-assert(
-  !dbValues.get("milim.settings")?.includes("legacy-tts-secret"),
-  "legacy TTS API key should not be imported into DB",
+  !dbValues.get("milim.settings")?.includes("voice"),
+  "obsolete legacy voice settings should not be imported into DB",
 );
 
 dbValues.set(
@@ -221,16 +217,12 @@ dbValues.set(
 );
 const sanitizedSettings = await readUserStateKey("milim.settings");
 assert(
-  !sanitizedSettings?.includes("existing-db-stt-secret"),
-  "existing DB STT API key should be redacted on read",
+  !sanitizedSettings?.includes("voice"),
+  "obsolete DB voice settings should be removed on read",
 );
 assert(
-  !sanitizedSettings?.includes("existing-db-tts-secret"),
-  "existing DB TTS API key should be redacted on read",
-);
-assert(
-  !dbValues.get("milim.settings")?.includes("existing-db-stt-secret"),
-  "redacted DB setting should be written back",
+  !dbValues.get("milim.settings")?.includes("voice"),
+  "cleaned DB settings should be written back",
 );
 
 dbValues.set("milim.themeId", "mono-dark");

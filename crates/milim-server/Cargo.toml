@@ -7,12 +7,6 @@ authors.workspace = true
 rust-version.workspace = true
 description = "Axum HTTP server exposing the OpenAI/Ollama-compatible API."
 
-[features]
-default = []
-native-vad = ["milim-voice/native-vad"]
-native-tts = ["milim-voice/native-tts"]
-native-tts-espeak = ["native-tts", "milim-voice/native-tts-espeak"]
-
 [dependencies]
 milim-core.workspace = true
 milim-inference.workspace = true
@@ -26,7 +20,6 @@ milim-skills.workspace = true
 milim-privacy.workspace = true
 milim-sandbox.workspace = true
 milim-mcp-client.workspace = true
-milim-voice.workspace = true
 tokio.workspace = true
 reqwest.workspace = true
 axum.workspace = true
@@ -40,9 +33,6 @@ tracing.workspace = true
 uuid.workspace = true
 time.workspace = true
 bytes.workspace = true
-flate2.workspace = true
-tar.workspace = true
-zip.workspace = true
 
 [dev-dependencies]
 milim-inference = { workspace = true, features = ["test-backend"] }

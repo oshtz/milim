@@ -1,21 +1,12 @@
 import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
-import { agentAvatarText, transcribe, type Agent, type ChatAttachment, type MediaKind, type SkillInfo, type ToolInfo, typeDictationText } from "../api";
+import { agentAvatarText, type Agent, type ChatAttachment, type MediaKind, type SkillInfo, type ToolInfo } from "../api";
 import type { WorkspaceFileSuggestion } from "../api";
 import { composerAutocompleteTriggerAt, mcpToolTagCompletion, replaceComposerAutocompleteTrigger, skillTagCompletion } from "../lib/composerAutocomplete";
 import { canNavigateComposerHistory, moveComposerHistory, type ComposerHistoryDirection } from "../lib/composerHistory";
 import { composerTokenParts, composerTokensForText } from "../lib/composerTokens";
-import { recordWav, type Recorder } from "../lib/recordWav";
-import { useSettings, voiceVadConfigIssue } from "../settings/store";
-import { featureVisibleInMode } from "../ui/features";
-import { shortcutLabel, shortcutMatchesEvent, shortcutToGlobalAccelerator } from "../ui/shortcuts";
+import { shortcutLabel, shortcutMatchesEvent } from "../ui/shortcuts";
 import { useUiPreferences } from "../ui/store";
-import { ArrowUp, ChevronDown, Folder, FolderOpen, Mic, Paperclip, PlusSquare, Slash, Square, UserRound, X } from "./icons";
-
-type GlobalShortcutEvent = {
-  state: "Pressed" | "Released";
-};
-
-type GlobalShortcutHandler = (event: GlobalShortcutEvent) => void;
+import { ArrowUp, ChevronDown, Folder, FolderOpen, Paperclip, PlusSquare, Slash, Square, UserRound, X } from "./icons";
 const COMPOSER_HISTORY_NOTICE_MS = 1800;
 
 function isTauriRuntime(): boolean {
@@ -51,12 +42,11 @@ const SLASH_COMMANDS: SlashCommand[] = [
 ];
 
 function agentMenuDetail(agent: Agent): string {
-  const model = agent.model.trim() || "current model";
   const mode = agent.tool_mode ?? ((agent.enabled_tools ?? []).length === 0 ? "all" : "custom");
   const tools = mode === "all" ? "all tools" : mode === "none" ? "no tools" : `${agent.enabled_tools?.length ?? 0} tools`;
   const skillMode = agent.skill_mode ?? ((agent.enabled_skills ?? []).length === 0 ? "auto" : "custom");
   const skills = skillMode === "auto" ? "auto skills" : skillMode === "none" ? "no skills" : `${agent.enabled_skills?.length ?? 0} skills`;
-  return `${model} / ${tools} / ${skills}`;
+  return `${tools} / ${skills}`;
 }
 
 type Suggestion =
@@ -98,18 +88,6 @@ function clipboardFiles(data: DataTransfer): File[] {
     if (file) byKey.set(`${file.name}:${file.size}:${file.type}:${file.lastModified}`, file);
   }
   return Array.from(byKey.values());
-}
-
-async function registerGlobalVoiceShortcut(
-  shortcut: string,
-  handler: GlobalShortcutHandler,
-): Promise<() => Promise<void>> {
-  const { register, unregister } = await import("@tauri-apps/plugin-global-shortcut");
-  await unregister(shortcut).catch(() => undefined);
-  await register(shortcut, handler);
-  return async () => {
-    await unregister(shortcut).catch(() => undefined);
-  };
 }
 
 export function Composer({
@@ -178,24 +156,12 @@ export function Composer({
   const fileRef = useRef<HTMLInputElement>(null);
   const personaRef = useRef<HTMLDivElement>(null);
   const projectRef = useRef<HTMLDivElement>(null);
-  const voice = useSettings((s) => s.voice);
   const composerSendShortcut = useUiPreferences((s) => s.composerSendShortcut);
   const composerDensity = useUiPreferences((s) => s.composerDensity);
-  const interfaceMode = useUiPreferences((s) => s.interfaceMode);
-  const recRef = useRef<Recorder | null>(null);
-  const recordVoiceRef = useRef(voice);
   const valueRef = useRef(value);
-  const recordingRef = useRef(false);
-  const transcribingRef = useRef(false);
-  const finishingRef = useRef(false);
-  const recordTickRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const applyingHistoryRef = useRef(false);
   const historyDraftRef = useRef("");
   const historyNoticeTimerRef = useRef<number | null>(null);
-  const [recording, setRecording] = useState(false);
-  const [recordElapsedMs, setRecordElapsedMs] = useState(0);
-  const [transcribing, setTranscribing] = useState(false);
-  const [voiceNotice, setVoiceNotice] = useState<string | null>(null);
   const [personaOpen, setPersonaOpen] = useState(false);
   const [projectOpen, setProjectOpen] = useState(false);
   const [slashOpen, setSlashOpen] = useState(false);
@@ -207,44 +173,6 @@ export function Composer({
   const [historyIndex, setHistoryIndex] = useState<number | null>(null);
   const [historyNotice, setHistoryNotice] = useState<string | null>(null);
 
-  const voiceProviderLabel =
-    voice.provider === "parakeet"
-      ? "Parakeet"
-      : voice.provider === "openai"
-        ? "OpenAI-compatible STT"
-        : voice.provider === "remote"
-          ? "Raw endpoint STT"
-          : "Whisper";
-  const hasWhisperModel = Boolean(voice.whisperModelPath.trim());
-  const hasRemoteEndpoint = Boolean(voice.remoteEndpoint.trim());
-  const hasOpenAiSttConfig = Boolean(voice.openAiEndpoint.trim() && voice.openAiModel.trim());
-  const hasParakeetCommand = Boolean(voice.parakeetCommand.trim());
-  const vadConfigIssue = voiceVadConfigIssue(voice);
-  const voiceReady =
-    voice.enabled &&
-    !vadConfigIssue &&
-    ((voice.provider === "whisper" && hasWhisperModel) ||
-      (voice.provider === "openai" && hasOpenAiSttConfig) ||
-      (voice.provider === "remote" && hasRemoteEndpoint) ||
-      (voice.provider === "parakeet" && hasParakeetCommand));
-  const showVoiceButton = voice.enabled || recording || transcribing;
-  const voiceTitle = recording
-    ? "Stop & transcribe"
-    : transcribing
-      ? "Transcribing..."
-      : !voice.enabled
-        ? "Voice input is disabled in Settings"
-        : voice.provider === "parakeet" && !hasParakeetCommand
-          ? "Choose a Parakeet command in Settings"
-          : voice.provider === "openai" && !hasOpenAiSttConfig
-            ? "Choose an OpenAI-compatible STT endpoint and model in Settings"
-          : voice.provider === "remote" && !hasRemoteEndpoint
-            ? "Choose a Remote STT endpoint in Settings"
-          : voice.provider === "whisper" && !hasWhisperModel
-            ? "Choose a Whisper model path in Settings"
-            : vadConfigIssue
-              ? vadConfigIssue
-            : `Voice input (${voiceProviderLabel})`;
   const slashInput = parseSlashInput(value);
   const activeTrigger = composerAutocompleteTriggerAt(value, cursor);
   const suggestionPrefix = activeTrigger?.prefix ?? "";
@@ -259,20 +187,8 @@ export function Composer({
   const activeWorkspaceLabel = activeWorkspaceFolder
     ? workspaceProjects.find((project) => project.folder === activeWorkspaceFolder)?.name ?? folderLabel(activeWorkspaceFolder)
     : "No project";
-  const showWorkspaceSelector = featureVisibleInMode("workspace", interfaceMode);
-  const availableSlashCommands = useMemo(() => {
-    if (featureVisibleInMode("workspace", interfaceMode)) return SLASH_COMMANDS;
-    return SLASH_COMMANDS.filter((cmd) =>
-      cmd.id === "model" ||
-      cmd.id === "plan" ||
-      cmd.id === "goal" ||
-      cmd.id === "memory" ||
-      cmd.id === "nomemory" ||
-      cmd.id === "privacy" ||
-      cmd.id === "approval" ||
-      cmd.id === "clear",
-    );
-  }, [interfaceMode]);
+  const showWorkspaceSelector = true;
+  const availableSlashCommands = SLASH_COMMANDS;
   const suggestions = useMemo(() => {
     const match = (text: string) => !suggestionQuery || text.toLowerCase().includes(suggestionQuery);
     const items: Suggestion[] = [];
@@ -392,21 +308,6 @@ export function Composer({
   }, [listWorkspaceFiles, suggestionPrefix, suggestionQuery, workspaceFolder]);
 
   useEffect(() => {
-    recordingRef.current = recording;
-  }, [recording]);
-
-  useEffect(() => {
-    transcribingRef.current = transcribing;
-  }, [transcribing]);
-
-  useEffect(() => {
-    return () => {
-      if (recordTickRef.current) clearInterval(recordTickRef.current);
-      recRef.current?.cancel();
-    };
-  }, []);
-
-  useEffect(() => {
     if (!personaOpen) return;
     const onDoc = (e: MouseEvent) => {
       if (personaRef.current && !personaRef.current.contains(e.target as Node)) setPersonaOpen(false);
@@ -437,122 +338,6 @@ export function Composer({
       document.removeEventListener("keydown", onKey);
     };
   }, [projectOpen]);
-
-  function clearRecordTimer() {
-    if (recordTickRef.current) {
-      clearInterval(recordTickRef.current);
-      recordTickRef.current = null;
-    }
-  }
-
-  function formatRecordElapsed(ms: number): string {
-    const totalSeconds = Math.max(0, Math.floor(ms / 1000));
-    const minutes = Math.floor(totalSeconds / 60);
-    const seconds = totalSeconds % 60;
-    return `${minutes}:${seconds.toString().padStart(2, "0")}`;
-  }
-
-  async function finishRecording(target: "composer" | "system" = "composer") {
-    if (finishingRef.current) return;
-    const rec = recRef.current;
-    recRef.current = null;
-    if (!rec) return;
-
-    finishingRef.current = true;
-    recordingRef.current = false;
-    clearRecordTimer();
-    setRecording(false);
-    transcribingRef.current = true;
-    setTranscribing(true);
-    try {
-      const activeVoice = recordVoiceRef.current;
-      const text = await transcribe(await rec.stop(), activeVoice);
-      if (text) {
-        setVoiceNotice(null);
-        if (target === "system" && activeVoice.dictationInjectText) {
-          await typeDictationText(text);
-        } else {
-          const currentValue = valueRef.current;
-          onChange(currentValue ? `${currentValue} ${text}` : text);
-        }
-      }
-    } catch (e) {
-      setVoiceNotice(`Voice transcription failed: ${e instanceof Error ? e.message : String(e)}`);
-    } finally {
-      finishingRef.current = false;
-      setRecordElapsedMs(0);
-      transcribingRef.current = false;
-      setTranscribing(false);
-    }
-  }
-
-  function cancelRecording() {
-    const rec = recRef.current;
-    recRef.current = null;
-    clearRecordTimer();
-    rec?.cancel();
-    finishingRef.current = false;
-    recordingRef.current = false;
-    setRecording(false);
-    setRecordElapsedMs(0);
-  }
-
-  async function startRecording(alertOnError = true) {
-    if (transcribingRef.current || recordingRef.current) return;
-    if (alertOnError) setVoiceNotice(null);
-    if (!voice.enabled) {
-      if (alertOnError) setVoiceNotice("Voice input is disabled. Enable it in Settings.");
-      return;
-    }
-    if (voice.provider === "parakeet" && !hasParakeetCommand) {
-      if (alertOnError) setVoiceNotice("Choose a Parakeet command in Settings.");
-      return;
-    }
-    if (voice.provider === "openai" && !hasOpenAiSttConfig) {
-      if (alertOnError) setVoiceNotice("Choose an OpenAI-compatible STT endpoint and model in Settings.");
-      return;
-    }
-    if (voice.provider === "remote" && !hasRemoteEndpoint) {
-      if (alertOnError) setVoiceNotice("Choose a Remote STT endpoint in Settings.");
-      return;
-    }
-    if (voice.provider === "whisper" && !hasWhisperModel) {
-      if (alertOnError) setVoiceNotice("Choose a Whisper model path in Settings.");
-      return;
-    }
-    if (vadConfigIssue) {
-      if (alertOnError) setVoiceNotice(vadConfigIssue);
-      return;
-    }
-    try {
-      recordVoiceRef.current = voice;
-      const recorder = await recordWav({
-        autoStopOnSilence: voice.vadEnabled,
-        silenceMs: voice.vadSilenceMs,
-        maxMs: voice.maxRecordingSeconds * 1000,
-        onAutoStop: () => {
-          void finishRecording();
-        },
-      });
-      recRef.current = recorder;
-      setRecordElapsedMs(0);
-      clearRecordTimer();
-      recordTickRef.current = setInterval(() => setRecordElapsedMs(recorder.elapsedMs()), 250);
-      recordingRef.current = true;
-      setRecording(true);
-    } catch {
-      if (alertOnError) setVoiceNotice("Microphone access was denied or unavailable.");
-    }
-  }
-
-  async function toggleMic() {
-    if (transcribing) return;
-    if (recording) {
-      await finishRecording();
-    } else {
-      await startRecording(true);
-    }
-  }
 
   function attachFromPicker() {
     if (isTauriRuntime()) {
@@ -705,31 +490,6 @@ export function Composer({
     if (composerSendShortcut === "enter") return true;
     return shortcutMatchesEvent("Mod+Enter", event);
   }
-
-  useEffect(() => {
-    const shortcut = shortcutToGlobalAccelerator(voice.hotkeyShortcut) ?? voice.hotkeyShortcut.trim();
-    if (!voice.hotkeyEnabled || !shortcut || !isTauriRuntime()) return;
-
-    let disposed = false;
-    const cleanupPromise = registerGlobalVoiceShortcut(shortcut, (event) => {
-      if (disposed) return;
-      if (event.state === "Pressed") {
-        void startRecording(false);
-      } else if (event.state === "Released" && recordingRef.current) {
-        void finishRecording(voice.dictationInjectText ? "system" : "composer");
-      }
-    }).catch((e) => {
-      console.warn(`Failed to register voice shortcut ${shortcut}:`, e);
-      return null;
-    });
-
-    return () => {
-      disposed = true;
-      void cleanupPromise.then((cleanup) => {
-        void cleanup?.();
-      });
-    };
-  }, [voice, hasParakeetCommand, hasOpenAiSttConfig, hasRemoteEndpoint, hasWhisperModel, vadConfigIssue]);
 
   return (
     <div
@@ -1088,44 +848,22 @@ export function Composer({
               </div>
             )}
           </div>
-          {showVoiceButton && (
-            <button
-              className={"tool-btn" + (recording ? " recording" : "")}
-              title={recording ? `${voiceTitle} (${formatRecordElapsed(recordElapsedMs)})` : voiceTitle}
-              aria-label={recording ? `${voiceTitle} (${formatRecordElapsed(recordElapsedMs)})` : voiceTitle}
-              aria-pressed={recording}
-              onClick={toggleMic}
-              disabled={transcribing || (!recording && !voiceReady)}
-            >
-              <Mic size={16} />
-            </button>
-          )}
-          {recording && (
-            <button className="tool-btn" title="Cancel recording" aria-label="Cancel recording" onClick={cancelRecording}>
-              <X size={16} />
-            </button>
-          )}
         </div>
         <div className="composer-send">
           <span
             className={"composer-status" + (historyNotice ? " history" : "") + (busy ? " shiny-text" : "")}
             data-testid={historyNotice ? "composer-history-status" : undefined}
-            role={voiceNotice ? "alert" : "status"}
-            aria-live={voiceNotice ? "assertive" : "polite"}
-            title={voiceNotice ?? historyNotice ?? undefined}
-            style={voiceNotice ? { color: "var(--error)" } : undefined}
+            role="status"
+            aria-live="polite"
+            title={historyNotice ?? undefined}
           >
-            {voiceNotice ?? (
-              recording
-                ? `Recording ${formatRecordElapsed(recordElapsedMs)}`
-                : busy
-                  ? "generating..."
-                  : historyNotice
-                    ? historyNotice
-                  : mediaActive
-                    ? mediaTargetLabel ?? `${mediaKind} mode`
-                    : contextTokenLabel
-            )}
+            {busy
+              ? "generating..."
+              : historyNotice
+                ? historyNotice
+                : mediaActive
+                  ? mediaTargetLabel ?? `${mediaKind} mode`
+                  : contextTokenLabel}
           </span>
           {busy ? (
             <>

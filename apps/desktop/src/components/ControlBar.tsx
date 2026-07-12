@@ -8,10 +8,8 @@ import {
 } from "../api";
 import { goalChipVisible, type GoalSettings } from "../lib/goals";
 import { modelDevProfile, modelDisplayName } from "../lib/modelPicker";
-import { featureVisibleInMode } from "../ui/features";
-import { useUiPreferences } from "../ui/store";
 import { ChevronDown, Cube, Folder, Lightbulb, Pin } from "./icons";
-import { ModelPicker } from "./ModelPicker";
+import { ModelPicker, type ModelPickerSelection } from "./ModelPicker";
 import { RunTimeline } from "./RunTimeline";
 
 function Shield({ size = 13 }: { size?: number }) {
@@ -76,9 +74,9 @@ export function ControlBar({
   planMode,
   onTogglePlanMode,
   privacy,
-  onCyclePrivacy,
+  onPrivacy,
   toolApproval,
-  onCycleToolApproval,
+  onToolApproval,
   onManageProviders,
   onManageMcp,
   onManageMemory,
@@ -91,7 +89,7 @@ export function ControlBar({
   model: string;
   providers?: ProviderInfo[];
   toolIntent?: boolean;
-  onModel: (m: string) => void;
+  onModel: (selection: ModelPickerSelection) => void;
   sandbox: boolean;
   onToggleSandbox: () => void;
   computerUse: boolean;
@@ -101,9 +99,9 @@ export function ControlBar({
   planMode: boolean;
   onTogglePlanMode: () => void;
   privacy: PrivacyMode;
-  onCyclePrivacy: () => void;
+  onPrivacy: (privacy: PrivacyMode) => void;
   toolApproval: ToolApprovalMode;
-  onCycleToolApproval: () => void;
+  onToolApproval: (approval: ToolApprovalMode) => void;
   onManageProviders: () => void;
   onManageMcp: () => void;
   onManageMemory: () => void;
@@ -132,24 +130,15 @@ export function ControlBar({
     return () => document.removeEventListener("mousedown", onDoc);
   }, [menu]);
 
-  const interfaceMode = useUiPreferences((s) => s.interfaceMode);
-  const showSandbox = featureVisibleInMode("sandbox", interfaceMode) || sandbox;
-  const showComputerUse =
-    featureVisibleInMode("computerUse", interfaceMode) || computerUse;
-  const showMemoryManager = featureVisibleInMode(
-    "memoryManager",
-    interfaceMode,
-  );
-  const activeContextCount = [
-    showSandbox && sandbox,
-    showComputerUse && computerUse,
-    planMode,
-    memory,
-    privacy !== "off",
-    toolApproval !== "guarded",
-  ].filter(Boolean).length;
-  const contextSummary =
-    activeContextCount === 0 ? "None active" : `${activeContextCount} active`;
+  const contextStates = [
+    sandbox ? "Sandbox" : "",
+    computerUse ? "Computer" : "",
+    memory ? "Memory" : "",
+    privacy !== "off" ? PRIVACY_LABEL[privacy] : "",
+    toolApproval !== "guarded" ? TOOL_APPROVAL_LABEL[toolApproval] : "",
+  ].filter(Boolean);
+  const contextSummary = contextStates.join(" / ");
+  const contextAccessibleLabel = `Session controls, Sandbox ${sandbox ? "on" : "off"}, Computer ${computerUse ? "on" : "off"}, Memory ${memory ? "on" : "off"}, Privacy ${PRIVACY_LABEL[privacy]}, Tool approval ${TOOL_APPROVAL_LABEL[toolApproval]}`;
   const showGoalChip = goalChipVisible(goal);
   const goalDetail = goal.status[0].toUpperCase() + goal.status.slice(1);
   const activeModel = models.find((item) => item.id === model);
@@ -253,21 +242,21 @@ export function ControlBar({
             <button
               type="button"
               className={
-                "chip context-chip" + (activeContextCount ? " chip-on" : "")
+                "chip context-chip" + (contextStates.length ? " chip-on" : "")
               }
               data-testid="context-menu-trigger"
               onClick={() =>
                 setMenu((m) => (m === "context" ? null : "context"))
               }
               title="Session controls"
-              aria-label={`Session controls, ${contextSummary}`}
+              aria-label={contextAccessibleLabel}
               aria-haspopup="menu"
               aria-expanded={menu === "context"}
             >
               <Folder size={13} />
               <span className="chip-label">Session</span>
               <span className="chip-detail">
-                {activeContextCount ? contextSummary : ""}
+                {contextSummary}
               </span>
               <ChevronDown size={12} className="chip-chev" />
             </button>
@@ -277,8 +266,7 @@ export function ControlBar({
                 role="menu"
                 aria-label="Session controls"
               >
-                {showSandbox && (
-                  <button
+                <button
                     className={"context-row" + (sandbox ? " context-on" : "")}
                     type="button"
                     onClick={onToggleSandbox}
@@ -296,10 +284,8 @@ export function ControlBar({
                     </span>
                     <span className="context-switch" aria-hidden="true" />
                   </button>
-                )}
 
-                {showComputerUse && (
-                  <button
+                <button
                     className={
                       "context-row" + (computerUse ? " context-on" : "")
                     }
@@ -319,39 +305,38 @@ export function ControlBar({
                     </span>
                     <span className="context-switch" aria-hidden="true" />
                   </button>
-                )}
 
-                <button
-                  className={
-                    "context-row" +
-                    (toolApproval !== "guarded" ? " context-on" : "")
-                  }
-                  type="button"
-                  onClick={onCycleToolApproval}
-                  title={
-                    toolApproval === "open"
-                      ? "Open mode for Claude CLI uses Claude's bypass-permissions mode. Claude may run tools and commands without additional Claude prompts. Use only in trusted workspaces."
-                      : "Cycle tool approval mode"
-                  }
-                >
+                <div className={"context-row context-choice-row" + (toolApproval !== "guarded" ? " context-on" : "")}>
                   <span className="context-icon">
                     <Shield size={14} />
                   </span>
                   <span className="context-copy">
                     <span className="context-title">Tool approval</span>
-                    <span className="context-value">
-                      {TOOL_APPROVAL_LABEL[toolApproval]}
+                    <span className="context-value">{TOOL_APPROVAL_LABEL[toolApproval]}</span>
+                    <span className="context-choice-group" role="radiogroup" aria-label="Tool approval">
+                      {(["review", "guarded", "open"] as const).map((value) => (
+                        <button
+                          key={value}
+                          type="button"
+                          role="radio"
+                          aria-checked={toolApproval === value}
+                          className={toolApproval === value ? "active" : ""}
+                          title={value === "review" ? "Ask before every tool" : value === "guarded" ? "Run safe tools and review consequential actions" : "Bypass tool prompts in trusted workspaces"}
+                          onClick={() => onToolApproval(value)}
+                        >
+                          {value === "review" ? "Review" : value === "guarded" ? "Guarded" : "Open"}
+                        </button>
+                      ))}
                     </span>
                   </span>
-                  <ChevronDown size={12} className="context-chev" />
-                </button>
+                </div>
 
                 <button
                   className={"context-row" + (memory ? " context-on" : "")}
                   type="button"
                   onClick={onToggleMemory}
                   aria-pressed={memory}
-                  title="Let the agent use scoped thread and project memories"
+                  title="Let the agent use personal and project memories"
                 >
                   <span className="context-icon">
                     <Lightbulb size={14} />
@@ -365,48 +350,51 @@ export function ControlBar({
                   <span className="context-switch" aria-hidden="true" />
                 </button>
 
-                {showMemoryManager && (
-                  <button
+                <button
                     className="context-row"
                     type="button"
                     onClick={() => {
                       setMenu(null);
                       onManageMemory();
                     }}
-                    title="Choose thread and project memory scope"
+                    title="Manage personal and project memory"
                   >
                     <span className="context-icon">
                       <Lightbulb size={14} />
                     </span>
                     <span className="context-copy">
-                      <span className="context-title">Memory scope</span>
+                      <span className="context-title">Manage memory</span>
                       <span className="context-value">
-                        Thread, project, all
+                        Personal and project
                       </span>
                     </span>
                     <ChevronDown size={12} className="context-chev" />
                   </button>
-                )}
 
-                <button
-                  className={
-                    "context-row" + (privacy !== "off" ? " context-on" : "")
-                  }
-                  type="button"
-                  onClick={onCyclePrivacy}
-                  title="Scan PII before sending to a remote provider. Click to cycle Off, Redact, Block."
-                >
+                <div className={"context-row context-choice-row" + (privacy !== "off" ? " context-on" : "")}>
                   <span className="context-icon">
                     <Shield size={14} />
                   </span>
                   <span className="context-copy">
-                    <span className="context-title">Private mode</span>
-                    <span className="context-value">
-                      {PRIVACY_LABEL[privacy]}
+                    <span className="context-title">Privacy</span>
+                    <span className="context-value">{PRIVACY_LABEL[privacy]}</span>
+                    <span className="context-choice-group" role="radiogroup" aria-label="Privacy">
+                      {(["off", "redact", "block"] as const).map((value) => (
+                        <button
+                          key={value}
+                          type="button"
+                          role="radio"
+                          aria-checked={privacy === value}
+                          className={privacy === value ? "active" : ""}
+                          title={value === "off" ? "Send without PII scanning" : value === "redact" ? "Redact detected PII before remote sends" : "Block remote sends when PII is detected"}
+                          onClick={() => onPrivacy(value)}
+                        >
+                          {PRIVACY_LABEL[value]}
+                        </button>
+                      ))}
                     </span>
                   </span>
-                  <ChevronDown size={12} className="context-chev" />
-                </button>
+                </div>
               </div>
             )}
           </div>

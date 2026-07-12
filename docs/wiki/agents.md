@@ -4,7 +4,7 @@ path: agents
 label: Agents
 title: Agents, tools, skills, and schedules
 summary: Reusable agent profiles, tool modes, skill modes, run timelines, child threads, schedules, and approval policies.
-group: Workbench
+group: Core
 order: 50
 updated: 2026-07-11
 ---
@@ -15,11 +15,11 @@ Agents are for repeatable behavior, tool access, and longer work. Keep one-off q
 
 | Block | Behavior |
 |---|---|
-| Named agents | Saved profiles with name, avatar text, system prompt, model override, tool mode, and skill mode. |
+| Named agents | Model-agnostic profiles with name, avatar text, system prompt, tool mode, and skill mode. Interactive runs always use the thread-selected model. |
 | Tool modes | `all`, `custom`, or `none`. |
 | Skill modes | `auto`, `custom`, or `none`; auto selects enabled skills by keyword, while explicit `@Skill Name` and `/Skill Name` prompt tags inject matching enabled skills for that turn. |
 | Run timeline | Start, token, reasoning, tool call, bounded tool result, memory, child-thread, per-request usage deltas, final usage, and error events render as structured stream parts. Tool results are capped before timeline persistence and again for model replay. Child-thread events carry monotonic `seq` cursors; event reads keep the newest tail when limited, and `/threads/{id}` plus child-thread SSE support `after_seq` backfill. Runs stop at 100 model turns by default (`stopped_at_limit: true`), and stream-open failures are retried once before surfacing an error. |
-| Schedules | Cron schedules capture their creation workspace and optional agent profile. The first occurrence is calculated after creation, up to four runs execute concurrently, and each run has a 15-minute limit. |
+| Schedules | Cron schedules capture an explicit model, creation workspace, prompt, files, and optional Agent. Legacy schedules with no model temporarily fall back to their Agent's deprecated saved model; editing persists that fallback. Missing both records a visible error. |
 | Tool approval | The UI sends approval policy and grants to the server-side agent loop. |
 
 ## Approval modes
@@ -44,14 +44,14 @@ Parent runs can expose child-thread tools when the run has a parent thread id an
 | `child_thread_wait` | Wait for a child thread to finish or time out. |
 | `child_thread_stop` | Stop a running child thread. |
 
-Child threads cannot spawn more children, can access only children owned by their current parent, and are limited to four active children per parent and sixteen process-wide. In `open` approval mode they inherit the parent run's effective tools after folder, sandbox, computer-use, MCP, memory, and named-agent filters are applied. In `guarded` and ungranted `review` runs they stay read-only. If the server restarts, unfinished child threads are marked `error` with `interrupted by restart`; graceful server shutdown marks running children `stopped`.
+Child threads cannot spawn more children, can access only children owned by their current parent, and are limited to four active children per parent and sixteen process-wide. They inherit the parent run's model unless `child_thread_spawn` explicitly names another available model. In `open` approval mode they inherit the parent run's effective tools after folder, sandbox, computer-use, MCP, memory, and named-agent filters are applied. In `guarded` and ungranted `review` runs they stay read-only. If the server restarts, unfinished child threads are marked `error` with `interrupted by restart`; graceful server shutdown marks running children `stopped`.
 
 ## Plan mode versus agent mode
 
 | Mode | Use it when |
 |---|---|
 | Plain chat | You need drafting, comparison, or a short answer without saved behavior. |
-| Named agent | The same role, model, prompt, tool mode, or skill mode should be reusable. |
+| Named agent | The same identity, prompt, tool mode, or skill mode should be reusable across thread models. |
 | Plan mode | You want read-only inspection before risky file or shell work. |
 | Goal run | You want the thread to continue toward explicit success criteria across turns. |
 | Schedule | The same prompt and saved file context should run on a clock without manually opening a thread. |
@@ -77,6 +77,7 @@ curl http://127.0.0.1:7377/schedules \
   -d '{
     "name": "weekday check",
     "cron": "0 0 9 * * Mon-Fri",
+    "model": "gpt-4.1",
     "prompt": "Summarize project status.",
     "agent_id": null,
     "attachments": [

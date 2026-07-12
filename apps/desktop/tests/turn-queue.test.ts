@@ -51,12 +51,13 @@ useSessions.getState().updateSettings(sessionId, {
   model: "thread-model",
   activeAgentId: "agent-1",
 });
-const agents = [{ id: "agent-1", model: "agent-model" }];
-equal(queuedModelForSession(sessionId, undefined, agents), "agent-model", "active agent model should win over thread model");
+const agents = [{ id: "agent-1" }];
+equal(queuedModelForSession(sessionId, undefined, agents), "thread-model", "active agents should use the thread model");
 
 useSessions.getState().updateSettings(sessionId, { activeAgentId: null });
-useSessions.getState().enqueueQueuedMessage(sessionId, { content: "first" });
-useSessions.getState().enqueueQueuedMessage(sessionId, { content: "second" });
+const firstQueued = useSessions.getState().enqueueQueuedMessage(sessionId, { content: "first" });
+const secondQueued = useSessions.getState().enqueueQueuedMessage(sessionId, { content: "second" });
+useSessions.getState().moveQueuedMessage(sessionId, secondQueued.id, firstQueued.id, "before");
 assert(hasQueuedMessages(sessionId), "queued messages should be visible before drain");
 
 const ran: string[] = [];
@@ -74,7 +75,23 @@ await drainQueuedMessages({
   },
 });
 
-equal(ran.join(","), "first,second", "drain should run queued messages in order");
+equal(ran.join(","), "second,first", "drain should run queued messages in reordered order");
 assert(!hasQueuedMessages(sessionId), "drain should clear queued messages");
+
+useSessions.getState().enqueueQueuedMessage(sessionId, { content: "fails" });
+useSessions.getState().enqueueQueuedMessage(sessionId, { content: "remains" });
+await drainQueuedMessages({
+  sessionId,
+  queueDrainRef: { current: new Set<string>() },
+  generationControllersRef: { current: new Map<string, AbortController>() },
+  setChatNotice: () => {},
+  sessionMessages: () => [],
+  runTurn: async (convo) => ({ status: "error", messages: convo }),
+});
+equal(
+  useSessions.getState().queuedMessagesBySession[sessionId]?.map((item) => item.content).join(","),
+  "remains",
+  "drain should leave later messages queued after a failed run",
+);
 
 export {};

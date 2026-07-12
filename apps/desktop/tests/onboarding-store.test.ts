@@ -59,10 +59,8 @@ assert(
   "dismissed onboarding should return after the snooze when no models are ready",
 );
 
-useOnboarding.getState().setMode("workbench");
-equal(useOnboarding.getState().status, "in_progress", "choosing a mode should start onboarding");
-equal(useOnboarding.getState().selectedMode, "workbench", "mode should be stored");
-assert(useOnboarding.getState().completedSteps.includes("mode"), "mode step should be marked complete");
+useOnboarding.getState().start();
+equal(useOnboarding.getState().status, "in_progress", "starting should begin unified onboarding");
 
 useOnboarding.getState().setSetupPath("hosted");
 equal(useOnboarding.getState().selectedSetupPath, "hosted", "setup path should be stored");
@@ -84,7 +82,6 @@ assert(useOnboarding.getState().completedSteps.includes("finish"), "finish step 
 
 useOnboarding.getState().reset();
 equal(useOnboarding.getState().status, "not_started", "reset should restore first-run status");
-equal(useOnboarding.getState().selectedMode, null, "reset should clear selected mode");
 equal(useOnboarding.getState().completedSteps.length, 0, "reset should clear completed steps");
 
 export {};
