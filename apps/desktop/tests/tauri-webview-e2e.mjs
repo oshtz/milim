@@ -818,13 +818,18 @@ async function runSlashAndAttachmentCheck(page) {
 
 async function runMemoryLibraryCheck(page) {
   await page.getByTestId("context-menu-trigger").click();
-  await page.getByText("Manage memory", { exact: true }).click();
+  const memoryToggle = page.getByTestId("memory-toggle");
+  const memoryBefore = await memoryToggle.getAttribute("aria-pressed");
+  await page.getByRole("button", { name: "Manage memory" }).click();
   await page.getByRole("heading", { name: "Memory" }).waitFor();
   await page.getByRole("tab", { name: "Personal" }).waitFor();
   await page.getByRole("tab", { name: "Project" }).waitFor();
   await page.getByLabel("Search memories").waitFor();
   await page.getByText("Show archived", { exact: true }).waitFor();
   await page.getByLabel("Close memory manager").click();
+  await page.getByTestId("context-menu-trigger").click();
+  await assertAttribute(memoryToggle, "aria-pressed", memoryBefore);
+  await page.getByTestId("context-menu-trigger").click();
 }
 
 async function runContextDrawerCheck(page) {

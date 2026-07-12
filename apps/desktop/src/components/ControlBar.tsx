@@ -267,132 +267,109 @@ export function ControlBar({
                 aria-label="Session controls"
               >
                 <button
-                    className={"context-row" + (sandbox ? " context-on" : "")}
-                    type="button"
-                    onClick={onToggleSandbox}
-                    aria-pressed={sandbox}
-                    title="Run tools in an isolated Docker sandbox"
-                  >
-                    <span className="context-icon">
-                      <Cube size={14} />
-                    </span>
-                    <span className="context-copy">
-                      <span className="context-title">Sandbox</span>
-                      <span className="context-value">
-                        {sandbox ? "On" : "Off"}
-                      </span>
-                    </span>
-                    <span className="context-switch" aria-hidden="true" />
-                  </button>
+                  className={"context-row" + (sandbox ? " context-on" : "")}
+                  type="button"
+                  onClick={onToggleSandbox}
+                  aria-pressed={sandbox}
+                  title="Run tools in an isolated Docker sandbox"
+                >
+                  <span className="context-icon">
+                    <Cube size={14} />
+                  </span>
+                  <span className="context-title">Sandbox</span>
+                  <span className="context-switch" aria-hidden="true" />
+                </button>
 
                 <button
-                    className={
-                      "context-row" + (computerUse ? " context-on" : "")
-                    }
-                    type="button"
-                    onClick={onToggleComputer}
-                    aria-pressed={computerUse}
-                    title="Let the agent see the screen and control the mouse/keyboard"
-                  >
-                    <span className="context-icon">
-                      <Monitor size={14} />
-                    </span>
-                    <span className="context-copy">
-                      <span className="context-title">Computer use</span>
-                      <span className="context-value">
-                        {computerUse ? "On" : "Off"}
-                      </span>
-                    </span>
-                    <span className="context-switch" aria-hidden="true" />
-                  </button>
+                  className={
+                    "context-row" + (computerUse ? " context-on" : "")
+                  }
+                  type="button"
+                  onClick={onToggleComputer}
+                  aria-pressed={computerUse}
+                  title="Let the agent see the screen and control the mouse/keyboard"
+                >
+                  <span className="context-icon">
+                    <Monitor size={14} />
+                  </span>
+                  <span className="context-title">Computer use</span>
+                  <span className="context-switch" aria-hidden="true" />
+                </button>
 
                 <div className={"context-row context-choice-row" + (toolApproval !== "guarded" ? " context-on" : "")}>
                   <span className="context-icon">
                     <Shield size={14} />
                   </span>
-                  <span className="context-copy">
-                    <span className="context-title">Tool approval</span>
-                    <span className="context-value">{TOOL_APPROVAL_LABEL[toolApproval]}</span>
-                    <span className="context-choice-group" role="radiogroup" aria-label="Tool approval">
-                      {(["review", "guarded", "open"] as const).map((value) => (
-                        <button
-                          key={value}
-                          type="button"
-                          role="radio"
-                          aria-checked={toolApproval === value}
-                          className={toolApproval === value ? "active" : ""}
-                          title={value === "review" ? "Ask before every tool" : value === "guarded" ? "Run safe tools and review consequential actions" : "Bypass tool prompts in trusted workspaces"}
-                          onClick={() => onToolApproval(value)}
-                        >
-                          {value === "review" ? "Review" : value === "guarded" ? "Guarded" : "Open"}
-                        </button>
-                      ))}
-                    </span>
+                  <span className="context-title">Tool approval</span>
+                  <span className="context-choice-group" role="radiogroup" aria-label="Tool approval">
+                    {(["review", "guarded", "open"] as const).map((value) => (
+                      <button
+                        key={value}
+                        type="button"
+                        role="radio"
+                        aria-checked={toolApproval === value}
+                        className={toolApproval === value ? "active" : ""}
+                        title={value === "review" ? "Ask before every tool" : value === "guarded" ? "Run safe tools and review consequential actions" : "Bypass tool prompts in trusted workspaces"}
+                        onClick={() => onToolApproval(value)}
+                      >
+                        {value === "review" ? "Review" : value === "guarded" ? "Guarded" : "Open"}
+                      </button>
+                    ))}
                   </span>
                 </div>
 
-                <button
-                  className={"context-row" + (memory ? " context-on" : "")}
-                  type="button"
-                  onClick={onToggleMemory}
-                  aria-pressed={memory}
-                  title="Let the agent use personal and project memories"
-                >
+                <div className={"context-row context-memory-row" + (memory ? " context-on" : "")}>
                   <span className="context-icon">
                     <Lightbulb size={14} />
                   </span>
-                  <span className="context-copy">
-                    <span className="context-title">Memory</span>
-                    <span className="context-value">
-                      {memory ? "On" : "Off"}
-                    </span>
+                  <span className="context-title">Memory</span>
+                  <span className="context-memory-actions">
+                    <button
+                      className="context-manage-button"
+                      type="button"
+                      aria-label="Manage memory"
+                      onClick={() => {
+                        setMenu(null);
+                        onManageMemory();
+                      }}
+                      title="Manage personal and project memory"
+                    >
+                      Manage
+                      <ChevronDown size={12} className="context-manage-chev" />
+                    </button>
+                    <button
+                      className="context-toggle-button"
+                      type="button"
+                      data-testid="memory-toggle"
+                      onClick={onToggleMemory}
+                      aria-label="Toggle memory"
+                      aria-pressed={memory}
+                      title="Let the agent use personal and project memories"
+                    >
+                      <span className="context-switch" aria-hidden="true" />
+                    </button>
                   </span>
-                  <span className="context-switch" aria-hidden="true" />
-                </button>
-
-                <button
-                    className="context-row"
-                    type="button"
-                    onClick={() => {
-                      setMenu(null);
-                      onManageMemory();
-                    }}
-                    title="Manage personal and project memory"
-                  >
-                    <span className="context-icon">
-                      <Lightbulb size={14} />
-                    </span>
-                    <span className="context-copy">
-                      <span className="context-title">Manage memory</span>
-                      <span className="context-value">
-                        Personal and project
-                      </span>
-                    </span>
-                    <ChevronDown size={12} className="context-chev" />
-                  </button>
+                </div>
 
                 <div className={"context-row context-choice-row" + (privacy !== "off" ? " context-on" : "")}>
                   <span className="context-icon">
                     <Shield size={14} />
                   </span>
-                  <span className="context-copy">
-                    <span className="context-title">Privacy</span>
-                    <span className="context-value">{PRIVACY_LABEL[privacy]}</span>
-                    <span className="context-choice-group" role="radiogroup" aria-label="Privacy">
-                      {(["off", "redact", "block"] as const).map((value) => (
-                        <button
-                          key={value}
-                          type="button"
-                          role="radio"
-                          aria-checked={privacy === value}
-                          className={privacy === value ? "active" : ""}
-                          title={value === "off" ? "Send without PII scanning" : value === "redact" ? "Redact detected PII before remote sends" : "Block remote sends when PII is detected"}
-                          onClick={() => onPrivacy(value)}
-                        >
-                          {PRIVACY_LABEL[value]}
-                        </button>
-                      ))}
-                    </span>
+                  <span className="context-title">Privacy</span>
+                  <span className="context-choice-group" role="radiogroup" aria-label="Privacy">
+                    {(["off", "redact", "block"] as const).map((value) => (
+                      <button
+                        key={value}
+                        type="button"
+                        role="radio"
+                        aria-checked={privacy === value}
+                        className={privacy === value ? "active" : ""}
+                        title={value === "off" ? "Send without PII scanning" : value === "redact" ? "Redact detected PII before remote sends" : "Block remote sends when PII is detected"}
+                        onClick={() => onPrivacy(value)}
+                      >
+                        {PRIVACY_LABEL[value]}
+                      </button>
+                    ))}
                   </span>
                 </div>
               </div>
