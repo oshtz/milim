@@ -102,6 +102,24 @@ impl ThreadSupervisor {
         tools: ToolRegistry,
         spec: ChildRunSpec,
     ) -> Result<AgentThread> {
+        const MAX_ACTIVE_CHILDREN: usize = 16;
+        const MAX_ACTIVE_CHILDREN_PER_PARENT: usize = 4;
+        let mut active = self.handles.lock().expect("thread handles poisoned");
+        if active.len() >= MAX_ACTIVE_CHILDREN {
+            return Err(Error::InvalidRequest(format!(
+                "at most {MAX_ACTIVE_CHILDREN} child threads may run at once"
+            )));
+        }
+        let parent_active = active
+            .keys()
+            .filter_map(|id| self.store.get(id).ok().flatten())
+            .filter(|thread| thread.parent_id == spec.parent_id)
+            .count();
+        if parent_active >= MAX_ACTIVE_CHILDREN_PER_PARENT {
+            return Err(Error::InvalidRequest(format!(
+                "at most {MAX_ACTIVE_CHILDREN_PER_PARENT} child threads may run for one parent"
+            )));
+        }
         let thread = self.store.create(
             &spec.parent_id,
             &spec.title,
@@ -133,10 +151,7 @@ impl ThreadSupervisor {
             run_child_thread(store, events, service, Arc::new(tools), task_thread, spec).await;
             let _ = handles.lock().map(|mut h| h.remove(&task_id));
         });
-        self.handles
-            .lock()
-            .expect("thread handles poisoned")
-            .insert(id, handle);
+        active.insert(id, handle);
         Ok(thread)
     }
 

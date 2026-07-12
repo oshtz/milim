@@ -21,7 +21,7 @@ function skill(name: string, enabled = true): SkillInfo {
 }
 
 function tool(name: string): ToolInfo {
-  return { name, description: "" };
+  return { name, description: "", effect: "unknown" };
 }
 
 const skills = [

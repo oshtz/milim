@@ -98,6 +98,8 @@ Claude CLI integration boundaries:
 | Installed Claude CLI | `GET /claude/status`, `POST /claude/run` |
 | Health | `GET /health` |
 
+Built-in tool safety is enforced server-side. Each run captures its workspace and preview target, Guarded mode exposes only tools declared read-only, and direct `POST /mcp/call` is read-only even though `GET /mcp/tools` returns the full catalog for agent configuration. Filesystem tools reject traversal through symlinks/junctions, use atomic replacement for writes, and support bounded ranged reads. `http_fetch` permits public HTTP(S) destinations only. Host and Docker commands have time/output limits; Docker runs also use no-network, memory, CPU, PID, capability, and read-only-root restrictions by default.
+
 Standalone auth is configured in `~/.milim/config/server.json`: set `authRequired: true` to accept locally minted `msk-v1` keys, add static bearer secrets under `apiKeys`, or trust extra signed-key issuers under `accessKeyIssuers`. `milim serve --expose` persists `authRequired: true` and prints an immediate `MILIM_API_TOKEN` when no auth is already configured. CLI client commands accept `--url`, `--port`, and `--token` (`MILIM_API_TOKEN`) when calling an authenticated server. The desktop app disables loopback trust and uses a per-launch bearer token for its embedded server. Empty CORS allow-list means no browser origins are allowed; set explicit origins at `~/.milim/config/server.json` when needed.
 
 ## Workspace Layout

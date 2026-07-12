@@ -6,7 +6,7 @@ title: Desktop app
 summary: Simple and Workbench modes, threads, projects, composer controls, artifacts, plan mode, goals, search, rendering, settings, and slash commands.
 group: Workbench
 order: 30
-updated: 2026-07-10
+updated: 2026-07-11
 ---
 
 The first run can open as Simple or Workbench. Simple keeps the dev chat core visible with model switching, themes, memory, and voice basics; Workbench exposes project, agent, MCP, media, sandbox, schedule, and computer-use controls. The sidebar Workbench launcher opens Runs, MCP servers, Skills, and Schedules from one persistent place. In both modes, the Tauri process starts the embedded backend, connects persisted MCP servers, and runs schedules in the background. The model picker loads cached models while one startup task refreshes enabled chat providers, then reconciles automatically; Codex and Claude discovery remain independent from provider availability. Background schedule completions and mobile relay events use shared app notices so they remain visible outside their settings panels. Closing the desktop window hides it to the system tray so those background services keep running; use the tray menu to reopen or quit.
@@ -53,8 +53,8 @@ For a stale native session, **Fresh** starts from Milim's complete context while
 | Control | Behavior |
 |---|---|
 | Model | Pick any discovered chat, account-runtime, or media-capable model. The chip shows provider, runtime lane, setup status, capabilities, favorite state, and reasoning effort where supported. |
-| Folder | Sets the host working folder. Host filesystem, shell, Git actions, and the quick-summary workspace launcher refuse to run until a folder is selected. |
-| Sandbox | Enables Docker-backed command execution through the isolated `run_command` tool. |
+| Folder | Sets the host working folder. Each run captures that folder immutably; filesystem tools reject symlink/junction escapes, writes replace files atomically, directory results are sorted and bounded, and `read_file` accepts byte `offset`/`limit` ranges. |
+| Sandbox | Enables bounded Docker execution through `run_command`: no network, read-only root, dropped capabilities, no-new-privileges, memory/CPU/PID limits, output caps, timeout, and cancellation cleanup. |
 | Computer use | Enables OS-level screen capture plus mouse/keyboard tools when the desktop build includes the feature. |
 | Memory | Adds scoped thread/project memory search as cheap turn context. Durable memory writes use `memory_register` only on explicit remember/save requests or already tool-capable turns. |
 | Privacy | Sets `off`, `redact`, or `block` for remote-provider and account-runtime traffic. |
@@ -70,7 +70,7 @@ HTTP and HTTPS links rendered in chat message bodies open in the system browser.
 
 Runnable generated apps never start automatically. Choose App, select **Review run**, and inspect the scope, working folder, package manager, install requirement, exact install and dev commands, and source fingerprint. **Run** is enabled only for that current preflight. Once healthy, the review collapses into a Ready status control and one-click Stop action; select Ready to reopen the details and Restart action. No-folder projects are atomically staged into Milim's managed runtime directory only after Run; selected-folder previews execute in that folder and warn when dependency installation may modify it. Stop covers installation and the dev server, and restart cannot let an older run overwrite newer state. The runtime probes its loopback URL rather than trusting console text, distinguishes active-but-unhealthy from stopped, preserves the last URL through compile failures and polling disconnects, and returns to ready after recovery. **Prepare fix** adds an editable queued message containing the selected revision and recent failure evidence; it does not send, replace the composer draft, or remove attachments.
 
-Milim registers one active preview surface across artifact iframes, native URL previews, and managed runtime previews, and only enables scoped tools when that surface is ready and DOM-capable: `preview_dom_snapshot`, `preview_click`, `preview_type_text`, `preview_key_press`, and `preview_scroll`. These tools operate only inside the active preview and remain separate from opt-in OS-level `/computer` control. Blank browser, markdown, code, loading, error, and Git states do not expose preview DOM tools. Preview activity cues are visual-only; browser cues use a transparent click-through overlay. Native App and URL webviews hide while an overlapping app dialog or popover is open, then restore at the current bounds without resetting navigation. For local QA, open the app with `?previewActivity=click`, `move`, `scroll`, `type`, or `inspect`, optionally with `previewActivityX` and `previewActivityY`, then open the inspector.
+Milim registers one active preview surface across artifact iframes, native URL previews, and managed runtime previews, and only enables scoped tools when that surface is ready and DOM-capable: `preview_dom_snapshot`, `preview_click`, `preview_type_text`, `preview_key_press`, and `preview_scroll`. A run captures the target surface before execution, so switching threads or previews cannot redirect an in-flight action. Preview callbacks use bounded asynchronous waits. These tools remain separate from opt-in OS-level `/computer` control. Computer-use arguments are range/enum validated and stored screenshots retain only the newest 50 captures.
 
 ## Workspace checkpoints
 

@@ -769,10 +769,10 @@ fn codex_tools_allowed(req: &CodexRunRequest) -> bool {
 }
 
 fn codex_approval_policy(req: &CodexRunRequest) -> &'static str {
-    if !codex_tools_allowed(req) {
+    if !codex_tools_allowed(req)
+        || account_runtime_policy(req.tool_approval_policy.as_deref()) == "guarded"
+    {
         "onRequest"
-    } else if account_runtime_policy(req.tool_approval_policy.as_deref()) == "guarded" {
-        "unlessTrusted"
     } else {
         // Matches Milim's Open mode: no per-tool prompt after the user selected Open or approved a Review run.
         "never"
@@ -791,7 +791,9 @@ fn codex_sandbox_policy(req: &CodexRunRequest, cwd: Option<&str>) -> Value {
 }
 
 fn codex_sandbox_mode(req: &CodexRunRequest, cwd: Option<&str>) -> &'static str {
-    if codex_tools_allowed(req) && cwd.is_some() {
+    let policy = account_runtime_policy(req.tool_approval_policy.as_deref());
+    let mutations_allowed = policy == "open" || (policy == "review" && req.tool_approval_grant);
+    if !req.plan_mode && mutations_allowed && cwd.is_some() {
         "workspace-write"
     } else {
         "read-only"
@@ -1204,14 +1206,11 @@ mod tests {
             tool_approval_grant: false,
             plan_mode: false,
         };
-        assert_eq!(codex_approval_policy(&req), "unlessTrusted");
-        assert_eq!(
-            codex_sandbox_mode(&req, req.cwd.as_deref()),
-            "workspace-write"
-        );
+        assert_eq!(codex_approval_policy(&req), "onRequest");
+        assert_eq!(codex_sandbox_mode(&req, req.cwd.as_deref()), "read-only");
         assert_eq!(
             codex_sandbox_policy(&req, req.cwd.as_deref())["type"],
-            "workspaceWrite"
+            "readOnly"
         );
 
         req.tool_approval_policy = Some("review".into());

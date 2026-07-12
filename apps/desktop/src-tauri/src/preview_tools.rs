@@ -1,9 +1,9 @@
-use std::sync::{mpsc, Arc, RwLock};
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use async_trait::async_trait;
 use milim_core::{Error, Result};
-use milim_tools::Tool;
+use milim_tools::{Tool, ToolEffect};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Manager, Wry};
@@ -84,11 +84,15 @@ try {
 
   if (__milimAction === "type_text") {
     const text = String(__milimArgs.text ?? "");
-    const el = pick() || D.activeElement;
+    const hasTarget = Boolean(__milimArgs.selector) || (__milimArgs.x != null && __milimArgs.y != null);
+    const el = (hasTarget ? pick() : null) || D.activeElement;
     if (!el) return { ok: false, error: "No preview element matched the typing target." };
     el.focus?.();
-    if ("value" in el) {
-      el.value = `${el.value ?? ""}${text}`;
+    if (el instanceof W.HTMLInputElement || el instanceof W.HTMLTextAreaElement) {
+      const value = `${el.value ?? ""}${text}`;
+      const proto = el instanceof W.HTMLTextAreaElement ? W.HTMLTextAreaElement.prototype : W.HTMLInputElement.prototype;
+      const setter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
+      if (setter) setter.call(el, value); else el.value = value;
       el.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: text }));
       el.dispatchEvent(new Event("change", { bubbles: true }));
     } else if (el.isContentEditable) {
@@ -148,6 +152,13 @@ impl PreviewToolState {
         if let Ok(mut current) = self.app.write() {
             *current = Some(app);
         }
+    }
+
+    fn snapshot(&self) -> SharedPreviewToolState {
+        Arc::new(Self {
+            app: RwLock::new(self.app.read().ok().and_then(|value| value.clone())),
+            target: RwLock::new(self.target.read().ok().and_then(|value| value.clone())),
+        })
     }
 
     // ponytail: Tauri target payload is flat; wrap it only if this grows.
@@ -211,7 +222,11 @@ pub fn preview_tools(state: SharedPreviewToolState) -> Vec<Arc<dyn Tool>> {
     ]
 }
 
-fn run_preview_action(state: &SharedPreviewToolState, action: &str, args: Value) -> Result<Value> {
+async fn run_preview_action(
+    state: &SharedPreviewToolState,
+    action: &str,
+    args: Value,
+) -> Result<Value> {
     let target = state
         .target
         .read()
@@ -244,16 +259,21 @@ fn run_preview_action(state: &SharedPreviewToolState, action: &str, args: Value)
         "(() => {{ const __milimAction = {action_json}; const __milimArgs = {args_json}; const __milimNative = {}; {PREVIEW_ACTION_JS} }})()",
         if target.native { "true" } else { "false" },
     );
-    let (tx, rx) = mpsc::channel();
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let tx = Arc::new(std::sync::Mutex::new(Some(tx)));
     webview
         .eval_with_callback(script, move |raw| {
-            let _ = tx.send(raw);
+            if let Some(tx) = tx.lock().ok().and_then(|mut tx| tx.take()) {
+                let _ = tx.send(raw);
+            }
         })
         .map_err(|e| Error::Other(format!("preview eval failed: {e}")))?;
-    let raw = rx
-        .recv_timeout(PREVIEW_EVAL_TIMEOUT)
-        .map_err(|_| Error::Other("preview tool timed out".to_string()))?;
-    let mut result = serde_json::from_str::<Value>(&raw).unwrap_or_else(|_| json!({ "ok": true, "result": raw }));
+    let raw = tokio::time::timeout(PREVIEW_EVAL_TIMEOUT, rx)
+        .await
+        .map_err(|_| Error::Other("preview tool timed out".to_string()))?
+        .map_err(|_| Error::Other("preview callback closed".to_string()))?;
+    let mut result = serde_json::from_str::<Value>(&raw)
+        .map_err(|error| Error::Other(format!("invalid preview response: {error}")))?;
     if let Value::Object(map) = &mut result {
         map.insert("preview_url".to_string(), json!(target.url));
         map.insert("preview_surface".to_string(), target_metadata_json(&target));
@@ -317,10 +337,20 @@ impl Tool for PreviewDomSnapshotTool {
             }
         })
     }
+    fn effect(&self) -> ToolEffect {
+        ToolEffect::ReadOnly
+    }
+    fn scoped_for_run(&self) -> Option<Arc<dyn Tool>> {
+        Some(Arc::new(Self {
+            state: self.state.snapshot(),
+        }))
+    }
 
     async fn invoke(&self, args: Value) -> Result<Value> {
-        let args: DomSnapshotArgs = serde_json::from_value(args).unwrap_or(DomSnapshotArgs { max_chars: None });
-        run_preview_action(&self.state, "snapshot", json!({ "max_chars": args.max_chars }))
+        let args: DomSnapshotArgs = serde_json::from_value(args).map_err(|error| {
+            Error::InvalidRequest(format!("invalid preview_dom_snapshot arguments: {error}"))
+        })?;
+        run_preview_action(&self.state, "snapshot", json!({ "max_chars": args.max_chars })).await
     }
 }
 
@@ -353,10 +383,18 @@ impl Tool for PreviewClickTool {
     fn input_schema(&self) -> Value {
         target_schema()
     }
+    fn effect(&self) -> ToolEffect {
+        ToolEffect::Mutating
+    }
+    fn scoped_for_run(&self) -> Option<Arc<dyn Tool>> {
+        Some(Arc::new(Self {
+            state: self.state.snapshot(),
+        }))
+    }
 
     async fn invoke(&self, args: Value) -> Result<Value> {
         let args = serde_json::to_value(normalize_target_args(args)?).map_err(|e| Error::Other(e.to_string()))?;
-        run_preview_action(&self.state, "click", args)
+        run_preview_action(&self.state, "click", args).await
     }
 }
 
@@ -397,12 +435,21 @@ impl Tool for PreviewTypeTextTool {
             "required": ["text"]
         })
     }
+    fn effect(&self) -> ToolEffect {
+        ToolEffect::Mutating
+    }
+    fn scoped_for_run(&self) -> Option<Arc<dyn Tool>> {
+        Some(Arc::new(Self {
+            state: self.state.snapshot(),
+        }))
+    }
 
     async fn invoke(&self, args: Value) -> Result<Value> {
         let args: TypeTextArgs = serde_json::from_value(args)
             .map_err(|e| Error::InvalidRequest(format!("invalid preview_type_text arguments: {e}")))?;
+        validate_coordinate_pair(args.x, args.y)?;
         let args = serde_json::to_value(args).map_err(|e| Error::Other(e.to_string()))?;
-        run_preview_action(&self.state, "type_text", args)
+        run_preview_action(&self.state, "type_text", args).await
     }
 }
 
@@ -440,12 +487,20 @@ impl Tool for PreviewKeyPressTool {
             "required": ["key"]
         })
     }
+    fn effect(&self) -> ToolEffect {
+        ToolEffect::Mutating
+    }
+    fn scoped_for_run(&self) -> Option<Arc<dyn Tool>> {
+        Some(Arc::new(Self {
+            state: self.state.snapshot(),
+        }))
+    }
 
     async fn invoke(&self, args: Value) -> Result<Value> {
         let args: KeyPressArgs = serde_json::from_value(args)
             .map_err(|e| Error::InvalidRequest(format!("invalid preview_key_press arguments: {e}")))?;
         let args = serde_json::to_value(args).map_err(|e| Error::Other(e.to_string()))?;
-        run_preview_action(&self.state, "key_press", args)
+        run_preview_action(&self.state, "key_press", args).await
     }
 }
 
@@ -489,18 +544,42 @@ impl Tool for PreviewScrollTool {
             }
         })
     }
+    fn effect(&self) -> ToolEffect {
+        ToolEffect::Mutating
+    }
+    fn scoped_for_run(&self) -> Option<Arc<dyn Tool>> {
+        Some(Arc::new(Self {
+            state: self.state.snapshot(),
+        }))
+    }
 
     async fn invoke(&self, args: Value) -> Result<Value> {
         let args: ScrollArgs = serde_json::from_value(args)
             .map_err(|e| Error::InvalidRequest(format!("invalid preview_scroll arguments: {e}")))?;
         let args = serde_json::to_value(args).map_err(|e| Error::Other(e.to_string()))?;
-        run_preview_action(&self.state, "scroll", args)
+        run_preview_action(&self.state, "scroll", args).await
     }
 }
 
 fn normalize_target_args(args: Value) -> Result<PreviewTargetArgs> {
-    serde_json::from_value(args)
-        .map_err(|e| Error::InvalidRequest(format!("invalid preview target arguments: {e}")))
+    let args: PreviewTargetArgs = serde_json::from_value(args)
+        .map_err(|e| Error::InvalidRequest(format!("invalid preview target arguments: {e}")))?;
+    validate_coordinate_pair(args.x, args.y)?;
+    Ok(args)
+}
+
+fn validate_coordinate_pair(x: Option<f64>, y: Option<f64>) -> Result<()> {
+    if x.is_some() != y.is_some() {
+        return Err(Error::InvalidRequest(
+            "preview coordinates require both x and y".into(),
+        ));
+    }
+    if x.is_some_and(|value| !value.is_finite()) || y.is_some_and(|value| !value.is_finite()) {
+        return Err(Error::InvalidRequest(
+            "preview coordinates must be finite numbers".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn target_schema() -> Value {
@@ -580,7 +659,9 @@ mod tests {
             Some("not_inspectable".to_string()),
             Some(vec![]),
         );
-        let err = run_preview_action(&state, "snapshot", json!({})).unwrap_err().to_string();
+        let err = tauri::async_runtime::block_on(run_preview_action(&state, "snapshot", json!({})))
+            .unwrap_err()
+            .to_string();
         assert!(
             err.contains("not inspectable"),
             "unexpected error: {err}"

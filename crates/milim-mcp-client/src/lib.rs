@@ -8,7 +8,7 @@
 //! Transport: newline-delimited JSON-RPC 2.0 over the child's stdin/stdout
 //! (the MCP stdio transport). A background reader task demuxes responses by id.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, RwLock};
@@ -17,13 +17,13 @@ use std::time::Duration;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::{oneshot, Mutex};
 
 use milim_core::{Error, Result};
 use milim_storage::EncryptedStore;
-use milim_tools::Tool;
+use milim_tools::{atomic_write, Tool, ToolEffect};
 
 const PROTOCOL_VERSION: &str = "2025-06-18";
 
@@ -197,24 +197,32 @@ impl McpSecretStore {
             std::fs::create_dir_all(parent)?;
         }
         let data = serde_json::to_vec(all)?;
-        std::fs::write(&self.data_path, self.enc.encrypt(&data)?)?;
+        atomic_write(&self.data_path, &self.enc.encrypt(&data)?)?;
         Ok(())
     }
 }
 
 fn read_or_make_key(path: &Path) -> Result<[u8; 32]> {
-    if let Ok(bytes) = std::fs::read(path) {
-        if bytes.len() == 32 {
+    match std::fs::read(path) {
+        Ok(bytes) if bytes.len() == 32 => {
             let mut key = [0u8; 32];
             key.copy_from_slice(&bytes);
             return Ok(key);
         }
+        Ok(bytes) => {
+            return Err(Error::Other(format!(
+                "invalid MCP encryption key length: expected 32 bytes, got {}",
+                bytes.len()
+            )))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
     }
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
     let key = EncryptedStore::random_key();
-    std::fs::write(path, key)?;
+    atomic_write(path, &key)?;
     Ok(key)
 }
 
@@ -259,7 +267,7 @@ impl McpClient {
         if let Some(cwd) = cwd.map(str::trim).filter(|value| !value.is_empty()) {
             cmd.current_dir(cwd);
         }
-        cmd.envs(env);
+        cmd.env_clear().envs(base_child_env()).envs(env);
         // Don't flash a console window when spawning the server on Windows.
         #[cfg(windows)]
         cmd.creation_flags(milim_core::proc::CREATE_NO_WINDOW);
@@ -284,20 +292,37 @@ impl McpClient {
         let pending_r = pending.clone();
         let stdin_r = stdin.clone();
         tokio::spawn(async move {
-            let mut lines = BufReader::new(stdout).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                if line.trim().is_empty() {
+            const MAX_LINE_BYTES: u64 = 8 * 1024 * 1024;
+            let mut reader = BufReader::new(stdout);
+            loop {
+                let mut line = Vec::new();
+                let read = (&mut reader)
+                    .take(MAX_LINE_BYTES + 1)
+                    .read_until(b'\n', &mut line)
+                    .await;
+                let Ok(read) = read else { break };
+                if read == 0 {
+                    break;
+                }
+                if line.len() as u64 > MAX_LINE_BYTES || !line.ends_with(b"\n") {
+                    break;
+                }
+                if line.iter().all(u8::is_ascii_whitespace) {
                     continue;
                 }
-                let Ok(msg) = serde_json::from_str::<Value>(&line) else {
+                let Ok(msg) = serde_json::from_slice::<Value>(&line) else {
                     continue;
                 };
+                if msg.get("method").is_some() {
+                    if msg.get("id").is_some() {
+                        let response = server_request_response(&msg);
+                        let _ = write_json(&stdin_r, &response).await;
+                    }
+                    continue;
+                }
                 if let Some(id) = msg.get("id").and_then(Value::as_i64) {
                     if let Some(tx) = pending_r.lock().await.remove(&id) {
                         let _ = tx.send(msg);
-                    } else if msg.get("method").is_some() {
-                        let response = server_request_response(&msg);
-                        let _ = write_json(&stdin_r, &response).await;
                     }
                 }
                 // Server-initiated notifications don't need responses.
@@ -378,6 +403,16 @@ impl McpClient {
                         .get("inputSchema")
                         .cloned()
                         .unwrap_or_else(|| json!({"type": "object"})),
+                    effect: match (
+                        t.pointer("/annotations/readOnlyHint")
+                            .and_then(Value::as_bool),
+                        t.pointer("/annotations/destructiveHint")
+                            .and_then(Value::as_bool),
+                    ) {
+                        (_, Some(true)) => ToolEffect::Mutating,
+                        (Some(true), _) => ToolEffect::ReadOnly,
+                        _ => ToolEffect::Unknown,
+                    },
                 })
             })
             .collect())
@@ -427,9 +462,12 @@ impl McpClient {
     }
 
     async fn list_paged(&self, method: &str, key: &str) -> Result<Vec<Value>> {
+        const MAX_PAGES: usize = 100;
+        const MAX_ITEMS: usize = 10_000;
         let mut out = Vec::new();
         let mut cursor: Option<String> = None;
-        loop {
+        let mut seen = HashSet::new();
+        for _ in 0..MAX_PAGES {
             let params = cursor
                 .as_ref()
                 .map(|c| json!({ "cursor": c }))
@@ -442,6 +480,11 @@ impl McpClient {
                     .cloned()
                     .unwrap_or_default(),
             );
+            if out.len() > MAX_ITEMS {
+                return Err(Error::Other(format!(
+                    "MCP '{method}' returned more than {MAX_ITEMS} items"
+                )));
+            }
             cursor = result
                 .get("nextCursor")
                 .and_then(Value::as_str)
@@ -449,8 +492,60 @@ impl McpClient {
             if cursor.is_none() {
                 return Ok(out);
             }
+            if !seen.insert(cursor.clone().unwrap_or_default()) {
+                return Err(Error::Other(format!(
+                    "MCP '{method}' repeated a pagination cursor"
+                )));
+            }
+        }
+        Err(Error::Other(format!(
+            "MCP '{method}' exceeded {MAX_PAGES} pages"
+        )))
+    }
+}
+
+impl Drop for McpClient {
+    fn drop(&mut self) {
+        #[cfg(windows)]
+        if let Ok(mut child) = self._child.try_lock() {
+            if child.try_wait().ok().flatten().is_none() {
+                let Some(pid) = child.id() else { return };
+                let mut command = std::process::Command::new("taskkill");
+                command
+                    .args(["/PID", &pid.to_string(), "/T", "/F"])
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null());
+                let _ = milim_core::proc::hide_console(&mut command).spawn();
+            }
         }
     }
+}
+
+fn base_child_env() -> HashMap<String, String> {
+    const KEYS: &[&str] = &[
+        "PATH",
+        "Path",
+        "SystemRoot",
+        "WINDIR",
+        "COMSPEC",
+        "PATHEXT",
+        "TEMP",
+        "TMP",
+        "TMPDIR",
+        "HOME",
+        "USERPROFILE",
+        "APPDATA",
+        "LOCALAPPDATA",
+        "LANG",
+        "LC_ALL",
+    ];
+    KEYS.iter()
+        .filter_map(|key| {
+            std::env::var(key)
+                .ok()
+                .map(|value| ((*key).to_string(), value))
+        })
+        .collect()
 }
 
 async fn client_request(
@@ -470,10 +565,16 @@ async fn client_request(
             "jsonrpc": "2.0", "id": id, "method": method, "params": params
         }))?
     );
-    write_line(stdin, &line).await?;
+    if let Err(error) = write_line(stdin, &line).await {
+        pending.lock().await.remove(&id);
+        return Err(error);
+    }
 
-    let resp = tokio::time::timeout(REQUEST_TIMEOUT, rx)
-        .await
+    let resp = tokio::time::timeout(REQUEST_TIMEOUT, rx).await;
+    if resp.is_err() {
+        pending.lock().await.remove(&id);
+    }
+    let resp = resp
         .map_err(|_| Error::Other(format!("MCP '{method}' timed out")))?
         .map_err(|_| Error::Other("MCP connection closed".into()))?;
 
@@ -518,6 +619,7 @@ pub struct McpToolDef {
     pub name: String,
     pub description: String,
     pub input_schema: Value,
+    pub effect: ToolEffect,
 }
 
 /// An [`milim_tools::Tool`] that proxies to a remote MCP tool. Exposed under a
@@ -529,6 +631,8 @@ pub struct McpTool {
     remote_name: String,
     description: String,
     schema: Value,
+    effect: ToolEffect,
+    aliases: Vec<String>,
 }
 
 #[async_trait]
@@ -541,6 +645,12 @@ impl Tool for McpTool {
     }
     fn input_schema(&self) -> Value {
         self.schema.clone()
+    }
+    fn effect(&self) -> ToolEffect {
+        self.effect
+    }
+    fn aliases(&self) -> Vec<String> {
+        self.aliases.clone()
     }
     async fn invoke(&self, args: Value) -> Result<Value> {
         let result = self.client.call_tool(&self.remote_name, args).await?;
@@ -567,13 +677,13 @@ impl Tool for McpListResourcesTool {
         json!({"type":"object","properties":{},"additionalProperties":false})
     }
 
+    fn effect(&self) -> ToolEffect {
+        ToolEffect::ReadOnly
+    }
+
     async fn invoke(&self, _args: Value) -> Result<Value> {
-        let resources = self.client.list_resources().await.unwrap_or_default();
-        let resource_templates = self
-            .client
-            .list_resource_templates()
-            .await
-            .unwrap_or_default();
+        let resources = self.client.list_resources().await?;
+        let resource_templates = self.client.list_resource_templates().await?;
         Ok(json!({ "resources": resources, "resourceTemplates": resource_templates }))
     }
 }
@@ -602,6 +712,10 @@ impl Tool for McpReadResourceTool {
         })
     }
 
+    fn effect(&self) -> ToolEffect {
+        ToolEffect::ReadOnly
+    }
+
     async fn invoke(&self, args: Value) -> Result<Value> {
         let uri = args
             .get("uri")
@@ -628,6 +742,10 @@ impl Tool for McpListPromptsTool {
 
     fn input_schema(&self) -> Value {
         json!({"type":"object","properties":{},"additionalProperties":false})
+    }
+
+    fn effect(&self) -> ToolEffect {
+        ToolEffect::ReadOnly
     }
 
     async fn invoke(&self, _args: Value) -> Result<Value> {
@@ -662,6 +780,10 @@ impl Tool for McpGetPromptTool {
         })
     }
 
+    fn effect(&self) -> ToolEffect {
+        ToolEffect::ReadOnly
+    }
+
     async fn invoke(&self, args: Value) -> Result<Value> {
         let name = args
             .get("name")
@@ -676,37 +798,76 @@ impl Tool for McpGetPromptTool {
 /// (`{type:"image", data, mimeType}`), surface it as a top-level `image` field
 /// so the agent loop forwards it to vision models (same path as `screenshot`).
 fn lift_mcp_image(mut result: Value) -> Value {
-    let img = result
-        .get("content")
-        .and_then(Value::as_array)
-        .and_then(|items| {
-            items.iter().find_map(|it| {
-                if it.get("type").and_then(Value::as_str) == Some("image") {
-                    let data = it.get("data").and_then(Value::as_str)?;
-                    let mime = it
-                        .get("mimeType")
-                        .and_then(Value::as_str)
-                        .unwrap_or("image/png");
-                    Some(json!({ "mime": mime, "data": data }))
-                } else {
-                    None
-                }
-            })
-        });
+    let mut img = None;
+    if let Some(items) = result.get_mut("content").and_then(Value::as_array_mut) {
+        for item in items {
+            let Some(object) = item.as_object_mut() else {
+                continue;
+            };
+            if object.get("type").and_then(Value::as_str) != Some("image") {
+                continue;
+            }
+            let data = object
+                .remove("data")
+                .and_then(|value| value.as_str().map(str::to_string));
+            if img.is_none() {
+                let mime = object
+                    .get("mimeType")
+                    .and_then(Value::as_str)
+                    .unwrap_or("image/png");
+                img = data.map(|data| json!({ "mime": mime, "data": data }));
+            }
+            object.insert("dataOmitted".to_string(), Value::Bool(true));
+        }
+    }
     if let (Some(img), Some(obj)) = (img, result.as_object_mut()) {
         obj.insert("image".to_string(), img);
     }
     result
 }
 
-/// Lowercase a server name to a safe tool-name prefix (`[a-z0-9_]`).
+/// Stable provider-safe namespace derived from the persisted server id.
 fn prefix_for(cfg: &McpServerConfig) -> String {
+    let base = if cfg.id.trim().is_empty() {
+        &cfg.name
+    } else {
+        &cfg.id
+    };
+    let hash = base.as_bytes().iter().fold(0x811c9dc5_u32, |hash, byte| {
+        (hash ^ u32::from(*byte)).wrapping_mul(0x01000193)
+    });
+    format!("mcp_{hash:08x}")
+}
+
+fn legacy_prefix_for(cfg: &McpServerConfig) -> String {
     let base = if cfg.name.trim().is_empty() {
         &cfg.id
     } else {
         &cfg.name
     };
-    let p: String = base
+    base.chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('_')
+        .to_string()
+}
+
+fn legacy_exposed_name(prefix: &str, name: &str) -> String {
+    if prefix.is_empty() {
+        name.to_string()
+    } else {
+        format!("{prefix}__{name}")
+    }
+}
+
+fn safe_tool_component(value: &str, max: usize) -> String {
+    let component: String = value
         .chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() {
@@ -715,16 +876,22 @@ fn prefix_for(cfg: &McpServerConfig) -> String {
                 '_'
             }
         })
+        .take(max)
         .collect();
-    p.trim_matches('_').to_string()
+    let component = component.trim_matches('_');
+    if component.is_empty() {
+        "tool".to_string()
+    } else {
+        component.to_string()
+    }
 }
 
-fn exposed_name(prefix: &str, name: &str) -> String {
-    if prefix.is_empty() {
-        name.to_string()
-    } else {
-        format!("{prefix}__{name}")
-    }
+fn exposed_tool_name(prefix: &str, name: &str) -> String {
+    format!("{prefix}__tool_{}", safe_tool_component(name, 45))
+}
+
+fn exposed_meta_name(prefix: &str, name: &str) -> String {
+    format!("{prefix}__{name}")
 }
 
 fn env_key(key: &str) -> String {
@@ -826,6 +993,7 @@ struct HubState {
 /// merged set of proxy tools. Persists configs to `<dir>/mcp.json`.
 pub struct McpHub {
     path: PathBuf,
+    load_error: Option<String>,
     secrets: Option<McpSecretStore>,
     inner: RwLock<HubState>,
 }
@@ -835,13 +1003,24 @@ impl McpHub {
     pub fn open(dir: impl AsRef<Path>) -> Self {
         let dir = dir.as_ref();
         let path = dir.join("mcp.json");
-        let configs = std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|s| serde_json::from_str::<Value>(&s).ok())
-            .and_then(|v| {
-                serde_json::from_value::<Vec<McpServerConfig>>(v.get("servers")?.clone()).ok()
-            })
-            .unwrap_or_default()
+        let (configs, load_error) = match std::fs::read_to_string(&path) {
+            Ok(data) => match serde_json::from_str::<Value>(&data).and_then(|value| {
+                serde_json::from_value::<Vec<McpServerConfig>>(
+                    value.get("servers").cloned().ok_or_else(|| {
+                        serde_json::Error::io(std::io::Error::other("missing servers"))
+                    })?,
+                )
+            }) {
+                Ok(configs) => (configs, None),
+                Err(error) => (Vec::new(), Some(format!("invalid mcp.json: {error}"))),
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (Vec::new(), None),
+            Err(error) => (
+                Vec::new(),
+                Some(format!("failed to read mcp.json: {error}")),
+            ),
+        };
+        let configs = configs
             .into_iter()
             .map(|mut cfg| {
                 cfg.env = normalized_env(cfg.env);
@@ -857,6 +1036,7 @@ impl McpHub {
         };
         Self {
             path,
+            load_error,
             secrets,
             inner: RwLock::new(HubState {
                 configs,
@@ -1033,13 +1213,11 @@ impl McpHub {
 
     /// All currently-available proxy tools across connected servers.
     pub fn tools(&self) -> Vec<Arc<dyn Tool>> {
-        self.inner
-            .read()
-            .expect("mcp hub poisoned")
-            .tools
-            .values()
-            .flatten()
-            .cloned()
+        let state = self.inner.read().expect("mcp hub poisoned");
+        let mut ids = state.tools.keys().collect::<Vec<_>>();
+        ids.sort();
+        ids.into_iter()
+            .flat_map(|id| state.tools[id].iter().cloned())
             .collect()
     }
 
@@ -1100,11 +1278,16 @@ impl McpHub {
     }
 
     fn save_configs(&self, configs: &[McpServerConfig]) -> Result<()> {
+        if let Some(error) = &self.load_error {
+            return Err(Error::Other(format!(
+                "refusing to overwrite unreadable MCP configuration: {error}"
+            )));
+        }
         if let Some(parent) = self.path.parent() {
             std::fs::create_dir_all(parent)?;
         }
         let data = serde_json::to_vec_pretty(&json!({ "servers": configs }))?;
-        std::fs::write(&self.path, data)?;
+        atomic_write(&self.path, &data)?;
         Ok(())
     }
 }
@@ -1119,39 +1302,51 @@ async fn connect_one(
         McpClient::connect_with_env(&cfg.command, &cfg.args, cfg.cwd.as_deref(), &env).await?;
     let defs = client.list_tools().await?;
     let prefix = prefix_for(cfg);
-    let tools: Vec<Arc<dyn Tool>> = defs
-        .into_iter()
-        .map(|d| {
-            let tool_name = exposed_name(&prefix, &d.name);
-            Arc::new(McpTool {
-                client: client.clone(),
-                exposed_name: tool_name,
-                remote_name: d.name,
-                description: d.description,
-                schema: d.input_schema,
-            }) as Arc<dyn Tool>
-        })
-        .collect();
-    let mut tools = tools;
+    let legacy_prefix = legacy_prefix_for(cfg);
+    let mut names = HashSet::new();
+    let mut tools: Vec<Arc<dyn Tool>> = Vec::new();
+    for d in defs {
+        let tool_name = exposed_tool_name(&prefix, &d.name);
+        let legacy_name = legacy_exposed_name(&legacy_prefix, &d.name);
+        if !names.insert(tool_name.clone()) {
+            return Err(Error::InvalidRequest(format!(
+                "MCP server exposes colliding tool names after normalization: {}",
+                d.name
+            )));
+        }
+        let aliases = (legacy_name != tool_name)
+            .then_some(legacy_name)
+            .into_iter()
+            .collect();
+        tools.push(Arc::new(McpTool {
+            client: client.clone(),
+            exposed_name: tool_name,
+            remote_name: d.name,
+            description: d.description,
+            schema: d.input_schema,
+            effect: d.effect,
+            aliases,
+        }) as Arc<dyn Tool>);
+    }
     let caps = client.capabilities();
     if caps.resources {
         tools.push(Arc::new(McpListResourcesTool {
             client: client.clone(),
-            name: exposed_name(&prefix, "list_resources"),
+            name: exposed_meta_name(&prefix, "list_resources"),
         }));
         tools.push(Arc::new(McpReadResourceTool {
             client: client.clone(),
-            name: exposed_name(&prefix, "read_resource"),
+            name: exposed_meta_name(&prefix, "read_resource"),
         }));
     }
     if caps.prompts {
         tools.push(Arc::new(McpListPromptsTool {
             client: client.clone(),
-            name: exposed_name(&prefix, "list_prompts"),
+            name: exposed_meta_name(&prefix, "list_prompts"),
         }));
         tools.push(Arc::new(McpGetPromptTool {
             client: client.clone(),
-            name: exposed_name(&prefix, "get_prompt"),
+            name: exposed_meta_name(&prefix, "get_prompt"),
         }));
     }
     Ok((client, tools))
@@ -1172,7 +1367,9 @@ mod tests {
             env: Vec::new(),
             enabled: true,
         };
-        assert_eq!(prefix_for(&cfg), "github_mcp");
+        let prefix = prefix_for(&cfg);
+        assert!(prefix.starts_with("mcp_"));
+        assert_eq!(prefix.len(), 12);
     }
 
     #[test]
@@ -1190,9 +1387,15 @@ mod tests {
     }
 
     #[test]
-    fn exposed_name_uses_prefix_when_present() {
-        assert_eq!(exposed_name("github", "search"), "github__search");
-        assert_eq!(exposed_name("", "search"), "search");
+    fn exposed_names_are_namespaced_and_provider_safe() {
+        assert_eq!(
+            exposed_tool_name("mcp_12345678", "Search-Web"),
+            "mcp_12345678__tool_search_web"
+        );
+        assert_eq!(
+            exposed_tool_name("mcp_12345678", "!!!"),
+            "mcp_12345678__tool_tool"
+        );
     }
 
     #[test]
@@ -1250,6 +1453,23 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn repeated_pagination_cursor_is_rejected() {
+        if std::process::Command::new("node")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            return;
+        }
+        let script = r#"const readline=require('readline');const rl=readline.createInterface({input:process.stdin});const send=(id,result)=>process.stdout.write(JSON.stringify({jsonrpc:'2.0',id,result})+'\n');rl.on('line',line=>{const m=JSON.parse(line);if(m.id===undefined)return;if(m.method==='initialize')return send(m.id,{protocolVersion:'2025-06-18',capabilities:{tools:{}},serverInfo:{name:'mock',version:'1'}});if(m.method==='tools/list')return send(m.id,{tools:[],nextCursor:'same'});});"#;
+        let client = McpClient::connect("node", &["-e".to_string(), script.to_string()])
+            .await
+            .unwrap();
+        let error = client.list_tools().await.unwrap_err().to_string();
+        assert!(error.contains("repeated a pagination cursor"));
+    }
+
     #[test]
     fn lifts_mcp_image_content() {
         let result = json!({"content":[
@@ -1259,6 +1479,8 @@ mod tests {
         let lifted = lift_mcp_image(result);
         assert_eq!(lifted["image"]["data"], "AAAA");
         assert_eq!(lifted["image"]["mime"], "image/png");
+        assert!(lifted["content"][1].get("data").is_none());
+        assert_eq!(lifted["content"][1]["dataOmitted"], true);
     }
 
     #[test]
@@ -1274,6 +1496,42 @@ mod tests {
         let hub = McpHub::open(&dir);
         assert!(hub.list().is_empty());
         assert!(hub.tools().is_empty());
+    }
+
+    #[tokio::test]
+    async fn corrupt_config_is_preserved_and_cannot_be_overwritten() {
+        let dir =
+            std::env::temp_dir().join(format!("milim-mcp-corrupt-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("mcp.json");
+        std::fs::write(&path, "{broken").unwrap();
+        let hub = McpHub::open(&dir);
+        let error = hub
+            .upsert(McpServerConfig {
+                id: "new".into(),
+                name: "New".into(),
+                command: "node".into(),
+                args: Vec::new(),
+                cwd: None,
+                env: Vec::new(),
+                enabled: false,
+            })
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("refusing to overwrite"));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{broken");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn invalid_existing_secret_key_fails_closed() {
+        let dir = std::env::temp_dir().join(format!("milim-mcp-key-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("mcp.key");
+        std::fs::write(&path, [1_u8; 8]).unwrap();
+        assert!(read_or_make_key(&path).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), [1_u8; 8]);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[tokio::test]

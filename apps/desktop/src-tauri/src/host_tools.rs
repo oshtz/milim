@@ -6,48 +6,43 @@
 //! `milim_server::AppState::workspace`. They refuse to run until a folder is set.
 //! Wiring these to the agent loop is what turns milim into a coding agent.
 
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use milim_core::{Error, Result};
-use milim_tools::Tool;
+use milim_tools::{atomic_write, read_text_range, resolve_workspace_path, Tool, ToolEffect};
 
 /// A cell holding the active working folder (shared with the server state).
 pub type Workspace = Arc<RwLock<Option<PathBuf>>>;
 
+#[derive(Clone)]
+enum ToolWorkspace {
+    Live(Workspace),
+    Fixed(Arc<PathBuf>),
+}
+
 /// Max bytes returned by `read_file`.
 const MAX_READ: u64 = 1024 * 1024;
+const MAX_LIST_ENTRIES: usize = 1000;
 
 /// The current workspace root, or an error if the user hasn't picked a folder.
-fn root_of(ws: &Workspace) -> Result<PathBuf> {
-    ws.read().ok().and_then(|g| g.clone()).ok_or_else(|| {
-        Error::InvalidRequest(
-            "no working folder selected - pick one with the Folder chip first".into(),
-        )
-    })
+fn root_of(ws: &ToolWorkspace) -> Result<PathBuf> {
+    match ws {
+        ToolWorkspace::Fixed(root) => Ok(root.as_ref().clone()),
+        ToolWorkspace::Live(ws) => ws.read().ok().and_then(|g| g.clone()).ok_or_else(|| {
+            Error::InvalidRequest(
+                "no working folder selected - pick one with the Folder chip first".into(),
+            )
+        }),
+    }
 }
 
 /// Resolve `rel` under the workspace root, rejecting `..` and absolute paths.
-fn safe_join(ws: &Workspace, rel: &str) -> Result<PathBuf> {
-    let mut out = root_of(ws)?;
-    for comp in Path::new(rel).components() {
-        match comp {
-            Component::Normal(c) => out.push(c),
-            Component::CurDir => {}
-            Component::ParentDir => {
-                return Err(Error::InvalidRequest("'..' is not allowed in paths".into()))
-            }
-            Component::RootDir | Component::Prefix(_) => {
-                return Err(Error::InvalidRequest(
-                    "absolute paths are not allowed".into(),
-                ))
-            }
-        }
-    }
-    Ok(out)
+fn safe_join(ws: &ToolWorkspace, rel: &str) -> Result<PathBuf> {
+    resolve_workspace_path(&root_of(ws)?, rel)
 }
 
 fn arg_str<'a>(args: &'a Value, key: &str) -> Result<&'a str> {
@@ -56,8 +51,18 @@ fn arg_str<'a>(args: &'a Value, key: &str) -> Result<&'a str> {
         .ok_or_else(|| Error::InvalidRequest(format!("missing string argument: {key}")))
 }
 
+fn optional_u64(args: &Value, key: &str, default: u64) -> Result<u64> {
+    match args.get(key) {
+        None => Ok(default),
+        Some(value) => value
+            .as_u64()
+            .ok_or_else(|| Error::InvalidRequest(format!("{key} must be a non-negative integer"))),
+    }
+}
+
 /// All host tools bound to the shared workspace cell.
 pub fn host_tools(ws: Workspace) -> Vec<Arc<dyn Tool>> {
+    let ws = ToolWorkspace::Live(ws);
     vec![
         Arc::new(ReadFileTool { ws: ws.clone() }),
         Arc::new(ReadFileAnchorsTool { ws: ws.clone() }),
@@ -71,7 +76,7 @@ pub fn host_tools(ws: Workspace) -> Vec<Arc<dyn Tool>> {
 
 /// Read a UTF-8 file from the working folder.
 pub struct ReadFileTool {
-    ws: Workspace,
+    ws: ToolWorkspace,
 }
 #[async_trait]
 impl Tool for ReadFileTool {
@@ -82,18 +87,27 @@ impl Tool for ReadFileTool {
         "Read a UTF-8 text file from the working folder (path is relative to it)."
     }
     fn input_schema(&self) -> Value {
-        json!({"type":"object","properties":{"path":{"type":"string"}},"required":["path"]})
+        json!({"type":"object","properties":{
+            "path":{"type":"string"},
+            "offset":{"type":"integer","minimum":0,"description":"Byte offset, default 0."},
+            "limit":{"type":"integer","minimum":1,"maximum":1048576,"description":"Maximum bytes, default 1 MiB."}
+        },"required":["path"],"additionalProperties":false})
+    }
+    fn effect(&self) -> ToolEffect {
+        ToolEffect::ReadOnly
+    }
+    fn scoped_to_workspace(&self, root: &Path) -> Option<Arc<dyn Tool>> {
+        Some(Arc::new(Self {
+            ws: ToolWorkspace::Fixed(Arc::new(root.to_path_buf())),
+        }))
     }
     async fn invoke(&self, args: Value) -> Result<Value> {
         let path = safe_join(&self.ws, arg_str(&args, "path")?)?;
-        let meta = std::fs::metadata(&path)?;
-        if meta.len() > MAX_READ {
-            return Err(Error::InvalidRequest(format!(
-                "file too large ({} bytes, max {MAX_READ})",
-                meta.len()
-            )));
-        }
-        Ok(json!({ "content": std::fs::read_to_string(&path)? }))
+        let offset = optional_u64(&args, "offset", 0)?;
+        let limit = usize::try_from(optional_u64(&args, "limit", MAX_READ)?)
+            .unwrap_or(usize::MAX);
+        let (content, next_offset, eof) = read_text_range(&path, offset, limit)?;
+        Ok(json!({ "content": content, "offset": offset, "next_offset": next_offset, "eof": eof }))
     }
 }
 
@@ -113,6 +127,22 @@ fn newline_separator(content: &str) -> &str {
     } else {
         "\n"
     }
+}
+
+fn has_mixed_newlines(content: &str) -> bool {
+    let bytes = content.as_bytes();
+    let mut saw_lf = false;
+    let mut saw_crlf = false;
+    for (index, byte) in bytes.iter().enumerate() {
+        if *byte == b'\n' {
+            if index > 0 && bytes[index - 1] == b'\r' {
+                saw_crlf = true;
+            } else {
+                saw_lf = true;
+            }
+        }
+    }
+    saw_lf && saw_crlf
 }
 
 fn anchored_content(content: &str) -> String {
@@ -186,6 +216,7 @@ struct ResolvedPatch {
     start: usize,
     end: usize,
     lines: Vec<String>,
+    order: usize,
 }
 
 fn required_obj<'a>(value: &'a Value, name: &str) -> Result<&'a serde_json::Map<String, Value>> {
@@ -218,6 +249,7 @@ fn resolve_patch_op(lines: &[String], op: &Value) -> Result<ResolvedPatch> {
                 start,
                 end,
                 lines: patch_lines(required_str(obj, "content")?),
+                order: 0,
             })
         }
         "delete_range" => {
@@ -232,6 +264,7 @@ fn resolve_patch_op(lines: &[String], op: &Value) -> Result<ResolvedPatch> {
                 start,
                 end,
                 lines: Vec::new(),
+                order: 0,
             })
         }
         "insert_before" => {
@@ -240,6 +273,7 @@ fn resolve_patch_op(lines: &[String], op: &Value) -> Result<ResolvedPatch> {
                 start,
                 end: start,
                 lines: patch_lines(required_str(obj, "content")?),
+                order: 0,
             })
         }
         "insert_after" => {
@@ -248,6 +282,7 @@ fn resolve_patch_op(lines: &[String], op: &Value) -> Result<ResolvedPatch> {
                 start,
                 end: start,
                 lines: patch_lines(required_str(obj, "content")?),
+                order: 0,
             })
         }
         other => Err(Error::InvalidRequest(format!("unknown patch op: {other}"))),
@@ -256,7 +291,7 @@ fn resolve_patch_op(lines: &[String], op: &Value) -> Result<ResolvedPatch> {
 
 /// Read a UTF-8 file with line-numbered content-hash anchors.
 pub struct ReadFileAnchorsTool {
-    ws: Workspace,
+    ws: ToolWorkspace,
 }
 #[async_trait]
 impl Tool for ReadFileAnchorsTool {
@@ -269,6 +304,14 @@ impl Tool for ReadFileAnchorsTool {
     fn input_schema(&self) -> Value {
         json!({"type":"object","properties":{"path":{"type":"string"}},"required":["path"]})
     }
+    fn effect(&self) -> ToolEffect {
+        ToolEffect::ReadOnly
+    }
+    fn scoped_to_workspace(&self, root: &Path) -> Option<Arc<dyn Tool>> {
+        Some(Arc::new(Self {
+            ws: ToolWorkspace::Fixed(Arc::new(root.to_path_buf())),
+        }))
+    }
     async fn invoke(&self, args: Value) -> Result<Value> {
         let path = safe_join(&self.ws, arg_str(&args, "path")?)?;
         let meta = std::fs::metadata(&path)?;
@@ -279,13 +322,18 @@ impl Tool for ReadFileAnchorsTool {
             )));
         }
         let content = std::fs::read_to_string(&path)?;
+        if has_mixed_newlines(&content) {
+            return Err(Error::InvalidRequest(
+                "patch_file does not support mixed line endings; use edit_file".into(),
+            ));
+        }
         Ok(json!({ "content": anchored_content(&content) }))
     }
 }
 
 /// List directory entries within the working folder.
 pub struct ListDirTool {
-    ws: Workspace,
+    ws: ToolWorkspace,
 }
 #[async_trait]
 impl Tool for ListDirTool {
@@ -298,8 +346,21 @@ impl Tool for ListDirTool {
     fn input_schema(&self) -> Value {
         json!({"type":"object","properties":{"path":{"type":"string"}}})
     }
+    fn effect(&self) -> ToolEffect {
+        ToolEffect::ReadOnly
+    }
+    fn scoped_to_workspace(&self, root: &Path) -> Option<Arc<dyn Tool>> {
+        Some(Arc::new(Self {
+            ws: ToolWorkspace::Fixed(Arc::new(root.to_path_buf())),
+        }))
+    }
     async fn invoke(&self, args: Value) -> Result<Value> {
-        let rel = args.get("path").and_then(Value::as_str).unwrap_or("");
+        let rel = match args.get("path") {
+            None => "",
+            Some(value) => value
+                .as_str()
+                .ok_or_else(|| Error::InvalidRequest("path must be a string".into()))?,
+        };
         let dir = safe_join(&self.ws, rel)?;
         let mut entries = Vec::new();
         for entry in std::fs::read_dir(&dir)? {
@@ -308,14 +369,20 @@ impl Tool for ListDirTool {
                 "name": entry.file_name().to_string_lossy(),
                 "is_dir": entry.file_type().map(|t| t.is_dir()).unwrap_or(false),
             }));
+            if entries.len() > MAX_LIST_ENTRIES {
+                break;
+            }
         }
-        Ok(json!({ "entries": entries }))
+        entries.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
+        let truncated = entries.len() > MAX_LIST_ENTRIES;
+        entries.truncate(MAX_LIST_ENTRIES);
+        Ok(json!({ "entries": entries, "truncated": truncated }))
     }
 }
 
 /// Create or overwrite a UTF-8 file in the working folder.
 pub struct WriteFileTool {
-    ws: Workspace,
+    ws: ToolWorkspace,
 }
 #[async_trait]
 impl Tool for WriteFileTool {
@@ -328,13 +395,22 @@ impl Tool for WriteFileTool {
     fn input_schema(&self) -> Value {
         json!({"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"]})
     }
+    fn effect(&self) -> ToolEffect {
+        ToolEffect::Mutating
+    }
+    fn scoped_to_workspace(&self, root: &Path) -> Option<Arc<dyn Tool>> {
+        Some(Arc::new(Self {
+            ws: ToolWorkspace::Fixed(Arc::new(root.to_path_buf())),
+        }))
+    }
     async fn invoke(&self, args: Value) -> Result<Value> {
         let path = safe_join(&self.ws, arg_str(&args, "path")?)?;
         let content = arg_str(&args, "content")?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(&path, content)?;
+        let path = safe_join(&self.ws, arg_str(&args, "path")?)?;
+        atomic_write(&path, content.as_bytes())?;
         Ok(json!({ "written": content.len() }))
     }
 }
@@ -342,7 +418,7 @@ impl Tool for WriteFileTool {
 /// Exact-string replacement in a file (a surgical code edit). The `old` text
 /// must occur exactly once, mirroring an editor's find/replace.
 pub struct EditFileTool {
-    ws: Workspace,
+    ws: ToolWorkspace,
 }
 #[async_trait]
 impl Tool for EditFileTool {
@@ -359,6 +435,14 @@ impl Tool for EditFileTool {
             "new":{"type":"string","description":"replacement text"}
         },"required":["path","old","new"]})
     }
+    fn effect(&self) -> ToolEffect {
+        ToolEffect::Mutating
+    }
+    fn scoped_to_workspace(&self, root: &Path) -> Option<Arc<dyn Tool>> {
+        Some(Arc::new(Self {
+            ws: ToolWorkspace::Fixed(Arc::new(root.to_path_buf())),
+        }))
+    }
     async fn invoke(&self, args: Value) -> Result<Value> {
         let path = safe_join(&self.ws, arg_str(&args, "path")?)?;
         let old = arg_str(&args, "old")?;
@@ -374,14 +458,19 @@ impl Tool for EditFileTool {
             )));
         }
         let updated = content.replacen(old, new, 1);
-        std::fs::write(&path, &updated)?;
+        if std::fs::read_to_string(&path)? != content {
+            return Err(Error::InvalidRequest(
+                "file changed while edit_file was running; read it again".into(),
+            ));
+        }
+        atomic_write(&path, updated.as_bytes())?;
         Ok(json!({ "replaced": 1, "bytes": updated.len() }))
     }
 }
 
 /// Apply line-anchored edits produced from `read_file_anchors`.
 pub struct PatchFileTool {
-    ws: Workspace,
+    ws: ToolWorkspace,
 }
 #[async_trait]
 impl Tool for PatchFileTool {
@@ -403,6 +492,14 @@ impl Tool for PatchFileTool {
             },"required":["op"]}}
         },"required":["path","ops"]})
     }
+    fn effect(&self) -> ToolEffect {
+        ToolEffect::Mutating
+    }
+    fn scoped_to_workspace(&self, root: &Path) -> Option<Arc<dyn Tool>> {
+        Some(Arc::new(Self {
+            ws: ToolWorkspace::Fixed(Arc::new(root.to_path_buf())),
+        }))
+    }
     async fn invoke(&self, args: Value) -> Result<Value> {
         let path = safe_join(&self.ws, arg_str(&args, "path")?)?;
         let ops = args
@@ -414,14 +511,30 @@ impl Tool for PatchFileTool {
         }
 
         let content = std::fs::read_to_string(&path)?;
+        if has_mixed_newlines(&content) {
+            return Err(Error::InvalidRequest(
+                "patch_file does not support mixed line endings; use edit_file".into(),
+            ));
+        }
         let sep = newline_separator(&content);
         let keep_trailing_newline = content.ends_with('\n');
         let mut lines = content.lines().map(ToString::to_string).collect::<Vec<_>>();
         let mut patches = ops
             .iter()
-            .map(|op| resolve_patch_op(&lines, op))
+            .enumerate()
+            .map(|(order, op)| {
+                resolve_patch_op(&lines, op).map(|mut patch| {
+                    patch.order = order;
+                    patch
+                })
+            })
             .collect::<Result<Vec<_>>>()?;
-        patches.sort_by(|a, b| b.start.cmp(&a.start).then_with(|| b.end.cmp(&a.end)));
+        patches.sort_by(|a, b| {
+            b.start
+                .cmp(&a.start)
+                .then_with(|| b.end.cmp(&a.end))
+                .then_with(|| b.order.cmp(&a.order))
+        });
 
         let mut next_lower_start = usize::MAX;
         for patch in &patches {
@@ -444,7 +557,12 @@ impl Tool for PatchFileTool {
         if keep_trailing_newline && !updated.is_empty() {
             updated.push_str(sep);
         }
-        std::fs::write(&path, &updated)?;
+        if std::fs::read_to_string(&path)? != content {
+            return Err(Error::InvalidRequest(
+                "file changed while patch_file was running; read it again".into(),
+            ));
+        }
+        atomic_write(&path, updated.as_bytes())?;
         Ok(
             json!({ "patched": ops.len(), "added": added, "removed": removed, "bytes": updated.len() }),
         )
@@ -455,7 +573,7 @@ impl Tool for PatchFileTool {
 /// Windows, `sh -c` elsewhere. Executes on the real machine - the agentic
 /// counterpart to the Docker-sandboxed `run_command`.
 pub struct ShellTool {
-    ws: Workspace,
+    ws: ToolWorkspace,
 }
 #[async_trait]
 impl Tool for ShellTool {
@@ -472,33 +590,152 @@ impl Tool for ShellTool {
     fn input_schema(&self) -> Value {
         json!({"type":"object","properties":{"command":{"type":"string"}},"required":["command"]})
     }
+    fn effect(&self) -> ToolEffect {
+        ToolEffect::Command
+    }
+    fn scoped_to_workspace(&self, root: &Path) -> Option<Arc<dyn Tool>> {
+        Some(Arc::new(Self {
+            ws: ToolWorkspace::Fixed(Arc::new(root.to_path_buf())),
+        }))
+    }
     async fn invoke(&self, args: Value) -> Result<Value> {
         let cwd = root_of(&self.ws)?;
         let command = arg_str(&args, "command")?.to_string();
-        tokio::task::spawn_blocking(move || run_shell(&cwd, &command))
-            .await
-            .map_err(|e| Error::Other(format!("shell task failed: {e}")))?
+        run_shell(&cwd, &command).await
     }
 }
 
-fn run_shell(cwd: &Path, command: &str) -> Result<Value> {
-    use std::process::Command;
-    let output = if cfg!(windows) {
+async fn run_shell(cwd: &Path, command: &str) -> Result<Value> {
+    use std::process::Stdio;
+    use tokio::io::AsyncReadExt;
+    use tokio::process::Command;
+
+    const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+    const MAX_OUTPUT: usize = 1024 * 1024;
+    let mut cmd = if cfg!(windows) {
         let mut cmd = Command::new("powershell");
         cmd.args(["-NoProfile", "-NonInteractive", "-Command", command])
             .current_dir(cwd);
-        milim_core::proc::hide_console(&mut cmd).output()?
+        #[cfg(windows)]
+        cmd.creation_flags(milim_core::proc::CREATE_NO_WINDOW);
+        cmd
     } else {
-        Command::new("sh")
-            .args(["-c", command])
-            .current_dir(cwd)
-            .output()?
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", command]).current_dir(cwd);
+        cmd
     };
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    let mut child = cmd
+        .spawn()
+        .map_err(|error| Error::Other(format!("shell failed to start: {error}")))?;
+    let mut guard = ProcessTreeGuard::new(child.id());
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| Error::Other("shell stdout unavailable".into()))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| Error::Other("shell stderr unavailable".into()))?;
+    let read = |mut stream: tokio::process::ChildStdout| async move {
+        let mut kept = Vec::new();
+        let mut buffer = [0_u8; 8192];
+        let mut truncated = false;
+        loop {
+            let count = stream.read(&mut buffer).await?;
+            if count == 0 {
+                break;
+            }
+            let remaining = MAX_OUTPUT.saturating_sub(kept.len());
+            kept.extend_from_slice(&buffer[..count.min(remaining)]);
+            truncated |= count > remaining;
+        }
+        Ok::<_, std::io::Error>((kept, truncated))
+    };
+    let stdout_task = tokio::spawn(read(stdout));
+    let stderr_task = tokio::spawn(async move {
+        let mut stream = stderr;
+        let mut kept = Vec::new();
+        let mut buffer = [0_u8; 8192];
+        let mut truncated = false;
+        loop {
+            let count = stream.read(&mut buffer).await?;
+            if count == 0 {
+                break;
+            }
+            let remaining = MAX_OUTPUT.saturating_sub(kept.len());
+            kept.extend_from_slice(&buffer[..count.min(remaining)]);
+            truncated |= count > remaining;
+        }
+        Ok::<_, std::io::Error>((kept, truncated))
+    });
+    let status = match tokio::time::timeout(TIMEOUT, child.wait()).await {
+        Ok(result) => result?,
+        Err(_) => {
+            guard.terminate();
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            return Err(Error::Other("shell timed out after 120 seconds".into()));
+        }
+    };
+    guard.disarm();
+    let (stdout, stdout_truncated) = stdout_task
+        .await
+        .map_err(|error| Error::Other(format!("shell stdout task failed: {error}")))??;
+    let (stderr, stderr_truncated) = stderr_task
+        .await
+        .map_err(|error| Error::Other(format!("shell stderr task failed: {error}")))??;
     Ok(json!({
-        "stdout": String::from_utf8_lossy(&output.stdout),
-        "stderr": String::from_utf8_lossy(&output.stderr),
-        "exit_code": output.status.code(),
+        "stdout": String::from_utf8_lossy(&stdout),
+        "stderr": String::from_utf8_lossy(&stderr),
+        "stdout_truncated": stdout_truncated,
+        "stderr_truncated": stderr_truncated,
+        "exit_code": status.code(),
     }))
+}
+
+struct ProcessTreeGuard {
+    pid: Option<u32>,
+}
+
+impl ProcessTreeGuard {
+    fn new(pid: Option<u32>) -> Self {
+        Self { pid }
+    }
+
+    fn disarm(&mut self) {
+        self.pid = None;
+    }
+
+    fn terminate(&mut self) {
+        #[cfg(windows)]
+        if let Some(pid) = self.pid {
+            let mut command = std::process::Command::new("taskkill");
+            command
+                .args(["/PID", &pid.to_string(), "/T", "/F"])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+            let _ = milim_core::proc::hide_console(&mut command).status();
+        }
+        self.pid = None;
+    }
+}
+
+impl Drop for ProcessTreeGuard {
+    fn drop(&mut self) {
+        #[cfg(windows)]
+        if let Some(pid) = self.pid.take() {
+            let mut command = std::process::Command::new("taskkill");
+            command
+                .args(["/PID", &pid.to_string(), "/T", "/F"])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+            let _ = milim_core::proc::hide_console(&mut command).spawn();
+        }
+    }
 }
 
 #[cfg(test)]
@@ -514,12 +751,12 @@ mod tests {
     }
 
     fn temp_workspace() -> PathBuf {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static NEXT: AtomicU32 = AtomicU32::new(0);
         let root = std::env::temp_dir().join(format!(
-            "milim-host-tools-test-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
+            "milim-host-tools-test-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         std::fs::create_dir_all(&root).unwrap();
         root
@@ -582,6 +819,63 @@ mod tests {
         .to_string();
 
         assert!(err.contains("stale anchor"), "unexpected error: {err}");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn registry_workspace_is_immutable_for_the_run() {
+        let first = temp_workspace();
+        let second = temp_workspace();
+        let workspace = Arc::new(RwLock::new(Some(first.clone())));
+        let mut registry = milim_tools::ToolRegistry::new();
+        for item in host_tools(workspace.clone()) {
+            registry.register(item);
+        }
+        let run_registry = registry.scoped_to_workspace(&first);
+        *workspace.write().unwrap() = Some(second.clone());
+
+        block_on(run_registry.call(
+            "write_file",
+            json!({"path":"bound.txt","content":"first"}),
+        ))
+        .unwrap();
+        assert_eq!(std::fs::read_to_string(first.join("bound.txt")).unwrap(), "first");
+        assert!(!second.join("bound.txt").exists());
+
+        let _ = std::fs::remove_dir_all(first);
+        let _ = std::fs::remove_dir_all(second);
+    }
+
+    #[test]
+    fn patch_preserves_same_anchor_insert_order() {
+        let root = temp_workspace();
+        let path = root.join("notes.txt");
+        std::fs::write(&path, "one\ntwo\n").unwrap();
+        let tools = host_tools(Arc::new(RwLock::new(Some(root.clone()))));
+
+        block_on(tool(&tools, "patch_file").invoke(json!({
+            "path": "notes.txt",
+            "ops": [
+                {"op":"insert_after","anchor":line_anchor(1, "one"),"content":"first"},
+                {"op":"insert_after","anchor":line_anchor(1, "one"),"content":"second"}
+            ]
+        })))
+        .unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "one\nfirst\nsecond\ntwo\n");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn hashline_tools_reject_mixed_line_endings() {
+        let root = temp_workspace();
+        std::fs::write(root.join("mixed.txt"), "one\r\ntwo\n").unwrap();
+        let tools = host_tools(Arc::new(RwLock::new(Some(root.clone()))));
+        let error = block_on(tool(&tools, "read_file_anchors").invoke(json!({
+            "path": "mixed.txt"
+        })))
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("mixed line endings"));
         let _ = std::fs::remove_dir_all(root);
     }
 }

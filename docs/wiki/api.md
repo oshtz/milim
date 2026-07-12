@@ -6,7 +6,7 @@ title: HTTP API surface
 summary: OpenAI-compatible, Anthropic-compatible, Ollama-compatible, providers, audio, media, workspace, MCP, agents, threads, memory, privacy, skills, schedules, mobile, and account runtime routes.
 group: Reference
 order: 90
-updated: 2026-07-10
+updated: 2026-07-11
 ---
 
 The standalone server accepts static bearer keys or `msk-v1` access keys when configured in `~/.milim/config/server.json`. The desktop app uses its own per-launch bearer token and resolves the actual loopback port through Tauri.
@@ -48,6 +48,10 @@ Root aliases are also mounted for OpenAI chat, completions, models, and embeddin
 | Skills and schedules | `GET/POST /skills`, `POST /skills/select`, `GET/PUT/DELETE /skills/{id}`, `GET/POST /schedules`, `GET /schedules/events`, `PUT/DELETE /schedules/{id}` |
 | Mobile companion | `GET /mobile`, PWA assets under `/mobile/*`, `GET /mobile/status`, `POST /mobile/enabled`, `POST /mobile/pairing`, `POST /mobile/pair`, `GET /mobile/device/status`, `POST /mobile/relay`, `GET/POST /mobile/thread`, `GET /mobile/thread/events`, `GET /mobile/events`, `DELETE /mobile/devices/{id}` |
 | Account runtimes | `GET /codex/account`, `POST /codex/login/device`, `POST /codex/login/chatgpt-device`, `POST /codex/login/api-key`, `POST /codex/logout`, `GET /codex/rate-limits`, `GET /codex/models`, `POST /codex/run`, `GET /claude/status`, `POST /claude/run` |
+
+`GET /mcp/tools` is the complete agent-configuration catalog and each entry includes an `effect` (`read_only`, `mutating`, `command`, or `unknown`). `GET /mcp/tools?callable=true` returns the read-only subset that `POST /mcp/call` can invoke; mutations must run through an agent with Review approval or Open mode. External MCP tools use stable id-derived namespaces, cannot shadow first-party tools, and default to `unknown` unless their MCP annotations explicitly mark them read-only. Previous display-name-derived MCP names remain accepted as non-advertised aliases for saved custom-agent selections.
+
+`http_fetch` accepts public HTTP(S) destinations only, validates every redirect, applies DNS/address checks, and limits transfer time and body size. It rejects loopback, private, link-local, multicast, and metadata-service addresses.
 
 `POST /schedules` and `PUT /schedules/{id}` accept an optional `attachments` array using the desktop chat attachment shape (`id`, `name`, `mime`, `size`, `content`, `truncated`, `sourcePath`). Saved attachment content is appended to the scheduled prompt each time the automation fires. `GET /schedules/events` drains completed background run results for the desktop to land as local threads.
 

@@ -57,6 +57,12 @@ pub struct Schedule {
     pub attachments: Vec<ScheduleAttachment>,
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// Workspace captured when the schedule was created.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
+    /// Creation time used as the lower bound for the first cron occurrence.
+    #[serde(default)]
+    pub created_unix: i64,
     /// Last fire time (unix seconds), if any.
     #[serde(default)]
     pub last_run: Option<i64>,
@@ -71,6 +77,8 @@ pub struct ScheduleUpdate<'a> {
     pub prompt: &'a str,
     pub attachments: Vec<ScheduleAttachment>,
     pub enabled: bool,
+    pub workspace: Option<String>,
+    pub created_unix: i64,
     pub last_run: Option<i64>,
 }
 
@@ -98,6 +106,15 @@ pub const SCHEDULE_MIGRATIONS: &[Migration] = &[
         version: 2,
         name: "schedule_attachments",
         sql: "ALTER TABLE schedules ADD COLUMN attachments_json TEXT NOT NULL DEFAULT '[]';",
+    },
+    Migration {
+        version: 3,
+        name: "schedule_execution_context",
+        sql: "ALTER TABLE schedules ADD COLUMN workspace TEXT;
+              ALTER TABLE schedules ADD COLUMN created_unix INTEGER NOT NULL DEFAULT 0;
+              UPDATE schedules
+              SET created_unix = COALESCE(CAST(strftime('%s', created_at) AS INTEGER), CAST(strftime('%s', 'now') AS INTEGER))
+              WHERE created_unix = 0;",
     },
 ];
 
@@ -215,6 +232,20 @@ impl ScheduleStore {
         prompt: &str,
         attachments: Vec<ScheduleAttachment>,
     ) -> Result<Schedule> {
+        self.create_with_context(name, cron, agent_id, prompt, attachments, true, None)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_with_context(
+        &self,
+        name: &str,
+        cron: &str,
+        agent_id: Option<String>,
+        prompt: &str,
+        attachments: Vec<ScheduleAttachment>,
+        enabled: bool,
+        workspace: Option<String>,
+    ) -> Result<Schedule> {
         validate_cron(cron)?;
         let schedule = Schedule {
             id: uuid::Uuid::new_v4().to_string(),
@@ -223,7 +254,9 @@ impl ScheduleStore {
             agent_id,
             prompt: prompt.to_string(),
             attachments: normalize_attachments(attachments),
-            enabled: true,
+            enabled,
+            workspace,
+            created_unix: Utc::now().timestamp(),
             last_run: None,
         };
         self.upsert(&schedule)?;
@@ -236,12 +269,13 @@ impl ScheduleStore {
             .map_err(|e| Error::Other(format!("schedule attachments json: {e}")))?;
         db.conn()
             .execute(
-                "INSERT INTO schedules (id, name, cron, agent_id, prompt, attachments_json, enabled, last_run)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                "INSERT INTO schedules (id, name, cron, agent_id, prompt, attachments_json, enabled, workspace, created_unix, last_run)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
                  ON CONFLICT(id) DO UPDATE SET
                    name=excluded.name, cron=excluded.cron, agent_id=excluded.agent_id,
                    prompt=excluded.prompt, attachments_json=excluded.attachments_json,
-                   enabled=excluded.enabled, last_run=excluded.last_run",
+                   enabled=excluded.enabled, workspace=excluded.workspace,
+                   created_unix=excluded.created_unix, last_run=excluded.last_run",
                 params![
                     s.id,
                     s.name,
@@ -250,6 +284,8 @@ impl ScheduleStore {
                     s.prompt,
                     attachments_json,
                     s.enabled as i64,
+                    s.workspace,
+                    s.created_unix,
                     s.last_run
                 ],
             )
@@ -268,6 +304,8 @@ impl ScheduleStore {
             prompt: update.prompt.to_string(),
             attachments: normalize_attachments(update.attachments),
             enabled: update.enabled,
+            workspace: update.workspace,
+            created_unix: update.created_unix,
             last_run: update.last_run,
         };
         self.upsert(&schedule)?;
@@ -279,7 +317,7 @@ impl ScheduleStore {
         let conn = db.conn();
         let mut stmt = conn
             .prepare(
-                "SELECT id, name, cron, agent_id, prompt, attachments_json, enabled, last_run
+                "SELECT id, name, cron, agent_id, prompt, attachments_json, enabled, workspace, created_unix, last_run
                  FROM schedules ORDER BY created_at DESC",
             )
             .map_err(sqlite)?;
@@ -320,7 +358,7 @@ impl ScheduleStore {
     pub fn due(&self, now_unix: i64) -> Result<Vec<Schedule>> {
         let mut due = Vec::new();
         for s in self.list()?.into_iter().filter(|s| s.enabled) {
-            let after = s.last_run.unwrap_or(0);
+            let after = s.last_run.unwrap_or(s.created_unix);
             if let Some(next) = cron_next_after(&s.cron, after)? {
                 if next <= now_unix {
                     due.push(s);
@@ -340,7 +378,9 @@ fn row_to_schedule(r: &rusqlite::Row) -> rusqlite::Result<Schedule> {
         prompt: r.get(4)?,
         attachments: parse_attachments_json(r.get::<_, String>(5)?),
         enabled: r.get::<_, i64>(6)? != 0,
-        last_run: r.get(7)?,
+        workspace: r.get(7)?,
+        created_unix: r.get(8)?,
+        last_run: r.get(9)?,
     })
 }
 
@@ -427,7 +467,10 @@ mod tests {
     #[test]
     fn due_selects_ready_schedules() {
         let s = store();
-        let sched = s.create("hourly", "0 0 * * * *", None, "tick").unwrap();
+        let mut sched = s.create("hourly", "0 0 * * * *", None, "tick").unwrap();
+        assert!(s.due(sched.created_unix).unwrap().is_empty());
+        sched.created_unix = 0;
+        s.upsert(&sched).unwrap();
         // last_run None → after=0 → next fire 3600; now far in the future → due.
         let due = s.due(10_000).unwrap();
         assert_eq!(due.len(), 1);
@@ -475,5 +518,25 @@ mod tests {
         assert!(prompt.contains("name=notes.md"));
         assert!(prompt.contains("path=C:\\tmp\\notes.md"));
         assert!(prompt.contains("hello\nworld"));
+    }
+
+    #[test]
+    fn schedule_execution_context_round_trips() {
+        let store = store();
+        let schedule = store
+            .create_with_context(
+                "daily",
+                "0 0 9 * * *",
+                Some("agent-1".to_string()),
+                "check",
+                Vec::new(),
+                false,
+                Some("C:\\repo".to_string()),
+            )
+            .unwrap();
+        let loaded = store.list().unwrap().remove(0);
+        assert_eq!(loaded.workspace.as_deref(), Some("C:\\repo"));
+        assert_eq!(loaded.created_unix, schedule.created_unix);
+        assert!(!loaded.enabled);
     }
 }

@@ -875,10 +875,10 @@ fn claude_tools_allowed(req: &ClaudeRunRequest) -> bool {
 fn claude_permission_mode(req: &ClaudeRunRequest) -> &'static str {
     if req.plan_mode {
         "plan"
-    } else if !claude_tools_allowed(req) {
+    } else if !claude_tools_allowed(req)
+        || account_runtime_policy(req.tool_approval_policy.as_deref()) == "guarded"
+    {
         "dontAsk"
-    } else if account_runtime_policy(req.tool_approval_policy.as_deref()) == "guarded" {
-        "acceptEdits"
     } else {
         "bypassPermissions"
     }
@@ -890,7 +890,7 @@ fn claude_denied_tools(req: &ClaudeRunRequest) -> Vec<&'static str> {
     } else if !claude_tools_allowed(req) {
         vec!["*"]
     } else if account_runtime_policy(req.tool_approval_policy.as_deref()) == "guarded" {
-        vec!["Bash", "PowerShell"]
+        vec!["Bash", "PowerShell", "Edit", "Write", "NotebookEdit"]
     } else {
         Vec::new()
     }
@@ -1175,8 +1175,11 @@ mod tests {
             plan_mode: false,
             allow_session_recovery: false,
         };
-        assert_eq!(claude_permission_mode(&req), "acceptEdits");
-        assert_eq!(claude_denied_tools(&req), vec!["Bash", "PowerShell"]);
+        assert_eq!(claude_permission_mode(&req), "dontAsk");
+        assert_eq!(
+            claude_denied_tools(&req),
+            vec!["Bash", "PowerShell", "Edit", "Write", "NotebookEdit"]
+        );
 
         req.tool_approval_policy = Some("open".into());
         assert_eq!(claude_permission_mode(&req), "bypassPermissions");

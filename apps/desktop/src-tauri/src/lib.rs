@@ -44,7 +44,7 @@ use milim_inference::{remote::RemoteBackend, unavailable::UnavailableBackend, Sh
 use milim_sandbox::{DockerBackend, RunOpts};
 use milim_server::AppState;
 use milim_storage::{Database, DatabaseOptions, JournalMode};
-use milim_tools::{Tool, ToolRegistry};
+use milim_tools::{Tool, ToolEffect, ToolRegistry};
 
 /// Simple Rust/JS bridge example.
 #[tauri::command]
@@ -3217,6 +3217,9 @@ impl Tool for RunCommandTool {
             "required": ["command"]
         })
     }
+    fn effect(&self) -> ToolEffect {
+        ToolEffect::Command
+    }
     async fn invoke(&self, args: Value) -> Result<Value> {
         let command = args
             .get("command")
@@ -3230,7 +3233,13 @@ impl Tool for RunCommandTool {
                 &RunOpts::default(),
             )
             .await?;
-        Ok(json!({ "stdout": out.stdout, "stderr": out.stderr, "exit_code": out.exit_code }))
+        Ok(json!({
+            "stdout": out.stdout,
+            "stderr": out.stderr,
+            "stdout_truncated": out.stdout_truncated,
+            "stderr_truncated": out.stderr_truncated,
+            "exit_code": out.exit_code
+        }))
     }
 }
 

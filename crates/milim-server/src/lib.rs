@@ -476,83 +476,126 @@ pub async fn fire_due(state: &AppState, now_unix: i64) -> Result<usize> {
         return Ok(0);
     };
     let due = schedules.due(now_unix)?;
+    let limit = std::sync::Arc::new(tokio::sync::Semaphore::new(4));
+    let mut jobs = tokio::task::JoinSet::new();
+    for (index, s) in due.into_iter().enumerate() {
+        schedules.mark_ran(&s.id, now_unix)?;
+        let state = state.clone();
+        let limit = limit.clone();
+        jobs.spawn(async move {
+            let _permit = limit.acquire_owned().await.ok();
+            fire_schedule(state, s, now_unix, index).await
+        });
+    }
 
     let mut fired = 0;
-    for s in due {
-        schedules.mark_ran(&s.id, now_unix)?;
-        let started = Instant::now();
-        let mut messages = Vec::new();
-        let mut model = "default".to_string();
-        let prompt = milim_automation::prompt_with_attachments(&s.prompt, &s.attachments);
-        if let Some(agent_id) = &s.agent_id {
-            if let Some(agents) = &state.agents {
-                if let Ok(Some(agent)) = agents.get(agent_id) {
-                    if !agent.system_prompt.is_empty() {
-                        messages.push(ChatMessage::text("system", agent.system_prompt.clone()));
-                    }
-                    messages.extend(agent_skill_messages(state, &agent, &prompt));
-                    if !agent.model.is_empty() {
-                        model = agent.model.clone();
-                    }
-                }
-            }
-        }
-        messages.push(ChatMessage::text("user", prompt));
-
-        let tools = routes::agent_registry(state);
-        match milim_agents::run_agent(state.service.as_ref(), &tools, &model, messages, None).await
-        {
-            Ok(outcome) => {
-                if let Some(journal) = &state.run_journal {
-                    let _ = journal.upsert(&milim_storage::RunJournalEntry {
-                        id: format!("run-schedule-{}-{now_unix}-{fired}", s.id),
-                        created_at_ms: now_unix * 1000,
-                        updated_at_ms: now_unix * 1000 + started.elapsed().as_millis() as i64,
-                        status: "done".to_string(),
-                        kind: "schedule".to_string(),
-                        title: s.name.clone(),
-                        goal: s.prompt.clone(),
-                        model: model.clone(),
-                        duration_ms: Some(started.elapsed().as_millis() as i64),
-                        input_excerpt: journal_excerpt(&s.prompt),
-                        output_excerpt: journal_excerpt(&outcome.message.text_content()),
-                        tools: outcome.steps.iter().map(|step| step.name.clone()).collect(),
-                        ..Default::default()
-                    });
-                }
-                state.schedule_runs.push(state::ScheduleRunEvent {
-                    id: format!("{}-{now_unix}-{fired}", s.id),
-                    schedule_id: s.id.clone(),
-                    schedule_name: s.name.clone(),
-                    prompt: s.prompt.clone(),
-                    response: outcome.message.text_content(),
-                    model: model.clone(),
-                    ran_at: now_unix,
-                });
-                fired += 1;
-            }
-            Err(e) => {
-                if let Some(journal) = &state.run_journal {
-                    let _ = journal.upsert(&milim_storage::RunJournalEntry {
-                        id: format!("run-schedule-{}-{now_unix}-{fired}", s.id),
-                        created_at_ms: now_unix * 1000,
-                        updated_at_ms: now_unix * 1000 + started.elapsed().as_millis() as i64,
-                        status: "error".to_string(),
-                        kind: "schedule".to_string(),
-                        title: s.name.clone(),
-                        goal: s.prompt.clone(),
-                        model: model.clone(),
-                        duration_ms: Some(started.elapsed().as_millis() as i64),
-                        input_excerpt: journal_excerpt(&s.prompt),
-                        error: Some(e.to_string()),
-                        ..Default::default()
-                    });
-                }
-                tracing::warn!("schedule {} failed: {e}", s.id)
-            }
+    while let Some(result) = jobs.join_next().await {
+        match result {
+            Ok(true) => fired += 1,
+            Ok(false) => {}
+            Err(error) => tracing::warn!("scheduled run task failed: {error}"),
         }
     }
     Ok(fired)
+}
+
+async fn fire_schedule(
+    mut state: AppState,
+    schedule: milim_automation::Schedule,
+    now_unix: i64,
+    index: usize,
+) -> bool {
+    const MAX_RUN: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+    let started = Instant::now();
+    let workspace = schedule.workspace.as_deref().and_then(|value| {
+        std::fs::canonicalize(value)
+            .ok()
+            .filter(|path| path.is_dir())
+    });
+    state.workspace = std::sync::Arc::new(std::sync::RwLock::new(workspace));
+
+    let prompt = milim_automation::prompt_with_attachments(&schedule.prompt, &schedule.attachments);
+    let agent = schedule
+        .agent_id
+        .as_deref()
+        .and_then(|id| state.agents.as_ref()?.get(id).ok().flatten());
+    let mut messages = Vec::new();
+    let mut model = "default".to_string();
+    if let Some(agent) = &agent {
+        if !agent.system_prompt.is_empty() {
+            messages.push(ChatMessage::text("system", agent.system_prompt.clone()));
+        }
+        messages.extend(agent_skill_messages(&state, agent, &prompt));
+        if !agent.model.is_empty() {
+            model = agent.model.clone();
+        }
+    }
+    messages.push(ChatMessage::text("user", prompt));
+    let tools = agent
+        .as_ref()
+        .map(|agent| routes::scheduled_agent_registry(&state, agent))
+        .unwrap_or_default();
+    let result = tokio::time::timeout(
+        MAX_RUN,
+        milim_agents::run_agent(state.service.as_ref(), &tools, &model, messages, None),
+    )
+    .await
+    .map_err(|_| milim_core::Error::Other("scheduled run timed out after 15 minutes".into()))
+    .and_then(|result| result);
+    let elapsed = started.elapsed().as_millis() as i64;
+    let run_id = format!("run-schedule-{}-{now_unix}-{index}", schedule.id);
+
+    match result {
+        Ok(outcome) => {
+            if let Some(journal) = &state.run_journal {
+                let _ = journal.upsert(&milim_storage::RunJournalEntry {
+                    id: run_id,
+                    created_at_ms: now_unix * 1000,
+                    updated_at_ms: now_unix * 1000 + elapsed,
+                    status: "done".to_string(),
+                    kind: "schedule".to_string(),
+                    title: schedule.name.clone(),
+                    goal: schedule.prompt.clone(),
+                    model: model.clone(),
+                    duration_ms: Some(elapsed),
+                    input_excerpt: journal_excerpt(&schedule.prompt),
+                    output_excerpt: journal_excerpt(&outcome.message.text_content()),
+                    tools: outcome.steps.iter().map(|step| step.name.clone()).collect(),
+                    ..Default::default()
+                });
+            }
+            state.schedule_runs.push(state::ScheduleRunEvent {
+                id: format!("{}-{now_unix}-{index}", schedule.id),
+                schedule_id: schedule.id,
+                schedule_name: schedule.name,
+                prompt: schedule.prompt,
+                response: outcome.message.text_content(),
+                model,
+                ran_at: now_unix,
+            });
+            true
+        }
+        Err(error) => {
+            if let Some(journal) = &state.run_journal {
+                let _ = journal.upsert(&milim_storage::RunJournalEntry {
+                    id: run_id,
+                    created_at_ms: now_unix * 1000,
+                    updated_at_ms: now_unix * 1000 + elapsed,
+                    status: "error".to_string(),
+                    kind: "schedule".to_string(),
+                    title: schedule.name.clone(),
+                    goal: schedule.prompt.clone(),
+                    model,
+                    duration_ms: Some(elapsed),
+                    input_excerpt: journal_excerpt(&schedule.prompt),
+                    error: Some(error.to_string()),
+                    ..Default::default()
+                });
+            }
+            tracing::warn!("schedule {} failed: {error}", schedule.id);
+            false
+        }
+    }
 }
 
 fn journal_excerpt(text: &str) -> String {
@@ -619,5 +662,23 @@ mod tests {
 
         agent.skill_mode = "none".to_string();
         assert!(agent_skill_messages(&state, &agent, "please review").is_empty());
+    }
+
+    #[test]
+    fn scheduled_agent_registry_respects_saved_tool_mode() {
+        let state = AppState::new(Arc::new(TestBackend::new()), ServerConfiguration::default())
+            .with_tools(milim_tools::ToolRegistry::with_builtins());
+        let agent = milim_agents::AgentDef {
+            id: "agent-none".to_string(),
+            name: "No tools".to_string(),
+            system_prompt: String::new(),
+            model: "test-echo".to_string(),
+            tool_mode: "none".to_string(),
+            enabled_tools: Vec::new(),
+            skill_mode: "none".to_string(),
+            enabled_skills: Vec::new(),
+            avatar: String::new(),
+        };
+        assert!(routes::scheduled_agent_registry(&state, &agent).is_empty());
     }
 }

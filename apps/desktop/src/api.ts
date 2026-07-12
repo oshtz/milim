@@ -1915,6 +1915,7 @@ export function parseAgentDraftResponse(text: string): AgentDraft {
 export interface ToolInfo {
   name: string;
   description: string;
+  effect: "read_only" | "mutating" | "command" | "unknown";
 }
 
 export async function listAgents(): Promise<Agent[]> {
@@ -2046,9 +2047,10 @@ export async function listTools(): Promise<ToolInfo[]> {
   try {
     const r = await authFetch(`${BASE}/mcp/tools`);
     const j = await r.json();
-    return (j.tools ?? []).map((t: { name: string; description?: string }) => ({
+    return (j.tools ?? []).map((t: { name: string; description?: string; effect?: ToolInfo["effect"] }) => ({
       name: t.name,
       description: t.description ?? "",
+      effect: t.effect ?? "unknown",
     }));
   } catch {
     return [];

@@ -20,16 +20,18 @@ use serde_json::{json, Value};
 use enigo::Keyboard;
 use enigo::{Axis, Button, Coordinate, Direction, Enigo, Key, Mouse, Settings};
 use milim_core::{Error, Result};
-use milim_tools::Tool;
+use milim_tools::{Tool, ToolEffect};
 
 /// Shared on/off switch for the whole computer-use layer.
 pub type ComputerGate = Arc<AtomicBool>;
 
 fn arg_i32(args: &Value, key: &str) -> Result<i32> {
-    args.get(key)
+    let value = args
+        .get(key)
         .and_then(Value::as_i64)
-        .map(|v| v as i32)
-        .ok_or_else(|| Error::InvalidRequest(format!("missing integer argument: {key}")))
+        .ok_or_else(|| Error::InvalidRequest(format!("missing integer argument: {key}")))?;
+    i32::try_from(value)
+        .map_err(|_| Error::InvalidRequest(format!("{key} is outside the supported range")))
 }
 
 fn ensure_enabled(gate: &ComputerGate) -> Result<()> {
@@ -112,21 +114,27 @@ impl Tool for ScreenshotTool {
     fn input_schema(&self) -> Value {
         json!({"type":"object","properties":{"monitor":{"type":"integer","description":"monitor index, default 0"}}})
     }
+    fn effect(&self) -> ToolEffect {
+        ToolEffect::ReadOnly
+    }
     async fn invoke(&self, args: Value) -> Result<Value> {
         ensure_enabled(&self.gate)?;
-        let idx = args.get("monitor").and_then(Value::as_i64).unwrap_or(0) as usize;
+        let monitor = args.get("monitor").and_then(Value::as_i64).unwrap_or(0);
+        let idx = usize::try_from(monitor)
+            .map_err(|_| Error::InvalidRequest("monitor must be non-negative".into()))?;
         let n = self.counter.fetch_add(1, Ordering::Relaxed);
         let path = self
             .dir
             .join(format!("shot-{}-{n}.png", std::process::id()));
         let path2 = path.clone();
-        tokio::task::spawn_blocking(move || capture(idx, &path2))
+        let gate = self.gate.clone();
+        tokio::task::spawn_blocking(move || capture(idx, &path2, &gate))
             .await
             .map_err(|e| Error::Other(format!("capture task failed: {e}")))?
     }
 }
 
-fn capture(idx: usize, path: &std::path::Path) -> Result<Value> {
+fn capture(idx: usize, path: &std::path::Path, gate: &ComputerGate) -> Result<Value> {
     use base64::Engine;
 
     let monitors =
@@ -138,11 +146,15 @@ fn capture(idx: usize, path: &std::path::Path) -> Result<Value> {
     let shot = monitor
         .capture_image()
         .map_err(|e| Error::Other(format!("capture failed: {e}")))?;
+    ensure_enabled(gate)?;
     let (w, h) = (shot.width(), shot.height());
 
     // Full-resolution PNG to disk for reference.
     shot.save(path)
         .map_err(|e| Error::Other(format!("save PNG failed: {e}")))?;
+    if let Some(dir) = path.parent() {
+        prune_captures(dir, path, 50);
+    }
 
     // Downscaled PNG (max 1568px - the practical vision-model cap) as a base64
     // payload. The agent loop strips this `image` field out of the visible
@@ -168,6 +180,24 @@ fn capture(idx: usize, path: &std::path::Path) -> Result<Value> {
     }))
 }
 
+fn prune_captures(dir: &std::path::Path, current: &std::path::Path, keep: usize) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let mut files = entries
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.path().extension().and_then(|ext| ext.to_str()) == Some("png"))
+        .filter(|entry| entry.path() != current)
+        .filter_map(|entry| {
+            let modified = entry.metadata().ok()?.modified().ok()?;
+            Some((modified, entry.path()))
+        })
+        .collect::<Vec<_>>();
+    files.sort_by_key(|(modified, _)| *modified);
+    let remove = files.len().saturating_sub(keep.saturating_sub(1));
+    for (_, path) in files.into_iter().take(remove) {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
 /// Move the mouse to absolute screen coordinates.
 pub struct MouseMoveTool {
     gate: ComputerGate,
@@ -183,10 +213,15 @@ impl Tool for MouseMoveTool {
     fn input_schema(&self) -> Value {
         json!({"type":"object","properties":{"x":{"type":"integer"},"y":{"type":"integer"}},"required":["x","y"]})
     }
+    fn effect(&self) -> ToolEffect {
+        ToolEffect::Mutating
+    }
     async fn invoke(&self, args: Value) -> Result<Value> {
         ensure_enabled(&self.gate)?;
         let (x, y) = (arg_i32(&args, "x")?, arg_i32(&args, "y")?);
+        let gate = self.gate.clone();
         tokio::task::spawn_blocking(move || -> Result<Value> {
+            ensure_enabled(&gate)?;
             let mut e = new_enigo()?;
             e.move_mouse(x, y, Coordinate::Abs)
                 .map_err(|e| Error::Other(format!("move_mouse: {e}")))?;
@@ -215,14 +250,26 @@ impl Tool for MouseClickTool {
             "button":{"type":"string","enum":["left","right","middle"]}
         }})
     }
+    fn effect(&self) -> ToolEffect {
+        ToolEffect::Mutating
+    }
     async fn invoke(&self, args: Value) -> Result<Value> {
         ensure_enabled(&self.gate)?;
-        let x = args.get("x").and_then(Value::as_i64).map(|v| v as i32);
-        let y = args.get("y").and_then(Value::as_i64).map(|v| v as i32);
-        let button = map_button(args.get("button").and_then(Value::as_str).unwrap_or("left"));
+        let position = match (args.get("x"), args.get("y")) {
+            (None, None) => None,
+            (Some(_), Some(_)) => Some((arg_i32(&args, "x")?, arg_i32(&args, "y")?)),
+            _ => {
+                return Err(Error::InvalidRequest(
+                    "mouse_click requires both x and y when either is provided".into(),
+                ))
+            }
+        };
+        let button = map_button(args.get("button").and_then(Value::as_str).unwrap_or("left"))?;
+        let gate = self.gate.clone();
         tokio::task::spawn_blocking(move || -> Result<Value> {
+            ensure_enabled(&gate)?;
             let mut e = new_enigo()?;
-            if let (Some(x), Some(y)) = (x, y) {
+            if let Some((x, y)) = position {
                 e.move_mouse(x, y, Coordinate::Abs)
                     .map_err(|e| Error::Other(format!("move_mouse: {e}")))?;
             }
@@ -250,6 +297,9 @@ impl Tool for TypeTextTool {
     fn input_schema(&self) -> Value {
         json!({"type":"object","properties":{"text":{"type":"string"}},"required":["text"]})
     }
+    fn effect(&self) -> ToolEffect {
+        ToolEffect::Mutating
+    }
     async fn invoke(&self, args: Value) -> Result<Value> {
         ensure_enabled(&self.gate)?;
         let text = args
@@ -258,7 +308,9 @@ impl Tool for TypeTextTool {
             .ok_or_else(|| Error::InvalidRequest("missing string argument: text".into()))?
             .to_string();
         let len = text.len();
+        let gate = self.gate.clone();
         tokio::task::spawn_blocking(move || -> Result<Value> {
+            ensure_enabled(&gate)?;
             type_text_input(&text)?;
             Ok(json!({ "typed": len }))
         })
@@ -282,6 +334,9 @@ impl Tool for KeyTool {
     fn input_schema(&self) -> Value {
         json!({"type":"object","properties":{"key":{"type":"string"}},"required":["key"]})
     }
+    fn effect(&self) -> ToolEffect {
+        ToolEffect::Mutating
+    }
     async fn invoke(&self, args: Value) -> Result<Value> {
         ensure_enabled(&self.gate)?;
         let name = args
@@ -289,7 +344,9 @@ impl Tool for KeyTool {
             .and_then(Value::as_str)
             .ok_or_else(|| Error::InvalidRequest("missing string argument: key".into()))?
             .to_string();
+        let gate = self.gate.clone();
         tokio::task::spawn_blocking(move || -> Result<Value> {
+            ensure_enabled(&gate)?;
             press_key_input(&name)?;
             Ok(json!({ "pressed": name }))
         })
@@ -316,6 +373,9 @@ impl Tool for ScrollTool {
             "axis":{"type":"string","enum":["vertical","horizontal"]}
         },"required":["amount"]})
     }
+    fn effect(&self) -> ToolEffect {
+        ToolEffect::Mutating
+    }
     async fn invoke(&self, args: Value) -> Result<Value> {
         ensure_enabled(&self.gate)?;
         let amount = arg_i32(&args, "amount")?;
@@ -324,10 +384,17 @@ impl Tool for ScrollTool {
             .and_then(Value::as_str)
             .unwrap_or("vertical")
         {
+            "vertical" => Axis::Vertical,
             "horizontal" => Axis::Horizontal,
-            _ => Axis::Vertical,
+            other => {
+                return Err(Error::InvalidRequest(format!(
+                    "unknown scroll axis: {other}"
+                )))
+            }
         };
+        let gate = self.gate.clone();
         tokio::task::spawn_blocking(move || -> Result<Value> {
+            ensure_enabled(&gate)?;
             let mut e = new_enigo()?;
             e.scroll(amount, axis)
                 .map_err(|e| Error::Other(format!("scroll: {e}")))?;
@@ -338,11 +405,14 @@ impl Tool for ScrollTool {
     }
 }
 
-fn map_button(name: &str) -> Button {
+fn map_button(name: &str) -> Result<Button> {
     match name.trim().to_lowercase().as_str() {
-        "right" => Button::Right,
-        "middle" => Button::Middle,
-        _ => Button::Left,
+        "left" => Ok(Button::Left),
+        "right" => Ok(Button::Right),
+        "middle" => Ok(Button::Middle),
+        other => Err(Error::InvalidRequest(format!(
+            "unknown mouse button: {other}"
+        ))),
     }
 }
 
@@ -542,5 +612,12 @@ mod tests {
             assert!(map_key(key).is_some(), "{key} should map to an enigo key");
         }
         assert!(map_key("not-a-key").is_none());
+    }
+
+    #[test]
+    fn rejects_wrapped_coordinates_and_unknown_actions() {
+        assert!(arg_i32(&json!({"x": i64::MAX}), "x").is_err());
+        assert!(map_button("left").is_ok());
+        assert!(map_button("sideways").is_err());
     }
 }

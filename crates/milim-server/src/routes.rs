@@ -38,7 +38,7 @@ use milim_inference::remote::RemoteBackend;
 use milim_inference::{
     CompletionRequest, EventStream, ModelService, SamplingParams, StreamEvent, ToolCallAccumulator,
 };
-use milim_tools::{Tool, ToolRegistry};
+use milim_tools::{Tool, ToolEffect, ToolRegistry};
 use milim_voice::{
     validate_voice_command, validate_voice_model_file, CommandSpeechSynthesizer,
     EnergyVoiceActivityDetector, OpenAiAudioSpeechSynthesizer, OpenAiAudioTranscriptionTranscriber,
@@ -3334,23 +3334,59 @@ fn account_runtime_prompt_for_remote(
 // ----- MCP (tools) -----
 
 fn mcp_registry(st: &AppState) -> ToolRegistry {
-    let mut reg = st.tools.as_deref().cloned().unwrap_or_default();
+    let mut reg = static_registry_for_run(st);
     if let Some(hub) = &st.mcp {
         for tool in hub.tools() {
-            reg.register(tool);
+            if let Err(error) = reg.try_register(tool) {
+                tracing::warn!("skipping colliding MCP tool: {error}");
+            }
         }
     }
     reg.without(HASHLINE_TOOL_NAMES)
 }
 
+fn mcp_catalog_registry(st: &AppState) -> ToolRegistry {
+    let mut registry = mcp_registry(st);
+    if let Some(store) = st.schedules.as_ref() {
+        register_schedule_tools(&mut registry, store.clone(), workspace_snapshot(st));
+    }
+    if let Some(store) = st.memory.as_ref() {
+        registry.register(Arc::new(MemoryRegisterTool {
+            store: store.clone(),
+            context: AgentMemoryContext::default(),
+        }));
+    }
+    if let Some(supervisor) = st.threads.as_ref() {
+        register_child_thread_tools(
+            &mut registry,
+            st.clone(),
+            supervisor.clone(),
+            AgentMemoryContext::default(),
+            ToolRegistry::new(),
+        );
+    }
+    registry
+}
+
 /// `GET /mcp/tools` — list available tools.
+#[derive(Default, Deserialize)]
+pub(crate) struct McpToolsQuery {
+    #[serde(default)]
+    callable: bool,
+}
+
 pub(crate) async fn mcp_tools(
     State(st): State<AppState>,
     headers: HeaderMap,
     peer: Peer,
+    Query(query): Query<McpToolsQuery>,
 ) -> Result<Response, ApiError> {
     authorize(&st, &headers, peer_addr(peer))?;
-    let tools = mcp_registry(&st).list();
+    let tools = if query.callable {
+        mcp_registry(&st).read_only().list()
+    } else {
+        mcp_catalog_registry(&st).list()
+    };
     Ok(Json(json!({ "tools": tools })).into_response())
 }
 
@@ -3369,7 +3405,7 @@ pub(crate) async fn mcp_call(
     Json(req): Json<McpCallRequest>,
 ) -> Result<Response, ApiError> {
     authorize(&st, &headers, peer_addr(peer))?;
-    let registry = mcp_registry(&st);
+    let registry = mcp_registry(&st).read_only();
     if registry.is_empty() {
         return Err(ApiError(Error::InvalidRequest(
             "no tools registered".to_string(),
@@ -4713,7 +4749,23 @@ pub(crate) async fn workspace_set(
     let folder = req
         .folder
         .filter(|s| !s.trim().is_empty())
-        .map(std::path::PathBuf::from);
+        .map(std::path::PathBuf::from)
+        .map(|path| {
+            let canonical = std::fs::canonicalize(&path).map_err(|error| {
+                ApiError(Error::InvalidRequest(format!(
+                    "invalid workspace {}: {error}",
+                    path.display()
+                )))
+            })?;
+            if !canonical.is_dir() {
+                return Err(ApiError(Error::InvalidRequest(format!(
+                    "workspace is not a directory: {}",
+                    canonical.display()
+                ))));
+            }
+            Ok(canonical)
+        })
+        .transpose()?;
     if let Ok(mut g) = st.workspace.write() {
         *g = folder.clone();
     }
@@ -8739,7 +8791,6 @@ const DESKTOP_WORKSPACE_TOOL_NAMES: &[&str] = &[
 ];
 const HASHLINE_TOOL_NAMES: &[&str] = &["read_file_anchors", "patch_file"];
 const SANDBOX_TOOL_NAMES: &[&str] = &["run_command"];
-const HOST_COMMAND_TOOL_NAMES: &[&str] = &["shell"];
 const COMPUTER_TOOL_NAMES: &[&str] = &[
     "screenshot",
     "mouse_move",
@@ -8858,11 +8909,19 @@ fn memory_context_from_request(req: &ChatCompletionRequest, model: String) -> Ag
 }
 
 fn workspace_is_selected(st: &AppState) -> bool {
-    st.workspace
-        .read()
-        .ok()
-        .and_then(|guard| guard.clone())
-        .is_some()
+    workspace_snapshot(st).is_some()
+}
+
+fn workspace_snapshot(st: &AppState) -> Option<PathBuf> {
+    st.workspace.read().ok().and_then(|guard| guard.clone())
+}
+
+fn static_registry_for_run(st: &AppState) -> ToolRegistry {
+    let reg = st.tools.as_deref().cloned().unwrap_or_default();
+    workspace_snapshot(st)
+        .map(|root| reg.scoped_to_workspace(&root))
+        .unwrap_or(reg)
+        .scoped_for_run()
 }
 
 fn registry_has_desktop_host_tools(reg: &ToolRegistry) -> bool {
@@ -8896,10 +8955,6 @@ fn add_workspace_notice_if_needed(messages: &mut Vec<ChatMessage>, workspace_una
 /// host fs/shell, Docker sandbox) plus any tools exposed by connected MCP
 /// servers. Rebuilt per-run (cheap clone) so newly-added MCP servers are
 /// picked up without restarting the app.
-pub(crate) fn agent_registry(st: &AppState) -> ToolRegistry {
-    agent_registry_with_memory(st, None, &ToolRunPolicy::default())
-}
-
 fn agent_registry_with_memory(
     st: &AppState,
     memory: Option<AgentMemoryContext>,
@@ -8913,7 +8968,7 @@ fn agent_base_registry_with_memory(
     memory: Option<AgentMemoryContext>,
     policy: &ToolRunPolicy,
 ) -> ToolRegistry {
-    let mut reg = st.tools.as_deref().cloned().unwrap_or_default();
+    let mut reg = static_registry_for_run(st);
     let workspace_unavailable = desktop_workspace_unavailable(st);
     if policy.plan_mode {
         return plan_mode_registry(
@@ -8924,11 +8979,13 @@ fn agent_base_registry_with_memory(
     }
     if let Some(hub) = &st.mcp {
         for tool in hub.tools() {
-            reg.register(tool);
+            if let Err(error) = reg.try_register(tool) {
+                tracing::warn!("skipping colliding MCP tool: {error}");
+            }
         }
     }
     if let Some(store) = st.schedules.as_ref() {
-        register_schedule_tools(&mut reg, store.clone());
+        register_schedule_tools(&mut reg, store.clone(), workspace_snapshot(st));
     }
     if let (Some(memory), Some(store)) = (memory.clone(), st.memory.as_ref()) {
         if memory.enabled {
@@ -8956,7 +9013,7 @@ fn agent_base_registry_with_memory(
     if policy.approval == ToolApprovalPolicy::Review && !policy.approval_granted {
         reg = ToolRegistry::new();
     } else if policy.approval == ToolApprovalPolicy::Guarded {
-        reg = reg.without(HOST_COMMAND_TOOL_NAMES);
+        reg = reg.read_only();
     }
     reg
 }
@@ -9019,19 +9076,29 @@ fn agent_registry_for_mode(
     }
 }
 
+pub(crate) fn scheduled_agent_registry(
+    st: &AppState,
+    agent: &milim_agents::AgentDef,
+) -> ToolRegistry {
+    agent_registry_for_mode(
+        st,
+        &agent.tool_mode,
+        &agent.enabled_tools,
+        None,
+        &ToolRunPolicy::default(),
+    )
+}
+
 struct MemoryRegisterTool {
     store: Arc<milim_memory::MemoryStore>,
     context: AgentMemoryContext,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct MemoryRegisterArgs {
     #[serde(default)]
     scope_kind: Option<String>,
-    #[serde(default)]
-    scope_label: Option<String>,
-    #[serde(default)]
-    scope_locator: Option<String>,
     #[serde(default = "default_memory_node_kind")]
     kind: String,
     title: String,
@@ -9039,8 +9106,6 @@ struct MemoryRegisterArgs {
     body: String,
     #[serde(default = "default_memory_confidence")]
     confidence: f32,
-    #[serde(default)]
-    source: String,
 }
 
 fn default_memory_node_kind() -> String {
@@ -9057,6 +9122,10 @@ impl Tool for MemoryRegisterTool {
         "memory_register"
     }
 
+    fn effect(&self) -> ToolEffect {
+        ToolEffect::Mutating
+    }
+
     fn description(&self) -> &str {
         "Register a concise durable memory in the current thread or project graph. Use this only for facts, decisions, preferences, and project context that will likely help future turns."
     }
@@ -9070,19 +9139,13 @@ impl Tool for MemoryRegisterTool {
                     "enum": ["thread", "project"],
                     "description": "Where to store the memory. Use project for repository/workspace facts and thread for conversation-specific facts."
                 },
-                "scope_label": { "type": "string" },
-                "scope_locator": {
-                    "type": "string",
-                    "description": "Optional override. Usually omit this and let Milim use the active thread/project."
-                },
                 "kind": {
                     "type": "string",
                     "description": "Memory kind such as fact, decision, preference, task, file, or entity."
                 },
                 "title": { "type": "string", "description": "Short human-readable title." },
                 "body": { "type": "string", "description": "One or two sentences with the useful durable context." },
-                "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
-                "source": { "type": "string", "description": "Optional source label." }
+                "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
             },
             "required": ["title"]
         })
@@ -9108,48 +9171,26 @@ impl Tool for MemoryRegisterTool {
 
         let (locator, label) = match scope_kind.as_str() {
             "project" => {
-                let locator = args
-                    .scope_locator
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .map(ToString::to_string)
-                    .or_else(|| self.context.project_locator.clone())
-                    .ok_or_else(|| {
-                        Error::InvalidRequest(
-                            "project memory requires an active project folder".to_string(),
-                        )
-                    })?;
-                let label = args
-                    .scope_label
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .map(ToString::to_string)
-                    .or_else(|| self.context.project_label.clone())
+                let locator = self.context.project_locator.clone().ok_or_else(|| {
+                    Error::InvalidRequest(
+                        "project memory requires an active project folder".to_string(),
+                    )
+                })?;
+                let label = self
+                    .context
+                    .project_label
+                    .clone()
                     .unwrap_or_else(|| locator.clone());
                 (locator, label)
             }
             "thread" => {
-                let locator = args
-                    .scope_locator
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .map(ToString::to_string)
-                    .or_else(|| self.context.thread_id.clone())
-                    .ok_or_else(|| {
-                        Error::InvalidRequest(
-                            "thread memory requires an active thread id".to_string(),
-                        )
-                    })?;
-                let label = args
-                    .scope_label
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .map(ToString::to_string)
-                    .or_else(|| self.context.thread_label.clone())
+                let locator = self.context.thread_id.clone().ok_or_else(|| {
+                    Error::InvalidRequest("thread memory requires an active thread id".to_string())
+                })?;
+                let label = self
+                    .context
+                    .thread_label
+                    .clone()
                     .unwrap_or_else(|| "Current thread".to_string());
                 (locator, label)
             }
@@ -9174,11 +9215,7 @@ impl Tool for MemoryRegisterTool {
                     title: args.title,
                     body: args.body,
                     confidence: args.confidence,
-                    source: if args.source.trim().is_empty() {
-                        "agent".to_string()
-                    } else {
-                        args.source
-                    },
+                    source: "agent".to_string(),
                 },
                 Vec::new(),
                 milim_memory::MemoryEventInput {
@@ -9226,11 +9263,16 @@ fn register_child_thread_tools(
     }));
     reg.register(Arc::new(ChildThreadReadTool {
         supervisor: supervisor.clone(),
+        context: context.clone(),
     }));
     reg.register(Arc::new(ChildThreadWaitTool {
         supervisor: supervisor.clone(),
+        context: context.clone(),
     }));
-    reg.register(Arc::new(ChildThreadStopTool { supervisor }));
+    reg.register(Arc::new(ChildThreadStopTool {
+        supervisor,
+        context,
+    }));
 }
 
 fn child_read_only_registry(st: &AppState) -> ToolRegistry {
@@ -9238,12 +9280,7 @@ fn child_read_only_registry(st: &AppState) -> ToolRegistry {
         .iter()
         .map(|name| (*name).to_string())
         .collect();
-    let mut reg = st
-        .tools
-        .as_deref()
-        .cloned()
-        .unwrap_or_default()
-        .filtered(&allowed);
+    let mut reg = static_registry_for_run(st).filtered(&allowed);
     if desktop_workspace_unavailable(st) {
         reg = reg.without(&["read_file", "list_dir"]);
     }
@@ -9272,6 +9309,21 @@ fn child_thread_parent_id(context: &AgentMemoryContext) -> milim_core::Result<St
         .ok_or_else(|| {
             Error::InvalidRequest("child threads require a parent thread id".to_string())
         })
+}
+
+fn owned_child_thread(
+    supervisor: &ThreadSupervisor,
+    context: &AgentMemoryContext,
+    thread_id: &str,
+) -> milim_core::Result<milim_agents::AgentThread> {
+    let parent_id = child_thread_parent_id(context)?;
+    let thread = supervisor
+        .get(thread_id)?
+        .ok_or_else(|| Error::ModelNotFound(format!("thread {thread_id}")))?;
+    if thread.parent_id != parent_id {
+        return Err(Error::ModelNotFound(format!("thread {thread_id}")));
+    }
+    Ok(thread)
 }
 
 fn child_thread_wait_ms(timeout_ms: Option<u64>) -> u64 {
@@ -9318,14 +9370,17 @@ struct ChildThreadListTool {
 
 struct ChildThreadReadTool {
     supervisor: Arc<ThreadSupervisor>,
+    context: AgentMemoryContext,
 }
 
 struct ChildThreadWaitTool {
     supervisor: Arc<ThreadSupervisor>,
+    context: AgentMemoryContext,
 }
 
 struct ChildThreadStopTool {
     supervisor: Arc<ThreadSupervisor>,
+    context: AgentMemoryContext,
 }
 
 #[derive(Debug, Deserialize)]
@@ -9380,6 +9435,10 @@ struct ChildThreadStopArgs {
 impl Tool for ChildThreadSpawnTool {
     fn name(&self) -> &str {
         "child_thread_spawn"
+    }
+
+    fn effect(&self) -> ToolEffect {
+        ToolEffect::Mutating
     }
 
     fn description(&self) -> &str {
@@ -9482,6 +9541,10 @@ impl Tool for ChildThreadListTool {
         "child_thread_list"
     }
 
+    fn effect(&self) -> ToolEffect {
+        ToolEffect::ReadOnly
+    }
+
     fn description(&self) -> &str {
         "List child threads for the current parent thread, optionally filtered by status."
     }
@@ -9499,21 +9562,22 @@ impl Tool for ChildThreadListTool {
     }
 
     async fn invoke(&self, args: Value) -> milim_core::Result<Value> {
-        let args: ChildThreadListArgs =
-            serde_json::from_value(args).unwrap_or(ChildThreadListArgs {
-                parent_thread_id: None,
-                status: None,
-                limit: None,
-            });
-        let parent_id = match args
+        let args: ChildThreadListArgs = serde_json::from_value(args).map_err(|error| {
+            Error::InvalidRequest(format!("invalid child_thread_list arguments: {error}"))
+        })?;
+        let parent_id = child_thread_parent_id(&self.context)?;
+        if let Some(requested) = args
             .parent_thread_id
             .as_deref()
             .map(str::trim)
             .filter(|id| !id.is_empty())
         {
-            Some(id) => id.to_string(),
-            None => child_thread_parent_id(&self.context)?,
-        };
+            if requested != parent_id {
+                return Err(Error::InvalidRequest(
+                    "child_thread_list cannot inspect another parent thread".into(),
+                ));
+            }
+        }
         let threads = self.supervisor.children(
             &parent_id,
             args.status.as_deref(),
@@ -9527,6 +9591,10 @@ impl Tool for ChildThreadListTool {
 impl Tool for ChildThreadReadTool {
     fn name(&self) -> &str {
         "child_thread_read"
+    }
+
+    fn effect(&self) -> ToolEffect {
+        ToolEffect::ReadOnly
     }
 
     fn description(&self) -> &str {
@@ -9552,10 +9620,7 @@ impl Tool for ChildThreadReadTool {
             Error::InvalidRequest(format!("invalid child_thread_read arguments: {e}"))
         })?;
         let thread_id = trim_required_tool_arg(args.thread_id, "thread_id")?;
-        let thread = self
-            .supervisor
-            .get(&thread_id)?
-            .ok_or_else(|| Error::ModelNotFound(format!("thread {thread_id}")))?;
+        let thread = owned_child_thread(&self.supervisor, &self.context, &thread_id)?;
         if args.include_events {
             let limit = args.event_limit.unwrap_or(DEFAULT_THREAD_EVENT_LIMIT);
             let limit = thread_event_limit(limit);
@@ -9585,6 +9650,10 @@ impl Tool for ChildThreadWaitTool {
         "child_thread_wait"
     }
 
+    fn effect(&self) -> ToolEffect {
+        ToolEffect::ReadOnly
+    }
+
     fn description(&self) -> &str {
         "Wait until a child thread finishes or the timeout elapses, then return its latest status."
     }
@@ -9606,6 +9675,7 @@ impl Tool for ChildThreadWaitTool {
             Error::InvalidRequest(format!("invalid child_thread_wait arguments: {e}"))
         })?;
         let thread_id = trim_required_tool_arg(args.thread_id, "thread_id")?;
+        owned_child_thread(&self.supervisor, &self.context, &thread_id)?;
         let thread = self
             .supervisor
             .wait(&thread_id, child_thread_wait_ms(args.timeout_ms))
@@ -9623,6 +9693,10 @@ impl Tool for ChildThreadWaitTool {
 impl Tool for ChildThreadStopTool {
     fn name(&self) -> &str {
         "child_thread_stop"
+    }
+
+    fn effect(&self) -> ToolEffect {
+        ToolEffect::Mutating
     }
 
     fn description(&self) -> &str {
@@ -9645,6 +9719,7 @@ impl Tool for ChildThreadStopTool {
             Error::InvalidRequest(format!("invalid child_thread_stop arguments: {e}"))
         })?;
         let thread_id = trim_required_tool_arg(args.thread_id, "thread_id")?;
+        owned_child_thread(&self.supervisor, &self.context, &thread_id)?;
         let thread = self
             .supervisor
             .stop(&thread_id)?
@@ -9657,9 +9732,14 @@ impl Tool for ChildThreadStopTool {
     }
 }
 
-fn register_schedule_tools(reg: &mut ToolRegistry, store: Arc<milim_automation::ScheduleStore>) {
+fn register_schedule_tools(
+    reg: &mut ToolRegistry,
+    store: Arc<milim_automation::ScheduleStore>,
+    workspace: Option<PathBuf>,
+) {
     reg.register(Arc::new(ScheduleCreateTool {
         store: store.clone(),
+        workspace: workspace.map(|path| path.to_string_lossy().to_string()),
     }));
     reg.register(Arc::new(ScheduleUpdateTool {
         store: store.clone(),
@@ -9672,6 +9752,7 @@ fn register_schedule_tools(reg: &mut ToolRegistry, store: Arc<milim_automation::
 
 struct ScheduleCreateTool {
     store: Arc<milim_automation::ScheduleStore>,
+    workspace: Option<String>,
 }
 
 struct ScheduleUpdateTool {
@@ -9762,6 +9843,10 @@ impl Tool for ScheduleCreateTool {
         "schedule_create"
     }
 
+    fn effect(&self) -> ToolEffect {
+        ToolEffect::Mutating
+    }
+
     fn description(&self) -> &str {
         "Create a cron automation that runs a saved agent prompt. Use this when the user asks to schedule, automate, run periodically, or create a cron from chat. Cron expressions must use six fields: sec min hour day month dow."
     }
@@ -9806,25 +9891,15 @@ impl Tool for ScheduleCreateTool {
         let name = trim_required_tool_arg(args.name, "name")?;
         let cron = trim_required_tool_arg(args.cron, "cron")?;
         let prompt = trim_required_tool_arg(args.prompt, "prompt")?;
-        let mut schedule = self.store.create_with_attachments(
+        let schedule = self.store.create_with_context(
             &name,
             &cron,
             trim_optional_agent_id(args.agent_id),
             &prompt,
             args.attachments,
+            args.enabled,
+            self.workspace.clone(),
         )?;
-        if !args.enabled {
-            schedule = self.store.update(milim_automation::ScheduleUpdate {
-                id: &schedule.id,
-                name: &schedule.name,
-                cron: &schedule.cron,
-                agent_id: schedule.agent_id.clone(),
-                prompt: &schedule.prompt,
-                attachments: schedule.attachments.clone(),
-                enabled: false,
-                last_run: schedule.last_run,
-            })?;
-        }
         Ok(json!({ "ok": true, "schedule": schedule }))
     }
 }
@@ -9833,6 +9908,10 @@ impl Tool for ScheduleCreateTool {
 impl Tool for ScheduleUpdateTool {
     fn name(&self) -> &str {
         "schedule_update"
+    }
+
+    fn effect(&self) -> ToolEffect {
+        ToolEffect::Mutating
     }
 
     fn description(&self) -> &str {
@@ -9915,6 +9994,8 @@ impl Tool for ScheduleUpdateTool {
             prompt: &prompt,
             attachments,
             enabled: args.enabled.unwrap_or(current.enabled),
+            workspace: current.workspace,
+            created_unix: current.created_unix,
             last_run: current.last_run,
         })?;
         Ok(json!({ "ok": true, "schedule": schedule }))
@@ -9925,6 +10006,10 @@ impl Tool for ScheduleUpdateTool {
 impl Tool for ScheduleListTool {
     fn name(&self) -> &str {
         "schedule_list"
+    }
+
+    fn effect(&self) -> ToolEffect {
+        ToolEffect::ReadOnly
     }
 
     fn description(&self) -> &str {
@@ -9943,11 +10028,9 @@ impl Tool for ScheduleListTool {
     }
 
     async fn invoke(&self, args: Value) -> milim_core::Result<Value> {
-        let args: ScheduleListToolArgs =
-            serde_json::from_value(args).unwrap_or(ScheduleListToolArgs {
-                enabled_only: false,
-                limit: None,
-            });
+        let args: ScheduleListToolArgs = serde_json::from_value(args).map_err(|error| {
+            Error::InvalidRequest(format!("invalid schedule_list arguments: {error}"))
+        })?;
         let mut schedules = self.store.list()?;
         if args.enabled_only {
             schedules.retain(|schedule| schedule.enabled);
@@ -9963,6 +10046,10 @@ impl Tool for ScheduleListTool {
 impl Tool for ScheduleDeleteTool {
     fn name(&self) -> &str {
         "schedule_delete"
+    }
+
+    fn effect(&self) -> ToolEffect {
+        ToolEffect::Mutating
     }
 
     fn description(&self) -> &str {
@@ -10592,12 +10679,14 @@ pub(crate) async fn schedule_create(
         ))
     })?;
     let schedule = store
-        .create_with_attachments(
+        .create_with_context(
             &req.name,
             &req.cron,
             req.agent_id,
             &req.prompt,
             req.attachments,
+            true,
+            workspace_snapshot(&st).map(|path| path.to_string_lossy().to_string()),
         )
         .map_err(ApiError)?;
     Ok(Json(schedule).into_response())
@@ -10618,6 +10707,7 @@ pub(crate) async fn schedule_update(
             "schedules are not enabled".to_string(),
         ))
     })?;
+    let current = find_schedule(store, &id).map_err(ApiError)?;
     let schedule = store
         .update(milim_automation::ScheduleUpdate {
             id: &id,
@@ -10627,6 +10717,8 @@ pub(crate) async fn schedule_update(
             prompt: &req.prompt,
             attachments: req.attachments,
             enabled: req.enabled,
+            workspace: current.workspace,
+            created_unix: current.created_unix,
             last_run: req.last_run,
         })
         .map_err(ApiError)?;
@@ -11377,4 +11469,25 @@ pub(crate) async fn ollama_embeddings(
         embeddings,
     })
     .into_response())
+}
+
+#[cfg(test)]
+mod tool_boundary_tests {
+    use super::*;
+
+    #[test]
+    fn child_tool_ownership_is_bound_to_the_current_parent() {
+        let store =
+            milim_agents::ThreadStore::new(milim_storage::Database::open_in_memory().unwrap())
+                .unwrap();
+        let child = store
+            .create("parent-a", "Child", "model", None, "work")
+            .unwrap();
+        let supervisor = ThreadSupervisor::new(store);
+        let context = AgentMemoryContext {
+            thread_id: Some("parent-b".to_string()),
+            ..Default::default()
+        };
+        assert!(owned_child_thread(&supervisor, &context, &child.id).is_err());
+    }
 }

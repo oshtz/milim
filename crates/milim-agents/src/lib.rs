@@ -157,12 +157,9 @@ pub async fn run_agent_with_config(
         messages.push(out.message);
         let mut pending_images: Vec<ChatMessage> = Vec::new();
         for call in calls {
-            let args: Value = serde_json::from_str(&call.function.arguments).unwrap_or(Value::Null);
-            let result = match tools.call(&call.function.name, args).await {
-                Ok(v) => v,
-                Err(e) => json!({ "error": e.to_string() }),
-            };
-            let (visible, image_uri) = split_tool_image(result);
+            let executed =
+                execute_tool_call(tools, &call.function.name, &call.function.arguments).await;
+            let visible = executed.visible;
             steps.push(ToolStep {
                 name: call.function.name.clone(),
                 arguments: call.function.arguments.clone(),
@@ -176,7 +173,7 @@ pub async fn run_agent_with_config(
                 tool_call_id: call.id.clone(),
                 reasoning_content: None,
             });
-            if let Some(uri) = image_uri {
+            if let Some(uri) = executed.image_uri {
                 pending_images.push(image_user_message(&call.function.name, uri));
             }
         }
@@ -361,22 +358,22 @@ pub fn run_agent_stream_with_config(
                     name: call.function.name.clone(),
                     arguments: call.function.arguments.clone(),
                 };
-                let args: Value =
-                    serde_json::from_str(&call.function.arguments).unwrap_or(Value::Null);
-                let result = match tools.call(&call.function.name, args).await {
-                    Ok(v) => v,
-                    Err(e) => json!({ "error": e.to_string() }),
-                };
-                let (visible, image_uri) = split_tool_image(result);
+                let executed = execute_tool_call(
+                    tools.as_ref(),
+                    &call.function.name,
+                    &call.function.arguments,
+                )
+                .await;
+                let visible = executed.visible;
                 yield AgentEvent::ToolResult {
                     call_id: call.id.clone(),
                     name: call.function.name.clone(),
                     result: visible.clone(),
                 };
-                if let Some(ev) = memory_registered_event(&visible) {
+                if let Some(ev) = executed.memory_event {
                     yield ev;
                 }
-                if let Some(ev) = child_thread_event(&visible) {
+                if let Some(ev) = executed.child_event {
                     yield ev;
                 }
                 messages.push(ChatMessage {
@@ -387,7 +384,7 @@ pub fn run_agent_stream_with_config(
                     tool_call_id: call.id.clone(),
                     reasoning_content: None,
                 });
-                if let Some(uri) = image_uri {
+                if let Some(uri) = executed.image_uri {
                     pending_images.push(image_user_message(&call.function.name, uri));
                 }
             }
@@ -502,9 +499,7 @@ fn truncate_tool_replay_text(text: &str) -> String {
     } else {
         (total_lines.saturating_sub(kept_lines), "lines")
     };
-    format!(
-        "{preview}\n\n...tool result truncated for replay: omitted {removed} {unit}. Full result remains in Milim's tool timeline."
-    )
+    format!("{preview}\n\n...tool result truncated for replay: omitted {removed} {unit}.")
 }
 
 fn prefix_by_bytes(text: &str, max_bytes: usize) -> &str {
@@ -545,6 +540,50 @@ fn split_tool_image(mut result: Value) -> (Value, Option<String>) {
         .unwrap_or("image/png");
     let uri = format!("data:{mime};base64,{data}");
     (result, Some(uri))
+}
+
+struct ExecutedToolResult {
+    visible: Value,
+    image_uri: Option<String>,
+    memory_event: Option<AgentEvent>,
+    child_event: Option<AgentEvent>,
+}
+
+async fn execute_tool_call(
+    tools: &ToolRegistry,
+    name: &str,
+    arguments: &str,
+) -> ExecutedToolResult {
+    let args = serde_json::from_str(arguments).unwrap_or(Value::Null);
+    let result = match tools.call(name, args).await {
+        Ok(value) => value,
+        Err(error) => json!({ "error": error.to_string() }),
+    };
+    let (visible, image_uri) = split_tool_image(result);
+    let memory_event = memory_registered_event(&visible);
+    let child_event = child_thread_event(&visible);
+    ExecutedToolResult {
+        visible: limit_visible_tool_result(visible),
+        image_uri,
+        memory_event,
+        child_event,
+    }
+}
+
+fn limit_visible_tool_result(result: Value) -> Value {
+    const MAX_VISIBLE_BYTES: usize = 1024 * 1024;
+    let Ok(encoded) = serde_json::to_vec(&result) else {
+        return json!({ "error": "tool result could not be encoded" });
+    };
+    if encoded.len() <= MAX_VISIBLE_BYTES {
+        return result;
+    }
+    let preview = String::from_utf8_lossy(&encoded[..MAX_VISIBLE_BYTES]).to_string();
+    json!({
+        "truncated": true,
+        "original_bytes": encoded.len(),
+        "preview": preview
+    })
 }
 
 /// A user message carrying an image a tool returned, so the model sees it next

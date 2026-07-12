@@ -4,9 +4,11 @@
 //! Containerization framework (macOS-only). The cross-platform replacement runs
 //! each command through Docker in a `--rm --network none` container.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use serde::Serialize;
+use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 
 use milim_core::{Error, Result};
@@ -40,6 +42,8 @@ impl Default for RunOpts {
 pub struct SandboxOutput {
     pub stdout: String,
     pub stderr: String,
+    pub stdout_truncated: bool,
+    pub stderr_truncated: bool,
     pub exit_code: Option<i32>,
 }
 
@@ -111,7 +115,30 @@ impl DockerBackend {
         command: &[String],
         opts: &RunOpts,
     ) -> Result<SandboxOutput> {
-        let mut args: Vec<String> = vec!["run".into(), "--rm".into()];
+        const MAX_OUTPUT: usize = 1024 * 1024;
+        static NEXT_CONTAINER: AtomicU64 = AtomicU64::new(0);
+        let container_name = format!(
+            "milim-sandbox-{}-{}",
+            std::process::id(),
+            NEXT_CONTAINER.fetch_add(1, Ordering::Relaxed)
+        );
+        let mut args: Vec<String> = vec![
+            "run".into(),
+            "--rm".into(),
+            "--name".into(),
+            container_name.clone(),
+            "--pids-limit".into(),
+            "128".into(),
+            "--cpus".into(),
+            "1".into(),
+            "--read-only".into(),
+            "--cap-drop".into(),
+            "ALL".into(),
+            "--security-opt".into(),
+            "no-new-privileges".into(),
+            "--tmpfs".into(),
+            "/tmp:rw,noexec,nosuid,size=64m".into(),
+        ];
         if !opts.network {
             args.push("--network".into());
             args.push("none".into());
@@ -128,20 +155,111 @@ impl DockerBackend {
         args.extend(command.iter().cloned());
 
         let mut cmd = Command::new(&self.docker_bin);
-        cmd.args(&args);
+        cmd.args(&args)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true);
         #[cfg(windows)]
         cmd.creation_flags(milim_core::proc::CREATE_NO_WINDOW);
-        let fut = cmd.output();
-        let output = tokio::time::timeout(opts.timeout, fut)
-            .await
-            .map_err(|_| Error::Other(format!("sandbox run timed out after {:?}", opts.timeout)))?
+        let mut child = cmd
+            .spawn()
             .map_err(|e| Error::Other(format!("docker run failed to start: {e}")))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| Error::Other("docker stdout unavailable".into()))?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| Error::Other("docker stderr unavailable".into()))?;
+        let stdout_task = tokio::spawn(read_bounded(stdout, MAX_OUTPUT));
+        let stderr_task = tokio::spawn(read_bounded(stderr, MAX_OUTPUT));
+        let mut guard = ContainerGuard::new(self.docker_bin.clone(), container_name);
+        let status = match tokio::time::timeout(opts.timeout, child.wait()).await {
+            Ok(result) => {
+                result.map_err(|error| Error::Other(format!("docker run failed: {error}")))?
+            }
+            Err(_) => {
+                guard.terminate().await;
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+                return Err(Error::Other(format!(
+                    "sandbox run timed out after {:?}",
+                    opts.timeout
+                )));
+            }
+        };
+        guard.disarm();
+        let (stdout, stdout_truncated) = stdout_task
+            .await
+            .map_err(|error| Error::Other(format!("docker stdout task failed: {error}")))??;
+        let (stderr, stderr_truncated) = stderr_task
+            .await
+            .map_err(|error| Error::Other(format!("docker stderr task failed: {error}")))??;
 
         Ok(SandboxOutput {
-            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-            exit_code: output.status.code(),
+            stdout: String::from_utf8_lossy(&stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&stderr).into_owned(),
+            stdout_truncated,
+            stderr_truncated,
+            exit_code: status.code(),
         })
+    }
+}
+
+async fn read_bounded<R>(mut reader: R, limit: usize) -> Result<(Vec<u8>, bool)>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    let mut kept = Vec::new();
+    let mut buffer = [0_u8; 8192];
+    let mut truncated = false;
+    loop {
+        let count = reader.read(&mut buffer).await?;
+        if count == 0 {
+            break;
+        }
+        let remaining = limit.saturating_sub(kept.len());
+        kept.extend_from_slice(&buffer[..count.min(remaining)]);
+        truncated |= count > remaining;
+    }
+    Ok((kept, truncated))
+}
+
+struct ContainerGuard {
+    docker_bin: String,
+    name: Option<String>,
+}
+
+impl ContainerGuard {
+    fn new(docker_bin: String, name: String) -> Self {
+        Self {
+            docker_bin,
+            name: Some(name),
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.name = None;
+    }
+
+    async fn terminate(&mut self) {
+        let Some(name) = self.name.take() else { return };
+        let mut command = Command::new(&self.docker_bin);
+        command.args(["rm", "-f", &name]);
+        #[cfg(windows)]
+        command.creation_flags(milim_core::proc::CREATE_NO_WINDOW);
+        let _ = tokio::time::timeout(Duration::from_secs(10), command.output()).await;
+    }
+}
+
+impl Drop for ContainerGuard {
+    fn drop(&mut self) {
+        let Some(name) = self.name.take() else { return };
+        let mut command = std::process::Command::new(&self.docker_bin);
+        command.args(["rm", "-f", &name]);
+        let _ = milim_core::proc::hide_console(&mut command).spawn();
     }
 }
 

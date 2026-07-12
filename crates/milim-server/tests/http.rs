@@ -84,6 +84,25 @@ impl milim_tools::Tool for NamedTestTool {
         json!({"type":"object","properties":{}})
     }
 
+    fn effect(&self) -> milim_tools::ToolEffect {
+        match self.name {
+            "current_time"
+            | "echo"
+            | "http_fetch"
+            | "read_file"
+            | "read_file_anchors"
+            | "list_dir"
+            | "screenshot"
+            | "preview_dom_snapshot"
+            | "schedule_list"
+            | "child_thread_list"
+            | "child_thread_read"
+            | "child_thread_wait" => milim_tools::ToolEffect::ReadOnly,
+            "shell" | "run_command" => milim_tools::ToolEffect::Command,
+            _ => milim_tools::ToolEffect::Mutating,
+        }
+    }
+
     async fn invoke(&self, _args: Value) -> milim_core::Result<Value> {
         Ok(json!({"ok": true}))
     }
@@ -1743,6 +1762,16 @@ async fn mcp_stdio_bridge_forwards_bearer_token() {
     .await
     .unwrap();
     assert!(!list["result"]["tools"].as_array().unwrap().is_empty());
+
+    let denied = handle_request(
+        &json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}),
+        &base,
+        Some("wrong"),
+        &client,
+    )
+    .await
+    .unwrap();
+    assert_eq!(denied["error"]["code"], -32603);
 }
 
 #[tokio::test]
@@ -5229,7 +5258,7 @@ async fn auth_required_when_keys_configured() {
 async fn mcp_tools_list_and_call() {
     use milim_tools::ToolRegistry;
     let mut tools = ToolRegistry::with_builtins();
-    for name in ["read_file_anchors", "patch_file"] {
+    for name in ["read_file_anchors", "patch_file", "write_file"] {
         tools.register(Arc::new(NamedTestTool { name }));
     }
     let state = AppState::new(Arc::new(TestBackend::new()), ServerConfiguration::default())
@@ -5266,6 +5295,14 @@ async fn mcp_tools_list_and_call() {
         .await
         .unwrap();
     assert_eq!(v["result"]["echoed"]["text"], "hi");
+
+    let denied = client
+        .post(format!("{base}/mcp/call"))
+        .json(&json!({"name":"write_file","arguments":{}}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(denied.status(), reqwest::StatusCode::BAD_REQUEST);
 
     // Unknown tool -> 400.
     let r = client
@@ -5440,6 +5477,7 @@ async fn agent_memory_register_streams_breadcrumb_event() {
             "messages": [{ "role": "user", "content": "remember the plan" }],
             "stream": true,
             "memory_enabled": true,
+            "tool_approval_policy": "open",
             "thread_id": "thread-memory-event",
             "thread_label": "Memory event test"
         }))
@@ -5987,6 +6025,7 @@ async fn agent_run_hides_desktop_host_tools_without_workspace() {
         .json(&json!({
             "model":"tool-listing",
             "sandbox_enabled": true,
+            "tool_approval_policy": "open",
             "messages":[{"role":"user","content":"what tools are available?"}]
         }))
         .send()
@@ -6033,6 +6072,7 @@ async fn agent_run_hides_hashline_tools_unless_experimental_flag_set() {
         .post(format!("{base}/agents/run"))
         .json(&json!({
             "model":"tool-listing",
+            "tool_approval_policy": "open",
             "messages":[{"role":"user","content":"what tools are available?"}]
         }))
         .send()
@@ -6056,6 +6096,7 @@ async fn agent_run_hides_hashline_tools_unless_experimental_flag_set() {
         .json(&json!({
             "model":"tool-listing",
             "experimental_hashline_patch": true,
+            "tool_approval_policy": "open",
             "messages":[{"role":"user","content":"what tools are available?"}]
         }))
         .send()
@@ -6091,6 +6132,7 @@ async fn agent_run_hides_sandbox_tool_when_sandbox_is_off() {
         .post(format!("{base}/agents/run"))
         .json(&json!({
             "model":"tool-listing",
+            "tool_approval_policy": "open",
             "messages":[{"role":"user","content":"what tools are available?"}]
         }))
         .send()
@@ -6148,6 +6190,7 @@ async fn agent_run_hides_preview_tools_unless_preview_is_active() {
         .json(&json!({
             "model":"tool-listing",
             "preview_tools_enabled": true,
+            "tool_approval_policy": "open",
             "messages":[{"role":"user","content":"what tools are available?"}]
         }))
         .send()
@@ -6228,8 +6271,8 @@ async fn agent_run_guarded_mode_hides_host_shell_with_workspace() {
 
     let content = v["message"]["content"].as_str().unwrap();
     assert!(content.contains("read_file"));
-    assert!(content.contains("write_file"));
-    assert!(content.contains("edit_file"));
+    assert!(!content.contains("write_file"));
+    assert!(!content.contains("edit_file"));
     assert!(
         !content.contains("shell"),
         "guarded mode exposed shell: {content}"
@@ -6325,24 +6368,19 @@ async fn agent_run_open_mode_allows_host_shell_with_workspace() {
 }
 
 #[tokio::test]
-async fn http_fetch_tool_self_request() {
+async fn http_fetch_tool_rejects_private_and_non_http_targets() {
     let state = AppState::new(Arc::new(TestBackend::new()), ServerConfiguration::default())
         .with_tools(milim_tools::ToolRegistry::with_builtins());
     let base = spawn(state).await;
     let client = reqwest::Client::new();
 
-    // The tool fetches the server's own /health endpoint.
-    let v: Value = client
+    let private = client
         .post(format!("{base}/mcp/call"))
         .json(&json!({"name":"http_fetch","arguments":{"url": format!("{base}/health")}}))
         .send()
         .await
-        .unwrap()
-        .json()
-        .await
         .unwrap();
-    assert_eq!(v["result"]["status"], 200);
-    assert!(v["result"]["body"].as_str().unwrap().contains("ok"));
+    assert_eq!(private.status(), reqwest::StatusCode::BAD_REQUEST);
 
     // Non-http(s) schemes are rejected.
     let bad = client
@@ -6361,7 +6399,7 @@ async fn schedules_crud_and_fire_due() {
 
     let store = ScheduleStore::new(Database::open_in_memory().unwrap()).unwrap();
     // A schedule that is already "due" (next fire after epoch is well before now).
-    store
+    let mut schedule = store
         .create_with_attachments(
             "hourly",
             "0 0 * * * *",
@@ -6379,6 +6417,8 @@ async fn schedules_crud_and_fire_due() {
             }],
         )
         .unwrap();
+    schedule.created_unix = 0;
+    store.upsert(&schedule).unwrap();
     let backend = MessageCaptureBackend::default();
     let seen_messages = backend.seen();
     let state = AppState::new(Arc::new(backend), ServerConfiguration::default())
@@ -6516,9 +6556,11 @@ async fn schedule_mark_failure_prevents_agent_run() {
 
     let db_path = unique_temp_path("milim-schedule-mark-fail.db");
     let store = ScheduleStore::new(Database::open(&db_path).unwrap()).unwrap();
-    store
+    let mut schedule = store
         .create("hourly", "0 0 * * * *", None, "must not run")
         .unwrap();
+    schedule.created_unix = 0;
+    store.upsert(&schedule).unwrap();
     let blocker = Database::open(&db_path).unwrap();
     blocker
         .conn()
@@ -6567,6 +6609,7 @@ async fn agent_run_can_create_schedule_from_chat_tool() {
         .post(format!("{base}/agents/run"))
         .json(&json!({
             "model": "test-schedule",
+            "tool_approval_policy": "open",
             "messages": [{ "role": "user", "content": "Create an OSS maintainer automation every 5 minutes." }]
         }))
         .send()

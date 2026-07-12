@@ -3159,7 +3159,6 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
- "tracing",
  "uuid",
 ]
 
@@ -3367,7 +3366,7 @@ dependencies = [
  "reqwest 0.12.28",
  "serde",
  "serde_json",
- "tracing",
+ "tokio",
 ]
 
 [[package]]
