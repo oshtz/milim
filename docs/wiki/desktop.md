@@ -58,7 +58,7 @@ For a stale native session, **Fresh** starts from Milim's complete context while
 | Computer use | Enables OS-level screen capture plus mouse/keyboard tools when the desktop build includes the feature. |
 | Memory | Adds scoped thread/project memory search as cheap turn context. Durable memory writes use `memory_register` only on explicit remember/save requests or already tool-capable turns. |
 | Privacy | Sets `off`, `redact`, or `block` for remote-provider and account-runtime traffic. |
-| Approval | Sets `review`, `guarded`, or `open` tool execution policy. |
+| Approval | Sets `review`, `guarded`, or `open` tool execution policy. The session control shows the current mode and explains the selected policy; changing the workspace folder resets approval to `guarded`, so `open` must be enabled explicitly for the new project boundary. |
 | Plan | Keeps the turn read-only until you approve execution. |
 | Goal | Tracks a thread objective, success criteria, constraints, turn count, and continuation prompts. |
 

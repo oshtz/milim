@@ -8,7 +8,7 @@ import {
 } from "../api";
 import { goalChipVisible, type GoalSettings } from "../lib/goals";
 import { modelDevProfile, modelDisplayName } from "../lib/modelPicker";
-import { ChevronDown, Cube, Folder, Lightbulb, Pin } from "./icons";
+import { ChevronDown, Cube, Lightbulb, Pin, Sliders } from "./icons";
 import { ModelPicker, type ModelPickerSelection } from "./ModelPicker";
 import { RunTimeline } from "./RunTimeline";
 
@@ -36,9 +36,15 @@ const PRIVACY_LABEL: Record<PrivacyMode, string> = {
 };
 
 const TOOL_APPROVAL_LABEL: Record<ToolApprovalMode, string> = {
-  review: "Review gate",
-  guarded: "Guarded run",
-  open: "Open / bypass permissions",
+  review: "Review",
+  guarded: "Guarded",
+  open: "Open",
+};
+
+const TOOL_APPROVAL_DESCRIPTION: Record<ToolApprovalMode, string> = {
+  review: "Ask before each tool action.",
+  guarded: "Run safe tools; ask before consequential actions.",
+  open: "Run without approval in trusted workspaces.",
 };
 
 function Monitor({ size = 13 }: { size?: number }) {
@@ -130,14 +136,7 @@ export function ControlBar({
     return () => document.removeEventListener("mousedown", onDoc);
   }, [menu]);
 
-  const contextStates = [
-    sandbox ? "Sandbox" : "",
-    computerUse ? "Computer" : "",
-    memory ? "Memory" : "",
-    privacy !== "off" ? PRIVACY_LABEL[privacy] : "",
-    toolApproval !== "guarded" ? TOOL_APPROVAL_LABEL[toolApproval] : "",
-  ].filter(Boolean);
-  const contextSummary = contextStates.join(" / ");
+  const approvalOpen = toolApproval === "open";
   const contextAccessibleLabel = `Session controls, Sandbox ${sandbox ? "on" : "off"}, Computer ${computerUse ? "on" : "off"}, Memory ${memory ? "on" : "off"}, Privacy ${PRIVACY_LABEL[privacy]}, Tool approval ${TOOL_APPROVAL_LABEL[toolApproval]}`;
   const showGoalChip = goalChipVisible(goal);
   const goalDetail = goal.status[0].toUpperCase() + goal.status.slice(1);
@@ -242,7 +241,8 @@ export function ControlBar({
             <button
               type="button"
               className={
-                "chip context-chip" + (contextStates.length ? " chip-on" : "")
+                "chip context-chip" +
+                (approvalOpen ? " context-chip-open" : "")
               }
               data-testid="context-menu-trigger"
               onClick={() =>
@@ -253,10 +253,9 @@ export function ControlBar({
               aria-haspopup="menu"
               aria-expanded={menu === "context"}
             >
-              <Folder size={13} />
-              <span className="chip-label">Session</span>
-              <span className="chip-detail">
-                {contextSummary}
+              <Sliders size={13} />
+              <span className="chip-label">
+                {TOOL_APPROVAL_LABEL[toolApproval]}
               </span>
               <ChevronDown size={12} className="chip-chev" />
             </button>
@@ -295,28 +294,6 @@ export function ControlBar({
                   <span className="context-title">Computer use</span>
                   <span className="context-switch" aria-hidden="true" />
                 </button>
-
-                <div className={"context-row context-choice-row" + (toolApproval !== "guarded" ? " context-on" : "")}>
-                  <span className="context-icon">
-                    <Shield size={14} />
-                  </span>
-                  <span className="context-title">Tool approval</span>
-                  <span className="context-choice-group" role="radiogroup" aria-label="Tool approval">
-                    {(["review", "guarded", "open"] as const).map((value) => (
-                      <button
-                        key={value}
-                        type="button"
-                        role="radio"
-                        aria-checked={toolApproval === value}
-                        className={toolApproval === value ? "active" : ""}
-                        title={value === "review" ? "Ask before every tool" : value === "guarded" ? "Run safe tools and review consequential actions" : "Bypass tool prompts in trusted workspaces"}
-                        onClick={() => onToolApproval(value)}
-                      >
-                        {value === "review" ? "Review" : value === "guarded" ? "Guarded" : "Open"}
-                      </button>
-                    ))}
-                  </span>
-                </div>
 
                 <div className={"context-row context-memory-row" + (memory ? " context-on" : "")}>
                   <span className="context-icon">
@@ -370,6 +347,48 @@ export function ControlBar({
                         {PRIVACY_LABEL[value]}
                       </button>
                     ))}
+                  </span>
+                </div>
+
+                <div
+                  className={
+                    "context-row context-choice-row" +
+                    (approvalOpen ? " context-warning" : "")
+                  }
+                >
+                  <span className="context-icon">
+                    <Shield size={14} />
+                  </span>
+                  <span className="context-title">Tool approval</span>
+                  <span
+                    className="context-choice-group"
+                    role="radiogroup"
+                    aria-label="Tool approval"
+                    aria-describedby="tool-approval-description"
+                  >
+                    {(["review", "guarded", "open"] as const).map((value) => (
+                      <button
+                        key={value}
+                        type="button"
+                        role="radio"
+                        aria-checked={toolApproval === value}
+                        className={
+                          toolApproval === value
+                            ? `active${value === "open" ? " warning" : ""}`
+                            : ""
+                        }
+                        title={TOOL_APPROVAL_DESCRIPTION[value]}
+                        onClick={() => onToolApproval(value)}
+                      >
+                        {TOOL_APPROVAL_LABEL[value]}
+                      </button>
+                    ))}
+                  </span>
+                  <span
+                    id="tool-approval-description"
+                    className="context-choice-description"
+                  >
+                    {TOOL_APPROVAL_DESCRIPTION[toolApproval]}
                   </span>
                 </div>
               </div>

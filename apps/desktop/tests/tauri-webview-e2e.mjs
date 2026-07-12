@@ -778,9 +778,25 @@ async function runSlashAndAttachmentCheck(page) {
 
   await page.getByTestId("composer-input").fill("/approval open");
   await page.getByTestId("composer-send").click();
-  await page.getByTestId("context-menu-trigger").click();
-  const approvalOpen = page.locator('[role="radiogroup"][aria-label="Tool approval"] [role="radio"]', { hasText: "Open" });
+  const approvalTrigger = page.getByTestId("context-menu-trigger");
+  await approvalTrigger.getByText("Open", { exact: true }).waitFor();
+  await approvalTrigger.click();
+  const approvalGroup = page.locator('[role="radiogroup"][aria-label="Tool approval"]');
+  await assertAttribute(approvalGroup, "aria-describedby", "tool-approval-description");
+  const approvalDescription = page.locator("#tool-approval-description");
+  await assertTextContains(approvalDescription, "Run without approval in trusted workspaces.");
+  const approvalOpen = approvalGroup.getByRole("radio", { name: "Open" });
   await assertAttribute(approvalOpen, "aria-checked", "true");
+  const approvalReview = approvalGroup.getByRole("radio", { name: "Review" });
+  await approvalReview.click();
+  await approvalTrigger.getByText("Review", { exact: true }).waitFor();
+  await assertTextContains(approvalDescription, "Ask before each tool action.");
+  const approvalGuarded = approvalGroup.getByRole("radio", { name: "Guarded" });
+  await approvalGuarded.click();
+  await approvalTrigger.getByText("Guarded", { exact: true }).waitFor();
+  await assertTextContains(approvalDescription, "Run safe tools; ask before consequential actions.");
+  await approvalOpen.click();
+  await approvalTrigger.getByText("Open", { exact: true }).waitFor();
   await page.getByTestId("composer-input").click();
 
   await page.getByTestId("composer-input").fill("/approval nope");

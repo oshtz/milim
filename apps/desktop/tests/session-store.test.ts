@@ -117,6 +117,12 @@ useSessions.getState().updateSettings(first, {
   planMode: true,
   reasoningEffort: "high",
 });
+equal(
+  useSessions.getState().getSettings(first).toolApproval,
+  "guarded",
+  "changing folders should ignore inherited Open approval",
+);
+useSessions.getState().updateSettings(first, { toolApproval: "open" });
 useSessions.getState().setMessages(first, [{ role: "user", content: "hello" }]);
 useSessions.getState().setSessionGenerating(first, true);
 deepEqual(
@@ -1558,6 +1564,7 @@ useSessions.getState().updateSettings(second, {
   memory: false,
   privacy: "block",
 });
+useSessions.getState().updateSettings(second, { toolApproval: "open" });
 useSessions.getState().switchTo(first);
 equal(
   useSessions.getState().getSettings(useSessions.getState().activeId).model,
@@ -1613,7 +1620,7 @@ deepEqual(
     computerUse: true,
     memory: false,
     privacy: "block",
-    toolApproval: "guarded",
+    toolApproval: "open",
     planMode: false,
     goal: DEFAULT_GOAL_SETTINGS,
   },
@@ -1647,7 +1654,7 @@ deepEqual(
     computerUse: true,
     memory: false,
     privacy: "block",
-    toolApproval: "guarded",
+    toolApproval: "open",
     planMode: false,
     goal: DEFAULT_GOAL_SETTINGS,
   },
@@ -1981,6 +1988,9 @@ equal(
   "removing a session should remove its queued messages",
 );
 
+useSessions.getState().updateSettings(useSessions.getState().activeId, {
+  toolApproval: "open",
+});
 useSessions.getState().newChat({
   ...useSessions.getState().getSettings(useSessions.getState().activeId),
   folder: "C:\\composer-project",
@@ -1990,6 +2000,12 @@ equal(
   "C:\\composer-project",
   "project selector should start a chat in the selected project",
 );
+equal(
+  useSessions.getState().getSettings(useSessions.getState().activeId)
+    .toolApproval,
+  "guarded",
+  "starting a chat in another project should reset Open approval",
+);
 assert(
   useSessions
     .getState()
@@ -1997,6 +2013,9 @@ assert(
   "project selector should register the selected project",
 );
 const projectCountBeforeNoProject = useSessions.getState().projects.length;
+useSessions.getState().updateSettings(useSessions.getState().activeId, {
+  toolApproval: "open",
+});
 useSessions
   .getState()
   .setMessages(useSessions.getState().activeId, [
@@ -2010,6 +2029,12 @@ equal(
   useSessions.getState().getSettings(useSessions.getState().activeId).folder,
   "",
   "no-project selector should start a chat without a folder",
+);
+equal(
+  useSessions.getState().getSettings(useSessions.getState().activeId)
+    .toolApproval,
+  "guarded",
+  "moving to a scratch project should reset Open approval",
 );
 equal(
   useSessions.getState().projects.length,
@@ -2032,10 +2057,32 @@ useSessions
   .getState()
   .newChat({ model: "archive-model", folder: "C:\\workspace-archive" });
 const archiveSession = useSessions.getState().activeId;
+const archiveProject = projectSectionId("C:\\workspace-archive");
+useSessions.getState().updateSettings(archiveSession, {
+  toolApproval: "open",
+});
+useSessions
+  .getState()
+  .setSessionFolder(archiveSession, "C:\\workspace-archive-moved");
+equal(
+  useSessions.getState().getSettings(archiveSession).toolApproval,
+  "guarded",
+  "setting a different session folder should reset Open approval",
+);
+useSessions.getState().updateSettings(archiveSession, {
+  toolApproval: "open",
+});
+useSessions
+  .getState()
+  .moveSessionInSidebar(archiveSession, null, archiveProject, "inside");
+equal(
+  useSessions.getState().getSettings(archiveSession).toolApproval,
+  "guarded",
+  "moving a session between project sections should reset Open approval",
+);
 useSessions
   .getState()
   .setMessages(archiveSession, [{ role: "user", content: "archive me" }]);
-const archiveProject = projectSectionId("C:\\workspace-archive");
 assert(
   useSessions
     .getState()

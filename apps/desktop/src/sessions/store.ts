@@ -565,6 +565,16 @@ function normalizeProjectFolder(folder?: string): string {
   return (folder ?? "").trim();
 }
 
+function resetApprovalForFolderChange(
+  previousFolder: string | undefined,
+  settings: ThreadSettings,
+): ThreadSettings {
+  return normalizeProjectFolder(previousFolder) ===
+    normalizeProjectFolder(settings.folder)
+    ? settings
+    : { ...settings, toolApproval: DEFAULT_THREAD_SETTINGS.toolApproval };
+}
+
 function folderLabel(folder: string): string {
   return folder.split(/[\\/]/).filter(Boolean).pop() || folder || "Project";
 }
@@ -1483,7 +1493,15 @@ export const useSessions = create<SessionState>()(
 
         newChat: (settings) => {
           const cur = get().sessions.find((s) => s.id === get().activeId);
-          const nextSettings = normalizeSettings(settings ?? cur?.settings);
+          const normalizedSettings = normalizeSettings(
+            settings ?? cur?.settings,
+          );
+          const nextSettings = cur
+            ? resetApprovalForFolderChange(
+                cur.settings?.folder,
+                normalizedSettings,
+              )
+            : normalizedSettings;
           if (cur && cur.messages.length === 0) {
             if (settings) get().updateSettings(cur.id, nextSettings);
             return;
@@ -2137,10 +2155,13 @@ export const useSessions = create<SessionState>()(
               s.id === id
                 ? {
                     ...s,
-                    settings: normalizeSettings({
-                      ...s.settings,
-                      folder: normalized,
-                    }),
+                    settings: resetApprovalForFolderChange(
+                      s.settings?.folder,
+                      normalizeSettings({
+                        ...s.settings,
+                        folder: normalized,
+                      }),
+                    ),
                     updatedAt: Date.now(),
                   }
                 : s,
@@ -2248,10 +2269,13 @@ export const useSessions = create<SessionState>()(
               s.id === id && targetFolder !== null
                 ? {
                     ...s,
-                    settings: normalizeSettings({
-                      ...s.settings,
-                      folder: targetFolder,
-                    }),
+                    settings: resetApprovalForFolderChange(
+                      s.settings?.folder,
+                      normalizeSettings({
+                        ...s.settings,
+                        folder: targetFolder,
+                      }),
+                    ),
                     updatedAt: Date.now(),
                   }
                 : s,
@@ -2774,9 +2798,16 @@ export const useSessions = create<SessionState>()(
                         ...(settings.goal ?? {}),
                       };
                     }
+                    const normalized = normalizeSettings(merged);
                     return {
                       ...s,
-                      settings: normalizeSettings(merged),
+                      settings:
+                        "folder" in settings
+                          ? resetApprovalForFolderChange(
+                              s.settings?.folder,
+                              normalized,
+                            )
+                          : normalized,
                       pendingHotSwap:
                         "model" in settings && settings.model !== s.settings?.model
                           ? undefined
