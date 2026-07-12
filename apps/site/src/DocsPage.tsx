@@ -22,7 +22,7 @@ const docModules = import.meta.glob("../../../docs/wiki/*.md", {
 }) as Record<string, string>;
 
 type DocPageId = string;
-type TocGroup = "Start" | "Workbench" | "Local data" | "Reference";
+type TocGroup = "Start" | "Core" | "Local data" | "Reference";
 
 type DocMeta = {
   id: DocPageId;
@@ -63,7 +63,7 @@ type SearchIndex = {
   docFreq: Map<string, number>;
 };
 
-const tocOrder: TocGroup[] = ["Start", "Workbench", "Local data", "Reference"];
+const tocOrder: TocGroup[] = ["Start", "Core", "Local data", "Reference"];
 const docPages = Object.entries(docModules)
   .map(([path, raw]) => parseDocPage(path, raw))
   .sort((a, b) => a.order - b.order);
