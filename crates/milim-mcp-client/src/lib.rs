@@ -1538,8 +1538,9 @@ mod tests {
     async fn upsert_reports_save_failure_without_mutating_state() {
         let blocker =
             std::env::temp_dir().join(format!("milim-mcp-blocker-{}", uuid::Uuid::new_v4()));
-        std::fs::write(&blocker, b"not a directory").unwrap();
         let hub = McpHub::open(&blocker);
+        std::fs::remove_dir_all(&blocker).unwrap();
+        std::fs::write(&blocker, b"not a directory").unwrap();
         let err = hub
             .upsert(McpServerConfig {
                 id: "broken".into(),
