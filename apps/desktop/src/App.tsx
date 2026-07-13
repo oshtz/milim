@@ -190,8 +190,10 @@ class AppErrorBoundary extends Component<
 
   render() {
     if (!this.state.error) return this.props.children;
+    const { backgroundFit, backgroundTreatment } = useUiPreferences.getState();
     return (
-      <div className="app-error-state">
+      <div className={`app app-error-state bg-fit-${backgroundFit} bg-treatment-${backgroundTreatment}`}>
+        <div className="bg-layer" aria-hidden="true" />
         <div className="app-error-backdrop" aria-hidden="true" />
         <main
           className="app-error-layout"
@@ -236,14 +238,6 @@ class AppErrorBoundary extends Component<
                 </code>
               </details>
             </section>
-
-            <div className="app-error-visual" aria-hidden="true">
-              <div className="app-error-orbit">
-                <Logo height={86} />
-                <span className="app-error-break" />
-              </div>
-              <p>UI / interrupted</p>
-            </div>
           </div>
         </main>
       </div>
