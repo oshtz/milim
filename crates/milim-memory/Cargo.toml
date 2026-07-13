@@ -15,7 +15,7 @@ rusqlite.workspace = true
 uuid.workspace = true
 serde.workspace = true
 tracing.workspace = true
+tokio.workspace = true
 
 [dev-dependencies]
 milim-inference = { workspace = true, features = ["test-backend"] }
-tokio = { workspace = true }

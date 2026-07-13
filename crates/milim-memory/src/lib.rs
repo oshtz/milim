@@ -5,7 +5,7 @@
 //! the most cosine-similar entries. Scoped graph memory builds on the same
 //! store for thread and project recall.
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -233,7 +233,7 @@ pub struct MemoryGraphHit {
 /// (rusqlite's `Connection` is not `Sync`); the lock is only held for the
 /// synchronous SQL section, never across an `await`.
 pub struct MemoryStore {
-    db: Mutex<Database>,
+    db: Arc<Mutex<Database>>,
     embedder: SharedService,
 }
 
@@ -242,7 +242,7 @@ impl MemoryStore {
     pub fn new(db: Database, embedder: SharedService) -> Result<Self> {
         db.migrate(MEMORY_MIGRATIONS)?;
         Ok(Self {
-            db: Mutex::new(db),
+            db: Arc::new(Mutex::new(db)),
             embedder,
         })
     }
@@ -573,14 +573,22 @@ impl MemoryStore {
                 Vec::new()
             }
         };
-        let rows: Vec<(MemoryNode, Vec<u8>)> = {
-            let db = self.db.lock().expect("memory db poisoned");
+        let scope_ids = scopes
+            .iter()
+            .map(normalize_scope_ref)
+            .collect::<Result<Vec<_>>>()?
+            .into_iter()
+            .map(|scope| scope_id_for(&scope))
+            .collect::<Vec<_>>();
+        let db = self.db.clone();
+        tokio::task::spawn_blocking(move || {
+            let db = db.lock().expect("memory db poisoned");
             let archived_clause = if include_archived {
                 ""
             } else {
                 "AND n.archived_at IS NULL"
             };
-            if scopes.is_empty() {
+            let rows: Vec<(MemoryNode, Vec<u8>)> = if scope_ids.is_empty() {
                 let sql = format!(
                     "SELECT n.id, n.scope_id, s.kind, s.label, n.kind, n.title, n.body,
                             n.confidence, n.source, n.created_at, n.updated_at, n.archived_at,
@@ -595,13 +603,6 @@ impl MemoryStore {
                     .map_err(sqlite)?;
                 collect_rows(mapped)?
             } else {
-                let ids = scopes
-                    .iter()
-                    .map(normalize_scope_ref)
-                    .collect::<Result<Vec<_>>>()?
-                    .into_iter()
-                    .map(|scope| scope_id_for(&scope))
-                    .collect::<Vec<_>>();
                 let mut out = Vec::new();
                 let sql = format!(
                     "SELECT n.id, n.scope_id, s.kind, s.label, n.kind, n.title, n.body,
@@ -612,7 +613,7 @@ impl MemoryStore {
                      WHERE n.scope_id = ?1 {archived_clause}"
                 );
                 let mut stmt = db.conn().prepare(&sql).map_err(sqlite)?;
-                for id in ids {
+                for id in scope_ids {
                     let mapped = stmt
                         .query_map(params![id], row_to_node_with_embedding)
                         .map_err(sqlite)?;
@@ -621,36 +622,38 @@ impl MemoryStore {
                     }
                 }
                 out
-            }
-        };
+            };
 
-        let mut hits = rows
-            .into_iter()
-            .map(|(node, blob)| MemoryGraphHit {
-                score: if q.is_empty() {
-                    0.0
-                } else {
-                    cosine(&q, &bytes_to_vec(&blob))
-                },
-                node,
-            })
-            .collect::<Vec<_>>();
-        hits.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| b.node.updated_at.cmp(&a.node.updated_at))
-        });
-        hits.truncate(top_k.clamp(1, 50));
-        Ok(hits)
+            let mut hits = rows
+                .into_iter()
+                .map(|(node, blob)| MemoryGraphHit {
+                    score: if q.is_empty() {
+                        0.0
+                    } else {
+                        cosine(&q, &bytes_to_vec(&blob))
+                    },
+                    node,
+                })
+                .collect::<Vec<_>>();
+            hits.sort_by(|a, b| {
+                b.score
+                    .partial_cmp(&a.score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| b.node.updated_at.cmp(&a.node.updated_at))
+            });
+            hits.truncate(top_k.clamp(1, 50));
+            Ok(hits)
+        })
+        .await
+        .map_err(|error| Error::Other(format!("memory graph search task: {error}")))?
     }
 
     /// Return the `top_k` entries most similar to `query`.
     pub async fn search(&self, model: &str, query: &str, top_k: usize) -> Result<Vec<MemoryHit>> {
         let q = self.embed_one(model, query).await?;
-
-        let rows: Vec<(String, String, Vec<u8>)> = {
-            let db = self.db.lock().expect("memory db poisoned");
+        let db = self.db.clone();
+        tokio::task::spawn_blocking(move || {
+            let db = db.lock().expect("memory db poisoned");
             let conn = db.conn();
             let mut stmt = conn
                 .prepare("SELECT id, text, embedding FROM memories")
@@ -668,23 +671,23 @@ impl MemoryStore {
             for row in mapped {
                 out.push(row.map_err(sqlite)?);
             }
-            out
-        };
-
-        let mut hits: Vec<MemoryHit> = rows
-            .into_iter()
-            .map(|(id, text, blob)| {
-                let score = cosine(&q, &bytes_to_vec(&blob));
-                MemoryHit { id, text, score }
-            })
-            .collect();
-        hits.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        hits.truncate(top_k);
-        Ok(hits)
+            let mut hits: Vec<MemoryHit> = out
+                .into_iter()
+                .map(|(id, text, blob)| {
+                    let score = cosine(&q, &bytes_to_vec(&blob));
+                    MemoryHit { id, text, score }
+                })
+                .collect();
+            hits.sort_by(|a, b| {
+                b.score
+                    .partial_cmp(&a.score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            hits.truncate(top_k);
+            Ok(hits)
+        })
+        .await
+        .map_err(|error| Error::Other(format!("memory search task: {error}")))?
     }
 
     /// Number of stored memories.

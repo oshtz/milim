@@ -3138,6 +3138,7 @@ dependencies = [
  "milim-storage",
  "rusqlite",
  "serde",
+ "tokio",
  "tracing",
  "uuid",
 ]
