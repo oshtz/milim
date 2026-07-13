@@ -8,6 +8,9 @@ importers:
 
   .:
     dependencies:
+      '@oshtz/shatz-avatars':
+        specifier: file:vendor/oshtz-shatz-avatars-0.1.0.tgz
+        version: file:vendor/oshtz-shatz-avatars-0.1.0.tgz
       '@tauri-apps/api':
         specifier: ^2.1.1
         version: 2.11.0
@@ -305,6 +308,10 @@ packages:
 
   '@jridgewell/trace-mapping@0.3.31':
     resolution: {integrity: sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw==}
+
+  '@oshtz/shatz-avatars@file:vendor/oshtz-shatz-avatars-0.1.0.tgz':
+    resolution: {integrity: sha512-HP419mTFECT+kiPSj5gXlzYiXuZZOelevKKYVR2HChYeKxhaUM1PiliQIsLN205spnHmomdgm4WCrGj86Xvu5A==, tarball: file:vendor/oshtz-shatz-avatars-0.1.0.tgz}
+    version: 0.1.0
 
   '@rolldown/pluginutils@1.0.0-beta.27':
     resolution: {integrity: sha512-+d0F4MKMCbeVUJwG96uQ4SgAznZNSq93I3V+9NHA4OpvqG8mRCpGdKmK8l/dl02h2CCDHwW2FqilnTyDcAnqjA==}
@@ -1357,6 +1364,8 @@ snapshots:
     dependencies:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.5.5
+
+  '@oshtz/shatz-avatars@file:vendor/oshtz-shatz-avatars-0.1.0.tgz': {}
 
   '@rolldown/pluginutils@1.0.0-beta.27': {}
 

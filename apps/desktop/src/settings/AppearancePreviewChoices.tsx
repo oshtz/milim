@@ -7,6 +7,7 @@ import type {
   CodeBlockTheme,
   MessageWidth,
 } from "../ui/store";
+import { AgentAvatar } from "../components/AgentAvatar";
 
 type PreviewChoiceOption<T extends string> = {
   value: T;
@@ -193,11 +194,15 @@ function AvatarPreview({ style }: { style: AvatarStyle }) {
   return (
     <span className={`appearance-avatar-preview ${style}`} aria-hidden="true">
       <span className="appearance-avatar-row user">
-        <span className="appearance-avatar-mark">{style === "role" ? "You" : "U"}</span>
+        {style !== "avatar" && <span className="appearance-avatar-mark">{style === "role" ? "You" : ""}</span>}
         <span className="appearance-avatar-text" />
       </span>
       <span className="appearance-avatar-row assistant">
-        <span className="appearance-avatar-mark">{style === "role" ? "AI" : "A"}</span>
+        {style === "avatar" ? (
+          <AgentAvatar avatar="appearance-preview-model" className="appearance-avatar-model" />
+        ) : (
+          <span className="appearance-avatar-mark">{style === "role" ? "Assistant" : ""}</span>
+        )}
         <span className="appearance-avatar-text short" />
       </span>
     </span>
@@ -273,10 +278,10 @@ const AVATAR_OPTIONS: Array<PreviewChoiceOption<AvatarStyle>> = [
     preview: <AvatarPreview style="none" />,
   },
   {
-    value: "initials",
-    label: "Initials",
-    detail: "Small role marks beside messages.",
-    preview: <AvatarPreview style="initials" />,
+    value: "avatar",
+    label: "Avatars",
+    detail: "Model identities beside assistant messages.",
+    preview: <AvatarPreview style="avatar" />,
   },
   {
     value: "role",

@@ -268,6 +268,7 @@ export function Slider({
 export interface Option {
   value: string;
   label: string;
+  leading?: ReactNode;
 }
 
 /** A themed dropdown (no native select). */
@@ -300,7 +301,10 @@ export function Select({
   return (
     <div className="ui-select" ref={ref}>
       <button type="button" className="ui-select-btn" data-testid={testId} onClick={() => setOpen((v) => !v)}>
-        <span className={"ui-select-value" + (current ? "" : " placeholder")}>{current?.label ?? placeholder}</span>
+        <span className={"ui-select-value" + (current ? "" : " placeholder")}>
+          {current?.leading}
+          <span>{current?.label ?? placeholder}</span>
+        </span>
         <ChevronDown size={13} />
       </button>
       {open && (
@@ -314,7 +318,8 @@ export function Select({
                 setOpen(false);
               }}
             >
-              {o.label}
+              {o.leading}
+              <span>{o.label}</span>
             </button>
           ))}
         </div>

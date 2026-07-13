@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useAgents } from "../agents/store";
 import {
-  agentAvatarText,
   deleteAgent,
   generateAgentDraft,
   isAgentDraftModel,
@@ -20,6 +19,7 @@ import {
   type ToolInfo,
 } from "../api";
 import { useSessions } from "../sessions/store";
+import { AgentAvatar } from "./AgentAvatar";
 import { Calendar, Copy, Plus, Sparkles, Trash, X } from "./icons";
 import { SheetDialog } from "./SheetDialog";
 import { Checkbox } from "./ui";
@@ -218,9 +218,7 @@ function AgentStarterGrid({ onStarter }: { onStarter: (starter: AgentStarter) =>
     <div className="agent-starter-grid" aria-label="Agent starters">
       {AGENT_STARTERS.map((starter) => (
         <button className="agent-starter-card" key={starter.key} type="button" onClick={() => onStarter(starter)}>
-          <span className="agent-badge agent-starter-badge" aria-hidden="true">
-            {starter.avatar}
-          </span>
+          <AgentAvatar name={starter.name} avatar={starter.avatar} className="agent-starter-badge" />
           <span className="agent-starter-copy">
             <strong>{starter.name}</strong>
             <span>{starter.description}</span>
@@ -376,7 +374,7 @@ export function AgentsManager({ onClose }: { onClose: () => void }) {
     resetTest();
     setName(skill.name);
     setInstructions(skill.instructions);
-    setAvatar(agentAvatarText({ name: skill.name }));
+    setAvatar(skill.id || skill.name);
     setToolMode("all");
     setEnabled([]);
     setSkillMode("custom");
@@ -583,9 +581,7 @@ export function AgentsManager({ onClose }: { onClose: () => void }) {
                       type="button"
                       onClick={() => edit(a)}
                     >
-                      <span className="agent-badge agent-card-badge" aria-hidden="true">
-                        {agentAvatarText(a)}
-                      </span>
+                      <AgentAvatar id={a.id} name={a.name} avatar={a.avatar} className="agent-card-badge" />
                       <span className="agent-card-copy">
                         <span className="agent-card-name">{a.name}</span>
                         <span className="agent-card-meta">
@@ -709,7 +705,7 @@ export function AgentsManager({ onClose }: { onClose: () => void }) {
                 <section className="agent-editor-section">
                   <div className="agent-section-head">
                     <h4>Identity</h4>
-                    <span>{agentAvatarText({ name, avatar })}</span>
+                    <AgentAvatar id={selectedAgent?.id} name={name} avatar={avatar} className="agent-identity-avatar" />
                   </div>
                   <label className="field agent-field">
                     <span>Name</span>
@@ -722,20 +718,18 @@ export function AgentsManager({ onClose }: { onClose: () => void }) {
                     />
                   </label>
                   <label className="field agent-field">
-                    <span>Avatar</span>
+                    <span>Avatar seed</span>
                     <div className="avatar-input-row agent-avatar-row">
-                      <span className="agent-badge avatar-preview" aria-hidden="true">
-                        {agentAvatarText({ name, avatar })}
-                      </span>
+                      <AgentAvatar id={selectedAgent?.id} name={name} avatar={avatar} className="avatar-preview" />
                       <input
                         className="css-input"
                         data-testid="agent-avatar-input"
                         value={avatar}
                         onChange={(e) => setAvatar(e.target.value)}
-                        placeholder="A"
+                        placeholder="researcher"
                       />
                     </div>
-                    <span className="sheet-hint">Leave blank to use the first character of the name.</span>
+                    <span className="sheet-hint">The same seed keeps the same avatar. Leave blank to follow the name.</span>
                   </label>
                 </section>
 

@@ -263,6 +263,20 @@
   white-space: nowrap;
 }
 
+.schedule-row-agent {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.schedule-agent-avatar,
+.select-agent-avatar {
+  width: 18px;
+  height: 18px;
+  border: 0;
+  border-radius: 6px;
+}
+
 .schedule-editor-panel {
   min-width: 0;
   min-height: 0;

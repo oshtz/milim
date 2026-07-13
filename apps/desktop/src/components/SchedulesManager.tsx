@@ -14,6 +14,7 @@ import {
 } from "../api";
 import { useSessions } from "../sessions/store";
 import { Calendar, Paperclip, Plus, Trash, X } from "./icons";
+import { AgentAvatar } from "./AgentAvatar";
 import { SheetDialog } from "./SheetDialog";
 import { Select, Toggle } from "./ui";
 import "./SchedulesManager.css";
@@ -574,7 +575,14 @@ export function SchedulesManager({ onClose }: { onClose: () => void }) {
   }
 
   const agentOptions = useMemo(
-    () => [{ label: "Default agent", value: "" }, ...agents.map((a) => ({ label: a.name, value: a.id }))],
+    () => [
+      { label: "Default agent", value: "" },
+      ...agents.map((agent) => ({
+        label: agent.name,
+        value: agent.id,
+        leading: <AgentAvatar id={agent.id} name={agent.name} avatar={agent.avatar} className="select-agent-avatar" />,
+      })),
+    ],
     [agents],
   );
   const modelOptions = useMemo(
@@ -675,6 +683,7 @@ export function SchedulesManager({ onClose }: { onClose: () => void }) {
               <div className="schedule-list">
                 {schedules.map((s) => {
                   const active = selectedSchedule?.id === s.id;
+                  const scheduleAgent = agents.find((agent) => agent.id === s.agent_id);
                   return (
                     <button
                       key={s.id}
@@ -691,7 +700,10 @@ export function SchedulesManager({ onClose }: { onClose: () => void }) {
                         <span className="schedule-row-cadence">{describeCron(s.cron)}</span>
                         <span className="schedule-row-cron">{s.cron}</span>
                         <span className="schedule-row-meta">
-                          <span>{agentLabel(s.agent_id, agents)}</span>
+                          <span className="schedule-row-agent">
+                            {scheduleAgent && <AgentAvatar id={scheduleAgent.id} name={scheduleAgent.name} avatar={scheduleAgent.avatar} className="schedule-agent-avatar" />}
+                            <span>{agentLabel(s.agent_id, agents)}</span>
+                          </span>
                           <span>{effectiveScheduleModel(s, agents) || "Model missing"}</span>
                           <span>{attachmentSummary(s.attachments)}</span>
                           <span>{lastRunLabel(s.last_run)}</span>
@@ -782,7 +794,7 @@ export function SchedulesManager({ onClose }: { onClose: () => void }) {
                   </div>
                   <div className="schedule-field">
                     <span>Agent</span>
-                    <Select value={agentId} placeholder="Default agent" options={agentOptions} onChange={setAgentId} />
+                    <Select value={agentId} placeholder="Default agent" options={agentOptions} onChange={setAgentId} testId="schedule-agent-select" />
                   </div>
                 </section>
 

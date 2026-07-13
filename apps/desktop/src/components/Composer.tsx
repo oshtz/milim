@@ -1,11 +1,12 @@
 import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
-import { agentAvatarText, type Agent, type ChatAttachment, type MediaKind, type SkillInfo, type ToolInfo } from "../api";
+import { type Agent, type ChatAttachment, type MediaKind, type SkillInfo, type ToolInfo } from "../api";
 import type { WorkspaceFileSuggestion } from "../api";
 import { composerAutocompleteTriggerAt, mcpToolTagCompletion, replaceComposerAutocompleteTrigger, skillTagCompletion } from "../lib/composerAutocomplete";
 import { canNavigateComposerHistory, moveComposerHistory, type ComposerHistoryDirection } from "../lib/composerHistory";
 import { composerTokenParts, composerTokensForText } from "../lib/composerTokens";
 import { shortcutLabel, shortcutMatchesEvent } from "../ui/shortcuts";
 import { useUiPreferences } from "../ui/store";
+import { AgentAvatar } from "./AgentAvatar";
 import { ArrowUp, ChevronDown, Folder, FolderOpen, Paperclip, PlusSquare, Slash, Square, UserRound, X } from "./icons";
 const COMPOSER_HISTORY_NOTICE_MS = 1800;
 
@@ -796,9 +797,11 @@ export function Composer({
                 setSlashOpen(false);
               }}
             >
-              <span className="agent-badge" aria-hidden="true">
-                {activeAgent ? agentAvatarText(activeAgent) : <UserRound size={13} />}
-              </span>
+              {activeAgent ? (
+                <AgentAvatar id={activeAgent.id} name={activeAgent.name} avatar={activeAgent.avatar} />
+              ) : (
+                <span className="agent-badge" aria-hidden="true"><UserRound size={13} /></span>
+              )}
             </button>
             {personaOpen && (
               <div className="menu menu-wide chat-menu persona-menu">
@@ -815,7 +818,7 @@ export function Composer({
                     data-testid={`agent-option-${agent.name}`}
                     onClick={() => applyAgent(agent)}
                   >
-                    <span className="agent-badge" aria-hidden="true">{agentAvatarText(agent)}</span>
+                    <AgentAvatar id={agent.id} name={agent.name} avatar={agent.avatar} />
                     <span className="agent-mono">{agent.name}</span>
                     <span className="agent-model">{agentMenuDetail(agent)}</span>
                   </button>

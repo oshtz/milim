@@ -1786,21 +1786,10 @@ const AGENT_DRAFT_SYSTEM_PROMPT = [
   "You generate reusable Milim agent profiles.",
   "Return only one JSON object with string fields: name, avatar, system_prompt.",
   "name: concise display name, usually 2-4 words.",
-  "avatar: one relevant emoji or a 1-2 character plain-text label.",
+  "avatar: a short deterministic seed word or phrase for a generated avatar, not an emoji.",
   "system_prompt: directly usable as an agent system prompt. Include role, priorities, behavior, boundaries, and output style.",
   "Do not include markdown, code fences, comments, explanations, or extra fields.",
 ].join("\n");
-
-function graphemes(text: string): string[] {
-  const Segmenter = (Intl as any).Segmenter;
-  if (Segmenter) {
-    return Array.from(
-      new Segmenter(undefined, { granularity: "grapheme" }).segment(text),
-      (x: any) => String(x.segment),
-    );
-  }
-  return Array.from(text);
-}
 
 export function isLegacyAgentAvatar(value: string): boolean {
   return (
@@ -1810,17 +1799,17 @@ export function isLegacyAgentAvatar(value: string): boolean {
   );
 }
 
-/** Text badge for an agent avatar. User-provided emoji or short labels win;
- *  old bundled image values fall back to the agent initial. */
-export function agentAvatarText(agent: {
+/** Deterministic avatar seed. Existing text/emoji values remain valid seeds;
+ *  old image values and empty fields follow the agent name, then persisted ID. */
+export function agentAvatarSeed(agent: {
+  id?: string;
   name?: string;
   avatar?: string;
 }): string {
   const raw = (agent.avatar ?? "").trim();
-  if (raw && !isLegacyAgentAvatar(raw))
-    return graphemes(raw).slice(0, 2).join("");
+  if (raw && !isLegacyAgentAvatar(raw)) return raw;
   const name = (agent.name ?? "").trim();
-  return graphemes(name)[0]?.toUpperCase() ?? "?";
+  return name || (agent.id ?? "").trim();
 }
 
 export function isAgentDraftModel(model: string): boolean {
@@ -1889,11 +1878,11 @@ export function parseAgentDraftResponse(text: string): AgentDraft {
     raw.system_prompt ?? raw.systemPrompt,
     6000,
   );
-  const rawAvatar = cleanDraftText(raw.avatar, 8);
+  const rawAvatar = cleanDraftText(raw.avatar, 64);
   const avatar =
     rawAvatar && !isLegacyAgentAvatar(rawAvatar)
-      ? graphemes(rawAvatar).slice(0, 2).join("")
-      : agentAvatarText({ name });
+      ? rawAvatar
+      : agentAvatarSeed({ name });
 
   if (!name) throw new Error("The model returned a draft without a name.");
   if (!systemPrompt)

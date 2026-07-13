@@ -89,6 +89,8 @@ try {
   assert(markup.includes("appearance-chat-preview bubbles"), "Chat layout preview classes should render");
   assert(markup.includes("appearance-width-slider-preview wide"), "Message width slider preview classes should render");
   assert(markup.includes("appearance-avatar-preview role"), "Avatar preview classes should render");
+  assert(markup.includes("Avatars"), "Appearance choices should offer model avatars instead of initials");
+  assert(markup.includes('data-avatar-seed="appearance-preview-model"'), "Avatar preview should use the shared deterministic renderer");
   assert(markup.includes("appearance-code-preview terminal"), "Code theme preview classes should render");
   assert(markup.includes("appearance-background-option active"), "Selected background options should render an active state");
   assert(markup.includes('data-testid="appearance-background-preview"'), "Background controls should render the selected image thumbnail");

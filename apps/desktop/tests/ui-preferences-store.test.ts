@@ -173,8 +173,10 @@ equal(useUiPreferences.getState().chatLayoutStyle, "bubbles", "chat layout shoul
 useUiPreferences.getState().setMessageWidth("wide");
 equal(useUiPreferences.getState().messageWidth, "wide", "message width should update");
 
-useUiPreferences.getState().setAvatarStyle("initials");
-equal(useUiPreferences.getState().avatarStyle, "initials", "avatar style should update");
+useUiPreferences.getState().setAvatarStyle("avatar");
+equal(useUiPreferences.getState().avatarStyle, "avatar", "avatar style should update");
+useUiPreferences.getState().setAvatarStyle("initials" as never);
+equal(useUiPreferences.getState().avatarStyle, "avatar", "legacy initials preferences should migrate to avatars");
 
 useUiPreferences.getState().setCodeBlockTheme("terminal");
 equal(useUiPreferences.getState().codeBlockTheme, "terminal", "code theme should update");

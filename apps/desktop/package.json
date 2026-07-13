@@ -12,7 +12,7 @@
     "test:brand-cleanup": "node tests/brand-cleanup.test.mjs",
     "test:selectors": "node tests/zustand-selector-lint.test.mjs",
     "test:store": "node tests/run-ts-test.mjs tests/session-store.test.ts tests/session-startup-hydration.test.ts tests/thread-titles.test.ts tests/sidebar-groups.test.ts tests/thread-export.test.ts tests/preview-runtime-keys.test.ts",
-    "test:settings": "node tests/run-ts-test.mjs tests/settings-store.test.ts tests/settings-appearance-rendering.test.tsx && node tests/agent-schedule-models.test.mjs",
+    "test:settings": "node tests/run-ts-test.mjs tests/settings-store.test.ts tests/settings-appearance-rendering.test.tsx tests/agent-avatar.test.tsx && node tests/agent-schedule-models.test.mjs",
     "test:assistant-stream": "node tests/run-ts-test.mjs tests/assistant-stream-grouping.test.ts tests/assistant-stream-summary.test.ts tests/attachment-wire.test.ts tests/hot-swap.test.ts tests/preview-activity.test.ts tests/turn-events.test.ts tests/turn-queue.test.ts tests/turn-prompt.test.ts tests/turn-runtime.test.ts tests/turn-stream.test.ts",
     "test:context-compaction": "node tests/run-ts-test.mjs tests/context-compaction.test.ts tests/turn-context.test.ts",
     "test:reasoning": "node tests/run-ts-test.mjs tests/reasoning-effort.test.ts tests/model-picker.test.ts tests/model-picker-rendering.test.tsx",
@@ -43,6 +43,7 @@
     "verify:tester-ready": "npm run verify && npm run verify:release && npm run verify:tauri-webview"
   },
   "dependencies": {
+    "@oshtz/shatz-avatars": "file:vendor/oshtz-shatz-avatars-0.1.0.tgz",
     "@tauri-apps/api": "^2.1.1",
     "@tauri-apps/plugin-dialog": "^2.7.1",
     "highlight.js": "^11.11.1",

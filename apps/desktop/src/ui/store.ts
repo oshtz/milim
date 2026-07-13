@@ -20,7 +20,7 @@ export type ComposerSendShortcut = "enter" | "modEnter";
 export type ComposerDensity = "comfortable" | "compact";
 export type ChatLayoutStyle = "transcript" | "bubbles" | "compact";
 export type MessageWidth = "narrow" | "standard" | "wide" | "full";
-export type AvatarStyle = "none" | "initials" | "role";
+export type AvatarStyle = "none" | "avatar" | "role";
 export type CodeBlockTheme = "match" | "terminal" | "github" | "high-contrast";
 export type BackgroundFit = "cover" | "contain" | "tile" | "center";
 export type BackgroundTreatment = "clear" | "dim" | "blur" | "mono";
@@ -138,7 +138,8 @@ function normalizeMessageWidth(value: unknown): MessageWidth {
 }
 
 function normalizeAvatarStyle(value: unknown): AvatarStyle {
-  return value === "initials" || value === "role" ? value : "none";
+  if (value === "avatar" || value === "initials") return "avatar";
+  return value === "role" ? "role" : "none";
 }
 
 function normalizeCodeBlockTheme(value: unknown): CodeBlockTheme {
