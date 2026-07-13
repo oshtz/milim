@@ -7,7 +7,7 @@ import type {
   QuickSummarySource,
 } from "../lib/quickSummary";
 import { codexLimitsFromRateLimitPayload, formatProviderLimits } from "../lib/usageMetrics";
-import { FileText, Folder, Globe, Paperclip, Sparkles, Terminal, UserRound, X } from "./icons";
+import { FileText, Folder, Globe, Paperclip, Sparkles, Terminal, X } from "./icons";
 
 const SOURCE_LIMIT = 5;
 
@@ -23,8 +23,6 @@ function rowIcon(row: QuickSummaryRow): ReactNode {
       return <Globe size={13} />;
     case "model":
       return <Sparkles size={13} />;
-    case "workers":
-      return <UserRound size={13} />;
     case "activity":
       return <Terminal size={13} />;
     default:
@@ -74,19 +72,19 @@ function SourceRow({ source }: { source: QuickSummarySource }) {
 export function QuickSummaryPanel({
   summary,
   open,
+  workerPanel,
   canOpenGit,
   onOpenChange,
   onOpenGit,
   onOpenGoal,
-  onOpenWorkers,
 }: {
   summary: QuickSummary;
   open: boolean;
+  workerPanel: ReactNode;
   canOpenGit: boolean;
   onOpenChange: (open: boolean) => void;
   onOpenGit: () => void;
   onOpenGoal: () => void;
-  onOpenWorkers: () => void;
 }) {
   const rows = Array.isArray(summary?.rows) ? summary.rows : [];
   const sources = Array.isArray(summary?.sources) ? summary.sources : [];
@@ -127,7 +125,7 @@ export function QuickSummaryPanel({
   const groups: Array<{ label: string; kinds: QuickSummaryRowKind[] }> = [
     { label: "Environment", kinds: ["workspace", "browser"] },
     { label: "Task", kinds: ["goal", "plan"] },
-    { label: "Activity", kinds: ["workers", "activity"] },
+    { label: "Activity", kinds: ["activity"] },
     { label: "Context", kinds: ["model", "usage", "limits", "privacy", "memory"] },
   ];
 
@@ -148,6 +146,7 @@ export function QuickSummaryPanel({
             </button>
           </div>
           <div className="quick-summary-scroll">
+            {workerPanel}
             {groups.map((group) => {
               const sectionRows = displayRows.filter((row) => group.kinds.includes(row.kind));
               if (!sectionRows.length) return null;
@@ -163,9 +162,7 @@ export function QuickSummaryPanel({
                           ? onOpenGit
                           : row.kind === "goal"
                             ? onOpenGoal
-                            : row.kind === "workers"
-                              ? onOpenWorkers
-                              : undefined
+                            : undefined
                       }
                     />
                   ))}

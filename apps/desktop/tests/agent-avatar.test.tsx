@@ -85,7 +85,23 @@ try {
   }));
   assert(selectMarkup.includes('data-avatar-seed="security-seed"'), "Agent selectors should render the shared avatar");
 
+  const workerInspectorProps = {
+    policy: "ask",
+    workerModel: "",
+    models: [],
+    providers: [],
+    agents: [agent],
+    onPolicyChange: () => {},
+    onWorkerModelChange: () => {},
+    onStart: () => {},
+    onStop: () => {},
+    onContinueSolo: () => {},
+    onStopWorker: async () => {},
+    onLoadDiff: async () => ({ worker_id: "task-1", status: {}, diff: "" }),
+    onApplyDiff: async () => ({ message: "" }),
+  };
   const workerMarkup = renderToStaticMarkup(createElement(WorkersInspector, {
+    ...workerInspectorProps,
     record: {
       run: {
         id: "run-1",
@@ -99,21 +115,68 @@ try {
       },
       workers: [],
     },
-    policy: "ask",
-    workerModel: "",
-    modelOptions: [],
-    agents: [agent],
-    onPolicyChange: () => {},
-    onWorkerModelChange: () => {},
-    onStart: () => {},
-    onStop: () => {},
-    onContinueSolo: () => {},
-    onStopWorker: async () => {},
-    onLoadDiff: async () => ({ worker_id: "task-1", status: {}, diff: "" }),
-    onApplyDiff: async () => ({ message: "" }),
-    onClose: () => {},
   }));
   assert(workerMarkup.includes('data-avatar-seed="security-seed"'), "Assigned Worker tasks should render their Agent avatar");
+
+  const unassignedTasks = [
+    { id: "task-a", title: "Inspect API", prompt: "Inspect the API.", model: "test", access: "read_only" },
+    { id: "task-b", title: "Inspect UI", prompt: "Inspect the UI.", model: "test", access: "read_only" },
+  ];
+  const unassignedRun = {
+    id: "run-2",
+    parent_thread_id: "thread-1",
+    policy: "ask",
+    runtime: "managed",
+    status: "proposed",
+    tasks: unassignedTasks,
+    created_at: "2026-07-13T00:00:00Z",
+    updated_at: "2026-07-13T00:00:00Z",
+  };
+  const proposedMarkup = renderToStaticMarkup(createElement(WorkersInspector, {
+    ...workerInspectorProps,
+    agents: [],
+    record: { run: unassignedRun, workers: [] },
+  }));
+  assert(proposedMarkup.includes('data-avatar-seed="worker:run-2:task-a"'), "Unassigned proposed tasks should receive deterministic avatars");
+  assert(proposedMarkup.includes('data-avatar-seed="worker:run-2:task-b"'), "Different proposed tasks should receive different avatars");
+
+  const runningMarkup = renderToStaticMarkup(createElement(WorkersInspector, {
+    ...workerInspectorProps,
+    agents: [],
+    record: {
+      run: { ...unassignedRun, status: "running" },
+      workers: unassignedTasks.map((task, index) => ({
+        id: `worker-${index + 1}`,
+        parent_id: "thread-1",
+        root_id: "thread-1",
+        title: task.title,
+        status: "running",
+        model: task.model,
+        prompt: task.prompt,
+        created_at: "2026-07-13T00:00:00Z",
+        updated_at: "2026-07-13T00:00:00Z",
+        runtime: "managed",
+        access: "read_only",
+      })),
+    },
+  }));
+  assert(runningMarkup.includes('data-avatar-seed="worker:run-2:task-a"'), "Live Workers should keep their proposed task avatar");
+  assert(runningMarkup.includes('data-avatar-seed="worker:run-2:task-b"'), "Every live Worker should render a Shatz avatar");
+
+  for (const policy of ["off", "ask", "auto"] as const) {
+    const emptyMarkup = renderToStaticMarkup(createElement(WorkersInspector, {
+      ...workerInspectorProps,
+      policy,
+      record: undefined,
+    }));
+    const policyLabel = policy[0].toUpperCase() + policy.slice(1);
+    assert(emptyMarkup.includes(`${policyLabel} · Inherit parent`), `${policy} should appear in the compact summary`);
+    assert(emptyMarkup.includes("No runs yet"), `${policy} should render the compact idle state`);
+    assert(emptyMarkup.includes('data-testid="workers-settings-toggle"'), "Workers should render the settings disclosure");
+    assert(emptyMarkup.includes('aria-expanded="false"'), "Worker settings should be collapsed by default");
+    assert(!emptyMarkup.includes('data-testid="worker-model-picker-trigger"'), "Collapsed Worker settings should not occupy space");
+    assert(!emptyMarkup.includes("<select"), "Workers should not render a native model select");
+  }
 } finally {
   await server.close();
 }

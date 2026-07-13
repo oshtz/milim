@@ -214,7 +214,7 @@ export interface SessionVirtualFile {
 
 export type SessionSidePanelMode = "artifact" | "browser" | "git";
 export type SessionArtifactPanelTab = "preview" | "code";
-export type SessionInspectorTab = "preview" | "code" | "git" | "workers";
+export type SessionInspectorTab = "preview" | "code" | "git";
 
 export interface SessionPreviewRuntime {
   status: PreviewAppState | string;
@@ -549,10 +549,10 @@ function normalizeInspectorTab(
   if (
     value === "preview" ||
     value === "code" ||
-    value === "git" ||
-    value === "workers"
+    value === "git"
   )
     return value;
+  if (value === "workers") return "preview";
   if (legacyMode === "git") return "git";
   if (legacyMode === "browser") return "preview";
   if (legacyArtifactTab === "code") return "code";
@@ -1092,14 +1092,19 @@ function normalizeSessionArtifacts(session: Session): Session {
     artifactPanelTab: legacyArtifactTab,
     ...current
   } = session;
+  const legacyWorkersOpen =
+    session.inspectorOpen === true &&
+    (session as { inspectorTab?: unknown }).inspectorTab === "workers";
   return {
     ...current,
     virtualFiles: normalizeVirtualFiles(session.virtualFiles),
     archivedAt,
-    contextPanelOpen: session.contextPanelOpen === true ? true : undefined,
-    inspectorOpen:
-      session.inspectorOpen === true ||
-      (session.inspectorOpen === undefined && legacyOpen === true)
+    contextPanelOpen:
+      session.contextPanelOpen === true || legacyWorkersOpen ? true : undefined,
+    inspectorOpen: legacyWorkersOpen
+      ? undefined
+      : session.inspectorOpen === true ||
+        (session.inspectorOpen === undefined && legacyOpen === true)
         ? true
         : undefined,
     inspectorTab: normalizeInspectorTab(
@@ -2737,18 +2742,10 @@ export const useSessions = create<SessionState>()(
                 const shouldReveal =
                   next.run.status === "proposed" || next.run.status === "running";
                 if (!shouldReveal) return { ...session, messages };
-                if (
-                  session.inspectorOpen &&
-                  session.inspectorTab !== "workers"
-                )
-                  return messages === session.messages
-                    ? session
-                    : { ...session, messages };
                 return {
                   ...session,
                   messages,
-                  inspectorOpen: true,
-                  inspectorTab: "workers" as const,
+                  contextPanelOpen: true,
                 };
               }),
             };

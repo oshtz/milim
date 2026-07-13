@@ -15,7 +15,7 @@ Agents are for repeatable behavior, tool access, and longer work. Keep one-off q
 
 | Block | Behavior |
 |---|---|
-| Named Agents | Model-agnostic profiles with name, deterministic avatar seed, system prompt, tool mode, and skill mode. The generated avatar follows the Agent through persona, schedule, and assigned Worker surfaces. An Agent is a saved role; a Worker is one live instance of that role. |
+| Named Agents | Model-agnostic profiles with name, deterministic avatar seed, system prompt, tool mode, and skill mode. The generated avatar follows the Agent through persona, schedule, and assigned Worker surfaces; unassigned Workers receive deterministic run-local identities. An Agent is a saved role; a Worker is one live instance of that role. |
 | Tool modes | `all`, `custom`, or `none`. |
 | Skill modes | `auto`, `custom`, or `none`; auto selects enabled skills by keyword, while explicit `@Skill Name` and `/Skill Name` prompt tags inject matching enabled skills for that turn. |
 | Run timeline | Start, token, reasoning, tool call, bounded tool result, memory, Worker Run, per-request usage deltas, final usage, and error events render as structured stream parts. Tool results are capped before timeline persistence and again for model replay. Worker events carry monotonic cursors and reload on demand. Runs stop at 100 model turns by default (`stopped_at_limit: true`), and stream-open failures are retried once before surfacing an error. |
@@ -43,6 +43,10 @@ Each thread has a delegation policy:
 | `off` | Delegation is unavailable for that turn. |
 | `ask` | The model may freeze an exact task plan. Milim pauses for **Run workers** or **Continue solo** before executing it. This is the default for existing and new threads. |
 | `auto` | Independent managed workers run in parallel and their results are joined before the parent answers. Read-only account-runtime turns may instead report native worker activity through the same Run contract. |
+
+The Worker model control uses the searchable model catalog and defaults to the parent chat model.
+
+Desktop keeps delegation controls, approval, live Worker rows, results, stopping, and diff review in the thread's Context card. Delegation and model settings stay collapsed behind a compact Workers summary row until opened, while proposed and running content remains visible automatically. On wide layouts Context can remain open beside the Preview / Code / Git inspector; active proposed or running Runs reveal Context automatically.
 
 Delegation is intended for independent work that benefits from parallelism, not short or sequential steps. Managed Workers receive the current request, selected goal and instructions, workspace and branch, resolved Agent instructions and skills, supported attachments, and their assigned task. They do not receive the full transcript.
 

@@ -1298,6 +1298,33 @@ equal(
   "reopening the inspector should keep the selected tab",
 );
 useSessions.getState().setInspectorTab(first, "preview");
+useSessions.getState().setContextPanelOpen(first, false);
+useSessions.getState().upsertWorkerRun({
+  run: {
+    id: "context-worker-run",
+    parent_thread_id: first,
+    policy: "ask",
+    runtime: "managed",
+    status: "proposed",
+    tasks: [],
+    created_at: "2026-07-13T00:00:00Z",
+    updated_at: "2026-07-13T00:00:00Z",
+  },
+  workers: [],
+});
+equal(
+  useSessions.getState().sessions.find((session) => session.id === first)
+    ?.contextPanelOpen,
+  true,
+  "proposed Worker Runs should reveal Context",
+);
+equal(
+  useSessions.getState().sessions.find((session) => session.id === first)
+    ?.inspectorTab,
+  "preview",
+  "revealing Workers in Context should preserve the inspector surface",
+);
+useSessions.getState().setContextPanelOpen(first, false);
 useSessions.getState().setSessionUnread(first, true);
 deepEqual(
   useSessions.getState().unreadSessionIds,

@@ -2,7 +2,6 @@ import type {
   ChatAttachment,
   ChatMessage,
   ChatStreamPart,
-  WorkerRunRecord,
   WorkspaceGitStatus,
 } from "../api";
 import type { GoalSettings } from "./goals";
@@ -15,7 +14,6 @@ export type QuickSummaryRowKind =
   | "goal"
   | "browser"
   | "model"
-  | "workers"
   | "activity"
   | "privacy"
   | "memory"
@@ -54,7 +52,6 @@ export interface BuildQuickSummaryInput {
   messages: ChatMessage[];
   pendingAttachments?: ChatAttachment[];
   previewUrl?: string | null;
-  workerRun?: WorkerRunRecord;
   turnRunning?: boolean;
 }
 
@@ -219,21 +216,6 @@ function summarySources(
   return sources;
 }
 
-function workerRow(record?: WorkerRunRecord): QuickSummaryRow | null {
-  if (!record || (record.run.status !== "proposed" && record.run.status !== "running")) return null;
-  const active = record.workers.filter(
-    (worker) => worker.status === "queued" || worker.status === "running",
-  ).length;
-  const total = record.workers.length || record.run.tasks.length;
-  return {
-    kind: "workers",
-    label: "Workers",
-    value: record.run.status === "proposed" ? "Needs approval" : active ? `${active} working` : "Starting",
-    meta: plural(total, "task"),
-    tone: record.run.status === "proposed" ? "warning" : undefined,
-  };
-}
-
 function activityRow(messages: ChatMessage[], turnRunning = false): QuickSummaryRow | null {
   if (!turnRunning) return null;
   for (let index = messages.length - 1; index >= 0; index -= 1) {
@@ -292,8 +274,6 @@ export function buildQuickSummary(input: BuildQuickSummaryInput): QuickSummary {
     });
   }
 
-  const workers = workerRow(input.workerRun);
-  if (workers) rows.push(workers);
   const activity = activityRow(input.messages, input.turnRunning);
   if (activity) rows.push(activity);
 

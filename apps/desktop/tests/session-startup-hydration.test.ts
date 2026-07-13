@@ -84,6 +84,15 @@ const persistedSessions = JSON.stringify({
         createdAt: 2,
         updatedAt: 2,
       },
+      {
+        id: "legacy-workers-session",
+        title: "Legacy Workers inspector",
+        messages: [],
+        inspectorOpen: true,
+        inspectorTab: "workers",
+        createdAt: 3,
+        updatedAt: 3,
+      },
     ],
     projects: [
       {
@@ -196,6 +205,12 @@ assert(
   useSessions.getState().sessions[0]?.contextPanelOpen === true &&
     useSessions.getState().sessions[1]?.contextPanelOpen === undefined,
   "context panel hydration should preserve only explicit true values",
+);
+assert(
+  useSessions.getState().sessions[2]?.contextPanelOpen === true &&
+    useSessions.getState().sessions[2]?.inspectorOpen === undefined &&
+    useSessions.getState().sessions[2]?.inspectorTab === "preview",
+  "legacy Workers inspector state should migrate into Context",
 );
 assert(
   stored.state.projects[0]?.folder === "C:\\keep",

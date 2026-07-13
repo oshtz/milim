@@ -85,7 +85,7 @@ try {
   await resetFrontendStorage(session.page);
   if (workersOnly) {
     const errors = collectErrors(session.page);
-    await runWorkersInspectorCheck(session.page);
+    await runWorkersInspectorCheck(session.page, milimHome);
     consoleErrors.push(...errors.filter((message) => !message.includes("/worker-runs/e2e-workers-run/events")));
   } else if (zoomOnly || microUiOnly) {
     const errors = collectErrors(session.page);
@@ -1042,23 +1042,26 @@ async function resetFrontendStorage(page) {
   await dismissOnboardingIfPresent(page);
 }
 
-async function runWorkersInspectorCheck(page) {
-  await seedWorkerFixture(page, "proposed");
+async function runWorkersInspectorCheck(page, milimHome) {
+  await seedWorkerFixture(page, milimHome, "proposed");
   const inspector = page.getByTestId("workers-inspector");
   await inspector.waitFor();
+  await assertHidden(page.getByRole("tab", { name: "Workers" }), "Workers inspector tab");
   await page.getByTestId("workers-plan").waitFor();
   await page.screenshot({ path: screenshots.workersPlan, fullPage: false });
 
-  await seedWorkerFixture(page, "running");
+  await seedWorkerFixture(page, milimHome, "running");
   await page.setViewportSize({ width: 760, height: 720 });
   await inspector.waitFor();
+  await inspector.locator(".workers-body").waitFor();
+  await assertTextContains(inspector.locator(".workers-status"), "Running");
   const fits = await inspector.evaluate((element) => element.scrollWidth <= element.clientWidth + 1);
-  if (!fits) throw new Error("Workers inspector overflows at narrow width.");
+  if (!fits) throw new Error("Workers Context panel overflows at narrow width.");
   await page.screenshot({ path: screenshots.workersNarrow, fullPage: false });
 }
 
-async function seedWorkerFixture(page, status) {
-  await page.evaluate(async (runStatus) => {
+async function seedWorkerFixture(page, milimHome, status) {
+  const fixture = await page.evaluate(async () => {
     const key = "milim.sessions";
     const invoke = window.__TAURI_INTERNALS__?.invoke;
     const now = Date.now();
@@ -1069,56 +1072,78 @@ async function seedWorkerFixture(page, status) {
       { id: "task-a", title: "Inspect API contract", prompt: "Review the Worker Run API contract.", role: "Reviewer", agent_id: null, model: "test-model", access: "read_only" },
       { id: "task-b", title: "Check desktop states", prompt: "Check normal and narrow inspector states.", role: "UI audit", agent_id: null, model: "test-model", access: "read_only" },
     ];
-    const workers = runStatus === "proposed" ? [] : tasks.map((task, index) => ({
-      id: `worker-${index}`,
-      parent_id: sessionId,
-      root_id: sessionId,
-      title: task.title,
-      status: "running",
-      model: task.model,
-      agent_id: null,
-      prompt: task.prompt,
-      summary: null,
-      error: null,
-      created_at: timestamp,
-      updated_at: timestamp,
-      finished_at: null,
-      run_id: runId,
-      runtime: "managed",
-      access: "read_only",
-      external_runtime_id: null,
-      worktree_path: null,
-    }));
     const value = JSON.stringify({
       state: {
         sessions: [{
           id: sessionId,
-          title: "Worker inspector fixture",
+          title: "Worker Context fixture",
           messages: [
             { role: "user", content: "Use workers to inspect this change." },
             { id: "turn-a", role: "assistant", content: "", workerRunId: runId },
           ],
           settings: { model: "", instructions: "", activeAgentId: null, folder: "", sandbox: false, computerUse: false, memory: false, privacy: "off", toolApproval: "guarded", delegationPolicy: "ask", workerModel: "", planMode: false },
-          inspectorOpen: true,
-          inspectorTab: "workers",
+          contextPanelOpen: true,
           createdAt: now,
           updatedAt: now,
         }],
         activeId: sessionId,
-        workerRuns: [{
-          run: { id: runId, parent_thread_id: sessionId, parent_turn_id: "turn-a", policy: "ask", runtime: "managed", status: runStatus, tasks, error: null, created_at: timestamp, updated_at: timestamp, finished_at: null },
-          workers,
-          events: [],
-        }],
       },
       version: 0,
     });
     if (invoke) await invoke("user_sessions_set", { value });
     else window.localStorage.setItem(key, value);
-  }, status);
+    return { sessionId, runId, tasks, timestamp };
+  });
+  await seedWorkerRunDatabase(milimHome, fixture, status);
   await page.reload();
   await page.getByTestId("chat-shell").waitFor();
   await dismissOnboardingIfPresent(page);
+}
+
+async function seedWorkerRunDatabase(milimHome, fixture, status) {
+  const { DatabaseSync } = await import("node:sqlite");
+  const db = new DatabaseSync(join(milimHome, "threads.db"));
+  db.exec("PRAGMA busy_timeout = 5000; BEGIN IMMEDIATE");
+  try {
+    db.prepare("DELETE FROM threads WHERE run_id = ?").run(fixture.runId);
+    db.prepare("DELETE FROM worker_runs WHERE id = ?").run(fixture.runId);
+    db.prepare(`
+      INSERT INTO worker_runs
+        (id, parent_thread_id, parent_turn_id, policy, runtime, status, tasks, created_at, updated_at)
+      VALUES (?, ?, 'turn-a', 'ask', 'managed', ?, ?, ?, ?)
+    `).run(
+      fixture.runId,
+      fixture.sessionId,
+      status,
+      JSON.stringify(fixture.tasks),
+      fixture.timestamp,
+      fixture.timestamp,
+    );
+    if (status === "running") {
+      const insertWorker = db.prepare(`
+        INSERT INTO threads
+          (id, parent_id, root_id, title, status, model, prompt, created_at, updated_at, run_id, runtime, access)
+        VALUES (?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, 'managed', 'read_only')
+      `);
+      fixture.tasks.forEach((task, index) => insertWorker.run(
+        `worker-${index}`,
+        fixture.sessionId,
+        fixture.sessionId,
+        task.title,
+        task.model,
+        task.prompt,
+        fixture.timestamp,
+        fixture.timestamp,
+        fixture.runId,
+      ));
+    }
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  } finally {
+    db.close();
+  }
 }
 
 async function dismissOnboardingIfPresent(page) {

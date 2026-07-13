@@ -1,19 +1,19 @@
 import assert from "node:assert/strict";
-import { createElement, type ComponentType } from "react";
+import { createElement, type ComponentType, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createServer } from "vite";
-import type { ChatMessage, WorkerRunRecord, WorkspaceGitStatus } from "../src/api.js";
+import type { ChatMessage, WorkspaceGitStatus } from "../src/api.js";
 import { DEFAULT_GOAL_SETTINGS } from "../src/lib/goals.js";
 import { buildQuickSummary, type QuickSummary, type QuickSummaryRowKind } from "../src/lib/quickSummary.js";
 
 type QuickSummaryPanelProps = {
   summary: QuickSummary;
   open: boolean;
+  workerPanel: ReactNode;
   canOpenGit: boolean;
   onOpenChange: (open: boolean) => void;
   onOpenGit: () => void;
   onOpenGoal: () => void;
-  onOpenWorkers: () => void;
 };
 
 function gitStatus(patch: Partial<WorkspaceGitStatus> = {}): WorkspaceGitStatus {
@@ -158,36 +158,6 @@ assert.deepEqual(
   ["attachment", "attachment", "artifact", "memory"],
 );
 
-const workerRun: WorkerRunRecord = {
-  run: {
-    id: "run-1",
-    parent_thread_id: "thread-1",
-    policy: "ask",
-    runtime: "managed",
-    status: "running",
-    tasks: [
-      { id: "task-1", title: "Inspect", prompt: "Inspect", model: "gpt-5", access: "read_only" },
-    ],
-    created_at: "2026-07-13T00:00:00Z",
-    updated_at: "2026-07-13T00:00:00Z",
-  },
-  workers: [
-    {
-      id: "worker-1",
-      parent_id: "thread-1",
-      root_id: "thread-1",
-      title: "Inspect",
-      status: "running",
-      model: "gpt-5",
-      prompt: "Inspect",
-      created_at: "2026-07-13T00:00:00Z",
-      updated_at: "2026-07-13T00:00:00Z",
-      runtime: "managed",
-      access: "read_only",
-    },
-  ],
-};
-
 const withActivity = buildQuickSummary({
   folder: "C:\\work\\milim",
   model: "gpt-5",
@@ -196,7 +166,6 @@ const withActivity = buildQuickSummary({
   planMode: false,
   goal: DEFAULT_GOAL_SETTINGS,
   gitStatus: gitStatus(),
-  workerRun,
   turnRunning: true,
   messages: [{
     role: "assistant",
@@ -204,7 +173,6 @@ const withActivity = buildQuickSummary({
     streamParts: [{ kind: "event", eventType: "tool", label: "Searching files", status: "running" }],
   }],
 });
-assert.equal(row(withActivity, "workers").value, "1 working");
 assert.equal(row(withActivity, "activity").value, "1 tool running");
 assert.equal(
   buildQuickSummary({
@@ -215,14 +183,13 @@ assert.equal(
     planMode: false,
     goal: DEFAULT_GOAL_SETTINGS,
     gitStatus: null,
-    workerRun: { ...workerRun, run: { ...workerRun.run, status: "done" } },
     turnRunning: false,
     messages: [{
       role: "assistant",
       content: "",
       streamParts: [{ kind: "event", eventType: "tool", label: "Searching files", status: "running" }],
     }],
-  }).rows.some((item) => item.kind === "workers" || item.kind === "activity"),
+  }).rows.some((item) => item.kind === "activity"),
   false,
 );
 
@@ -241,11 +208,11 @@ try {
     createElement(QuickSummaryPanel, {
       summary: { sources: [] } as unknown as QuickSummary,
       open: true,
+      workerPanel: null,
       canOpenGit: false,
       onOpenChange: () => {},
       onOpenGit: () => {},
       onOpenGoal: () => {},
-      onOpenWorkers: () => {},
     }),
   );
   assert.match(missingRowsMarkup, /data-testid="quick-summary-panel"/);
@@ -263,16 +230,17 @@ try {
         })),
       },
       open: true,
+      workerPanel: createElement("div", { "data-testid": "worker-panel" }, "Workers"),
       canOpenGit: true,
       onOpenChange: () => {},
       onOpenGit: () => {},
       onOpenGoal: () => {},
-      onOpenWorkers: () => {},
     }),
   );
   for (const section of ["Environment", "Task", "Activity", "Context", "Sources"]) {
     assert.match(groupedMarkup, new RegExp(`>${section}<`));
   }
+  assert.match(groupedMarkup, /data-testid="worker-panel"/);
   assert.match(groupedMarkup, />2 more</);
   assert.match(groupedMarkup, /source-5/);
   assert.doesNotMatch(groupedMarkup, /source-6/);
@@ -281,11 +249,11 @@ try {
     createElement(QuickSummaryPanel, {
       summary: empty,
       open: false,
+      workerPanel: null,
       canOpenGit: false,
       onOpenChange: () => {},
       onOpenGit: () => {},
       onOpenGoal: () => {},
-      onOpenWorkers: () => {},
     }),
   );
   assert.match(closedMarkup, /aria-hidden="true"/);

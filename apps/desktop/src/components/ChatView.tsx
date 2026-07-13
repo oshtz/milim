@@ -310,7 +310,6 @@ import {
   Check,
   Code,
   Copy,
-  Cube,
   Eye,
   FileText,
   GitBranch,
@@ -321,6 +320,7 @@ import {
   Refresh,
   Sidebar as PanelIcon,
   Trash,
+  UserRound,
   X,
 } from "./icons";
 import { groupSessionsByProjects } from "./Sidebar";
@@ -898,8 +898,9 @@ type MessageRowActions = {
   ) => boolean;
   setInspectorTab: (
     sessionId: string,
-    tab: "code" | "preview" | "workers",
+    tab: "code" | "preview",
   ) => void;
+  openWorkers: () => void;
   preparePreviewRuntimeForArtifacts: (
     artifacts?: readonly ChatArtifact[],
   ) => Promise<void>;
@@ -1238,11 +1239,9 @@ function MessageRowView({
                 className={`worker-run-event ${linkedWorkerRun.run.status}`}
                 type="button"
                 data-testid="worker-run-event"
-                onClick={() =>
-                  actions?.setInspectorTab(activeId, "workers")
-                }
+                onClick={() => actions?.openWorkers()}
               >
-                <Cube size={13} />
+                <UserRound size={13} />
                 <span>
                   {linkedWorkerRun.run.status === "proposed"
                     ? "Worker plan ready"
@@ -3322,13 +3321,11 @@ export function ChatView({
         messages,
         pendingAttachments,
         previewUrl: activePreviewRuntime?.url ?? null,
-        workerRun: activeWorkerRun,
         turnRunning: generatingSessionIds.includes(activeId),
       }),
     [
       activePreviewRuntime?.url,
       activeId,
-      activeWorkerRun,
       effectiveModel,
       folder,
       gitStatus,
@@ -3475,6 +3472,7 @@ export function ChatView({
 
   const chatScrollRef = useRef<HTMLDivElement>(null);
   const chatBodyRef = useRef<HTMLDivElement>(null);
+  const previewResizeHandleRef = useRef<HTMLDivElement>(null);
   const contextLauncherRef = useRef<HTMLButtonElement>(null);
   const stickToBottomRef = useRef(true);
   const generationControllersRef = useRef<Map<string, AbortController>>(
@@ -3492,6 +3490,7 @@ export function ChatView({
   const previewResizeStartRef = useRef<{
     clientX: number;
     width: number;
+    latestWidth: number;
     pointerId: number;
     target: HTMLDivElement;
     snappedClosed: boolean;
@@ -4286,13 +4285,6 @@ export function ChatView({
     setSessionInspectorTab(activeId, "git");
   }
 
-  function openWorkersInspector() {
-    rememberInspectorInvoker();
-    clearPreviewCloseTimer();
-    setPreviewPanelClosing(false);
-    setSessionInspectorTab(activeId, "workers");
-  }
-
   async function approveWorkerRun(runId: string) {
     setWorkerActionBusy(true);
     approvedWorkerRunsRef.current.add(runId);
@@ -4376,29 +4368,6 @@ export function ChatView({
       ) {
         setSessionInspectorOpen(activeId, false);
       }
-      setPreviewPanelClosing(false);
-      previewCloseTimeoutRef.current = null;
-      restoreInspectorInvokerFocus();
-    }, PREVIEW_PANEL_ANIMATION_MS);
-  }
-
-  function closeWorkersInspector() {
-    clearPreviewCloseTimer();
-    if (prefersReducedMotion()) {
-      setPreviewPanelClosing(false);
-      setSessionInspectorOpen(activeId, false);
-      restoreInspectorInvokerFocus();
-      return;
-    }
-    setPreviewPanelClosing(true);
-    previewCloseTimeoutRef.current = window.setTimeout(() => {
-      if (
-        useSessions
-          .getState()
-          .sessions.find((session) => session.id === activeId)
-          ?.inspectorTab === "workers"
-      )
-        setSessionInspectorOpen(activeId, false);
       setPreviewPanelClosing(false);
       previewCloseTimeoutRef.current = null;
       restoreInspectorInvokerFocus();
@@ -4687,9 +4656,7 @@ export function ChatView({
   }
 
   function openSelectedSidePanel() {
-    if (inspectorTab === "workers") {
-      openWorkersInspector();
-    } else if (inspectorTab === "git" && (canOpenGitPanel || gitPanelChecking)) {
+    if (inspectorTab === "git" && (canOpenGitPanel || gitPanelChecking)) {
       openGitPanel();
     } else if (inspectorTab === "code") {
       openArtifactSidePanel("code");
@@ -4735,9 +4702,7 @@ export function ChatView({
           : browserPreviewSelection(activeInspectorBrowserSession);
   const sidePanelVisible = Boolean(
     inspectorOpen &&
-    (inspectorTab === "workers"
-      ? true
-      : inspectorTab === "git"
+    (inspectorTab === "git"
         ? canShowGitPanel
         : visiblePreviewSelection),
   );
@@ -4746,7 +4711,7 @@ export function ChatView({
   const panelsStacked = contextStacked || inspectorStacked;
   const reservedContextWidth = contextPanelOpen && !contextStacked ? CONTEXT_PANEL_WIDTH : 0;
   const resolvedPreviewPanelWidth = clampPreviewPanelWidth(
-    previewPanelWidth,
+    previewResizeStartRef.current?.latestWidth ?? previewPanelWidth,
     chatBodyWidth,
     reservedContextWidth,
   );
@@ -4754,9 +4719,7 @@ export function ChatView({
     "--preview-panel-width": `${resolvedPreviewPanelWidth}px`,
   } as CSSProperties;
   const inspectorLauncherLabel =
-    inspectorTab === "workers"
-      ? "Open Workers"
-      : inspectorTab === "git"
+    inspectorTab === "git"
       ? "Open Git"
       : inspectorTab === "code"
         ? `Open Code: ${activeArtifactSelection?.artifact.filename ?? activeArtifactSelection?.artifact.title ?? "artifact"}`
@@ -4768,7 +4731,6 @@ export function ChatView({
   const previewToolsIntent = Boolean(
     sidePanelVisible &&
       inspectorTab !== "git" &&
-      inspectorTab !== "workers" &&
       activePreviewSurface?.status === "ready" &&
       activePreviewSurface.capabilities.includes("dom_snapshot"),
   );
@@ -5006,6 +4968,13 @@ export function ChatView({
   }, [activeId, chatBodyWidth, contextPanelOpen, setSessionContextPanelOpen, sidePanelVisible]);
 
   useEffect(() => {
+    if (
+      activeWorkerRun?.run.status === "proposed" ||
+      activeWorkerRun?.run.status === "running"
+    ) openContextPanel();
+  }, [activeWorkerRun?.run.id, activeWorkerRun?.run.status]);
+
+  useEffect(() => {
     if (!sidePanelVisible || inspectorTab === "git") setActivePreviewSurface(null);
   }, [inspectorTab, sidePanelVisible]);
 
@@ -5029,6 +4998,19 @@ export function ChatView({
     );
   }
 
+  function resizePreviewPanelDuringDrag(width: number) {
+    const start = previewResizeStartRef.current;
+    if (!start) return;
+    const nextWidth = clampPreviewPanelWidth(
+      width,
+      chatBodyWidth,
+      reservedContextWidth,
+    );
+    start.latestWidth = nextWidth;
+    chatBodyRef.current?.style.setProperty("--preview-panel-width", `${nextWidth}px`);
+    previewResizeHandleRef.current?.setAttribute("aria-valuenow", String(nextWidth));
+  }
+
   function startPreviewResize(event: ReactPointerEvent<HTMLDivElement>) {
     if (event.button !== 0) return;
     event.preventDefault();
@@ -5036,6 +5018,7 @@ export function ChatView({
     previewResizeStartRef.current = {
       clientX: event.clientX,
       width: resolvedPreviewPanelWidth,
+      latestWidth: resolvedPreviewPanelWidth,
       pointerId: event.pointerId,
       target,
       snappedClosed: false,
@@ -5062,24 +5045,34 @@ export function ChatView({
     if (width < PREVIEW_PANEL_MIN_WIDTH - PREVIEW_PANEL_COLLAPSE_OVERSHOOT) {
       if (!start.snappedClosed) {
         start.snappedClosed = true;
-        if (inspectorTab === "workers") closeWorkersInspector();
-        else if (inspectorTab === "git") closeGitPanel();
+        if (inspectorTab === "git") closeGitPanel();
         else closePreview();
       }
       return;
     }
     if (start.snappedClosed) {
       start.snappedClosed = false;
+      start.latestWidth = clampPreviewPanelWidth(
+        width,
+        chatBodyWidth,
+        reservedContextWidth,
+      );
       clearPreviewCloseTimer();
       setPreviewPanelClosing(false);
       setSessionInspectorOpen(activeId, true);
     }
-    resizePreviewPanel(width);
+    resizePreviewPanelDuringDrag(width);
   }
 
   function endPreviewResize(event: PointerEvent) {
     const start = previewResizeStartRef.current;
     if (!start || event.pointerId !== start.pointerId) return;
+    const finalWidth = clampPreviewPanelWidth(
+      start.latestWidth,
+      chatBodyWidth,
+      reservedContextWidth,
+    );
+    if (finalWidth !== start.width) setPreviewPanelWidth(finalWidth);
     previewResizeStartRef.current = null;
     previewResizeCleanupRef.current?.();
     setPreviewResizing(false);
@@ -6956,8 +6949,7 @@ export function ChatView({
         computerUse: turnComputerUse,
         previewSurface:
           sidePanelVisible &&
-          inspectorTab !== "git" &&
-          inspectorTab !== "workers"
+          inspectorTab !== "git"
             ? activePreviewSurface
             : null,
         activeAgentId: turnActiveAgentId,
@@ -8227,28 +8219,13 @@ export function ChatView({
           <span>Git</span>
         </button>
       )}
-      <button
-        id="inspector-tab-workers"
-        type="button"
-        className={inspectorTab === "workers" ? "active" : ""}
-        role="tab"
-        aria-selected={inspectorTab === "workers"}
-        aria-controls="inspector-panel-workers"
-        tabIndex={inspectorTab === "workers" ? 0 : -1}
-        onClick={openWorkersInspector}
-      >
-        <Cube size={14} />
-        <span>Workers</span>
-        {activeWorkerRun?.run.status === "running" && (
-          <span className="inspector-live-badge" aria-label="Workers running" />
-        )}
-      </button>
     </div>
   );
 
   messageRowActionsRef.current = {
     openContextMenu,
     setInspectorTab: setSessionInspectorTab,
+    openWorkers: openContextPanel,
     preparePreviewRuntimeForArtifacts,
     openPreviewArtifact,
     artifactRevisionChoice,
@@ -8280,10 +8257,11 @@ export function ChatView({
       <div
         ref={chatBodyRef}
         className={`chat-body${panelsStacked ? " inspector-stacked" : ""}`}
+        style={previewPanelStyle}
       >
         <div className="chat-main">
           <div className="chat-main-actions">
-            <WorkspaceLauncherButton folder={folder} />
+            {folder.trim() && <WorkspaceLauncherButton folder={folder} />}
             {!contextPanelOpen && (
               <button
                 ref={contextLauncherRef}
@@ -8511,16 +8489,41 @@ export function ChatView({
         <QuickSummaryPanel
           summary={quickSummary}
           open={contextPanelOpen}
+          workerPanel={(
+            <WorkersInspector
+              record={activeWorkerRun}
+              policy={delegationPolicy}
+              workerModel={workerModel}
+              agents={agents}
+              models={pickerModels.filter(
+                (item) => !item.capabilities?.imageOutput && !item.capabilities?.videoOutput,
+              )}
+              providers={providers}
+              busy={workerActionBusy}
+              onPolicyChange={(next) =>
+                updateThreadSettings(activeId, { delegationPolicy: next })
+              }
+              onWorkerModelChange={(next) =>
+                updateThreadSettings(activeId, { workerModel: next })
+              }
+              onStart={(runId) => void approveWorkerRun(runId)}
+              onStop={(runId) => void stopActiveWorkerRun(runId)}
+              onContinueSolo={(runId) => void continueWorkerRunSolo(runId)}
+              onStopWorker={stopOneWorker}
+              onLoadDiff={getWorkerDiff}
+              onApplyDiff={applyWorkerDiff}
+            />
+          )}
           canOpenGit={canOpenGitPanel}
           onOpenChange={(open) => open ? openContextPanel() : closeContextPanel()}
           onOpenGit={openGitPanel}
           onOpenGoal={() => openGoalPanel()}
-          onOpenWorkers={openWorkersInspector}
         />
         {sidePanelVisible && (
           <>
             {!panelsStacked && (
               <div
+                ref={previewResizeHandleRef}
                 className={`preview-resize-handle${previewResizing ? " dragging" : ""}${previewPanelClosing ? " closing" : ""}${sidePanelAlreadyOpen ? " no-enter" : ""}`}
                 data-testid="preview-resize-handle"
                 role="separator"
@@ -8536,42 +8539,12 @@ export function ChatView({
                 onDoubleClick={() => resizePreviewPanel(DEFAULT_PREVIEW_PANEL_WIDTH)}
               />
             )}
-            {inspectorTab === "workers" ? (
-              <WorkersInspector
-                record={activeWorkerRun}
-                policy={delegationPolicy}
-                workerModel={workerModel}
-                agents={agents}
-                modelOptions={pickerModels.map((item) => ({
-                  id: item.id,
-                  label: item.id,
-                }))}
-                busy={workerActionBusy}
-                closing={previewPanelClosing}
-                noEnterMotion={sidePanelAlreadyOpen}
-                modeSwitcher={inspectorTabSwitcher}
-                style={previewPanelStyle}
-                onPolicyChange={(next) =>
-                  updateThreadSettings(activeId, { delegationPolicy: next })
-                }
-                onWorkerModelChange={(next) =>
-                  updateThreadSettings(activeId, { workerModel: next })
-                }
-                onStart={(runId) => void approveWorkerRun(runId)}
-                onStop={(runId) => void stopActiveWorkerRun(runId)}
-                onContinueSolo={(runId) => void continueWorkerRunSolo(runId)}
-                onStopWorker={stopOneWorker}
-                onLoadDiff={getWorkerDiff}
-                onApplyDiff={applyWorkerDiff}
-                onClose={closeWorkersInspector}
-              />
-            ) : inspectorTab === "git" ? (
+            {inspectorTab === "git" ? (
               <div
                 id="inspector-panel-git"
                 className="inspector-git-panel"
                 role="tabpanel"
                 aria-labelledby="inspector-tab-git"
-                style={previewPanelStyle}
               >
                 <GitWorkspacePanel
                   folder={folder}
@@ -8581,7 +8554,6 @@ export function ChatView({
                   noEnterMotion={sidePanelAlreadyOpen}
                   onClose={closeGitPanel}
                   modeSwitcher={inspectorTabSwitcher}
-                  style={previewPanelStyle}
                   headerNotice={
                     activeSession?.retryWorkspace ? (
                       <div className="hot-swap-retry-banner">
@@ -8654,7 +8626,6 @@ export function ChatView({
                   controlActivity={previewControlActivity}
                   onSurfaceChange={setActivePreviewSurface}
                   modeSwitcher={inspectorTabSwitcher}
-                  style={previewPanelStyle}
                 />
               )
             )}
