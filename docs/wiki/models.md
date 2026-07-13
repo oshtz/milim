@@ -15,6 +15,8 @@ On desktop startup, the picker reads the cached catalog while a single live refr
 
 The model chip and picker classify the selected model into one runtime lane: plain chat, Milim tools, Codex runtime, Claude runtime, or media. Switching models changes the next turn for the active thread without resetting workspace context, memory, previews, artifacts, approvals, or queued messages.
 
+Worker routing is a separate thread setting. A thread may choose an optional Worker model; otherwise managed Workers inherit the parent model. Saved Agents remain portable roles: their instructions and resolved skills transfer to the selected Worker runtime, while Milim still governs Worker access independently. In Auto, provider and local parents use Milim-managed Workers. Read-only Codex and Claude turns may normalize native worker activity into Milim Runs; write-capable account-runtime turns use managed read-only Workers so only the parent edits the workspace. If a runtime cannot report reliable worker lineage, Milim falls back to managed Workers or ordinary tool activity instead of inventing a parent/child relationship.
+
 ## Favorites and reasoning effort
 
 Favorites are the only model shortcut. The picker switches between Models and Favorites, and each model keeps its own persisted reasoning-effort choice. Agents do not pin models, so changing the thread model keeps the active Agent enabled and changes the model used by its next interactive run.

@@ -3,7 +3,7 @@ id: api
 path: api
 label: API
 title: HTTP API surface
-summary: OpenAI-compatible, Anthropic-compatible, Ollama-compatible, providers, media, workspace, MCP, agents, threads, memory, privacy, skills, schedules, mobile, and account runtime routes.
+summary: OpenAI-compatible, Anthropic-compatible, Ollama-compatible, providers, media, workspace, MCP, Agents, Worker Runs, memory, privacy, skills, schedules, mobile, and account runtime routes.
 group: Reference
 order: 90
 updated: 2026-07-11
@@ -39,6 +39,7 @@ Root aliases are also mounted for OpenAI chat, completions, models, and embeddin
 | Managed preview apps | `GET /preview-apps/{runtime_id}`, `POST /preview-apps/{runtime_id}/stage`, `POST /preview-apps/{runtime_id}/start`, `POST /preview-apps/{runtime_id}/stop`, `POST /preview-apps/{runtime_id}/restart`, `GET /preview-apps/{runtime_id}/logs` |
 | MCP | `GET /mcp/tools`, `POST /mcp/call`, `GET/POST /mcp/servers`, `POST /mcp/servers/test`, `POST /mcp/servers/{id}/test`, `DELETE /mcp/servers/{id}` |
 | Agents | `POST /agents/run`, `GET/POST /agents`, `GET/PUT/DELETE /agents/{id}`, `POST /agents/{id}/run` |
+| Worker Runs | `GET/POST /worker-runs`, `GET /worker-runs/{id}`, `GET /worker-runs/{id}/events`, `POST /worker-runs/{id}/start`, `POST /worker-runs/{id}/stop`; writer diff review/apply routes are scoped to a worker in the Run. |
 | Threads | `GET /threads/{id}` (`include_events=true&event_limit=N` returns `event_count` and `events_truncated`), `DELETE /threads/{id}`, `GET /threads/{id}/children`, `GET /threads/{id}/events`, `POST /threads/{id}/stop` |
 | Memory | `POST /memory/ingest`, `POST /memory/search`, `POST /memory/register`, `POST /memory/graph/search`, `GET /memory/scopes`, `GET /memory/nodes` |
 | Privacy | `POST /privacy/scan`, `GET/POST /privacy/mode` |

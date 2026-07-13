@@ -6,7 +6,7 @@ title: Config, storage, and build flags
 summary: Milim home, runtime asset directory, server config, persisted databases, provider records, desktop state, and native build variants.
 group: Reference
 order: 100
-updated: 2026-07-03
+updated: 2026-07-13
 ---
 
 Configuration is intentionally local. The desktop app embeds the server, stores secrets encrypted on disk, and keeps optional native runtimes behind explicit build flags.
@@ -21,11 +21,13 @@ Configuration is intentionally local. The desktop app embeds the server, stores 
 | Provider records | SQLite storage with encrypted secret fields. |
 | Runtime assets | Milim runtime directory for downloaded model and media-related assets. Previously downloaded voice assets are left untouched but no longer used. |
 | Schedules | `schedules.db` under the Milim root. |
-| Agents and child threads | `agents.db` and `threads.db` under the Milim root. |
+| Agents and Worker Runs | `agents.db` and `threads.db` under the Milim root. `threads.db` retains legacy child rows and stores Run batches in `worker_runs`. |
 
 ## Desktop session state
 
-The desktop UI hydrates through the canonical `milim.sessions` user-state key, but the Tauri store now persists each chat session as a `user_sessions` SQLite row and each transcript message as a `user_session_messages` row keyed by session id and message index. Non-session metadata such as the active id, queued messages, sidebar organization, and archive retention stays in a small `milim.sessions.meta` JSON entry. Legacy `milim.sessions` blobs are migrated into rows on first session read. During active generation, desktop session persistence skips the full session snapshot and flushes the final state when the turn ends; unsent composer drafts use the separate tiny `milim.sessionDrafts` user-state key.
+The desktop UI hydrates through the canonical `milim.sessions` user-state key, but the Tauri store persists each chat session as a `user_sessions` SQLite row and each transcript message as a `user_session_messages` row keyed by session id and message index. Normal saves send a transactional delta containing only changed session metadata and message indices; full snapshots remain for hydration, legacy import, and recovery. Non-session metadata such as the active id, queued messages, sidebar organization, and archive retention stays in a small `milim.sessions.meta` JSON entry. Worker Runs are not duplicated there: `threads.db` remains their durable authority and the UI reloads them through the server API. Legacy `milim.sessions` blobs are migrated into rows on first session read. During active generation, desktop session persistence defers writes and flushes the final state when the turn ends; unsent composer drafts use the separate tiny `milim.sessionDrafts` user-state key.
+
+The shared `milim.db` profile database uses verified SQLite WAL mode with foreign keys and a five-second busy timeout. WAL lets session and memory readers overlap with a writer; writes to one SQLite file are still serialized. Live backup or future sync must use SQLite's backup/checkpoint mechanisms rather than copying only `milim.db` while the app is running.
 
 The remaining storage work is:
 
