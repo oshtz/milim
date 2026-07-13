@@ -144,6 +144,8 @@ const setupSettings = {
   memory: true,
   activeAgentId: "agent-1",
   toolApproval: "guarded" as const,
+  delegationPolicy: "ask" as const,
+  workerModel: "",
   planMode: false,
 };
 const setup = resolveTurnSetup({

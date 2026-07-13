@@ -1,4 +1,4 @@
-import type { AgentMemoryContext, AgentToolContext, ChatMessage, MemoryScopeRef, PreviewAppFile, PreviewSurfaceTarget, SkillInfo, ToolApprovalMode } from "../api.js";
+import type { AgentMemoryContext, AgentToolContext, ChatMessage, DelegationPolicy, MemoryScopeRef, PreviewAppFile, PreviewSurfaceTarget, SkillInfo, ToolApprovalMode } from "../api.js";
 import { planModeInstructionMessages, threadArtifactInstructionMessages } from "./chatInstructions.js";
 import { goalInstructionMessage, type GoalSettings } from "./goals.js";
 import { skillInstructionMessage } from "./skills.js";
@@ -78,6 +78,8 @@ export function buildTurnPromptContext({
   toolApproval,
   toolApprovalGrant,
   experimentalHashlinePatch,
+  delegationPolicy = "ask",
+  workerModel = "",
   virtualProjectFiles = [],
 }: {
   sessionId: string;
@@ -102,6 +104,8 @@ export function buildTurnPromptContext({
   toolApproval: ToolApprovalMode;
   toolApprovalGrant: boolean;
   experimentalHashlinePatch: boolean;
+  delegationPolicy?: DelegationPolicy;
+  workerModel?: string;
   virtualProjectFiles?: PreviewAppFile[];
 }): TurnPromptContext {
   const skillMessage = skillInstructionMessage(selectedSkills);
@@ -161,6 +165,8 @@ export function buildTurnPromptContext({
       preview_surface: previewSurface ?? null,
       experimental_hashline_patch: experimentalHashlinePatch,
       plan_mode: planMode,
+      delegation_policy: delegationPolicy,
+      worker_model: workerModel.trim() || undefined,
     },
   };
 }
@@ -188,6 +194,8 @@ export async function prepareTurnPromptContext({
   toolApproval,
   toolApprovalGrant,
   experimentalHashlinePatch,
+  delegationPolicy,
+  workerModel,
   messageContent,
   searchMemory,
   selectSkills,
@@ -215,6 +223,8 @@ export async function prepareTurnPromptContext({
   toolApproval: ToolApprovalMode;
   toolApprovalGrant: boolean;
   experimentalHashlinePatch: boolean;
+  delegationPolicy?: DelegationPolicy;
+  workerModel?: string;
   messageContent: (message: ChatMessage) => string;
   searchMemory: (query: string, scopes: MemoryScopeRef[], limit: number, model?: string) => Promise<MemoryHit[]>;
   selectSkills: (query: string, limit: number) => Promise<SkillInfo[]>;
@@ -252,6 +262,8 @@ export async function prepareTurnPromptContext({
     toolApproval,
     toolApprovalGrant,
     experimentalHashlinePatch,
+    delegationPolicy,
+    workerModel,
     virtualProjectFiles,
   });
 }

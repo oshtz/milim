@@ -8,7 +8,7 @@ use std::time::Duration;
 use std::{env, path::PathBuf};
 
 use axum::response::sse::Event;
-use futures::Stream;
+use futures::{Stream, StreamExt};
 use milim_core::api::openai::{ReasoningEffort, Usage};
 use milim_core::{Error, Result};
 use serde::{Deserialize, Serialize};
@@ -105,6 +105,71 @@ enum CodexStreamEvent {
         #[serde(skip_serializing_if = "Option::is_none")]
         saved_path: Option<String>,
     },
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub(crate) enum AccountWorkerEvent {
+    Session {
+        runtime: String,
+        external_thread_id: String,
+        model: String,
+    },
+    Started {
+        runtime: String,
+        external_thread_id: Option<String>,
+        external_turn_id: Option<String>,
+    },
+    Token {
+        text: String,
+    },
+    Reasoning {
+        text: String,
+    },
+    Tool {
+        id: String,
+        name: String,
+        status: String,
+        label: Option<String>,
+        detail: Option<String>,
+        icon: Option<String>,
+    },
+    NativeWorker {
+        lifecycle: AccountNativeWorkerLifecycle,
+    },
+    Done {
+        status: String,
+        usage: Option<Usage>,
+        cost_usd: Option<f64>,
+    },
+    Error {
+        message: String,
+        usage: Option<Usage>,
+        cost_usd: Option<f64>,
+    },
+    Warning {
+        message: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub(crate) struct AccountNativeWorkerLifecycle {
+    pub runtime: String,
+    pub call_id: String,
+    pub operation: String,
+    pub status: String,
+    pub parent_runtime_id: Option<String>,
+    pub worker_runtime_ids: Vec<String>,
+    pub workers: Vec<AccountNativeWorkerState>,
+    pub prompt: Option<String>,
+    pub model: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub(crate) struct AccountNativeWorkerState {
+    pub runtime_id: String,
+    pub status: String,
+    pub message: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -316,18 +381,60 @@ pub(crate) fn run_stream(
     redactions: BTreeMap<String, String>,
 ) -> impl Stream<Item = std::result::Result<Event, Infallible>> {
     async_stream::stream! {
+        let (worker_tx, mut worker_rx) = tokio::sync::mpsc::unbounded_channel();
+        let stream = run_stream_with_worker_events(req, redactions, Some(worker_tx));
+        futures::pin_mut!(stream);
+        while let Some(event) = stream.next().await {
+            yield event;
+            while let Ok(worker) = worker_rx.try_recv() {
+                if matches!(worker, AccountWorkerEvent::NativeWorker { .. }) {
+                    yield sse_event(&worker);
+                }
+            }
+        }
+    }
+}
+
+pub(crate) fn run_read_only_worker_events(
+    prompt: String,
+    model: Option<String>,
+    cwd: Option<String>,
+    redactions: BTreeMap<String, String>,
+) -> impl Stream<Item = AccountWorkerEvent> {
+    let req = read_only_worker_request(prompt, model, cwd);
+    async_stream::stream! {
+        let (worker_tx, mut worker_rx) = tokio::sync::mpsc::unbounded_channel();
+        let stream = run_stream_with_worker_events(req, redactions, Some(worker_tx));
+        futures::pin_mut!(stream);
+        while stream.next().await.is_some() {
+            while let Ok(event) = worker_rx.try_recv() {
+                yield event;
+            }
+        }
+        while let Ok(event) = worker_rx.try_recv() {
+            yield event;
+        }
+    }
+}
+
+fn run_stream_with_worker_events(
+    req: CodexRunRequest,
+    redactions: BTreeMap<String, String>,
+    worker_events: Option<tokio::sync::mpsc::UnboundedSender<AccountWorkerEvent>>,
+) -> impl Stream<Item = std::result::Result<Event, Infallible>> {
+    async_stream::stream! {
         let mut proc = match CodexProcess::start().await {
             Ok(proc) => proc,
             Err(e) => {
                 let message = e.to_string();
                 if is_cli_path_warning(&message) {
-                    yield sse_event(&CodexStreamEvent::Warning { message });
+                    yield sse_event_with_worker(&CodexStreamEvent::Warning { message }, &worker_events);
                 } else {
-                    yield sse_event(&CodexStreamEvent::Error {
+                    yield sse_event_with_worker(&CodexStreamEvent::Error {
                         message,
                         usage: None,
                         cost_usd: None,
-                    });
+                    }, &worker_events);
                 }
                 yield Ok(Event::default().data("[DONE]"));
                 return;
@@ -340,11 +447,11 @@ pub(crate) fn run_stream(
         let thread = match proc.request(thread_method, Some(thread_params)).await {
             Ok(value) => value,
             Err(e) => {
-                yield sse_event(&CodexStreamEvent::Error {
+                yield sse_event_with_worker(&CodexStreamEvent::Error {
                     message: e.to_string(),
                     usage: None,
                     cost_usd: None,
-                });
+                }, &worker_events);
                 yield Ok(Event::default().data("[DONE]"));
                 return;
             }
@@ -352,19 +459,19 @@ pub(crate) fn run_stream(
         let thread_id = match extract_string(&thread, &["thread", "id"]) {
             Some(id) => id,
             None => {
-                yield sse_event(&CodexStreamEvent::Error {
+                yield sse_event_with_worker(&CodexStreamEvent::Error {
                     message: "codex app-server did not return a thread id".to_string(),
                     usage: None,
                     cost_usd: None,
-                });
+                }, &worker_events);
                 yield Ok(Event::default().data("[DONE]"));
                 return;
             }
         };
-        yield sse_event(&CodexStreamEvent::Thread {
+        yield sse_event_with_worker(&CodexStreamEvent::Thread {
             thread_id: thread_id.clone(),
             model: model.to_string(),
-        });
+        }, &worker_events);
 
         let cwd = clean_optional(req.cwd.as_deref());
         let mut turn_params = json!({
@@ -384,11 +491,11 @@ pub(crate) fn run_stream(
         let turn_request_id = match proc.send_request("turn/start", Some(turn_params)).await {
             Ok(id) => id,
             Err(e) => {
-                yield sse_event(&CodexStreamEvent::Error {
+                yield sse_event_with_worker(&CodexStreamEvent::Error {
                     message: e.to_string(),
                     usage: None,
                     cost_usd: None,
-                });
+                }, &worker_events);
                 yield Ok(Event::default().data("[DONE]"));
                 return;
             }
@@ -404,11 +511,11 @@ pub(crate) fn run_stream(
             let msg = match proc.read_value().await {
                 Ok(msg) => msg,
                 Err(e) => {
-                    yield sse_event(&CodexStreamEvent::Error {
+                    yield sse_event_with_worker(&CodexStreamEvent::Error {
                         message: e.to_string(),
                         usage: None,
                         cost_usd: None,
-                    });
+                    }, &worker_events);
                     yield Ok(Event::default().data("[DONE]"));
                     return;
                 }
@@ -416,20 +523,20 @@ pub(crate) fn run_stream(
 
             if response_id(&msg) == Some(turn_request_id) {
                 if let Some(error) = msg.get("error") {
-                    yield sse_event(&CodexStreamEvent::Error {
+                    yield sse_event_with_worker(&CodexStreamEvent::Error {
                         message: rpc_error_message(error),
                         usage: usage_from_any(&msg),
                         cost_usd: cost_from_any(&msg),
-                    });
+                    }, &worker_events);
                     yield Ok(Event::default().data("[DONE]"));
                     return;
                 }
                 turn_id = extract_string(&msg, &["result", "turn", "id"]);
                 if let Some(id) = &turn_id {
-                    yield sse_event(&CodexStreamEvent::Start {
+                    yield sse_event_with_worker(&CodexStreamEvent::Start {
                         thread_id: thread_id.clone(),
                         turn_id: id.clone(),
-                    });
+                    }, &worker_events);
                 }
                 continue;
             }
@@ -443,19 +550,22 @@ pub(crate) fn run_stream(
                     if let Some(id) = response_id(&msg) {
                         let result = codex_approval_response(&req, method);
                         if let Err(e) = proc.respond(id, result).await {
-                            yield sse_event(&CodexStreamEvent::Error {
+                            yield sse_event_with_worker(&CodexStreamEvent::Error {
                                 message: e.to_string(),
                                 usage: None,
                                 cost_usd: None,
-                            });
+                            }, &worker_events);
                             yield Ok(Event::default().data("[DONE]"));
                             return;
                         }
                     }
                 }
                 "item/started" => {
+                    if let Some(event) = codex_native_worker_event(params.get("item").unwrap_or(&Value::Null)) {
+                        publish_worker(&worker_events, AccountWorkerEvent::NativeWorker { lifecycle: event });
+                    }
                     if let Some(event) = tool_event_from_item(params.get("item").unwrap_or(&Value::Null), true) {
-                        yield sse_event(&event);
+                        yield sse_event_with_worker(&event, &worker_events);
                     }
                 }
                 "item/agentMessage/delta" => {
@@ -464,16 +574,16 @@ pub(crate) fn run_stream(
                             .or_else(|| extract_string(params, &["item", "id"]));
                         if item_id.is_some() && item_id != last_agent_message_id {
                             if emitted_agent_text {
-                                yield sse_event(&CodexStreamEvent::Token {
+                                yield sse_event_with_worker(&CodexStreamEvent::Token {
                                     text: "\n\n".to_string(),
-                                });
+                                }, &worker_events);
                             }
                             last_agent_message_id = item_id;
                         }
                         let text = content.push(delta);
                         if !text.is_empty() {
                             emitted_agent_text = true;
-                            yield sse_event(&CodexStreamEvent::Token { text });
+                            yield sse_event_with_worker(&CodexStreamEvent::Token { text }, &worker_events);
                         }
                     }
                 }
@@ -481,27 +591,30 @@ pub(crate) fn run_stream(
                     if let Some(delta) = params.get("delta").and_then(Value::as_str) {
                         let text = reasoning.push(delta);
                         if !text.is_empty() {
-                            yield sse_event(&CodexStreamEvent::Reasoning { text });
+                            yield sse_event_with_worker(&CodexStreamEvent::Reasoning { text }, &worker_events);
                         }
                     }
                 }
                 "item/completed" | "rawResponseItem/completed" => {
                     let item = params.get("item").unwrap_or(&Value::Null);
+                    if let Some(event) = codex_native_worker_event(item) {
+                        publish_worker(&worker_events, AccountWorkerEvent::NativeWorker { lifecycle: event });
+                    }
                     if let Some(event) = image_event_from_item(item) {
                         yield sse_event(&event);
                     }
                     if let Some(event) = tool_event_from_item(item, false) {
-                        yield sse_event(&event);
+                        yield sse_event_with_worker(&event, &worker_events);
                     }
                 }
                 "turn/completed" => {
                     let tail = content.flush();
                     if !tail.is_empty() {
-                        yield sse_event(&CodexStreamEvent::Token { text: tail });
+                        yield sse_event_with_worker(&CodexStreamEvent::Token { text: tail }, &worker_events);
                     }
                     let rtail = reasoning.flush();
                     if !rtail.is_empty() {
-                        yield sse_event(&CodexStreamEvent::Reasoning { text: rtail });
+                        yield sse_event_with_worker(&CodexStreamEvent::Reasoning { text: rtail }, &worker_events);
                     }
 
                     let status = extract_string(params, &["turn", "status"])
@@ -512,19 +625,19 @@ pub(crate) fn run_stream(
                     if status == "failed" {
                         let message = extract_string(params, &["turn", "error", "message"])
                             .unwrap_or_else(|| "codex turn failed".to_string());
-                        yield sse_event(&CodexStreamEvent::Error {
+                        yield sse_event_with_worker(&CodexStreamEvent::Error {
                             message,
                             usage,
                             cost_usd,
-                        });
+                        }, &worker_events);
                     } else {
-                        yield sse_event(&CodexStreamEvent::Done {
+                        yield sse_event_with_worker(&CodexStreamEvent::Done {
                             thread_id: thread_id.clone(),
                             turn_id: completed_turn_id,
                             status,
                             usage,
                             cost_usd,
-                        });
+                        }, &worker_events);
                     }
                     yield Ok(Event::default().data("[DONE]"));
                     return;
@@ -534,11 +647,11 @@ pub(crate) fn run_stream(
                         .get("error")
                         .map(rpc_error_message)
                         .unwrap_or_else(|| "codex app-server reported an error".to_string());
-                    yield sse_event(&CodexStreamEvent::Error {
+                    yield sse_event_with_worker(&CodexStreamEvent::Error {
                         message,
                         usage: usage_from_any(params),
                         cost_usd: cost_from_any(params),
-                    });
+                    }, &worker_events);
                     yield Ok(Event::default().data("[DONE]"));
                     return;
                 }
@@ -550,6 +663,82 @@ pub(crate) fn run_stream(
 
 fn sse_event<T: Serialize>(value: &T) -> std::result::Result<Event, Infallible> {
     Ok(Event::default().data(serde_json::to_string(value).unwrap_or_else(|_| "{}".to_string())))
+}
+
+fn sse_event_with_worker(
+    value: &CodexStreamEvent,
+    worker_events: &Option<tokio::sync::mpsc::UnboundedSender<AccountWorkerEvent>>,
+) -> std::result::Result<Event, Infallible> {
+    if let Some(event) = account_worker_event_from_codex(value) {
+        publish_worker(worker_events, event);
+    }
+    sse_event(value)
+}
+
+fn publish_worker(
+    worker_events: &Option<tokio::sync::mpsc::UnboundedSender<AccountWorkerEvent>>,
+    event: AccountWorkerEvent,
+) {
+    if let Some(worker_events) = worker_events {
+        let _ = worker_events.send(event);
+    }
+}
+
+fn account_worker_event_from_codex(value: &CodexStreamEvent) -> Option<AccountWorkerEvent> {
+    match value {
+        CodexStreamEvent::Thread { thread_id, model } => Some(AccountWorkerEvent::Session {
+            runtime: "codex".to_string(),
+            external_thread_id: thread_id.clone(),
+            model: model.clone(),
+        }),
+        CodexStreamEvent::Start { thread_id, turn_id } => Some(AccountWorkerEvent::Started {
+            runtime: "codex".to_string(),
+            external_thread_id: Some(thread_id.clone()),
+            external_turn_id: Some(turn_id.clone()),
+        }),
+        CodexStreamEvent::Token { text } => Some(AccountWorkerEvent::Token { text: text.clone() }),
+        CodexStreamEvent::Reasoning { text } => {
+            Some(AccountWorkerEvent::Reasoning { text: text.clone() })
+        }
+        CodexStreamEvent::Tool {
+            id,
+            name,
+            status,
+            label,
+            detail,
+            icon,
+        } => Some(AccountWorkerEvent::Tool {
+            id: id.clone(),
+            name: name.clone(),
+            status: status.clone(),
+            label: label.clone(),
+            detail: detail.clone(),
+            icon: icon.clone(),
+        }),
+        CodexStreamEvent::Done {
+            status,
+            usage,
+            cost_usd,
+            ..
+        } => Some(AccountWorkerEvent::Done {
+            status: status.clone(),
+            usage: *usage,
+            cost_usd: *cost_usd,
+        }),
+        CodexStreamEvent::Error {
+            message,
+            usage,
+            cost_usd,
+        } => Some(AccountWorkerEvent::Error {
+            message: message.clone(),
+            usage: *usage,
+            cost_usd: *cost_usd,
+        }),
+        CodexStreamEvent::Warning { message } => Some(AccountWorkerEvent::Warning {
+            message: message.clone(),
+        }),
+        CodexStreamEvent::Image { .. } => None,
+    }
 }
 
 struct CodexProcess {
@@ -752,6 +941,24 @@ fn codex_thread_request(req: &CodexRunRequest, model: &str) -> (&'static str, Va
     }
 }
 
+fn read_only_worker_request(
+    prompt: String,
+    model: Option<String>,
+    cwd: Option<String>,
+) -> CodexRunRequest {
+    CodexRunRequest {
+        prompt,
+        model,
+        cwd,
+        reasoning_effort: None,
+        thread_id: None,
+        persist_thread: false,
+        tool_approval_policy: Some("guarded".to_string()),
+        tool_approval_grant: false,
+        plan_mode: false,
+    }
+}
+
 fn account_runtime_policy(value: Option<&str>) -> &str {
     match value.map(str::trim) {
         Some("review") => "review",
@@ -944,6 +1151,74 @@ fn tool_event_from_item(item: &Value, running: bool) -> Option<CodexStreamEvent>
         detail,
         icon: Some(icon),
     })
+}
+
+fn codex_native_worker_event(item: &Value) -> Option<AccountNativeWorkerLifecycle> {
+    match item.get("type").and_then(Value::as_str)? {
+        "collabAgentToolCall" | "collabToolCall" => {}
+        _ => return None,
+    }
+    let call_id = extract_string(item, &["id"])?;
+    let operation = extract_string(item, &["tool"])?;
+    let parent_runtime_id = extract_string(item, &["senderThreadId"]);
+    let worker_runtime_ids = item
+        .get("receiverThreadIds")
+        .and_then(Value::as_array)
+        .map(|ids| {
+            ids.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if parent_runtime_id.is_none() && worker_runtime_ids.is_empty() {
+        return None;
+    }
+    let workers = item
+        .get("agentsStates")
+        .and_then(Value::as_object)
+        .map(|states| {
+            states
+                .iter()
+                .filter_map(|(runtime_id, value)| {
+                    Some(AccountNativeWorkerState {
+                        runtime_id: runtime_id.clone(),
+                        status: normalized_native_status(value.get("status")?.as_str()?),
+                        message: value
+                            .get("message")
+                            .and_then(Value::as_str)
+                            .map(str::to_string),
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    Some(AccountNativeWorkerLifecycle {
+        runtime: "codex".to_string(),
+        call_id,
+        operation,
+        status: normalized_native_status(
+            item.get("status")
+                .and_then(Value::as_str)
+                .unwrap_or("inProgress"),
+        ),
+        parent_runtime_id,
+        worker_runtime_ids,
+        workers,
+        prompt: extract_string(item, &["prompt"]),
+        model: extract_string(item, &["model"]),
+    })
+}
+
+fn normalized_native_status(status: &str) -> String {
+    match status {
+        "pendingInit" | "inProgress" => "running",
+        "completed" | "shutdown" => "completed",
+        "failed" | "errored" | "notFound" => "error",
+        "interrupted" => "stopped",
+        other => other,
+    }
+    .to_string()
 }
 
 fn command_detail(item: &Value) -> Option<String> {
@@ -1282,6 +1557,60 @@ mod tests {
                 && url == "data:image/png;base64,abc123"
                 && prompt == "a small diagram"
         ));
+    }
+
+    #[test]
+    fn read_only_workers_are_ephemeral_and_cannot_write() {
+        let req = read_only_worker_request(
+            "inspect the repository".to_string(),
+            Some("gpt-5.4-mini".to_string()),
+            Some("C:\\repo".to_string()),
+        );
+        let (method, params) = codex_thread_request(&req, req.model.as_deref().unwrap());
+        assert_eq!(method, "thread/start");
+        assert_eq!(params["ephemeral"], true);
+        assert_eq!(params["sandbox"], "read-only");
+        assert_eq!(
+            codex_sandbox_policy(&req, req.cwd.as_deref())["type"],
+            "readOnly"
+        );
+        assert_eq!(codex_approval_policy(&req), "onRequest");
+    }
+
+    #[test]
+    fn maps_codex_collab_lineage_to_native_worker_lifecycle() {
+        let event = codex_native_worker_event(&json!({
+            "type": "collabAgentToolCall",
+            "id": "call-1",
+            "tool": "spawnAgent",
+            "status": "completed",
+            "senderThreadId": "parent-thread",
+            "receiverThreadIds": ["worker-thread"],
+            "prompt": "review the parser",
+            "model": "gpt-5.4-mini",
+            "agentsStates": {
+                "worker-thread": { "status": "completed", "message": "done" }
+            }
+        }))
+        .expect("native worker event");
+        assert_eq!(event.call_id, "call-1");
+        assert_eq!(event.operation, "spawnAgent");
+        assert_eq!(event.status, "completed");
+        assert_eq!(event.parent_runtime_id.as_deref(), Some("parent-thread"));
+        assert_eq!(event.worker_runtime_ids, vec!["worker-thread"]);
+        assert_eq!(event.workers[0].runtime_id, "worker-thread");
+        assert_eq!(event.workers[0].status, "completed");
+    }
+
+    #[test]
+    fn ignores_codex_collab_items_without_lineage() {
+        assert!(codex_native_worker_event(&json!({
+            "type": "collabAgentToolCall",
+            "id": "call-1",
+            "tool": "spawnAgent",
+            "status": "inProgress"
+        }))
+        .is_none());
     }
 
     #[test]

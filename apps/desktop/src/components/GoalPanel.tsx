@@ -11,6 +11,8 @@ function statusLabel(status: GoalSettings["status"]): string {
       return "Idle";
     case "running":
       return "Running";
+    case "waiting_for_worker_approval":
+      return "Waiting for worker approval";
     case "paused":
       return "Paused";
     case "complete":
@@ -50,7 +52,7 @@ export function GoalPanel({
   const [constraints, setConstraints] = useState("");
   const [developerMaxTurns, setDeveloperMaxTurns] = useState("");
   const configured = goalConfigured(goal);
-  const running = goal.status === "running";
+  const running = goal.status === "running" || goal.status === "waiting_for_worker_approval";
 
   useEffect(() => {
     setObjective(prefillObjective?.trim() || goal.objective);

@@ -90,6 +90,7 @@ impl milim_tools::Tool for NamedTestTool {
             | "child_thread_list"
             | "child_thread_read"
             | "child_thread_wait" => milim_tools::ToolEffect::ReadOnly,
+            "delegate_workers" => milim_tools::ToolEffect::Mutating,
             "shell" | "run_command" => milim_tools::ToolEffect::Command,
             _ => milim_tools::ToolEffect::Mutating,
         }
@@ -337,7 +338,7 @@ impl ModelService for ChildThreadToolBackend {
         let has_child_spawn = req
             .tools
             .iter()
-            .any(|tool| tool.function.name == "child_thread_spawn");
+            .any(|tool| tool.function.name == "delegate_workers");
         let stream = async_stream::stream! {
             if has_tool_reply {
                 yield Ok(StreamEvent::Delta(DeltaEvent::text("parent saw child")));
@@ -368,11 +369,11 @@ impl ModelService for ChildThreadToolBackend {
             }
             if has_child_spawn {
                 let arguments = if last_user.contains("missing child model") {
-                    "{\"prompt\":\"child task\",\"title\":\"Child worker\",\"model\":\"missing-child-model\",\"wait\":true,\"timeout_ms\":5000}"
+                    "{\"tasks\":[{\"prompt\":\"child task\",\"title\":\"Child worker\",\"model\":\"missing-child-model\"}]}"
                 } else if last_user.contains("list child tools") {
-                    "{\"prompt\":\"child task list child tools\",\"title\":\"Child worker\",\"wait\":true,\"timeout_ms\":5000}"
+                    "{\"tasks\":[{\"prompt\":\"child task list child tools\",\"title\":\"Child worker\"}]}"
                 } else {
-                    "{\"prompt\":\"child task\",\"title\":\"Child worker\",\"wait\":true,\"timeout_ms\":5000}"
+                    "{\"tasks\":[{\"prompt\":\"child task\",\"title\":\"Child worker\"}]}"
                 };
                 yield Ok(StreamEvent::Delta(DeltaEvent {
                     tool_calls: vec![DeltaToolCall {
@@ -380,7 +381,7 @@ impl ModelService for ChildThreadToolBackend {
                         id: Some("call_child".to_string()),
                         kind: Some("function".to_string()),
                         function: DeltaFunction {
-                            name: Some("child_thread_spawn".to_string()),
+                            name: Some("delegate_workers".to_string()),
                             arguments: Some(arguments.to_string()),
                         },
                     }],
@@ -4560,6 +4561,10 @@ async fn thread_supervisor_runs_child_with_test_backend() {
                 agent_id: None,
                 system_prompt: None,
                 prompt: "hello child".to_string(),
+                run_id: None,
+                runtime: milim_agents::WorkerRuntime::Legacy,
+                access: milim_agents::WorkerAccess::ReadOnly,
+                worktree_path: None,
             },
         )
         .unwrap();
@@ -4603,6 +4608,10 @@ async fn thread_events_stream_supervisor_updates() {
                 agent_id: None,
                 system_prompt: None,
                 prompt: "hello child".to_string(),
+                run_id: None,
+                runtime: milim_agents::WorkerRuntime::Legacy,
+                access: milim_agents::WorkerAccess::ReadOnly,
+                worktree_path: None,
             },
         )
         .unwrap();
@@ -4742,6 +4751,7 @@ async fn agent_run_can_spawn_waiting_child_thread() {
             "model":"child-thread-tool",
             "messages":[{"role":"user","content":"delegate this"}],
             "thread_id":"parent-1",
+            "delegation_policy":"auto",
             "stream":true
         }))
         .send()
@@ -4752,7 +4762,7 @@ async fn agent_run_can_spawn_waiting_child_thread() {
         .unwrap();
 
     assert!(
-        text.contains("\"type\":\"child_thread_done\""),
+        text.contains("\"type\":\"worker_run_done\""),
         "missing child done event: {text}"
     );
     assert!(text.contains("parent saw child"));
@@ -4787,7 +4797,8 @@ async fn agent_run_rejects_unavailable_child_thread_model() {
         .json(&json!({
             "model":"child-thread-tool",
             "messages":[{"role":"user","content":"delegate this with missing child model"}],
-            "thread_id":"parent-1"
+            "thread_id":"parent-1",
+            "delegation_policy":"auto"
         }))
         .send()
         .await
@@ -4799,7 +4810,7 @@ async fn agent_run_rejects_unavailable_child_thread_model() {
     assert!(run["steps"][0]["result"]["error"]
         .as_str()
         .unwrap()
-        .contains("child thread model 'missing-child-model' is not available"));
+        .contains("worker model 'missing-child-model' is not available"));
     assert!(store
         .list_children("parent-1", None, 10)
         .unwrap()
@@ -4837,6 +4848,7 @@ async fn agent_run_open_mode_child_inherits_parent_tools_without_child_spawn() {
             "model":"child-thread-tool",
             "messages":[{"role":"user","content":"delegate this and list child tools"}],
             "thread_id":"parent-1",
+            "delegation_policy":"auto",
             "tool_approval_policy":"open",
             "stream":true
         }))
@@ -4847,14 +4859,14 @@ async fn agent_run_open_mode_child_inherits_parent_tools_without_child_spawn() {
         .await
         .unwrap();
 
-    assert!(text.contains("\"type\":\"child_thread_done\""), "{text}");
+    assert!(text.contains("\"type\":\"worker_run_done\""), "{text}");
     let children = store
         .list_children("parent-1", Some(milim_agents::THREAD_STATUS_DONE), 10)
         .unwrap();
     let summary = children[0].summary.as_deref().unwrap();
-    assert!(summary.contains("shell"), "{summary}");
-    assert!(summary.contains("write_file"), "{summary}");
-    assert!(!summary.contains("child_thread_spawn"), "{summary}");
+    assert!(!summary.contains("shell"), "{summary}");
+    assert!(!summary.contains("write_file"), "{summary}");
+    assert!(!summary.contains("delegate_workers"), "{summary}");
 }
 
 #[tokio::test]
@@ -4888,6 +4900,7 @@ async fn agent_run_guarded_mode_child_stays_read_only() {
             "model":"child-thread-tool",
             "messages":[{"role":"user","content":"delegate this and list child tools"}],
             "thread_id":"parent-1",
+            "delegation_policy":"auto",
             "tool_approval_policy":"guarded",
             "stream":true
         }))
@@ -4898,7 +4911,7 @@ async fn agent_run_guarded_mode_child_stays_read_only() {
         .await
         .unwrap();
 
-    assert!(text.contains("\"type\":\"child_thread_done\""), "{text}");
+    assert!(text.contains("\"type\":\"worker_run_done\""), "{text}");
     let children = store
         .list_children("parent-1", Some(milim_agents::THREAD_STATUS_DONE), 10)
         .unwrap();

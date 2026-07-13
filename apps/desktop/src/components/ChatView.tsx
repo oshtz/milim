@@ -18,6 +18,7 @@ import {
 import { useAgents } from "../agents/store";
 import {
   artifactFileStatus,
+  applyWorkerDiff,
   claudeRuntimeModel,
   completeChat,
   completeChatWithMetrics,
@@ -28,6 +29,7 @@ import {
   getCodexAccount,
   getMobileCompanionStatus,
   getWorkspaceGitStatus,
+  getWorkerDiff,
   getMediaModelSchema,
   getMediaStatus,
   getPreviewAppStatus,
@@ -41,6 +43,7 @@ import {
   listProviders,
   listSkills,
   listTools,
+  listWorkerRuns,
   MAX_ATTACHMENT_BYTES,
   openArtifactLocation,
   openExternalUrl,
@@ -60,17 +63,22 @@ import {
   setPrivacyMode,
   setWorkspace,
   startPreviewApp,
+  startWorkerRun,
   stopChildThread,
   stopPreviewApp,
+  stopWorkerRun,
+  stopWorker,
   streamAgentRun,
   streamChat,
   streamChildThreadEvents,
+  streamWorkerRunEvents,
   streamClaudeRun,
   streamCodexDeviceLogin,
   streamCodexRun,
   wireMessageContent,
   mediaProviders,
   type AgentEvent,
+  type AccountNativeWorkerLifecycle,
   type ArtifactFileStatus,
   type ArtifactOpenTarget,
   type ArtifactWritePreview,
@@ -80,6 +88,7 @@ import {
   type ChatMessage,
   type ChatStreamPart,
   type ChildThreadInfo,
+  type DelegationPolicy,
   type ClaudeRunEvent,
   type CodexLoginEvent,
   type CodexRunEvent,
@@ -89,6 +98,7 @@ import {
   type MediaSchemaControl,
   type MobileThreadGroup,
   type MobileThreadSummary,
+  type MobileWorkerRunSnapshot,
   type MobileRelayAttachment,
   type MobileRelayEvent,
   type MemoryNotice,
@@ -112,6 +122,8 @@ import {
   type WorkspaceFileSuggestion,
   type WorkspaceCheckpoint,
   type WorkspaceGitStatus,
+  type Worker,
+  type WorkerRunRecord,
 } from "../api";
 import {
   DEFAULT_THREAD_SETTINGS,
@@ -283,6 +295,7 @@ import { themeCssVariables } from "../theme/applyTheme";
 import { useTheme } from "../theme/store";
 import { shortcutLabel, shortcutMatchesEvent } from "../ui/shortcuts";
 import { DEFAULT_PREVIEW_PANEL_WIDTH, useUiPreferences } from "../ui/store";
+import { AgentAvatar } from "./AgentAvatar";
 import { Composer } from "./Composer";
 import { ControlBar } from "./ControlBar";
 import type { ModelPickerSelection } from "./ModelPicker";
@@ -293,7 +306,9 @@ import {
   Check,
   Code,
   Copy,
+  Cube,
   Eye,
+  FileText,
   GitBranch,
   Globe,
   Image,
@@ -306,6 +321,7 @@ import {
 } from "./icons";
 import { groupSessionsByProjects } from "./Sidebar";
 import { InlineMediaControls } from "./InlineMediaControls";
+import { WorkersInspector } from "./WorkersInspector";
 import { AssistantMessage } from "./AssistantMessage";
 import { ArtifactList } from "./ArtifactList";
 import { ChatSearchPopover } from "./ChatSearchPopover";
@@ -385,6 +401,97 @@ function mobileThreadMessages(
     .filter((message) => message.content.trim());
 }
 
+function workerRunSynthesisMessage(record: WorkerRunRecord): ChatMessage {
+  const results = record.workers.map((worker, index) => {
+    const task = record.run.tasks.find(
+      (item) => item.prompt === worker.prompt || item.title === worker.title,
+    );
+    const content = worker.summary?.trim() || worker.error?.trim() || "No result returned.";
+    return [
+      `Worker ${index + 1}: ${task?.title || worker.title || worker.id}`,
+      `Status: ${worker.status}`,
+      content,
+    ].join("\n");
+  });
+  return {
+    role: "system",
+    content: [
+      `Worker Run ${record.run.id} finished with status ${record.run.status}.`,
+      "Use the joined results below to answer the original request. Treat failures as visible evidence, not successful results.",
+      ...results,
+    ].join("\n\n"),
+  };
+}
+
+function nativeWorkerRunRecord(
+  lifecycle: AccountNativeWorkerLifecycle,
+  parentThreadId: string,
+  parentTurnId: string,
+  fallbackModel: string,
+): WorkerRunRecord {
+  const now = new Date().toISOString();
+  const terminal = /done|complete|success/i.test(lifecycle.status);
+  const failed = /error|fail/i.test(lifecycle.status);
+  const runStatus = failed ? "error" : terminal ? "done" : "running";
+  const runtime: Worker["runtime"] = lifecycle.runtime === "claude" ? "claude" : "codex";
+  const workerIds = lifecycle.workers.length
+    ? lifecycle.workers.map((worker) => worker.runtime_id)
+    : lifecycle.worker_runtime_ids;
+  const tasks = workerIds.map((runtimeId, index) => ({
+    id: `${lifecycle.call_id}:${runtimeId}`,
+    title: `Native worker ${index + 1}`,
+    prompt: lifecycle.prompt || "Native account-runtime worker",
+    role: lifecycle.operation || null,
+    agent_id: null,
+    model: lifecycle.model || fallbackModel,
+    access: "read_only" as const,
+  }));
+  const workers = workerIds.map((runtimeId, index) => {
+    const state = lifecycle.workers.find((worker) => worker.runtime_id === runtimeId);
+    const status: Worker["status"] = /done|complete|success/i.test(state?.status || "")
+      ? "done"
+      : /error|fail/i.test(state?.status || "")
+        ? "error"
+        : "running";
+    return {
+      id: tasks[index].id,
+      parent_id: parentThreadId,
+      root_id: parentThreadId,
+      title: tasks[index].title,
+      status,
+      model: tasks[index].model,
+      agent_id: null,
+      prompt: tasks[index].prompt,
+      summary: status === "done" ? state?.message ?? null : null,
+      error: status === "error" ? state?.message ?? "Native worker failed." : null,
+      created_at: now,
+      updated_at: now,
+      finished_at: status === "running" ? null : now,
+      run_id: `native:${runtime}:${lifecycle.call_id}`,
+      runtime,
+      access: "read_only" as const,
+      external_runtime_id: runtimeId,
+      worktree_path: null,
+    };
+  });
+  return {
+    run: {
+      id: `native:${runtime}:${lifecycle.call_id}`,
+      parent_thread_id: parentThreadId,
+      parent_turn_id: parentTurnId,
+      policy: "auto",
+      runtime,
+      status: runStatus,
+      tasks,
+      error: failed ? "Native worker activity failed." : null,
+      created_at: now,
+      updated_at: now,
+      finished_at: runStatus === "running" ? null : now,
+    },
+    workers,
+  };
+}
+
 function mobileThreadMessageContent(message: ChatMessage): string {
   if (message.content.trim()) return message.content;
   return (message.streamParts ?? [])
@@ -441,6 +548,7 @@ function mobileThreadSummaries(
   );
   return sessions
     .filter((session) => {
+      if (session.parentId) return false;
       if (session.archivedAt) return false;
       const folder = session.settings?.folder?.trim() ?? "";
       return !folder || !archivedProjectFolders.has(folder);
@@ -448,6 +556,26 @@ function mobileThreadSummaries(
     .slice()
     .sort((a, b) => b.updatedAt - a.updatedAt)
     .map((session) => mobileThreadSummary(session, running, projectByFolder));
+}
+
+function mobileWorkerRun(record?: WorkerRunRecord): MobileWorkerRunSnapshot | null {
+  if (!record) return null;
+  return {
+    id: record.run.id,
+    status: record.run.status,
+    tasks: record.run.tasks.map((task) => {
+      const worker = record.workers.find(
+        (item) => item.prompt === task.prompt || item.title === task.title,
+      );
+      return {
+        title: task.title,
+        model: task.model,
+        access: worker?.access ?? task.access,
+        status: worker?.status ?? (record.run.status === "proposed" ? "proposed" : "queued"),
+        result: worker?.summary ?? worker?.error ?? null,
+      };
+    }),
+  };
 }
 
 function mobileThreadGroups(
@@ -489,10 +617,14 @@ function isUsableMobileModel(model: ModelInfo): boolean {
 const PREVIEW_PANEL_MAX_WIDTH = 900;
 const CHAT_MAIN_MIN_WIDTH = 420;
 const PREVIEW_RESIZE_HANDLE_WIDTH = 8;
+const CONTEXT_PANEL_WIDTH = 300;
 const INSPECTOR_STACK_THRESHOLD =
   PREVIEW_PANEL_MIN_WIDTH + CHAT_MAIN_MIN_WIDTH + PREVIEW_RESIZE_HANDLE_WIDTH;
+const CONTEXT_STACK_THRESHOLD = CONTEXT_PANEL_WIDTH + CHAT_MAIN_MIN_WIDTH;
+const CONCURRENT_PANEL_THRESHOLD = INSPECTOR_STACK_THRESHOLD + CONTEXT_PANEL_WIDTH;
 const PREVIEW_PANEL_KEYBOARD_STEP = 32;
-const PREVIEW_PANEL_ANIMATION_MS = 190;
+const PREVIEW_PANEL_COLLAPSE_OVERSHOOT = 96;
+const PREVIEW_PANEL_ANIMATION_MS = 100;
 const MEDIA_CONTEXT_MESSAGE_LIMIT = 10;
 const MEDIA_CONTEXT_CHAR_LIMIT = 1800;
 const HOT_SWAP_CONTINUE_PROMPT =
@@ -784,7 +916,10 @@ type MessageRowActions = {
     items: ContextMenuItem[],
     label?: string,
   ) => boolean;
-  setInspectorTab: (sessionId: string, tab: "code" | "preview") => void;
+  setInspectorTab: (
+    sessionId: string,
+    tab: "code" | "preview" | "workers",
+  ) => void;
   preparePreviewRuntimeForArtifacts: (
     artifacts?: readonly ChatArtifact[],
   ) => Promise<void>;
@@ -877,6 +1012,12 @@ function MessageRowView({
 }: MessageRowProps) {
   markPerfRender("MessageRow");
   const [copied, setCopied] = useState(false);
+  const showModelAvatar = useUiPreferences((state) => state.avatarStyle === "avatar");
+  const linkedWorkerRun = useSessions((state) =>
+    m.workerRunId
+      ? state.workerRuns.find((record) => record.run.id === m.workerRunId)
+      : undefined,
+  );
   const actions = actionsRef.current;
   const messageIsCompaction = isCompactionCheckpoint(m);
   const isApprovalMessage = Boolean(m.approval);
@@ -910,6 +1051,7 @@ function MessageRowView({
   const hasStreamTranscript = Boolean(m.streamParts?.length);
   const hasAssistantOutput = Boolean(m.content || hasStreamTranscript);
   const metricsLabel = formatResponseMetrics(m.metrics);
+  const modelAvatarSeed = m.role === "assistant" ? m.metrics?.model.trim() : "";
   const canExecutePlan =
     m.role === "assistant" &&
     m.plan?.status === "proposed" &&
@@ -1087,12 +1229,15 @@ function MessageRowView({
 
   return (
     <div
-      className={"msg " + m.role}
+      className={`msg ${m.role}${modelAvatarSeed ? " has-model-avatar" : ""}`}
       data-testid={
         m.role === "assistant" ? "assistant-message" : "user-message"
       }
       onContextMenu={openMessageContextMenu}
     >
+      {showModelAvatar && modelAvatarSeed && (
+        <AgentAvatar avatar={modelAvatarSeed} className="message-agent-avatar" />
+      )}
       <div className="msg-content" dir="auto">
         {m.role === "assistant" ? (
           <>
@@ -1107,6 +1252,29 @@ function MessageRowView({
                 onApprove={() => actions?.approveToolApproval(i, m)}
                 onDeny={() => actions?.denyToolApproval(i, m)}
               />
+            )}
+            {linkedWorkerRun && (
+              <button
+                className={`worker-run-event ${linkedWorkerRun.run.status}`}
+                type="button"
+                data-testid="worker-run-event"
+                onClick={() =>
+                  actions?.setInspectorTab(activeId, "workers")
+                }
+              >
+                <Cube size={13} />
+                <span>
+                  {linkedWorkerRun.run.status === "proposed"
+                    ? "Worker plan ready"
+                    : linkedWorkerRun.run.status === "running"
+                      ? "Workers running"
+                      : `Worker run ${linkedWorkerRun.run.status}`}
+                </span>
+                <small>
+                  {linkedWorkerRun.run.tasks.length} task{linkedWorkerRun.run.tasks.length === 1 ? "" : "s"}
+                </small>
+                <ArrowRight size={12} />
+              </button>
             )}
             {(hasAssistantOutput || assistantStreaming) && (
               <AssistantMessage
@@ -1595,7 +1763,7 @@ function extensionOf(filename: string): string {
   return dot >= 0 ? filename.slice(dot + 1).toLowerCase() : "";
 }
 
-function maxPreviewPanelWidth(chatBodyWidth?: number): number {
+function maxPreviewPanelWidth(chatBodyWidth?: number, reservedWidth = 0): number {
   const availableWidth =
     chatBodyWidth ??
     (typeof window === "undefined" ? undefined : window.innerWidth);
@@ -1604,16 +1772,16 @@ function maxPreviewPanelWidth(chatBodyWidth?: number): number {
     PREVIEW_PANEL_MAX_WIDTH,
     Math.max(
       PREVIEW_PANEL_MIN_WIDTH,
-      availableWidth - CHAT_MAIN_MIN_WIDTH - PREVIEW_RESIZE_HANDLE_WIDTH,
+      availableWidth - reservedWidth - CHAT_MAIN_MIN_WIDTH - PREVIEW_RESIZE_HANDLE_WIDTH,
     ),
   );
 }
 
-function clampPreviewPanelWidth(width: number, chatBodyWidth?: number): number {
+function clampPreviewPanelWidth(width: number, chatBodyWidth?: number, reservedWidth = 0): number {
   return Math.round(
     Math.min(
       Math.max(width, PREVIEW_PANEL_MIN_WIDTH),
-      maxPreviewPanelWidth(chatBodyWidth),
+      maxPreviewPanelWidth(chatBodyWidth, reservedWidth),
     ),
   );
 }
@@ -2342,6 +2510,7 @@ type RunTurnOptions = {
   goal?: GoalSettings;
   toolApprovalGrant?: boolean;
   claudeSessionRecoveryGrant?: boolean;
+  delegationPolicyOverride?: DelegationPolicy;
 };
 
 type ToolApprovalScope = ChatApprovalRequest["scope"];
@@ -2949,6 +3118,7 @@ export function ChatView({
   const [previewAppBusy, setPreviewAppBusy] = useState<
     "start" | "stop" | "restart" | null
   >(null);
+  const [workerActionBusy, setWorkerActionBusy] = useState(false);
   const [previewPanelClosing, setPreviewPanelClosing] = useState(false);
   const [, setPreviewSource] =
     useState<InspectorPreviewSource>("url");
@@ -2965,7 +3135,6 @@ export function ChatView({
   const [chatNotice, setChatNotice] = useState<ChatNotice | null>(null);
   const [goalPanelOpen, setGoalPanelOpen] = useState(false);
   const [goalPrefill, setGoalPrefill] = useState<string | null>(null);
-  const [quickSummaryOpen, setQuickSummaryOpen] = useState(false);
   const [chatSearchOpen, setChatSearchOpen] = useState(false);
   const [batonRequest, setBatonRequest] = useState<BatonRequest | null>(null);
   const [hotSwapPreflight, setHotSwapPreflight] =
@@ -3010,6 +3179,13 @@ export function ChatView({
   const activeSession = useSessions(
     (s) => s.sessions.find((x) => x.id === s.activeId),
   );
+  const workerRuns = useSessions((s) => s.workerRuns);
+  const activeWorkerRuns = useMemo(
+    () =>
+      workerRuns.filter((record) => record.run.parent_thread_id === activeId),
+    [activeId, workerRuns],
+  );
+  const activeWorkerRun = activeWorkerRuns[0];
   const projects = useSessions((s) => s.projects);
   const sidebarState = useSessions((s) => s.sidebar);
   const generatingSessionIds = useSessions((s) => s.generatingSessionIds);
@@ -3033,6 +3209,10 @@ export function ChatView({
     (s) =>
       s.sessions.find((x) => x.id === s.activeId)?.inspectorOpen === true,
   );
+  const contextPanelOpen = useSessions(
+    (s) =>
+      s.sessions.find((x) => x.id === s.activeId)?.contextPanelOpen === true,
+  );
   const activePreviewRuntime = useSessions((s) => {
     const session = s.sessions.find((x) => x.id === s.activeId);
     const activeFolder = session?.settings?.folder ?? "";
@@ -3046,6 +3226,7 @@ export function ChatView({
   const markArtifactSaved = useSessions((s) => s.markArtifactSaved);
   const upsertVirtualFiles = useSessions((s) => s.upsertVirtualFiles);
   const commitResponseMetrics = useSessions((s) => s.commitResponseMetrics);
+  const setSessionContextPanelOpen = useSessions((s) => s.setContextPanelOpen);
   const setSessionInspectorOpen = useSessions((s) => s.setInspectorOpen);
   const setSessionInspectorTab = useSessions((s) => s.setInspectorTab);
   const setSessionPreviewRuntime = useSessions((s) => s.setPreviewRuntime);
@@ -3093,6 +3274,8 @@ export function ChatView({
     activeAgentId,
     privacy,
     toolApproval,
+    delegationPolicy,
+    workerModel,
     planMode,
     goal,
   } = threadSettings;
@@ -3159,9 +3342,13 @@ export function ChatView({
         messages,
         pendingAttachments,
         previewUrl: activePreviewRuntime?.url ?? null,
+        workerRun: activeWorkerRun,
+        turnRunning: generatingSessionIds.includes(activeId),
       }),
     [
       activePreviewRuntime?.url,
+      activeId,
+      activeWorkerRun,
       effectiveModel,
       folder,
       gitStatus,
@@ -3171,6 +3358,7 @@ export function ChatView({
       pendingAttachments,
       planMode,
       privacy,
+      generatingSessionIds,
     ],
   );
   const enabledMediaProviders = useMemo(
@@ -3300,11 +3488,14 @@ export function ChatView({
     ],
   );
   const activeWorkerRunning =
-    activeWorker?.status === "queued" || activeWorker?.status === "running";
+    activeWorker?.status === "queued" ||
+    activeWorker?.status === "running" ||
+    activeWorkerRun?.run.status === "running";
   const busy = generatingSessionIds.includes(activeId) || activeWorkerRunning;
 
   const chatScrollRef = useRef<HTMLDivElement>(null);
   const chatBodyRef = useRef<HTMLDivElement>(null);
+  const contextLauncherRef = useRef<HTMLButtonElement>(null);
   const stickToBottomRef = useRef(true);
   const generationControllersRef = useRef<Map<string, AbortController>>(
     new Map(),
@@ -3312,12 +3503,20 @@ export function ChatView({
   const childThreadEventControllersRef = useRef<Map<string, AbortController>>(
     new Map(),
   );
+  const workerRunEventControllersRef = useRef<Map<string, AbortController>>(
+    new Map(),
+  );
+  const approvedWorkerRunsRef = useRef<Set<string>>(new Set());
   const childThreadLiveIdsRef = useRef<Map<string, Set<string>>>(new Map());
   const childThreadEventsRef = useRef<Map<string, ThreadEvent[]>>(new Map());
   const previewResizeStartRef = useRef<{
     clientX: number;
     width: number;
+    pointerId: number;
+    target: HTMLDivElement;
+    snappedClosed: boolean;
   } | null>(null);
+  const previewResizeCleanupRef = useRef<(() => void) | null>(null);
   const previewCloseTimeoutRef = useRef<number | null>(null);
   const stopShortcutConfirmUntilRef = useRef(0);
   const stopShortcutConfirmTimerRef = useRef<number | null>(null);
@@ -3531,6 +3730,99 @@ export function ChatView({
       });
   }
 
+  function applyWorkerRunEvent(event: AgentEvent) {
+    const store = useSessions.getState();
+    const run =
+      event.run ??
+      store.workerRuns.find((record) => record.run.id === event.run_id)?.run;
+    if (run) {
+      const record = {
+        run,
+        workers: event.workers ?? (event.worker ? [event.worker] : []),
+      };
+      store.upsertWorkerRun(record);
+      const merged = useSessions.getState().workerRuns.find((item) => item.run.id === run.id);
+      if (merged) maybeResumeAfterWorkerRun(merged);
+    }
+    if (event.event?.id && (run?.id || event.run_id))
+      store.setWorkerRunEvent(run?.id ?? event.run_id!, event.event);
+  }
+
+  function maybeResumeAfterWorkerRun(record: WorkerRunRecord) {
+    if (
+      !approvedWorkerRunsRef.current.has(record.run.id) ||
+      !["done", "partial", "error"].includes(record.run.status)
+    ) return;
+    approvedWorkerRunsRef.current.delete(record.run.id);
+    workerRunEventControllersRef.current.get(record.run.id)?.abort();
+    const sessionId = record.run.parent_thread_id;
+    const nextMessages = [...sessionMessages(sessionId), workerRunSynthesisMessage(record)];
+    setMessages(sessionId, nextMessages, { autoTitle: false });
+    const settings = useSessions.getState().getSettings(sessionId);
+    if (settings.goal.status === "waiting_for_worker_approval") {
+      const runningGoal = updateGoalState(sessionId, {
+        status: "running",
+        lastReason: "Worker results joined. Goal resumed.",
+      });
+      goalLoopRef.current = { sessionId, stopped: false };
+      void runGoalLoop(sessionId, settings.model, runningGoal, true);
+      return;
+    }
+    void runTurn(
+      nextMessages,
+      settings.model,
+      { delegationPolicyOverride: "off" },
+      sessionId,
+    ).then((result) => {
+      if (result.status === "done") void drainQueuedMessages(sessionId, settings.model);
+    });
+  }
+
+  function startWorkerRunEvents(record: WorkerRunRecord) {
+    const run = record.run;
+    if (
+      run.status !== "proposed" &&
+      run.status !== "running"
+    )
+      return;
+    if (workerRunEventControllersRef.current.has(run.id)) return;
+    const controller = new AbortController();
+    workerRunEventControllersRef.current.set(run.id, controller);
+    void streamWorkerRunEvents(run.id, applyWorkerRunEvent, controller.signal)
+      .catch((error) => {
+        if (!controller.signal.aborted)
+          console.warn("worker run event stream failed", error);
+      })
+      .finally(() => {
+        if (workerRunEventControllersRef.current.get(run.id) === controller)
+          workerRunEventControllersRef.current.delete(run.id);
+      });
+  }
+
+  useEffect(() => {
+    if (!sessionsHydrated || !activeId) return;
+    let cancelled = false;
+    void listWorkerRuns(activeId)
+      .then((records) => {
+        if (cancelled) return;
+        const store = useSessions.getState();
+        for (const record of records) {
+          store.upsertWorkerRun(record);
+          startWorkerRunEvents(record);
+        }
+      })
+      .catch(() => {
+        // Older embedded servers do not expose Worker Runs yet.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeId, sessionsHydrated]);
+
+  useEffect(() => {
+    for (const record of activeWorkerRuns) startWorkerRunEvents(record);
+  }, [activeWorkerRuns]);
+
   useEffect(() => {
     const running = new Set(generatingSessionIds);
     generationControllersRef.current.forEach((controller, id) => {
@@ -3739,6 +4031,10 @@ export function ChatView({
       );
       childThreadEventControllersRef.current.clear();
       childThreadLiveIdsRef.current.clear();
+      workerRunEventControllersRef.current.forEach((controller) =>
+        controller.abort(),
+      );
+      workerRunEventControllersRef.current.clear();
     };
   }, []);
 
@@ -4010,6 +4306,78 @@ export function ChatView({
     setSessionInspectorTab(activeId, "git");
   }
 
+  function openWorkersInspector() {
+    rememberInspectorInvoker();
+    clearPreviewCloseTimer();
+    setPreviewPanelClosing(false);
+    setSessionInspectorTab(activeId, "workers");
+  }
+
+  async function approveWorkerRun(runId: string) {
+    setWorkerActionBusy(true);
+    approvedWorkerRunsRef.current.add(runId);
+    try {
+      const record = await startWorkerRun(runId);
+      useSessions.getState().upsertWorkerRun(record);
+      maybeResumeAfterWorkerRun(record);
+      startWorkerRunEvents(record);
+    } catch (error) {
+      approvedWorkerRunsRef.current.delete(runId);
+      setChatNotice({
+        tone: "error",
+        message: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      setWorkerActionBusy(false);
+    }
+  }
+
+  async function stopActiveWorkerRun(runId: string) {
+    setWorkerActionBusy(true);
+    try {
+      approvedWorkerRunsRef.current.delete(runId);
+      useSessions.getState().upsertWorkerRun(await stopWorkerRun(runId));
+    } catch (error) {
+      setChatNotice({
+        tone: "error",
+        message: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      setWorkerActionBusy(false);
+    }
+  }
+
+  async function stopOneWorker(runId: string, workerId: string) {
+    const result = await stopWorker(runId, workerId);
+    const current = useSessions.getState().workerRuns.find((item) => item.run.id === runId);
+    if (!current || !result.run) return;
+    useSessions.getState().upsertWorkerRun({
+      run: result.run,
+      workers: current.workers.map((worker) => worker.id === workerId ? result.worker : worker),
+    });
+  }
+
+  async function continueWorkerRunSolo(runId: string) {
+    if (busy) return;
+    setWorkerActionBusy(true);
+    try {
+      approvedWorkerRunsRef.current.delete(runId);
+      useSessions.getState().upsertWorkerRun(await stopWorkerRun(runId));
+      const conversation = regenerateTurnConversation(messages);
+      if (conversation)
+        await runTurnAndDrain(conversation, undefined, {
+          delegationPolicyOverride: "off",
+        });
+    } catch (error) {
+      setChatNotice({
+        tone: "error",
+        message: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      setWorkerActionBusy(false);
+    }
+  }
+
   function closeGitPanel() {
     clearPreviewCloseTimer();
     if (prefersReducedMotion()) {
@@ -4028,6 +4396,29 @@ export function ChatView({
       ) {
         setSessionInspectorOpen(activeId, false);
       }
+      setPreviewPanelClosing(false);
+      previewCloseTimeoutRef.current = null;
+      restoreInspectorInvokerFocus();
+    }, PREVIEW_PANEL_ANIMATION_MS);
+  }
+
+  function closeWorkersInspector() {
+    clearPreviewCloseTimer();
+    if (prefersReducedMotion()) {
+      setPreviewPanelClosing(false);
+      setSessionInspectorOpen(activeId, false);
+      restoreInspectorInvokerFocus();
+      return;
+    }
+    setPreviewPanelClosing(true);
+    previewCloseTimeoutRef.current = window.setTimeout(() => {
+      if (
+        useSessions
+          .getState()
+          .sessions.find((session) => session.id === activeId)
+          ?.inspectorTab === "workers"
+      )
+        setSessionInspectorOpen(activeId, false);
       setPreviewPanelClosing(false);
       previewCloseTimeoutRef.current = null;
       restoreInspectorInvokerFocus();
@@ -4074,9 +4465,8 @@ export function ChatView({
   }
 
   function closePreview() {
-    const closingId = activeArtifactSelection?.artifact.id ?? null;
     setDismissedPreviewKey(activeArtifactSelection?.autoOpenKey ?? null);
-    if (!closingId || prefersReducedMotion()) {
+    if (prefersReducedMotion()) {
       clearPreviewCloseTimer();
       setPreviewPanelClosing(false);
       setSessionInspectorOpen(activeId, false);
@@ -4317,7 +4707,9 @@ export function ChatView({
   }
 
   function openSelectedSidePanel() {
-    if (inspectorTab === "git" && (canOpenGitPanel || gitPanelChecking)) {
+    if (inspectorTab === "workers") {
+      openWorkersInspector();
+    } else if (inspectorTab === "git" && (canOpenGitPanel || gitPanelChecking)) {
       openGitPanel();
     } else if (inspectorTab === "code") {
       openArtifactSidePanel("code");
@@ -4344,14 +4736,6 @@ export function ChatView({
     setPreviewSelection(next);
   }
 
-  const resolvedPreviewPanelWidth = clampPreviewPanelWidth(
-    previewPanelWidth,
-    chatBodyWidth,
-  );
-  const inspectorStacked = chatBodyWidth < INSPECTOR_STACK_THRESHOLD;
-  const previewPanelStyle = {
-    "--preview-panel-width": `${resolvedPreviewPanelWidth}px`,
-  } as CSSProperties;
   const availablePreviewSources: InspectorPreviewSource[] = [
     ...(activeArtifactSelection && isPreviewableArtifact(activeArtifactSelection.artifact)
       ? (["artifact"] as const)
@@ -4371,10 +4755,28 @@ export function ChatView({
           : browserPreviewSelection(activeInspectorBrowserSession);
   const sidePanelVisible = Boolean(
     inspectorOpen &&
-    (inspectorTab === "git" ? canShowGitPanel : visiblePreviewSelection),
+    (inspectorTab === "workers"
+      ? true
+      : inspectorTab === "git"
+        ? canShowGitPanel
+        : visiblePreviewSelection),
   );
+  const contextStacked = contextPanelOpen && chatBodyWidth < CONTEXT_STACK_THRESHOLD;
+  const inspectorStacked = sidePanelVisible && chatBodyWidth < INSPECTOR_STACK_THRESHOLD;
+  const panelsStacked = contextStacked || inspectorStacked;
+  const reservedContextWidth = contextPanelOpen && !contextStacked ? CONTEXT_PANEL_WIDTH : 0;
+  const resolvedPreviewPanelWidth = clampPreviewPanelWidth(
+    previewPanelWidth,
+    chatBodyWidth,
+    reservedContextWidth,
+  );
+  const previewPanelStyle = {
+    "--preview-panel-width": `${resolvedPreviewPanelWidth}px`,
+  } as CSSProperties;
   const inspectorLauncherLabel =
-    inspectorTab === "git"
+    inspectorTab === "workers"
+      ? "Open Workers"
+      : inspectorTab === "git"
       ? "Open Git"
       : inspectorTab === "code"
         ? `Open Code: ${activeArtifactSelection?.artifact.filename ?? activeArtifactSelection?.artifact.title ?? "artifact"}`
@@ -4386,6 +4788,7 @@ export function ChatView({
   const previewToolsIntent = Boolean(
     sidePanelVisible &&
       inspectorTab !== "git" &&
+      inspectorTab !== "workers" &&
       activePreviewSurface?.status === "ready" &&
       activePreviewSurface.capabilities.includes("dom_snapshot"),
   );
@@ -4602,40 +5005,106 @@ export function ChatView({
     sidePanelOpenRef.current && sidePanelVisible && !previewPanelClosing;
 
   useEffect(() => {
-    sidePanelOpenRef.current = sidePanelVisible;
-  }, [sidePanelVisible]);
+    if (!sidePanelVisible || previewPanelClosing) {
+      sidePanelOpenRef.current = false;
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      sidePanelOpenRef.current = true;
+    }, PREVIEW_PANEL_ANIMATION_MS);
+    return () => window.clearTimeout(timer);
+  }, [previewPanelClosing, sidePanelVisible]);
+
+  useEffect(() => {
+    if (
+      contextPanelOpen &&
+      sidePanelVisible &&
+      chatBodyWidth < CONCURRENT_PANEL_THRESHOLD
+    ) {
+      setSessionContextPanelOpen(activeId, false);
+    }
+  }, [activeId, chatBodyWidth, contextPanelOpen, setSessionContextPanelOpen, sidePanelVisible]);
 
   useEffect(() => {
     if (!sidePanelVisible || inspectorTab === "git") setActivePreviewSurface(null);
   }, [inspectorTab, sidePanelVisible]);
 
+  function openContextPanel() {
+    if (chatBodyWidth < CONCURRENT_PANEL_THRESHOLD && inspectorOpen) {
+      clearPreviewCloseTimer();
+      setPreviewPanelClosing(false);
+      setSessionInspectorOpen(activeId, false);
+    }
+    setSessionContextPanelOpen(activeId, true);
+  }
+
+  function closeContextPanel() {
+    setSessionContextPanelOpen(activeId, false);
+    window.requestAnimationFrame(() => contextLauncherRef.current?.focus());
+  }
+
   function resizePreviewPanel(width: number) {
-    setPreviewPanelWidth(clampPreviewPanelWidth(width, chatBodyWidth));
+    setPreviewPanelWidth(
+      clampPreviewPanelWidth(width, chatBodyWidth, reservedContextWidth),
+    );
   }
 
   function startPreviewResize(event: ReactPointerEvent<HTMLDivElement>) {
     if (event.button !== 0) return;
     event.preventDefault();
+    const target = event.currentTarget;
     previewResizeStartRef.current = {
       clientX: event.clientX,
       width: resolvedPreviewPanelWidth,
+      pointerId: event.pointerId,
+      target,
+      snappedClosed: false,
     };
     setPreviewResizing(true);
-    event.currentTarget.setPointerCapture(event.pointerId);
+    target.setPointerCapture(event.pointerId);
+    const move = (nextEvent: PointerEvent) => movePreviewResize(nextEvent);
+    const end = (nextEvent: PointerEvent) => endPreviewResize(nextEvent);
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", end);
+    window.addEventListener("pointercancel", end);
+    previewResizeCleanupRef.current = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", end);
+      window.removeEventListener("pointercancel", end);
+      previewResizeCleanupRef.current = null;
+    };
   }
 
-  function movePreviewResize(event: ReactPointerEvent<HTMLDivElement>) {
+  function movePreviewResize(event: PointerEvent) {
     const start = previewResizeStartRef.current;
-    if (!start) return;
-    resizePreviewPanel(start.width + start.clientX - event.clientX);
+    if (!start || event.pointerId !== start.pointerId) return;
+    const width = start.width + start.clientX - event.clientX;
+    if (width < PREVIEW_PANEL_MIN_WIDTH - PREVIEW_PANEL_COLLAPSE_OVERSHOOT) {
+      if (!start.snappedClosed) {
+        start.snappedClosed = true;
+        if (inspectorTab === "workers") closeWorkersInspector();
+        else if (inspectorTab === "git") closeGitPanel();
+        else closePreview();
+      }
+      return;
+    }
+    if (start.snappedClosed) {
+      start.snappedClosed = false;
+      clearPreviewCloseTimer();
+      setPreviewPanelClosing(false);
+      setSessionInspectorOpen(activeId, true);
+    }
+    resizePreviewPanel(width);
   }
 
-  function endPreviewResize(event: ReactPointerEvent<HTMLDivElement>) {
-    if (!previewResizeStartRef.current) return;
+  function endPreviewResize(event: PointerEvent) {
+    const start = previewResizeStartRef.current;
+    if (!start || event.pointerId !== start.pointerId) return;
     previewResizeStartRef.current = null;
+    previewResizeCleanupRef.current?.();
     setPreviewResizing(false);
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId);
+    if (start.target.hasPointerCapture(event.pointerId)) {
+      start.target.releasePointerCapture(event.pointerId);
     }
   }
 
@@ -4655,7 +5124,7 @@ export function ChatView({
       resizePreviewPanel(PREVIEW_PANEL_MIN_WIDTH);
     } else if (event.key === "End") {
       event.preventDefault();
-      resizePreviewPanel(maxPreviewPanelWidth(chatBodyWidth));
+      resizePreviewPanel(maxPreviewPanelWidth(chatBodyWidth, reservedContextWidth));
     } else if (event.key === "Enter") {
       event.preventDefault();
       resizePreviewPanel(DEFAULT_PREVIEW_PANEL_WIDTH);
@@ -5484,6 +5953,18 @@ export function ChatView({
           updateGoalState(sessionId, {
             status: "paused",
             lastReason: "Goal paused.",
+          });
+          return;
+        }
+        const proposedRun = useSessions.getState().workerRuns.find(
+          (record) =>
+            record.run.parent_thread_id === sessionId &&
+            record.run.status === "proposed",
+        );
+        if (proposedRun) {
+          updateGoalState(sessionId, {
+            status: "waiting_for_worker_approval",
+            lastReason: "Goal waiting for worker approval.",
           });
           return;
         }
@@ -6385,6 +6866,8 @@ export function ChatView({
     const turnMemory = turnSettings.memory;
     const turnActiveAgentId = turnSettings.activeAgentId ?? null;
     const turnToolApproval = turnSettings.toolApproval;
+    const turnDelegationPolicy =
+      options.delegationPolicyOverride ?? turnSettings.delegationPolicy;
     const pendingHotSwap = useSessions
       .getState()
       .sessions.find((item) => item.id === id)?.pendingHotSwap;
@@ -6485,13 +6968,17 @@ export function ChatView({
         sandbox: turnSandbox,
         computerUse: turnComputerUse,
         previewSurface:
-          sidePanelVisible && inspectorTab !== "git"
+          sidePanelVisible &&
+          inspectorTab !== "git" &&
+          inspectorTab !== "workers"
             ? activePreviewSurface
             : null,
         activeAgentId: turnActiveAgentId,
         toolApproval: turnToolApproval,
         toolApprovalGrant: false,
         experimentalHashlinePatch,
+        delegationPolicy: turnDelegationPolicy,
+        workerModel: turnSettings.workerModel,
         messageContent: wireMessageContent,
         searchMemory: searchGraphMemory,
         selectSkills,
@@ -6594,6 +7081,10 @@ export function ChatView({
         store.appendMemoryNotice(id, assistantMessageId, notice),
       upsertChildThread: (thread) => store.upsertChildThread(id, thread),
       updateChildThread: (thread) => store.updateChildThread(thread),
+      upsertWorkerRun: (record) => {
+        store.upsertWorkerRun(record);
+        startWorkerRunEvents(record);
+      },
       captureUsage: metricsCapture.captureUsage,
       captureUsageDelta: captureAgentUsageDelta,
       snapshot,
@@ -6648,6 +7139,19 @@ export function ChatView({
             store.completeStreamEvent(id, assistantMessageId, name, part),
           captureRuntimeMetrics: metricsCapture.captureRuntimeMetrics,
           captureProviderLimit: metricsCapture.captureProviderLimit,
+          onNativeWorker:
+            turnDelegationPolicy === "auto" &&
+            (turnToolApproval === "guarded" || turnPlanMode)
+              ? (lifecycle) =>
+                  store.upsertWorkerRun(
+                    nativeWorkerRunRecord(
+                      lifecycle,
+                      id,
+                      assistantMessageId,
+                      turnModel,
+                    ),
+                  )
+              : undefined,
           setCodexThreadId: (threadId) =>
             store.setAccountRuntime(id, { codexThreadId: threadId }),
           appendImage: (ev) => {
@@ -6926,6 +7430,19 @@ export function ChatView({
   }
 
   async function stopSessionRun(sessionId: string) {
+    const workerRun = useSessions
+      .getState()
+      .workerRuns.find(
+        (record) =>
+          record.run.parent_thread_id === sessionId &&
+          record.run.status === "running",
+      );
+    if (workerRun) {
+      approvedWorkerRunsRef.current.delete(workerRun.run.id);
+      useSessions
+        .getState()
+        .upsertWorkerRun(await stopWorkerRun(workerRun.run.id));
+    }
     const session = useSessions
       .getState()
       .sessions.find((item) => item.id === sessionId);
@@ -7313,6 +7830,21 @@ export function ChatView({
       startMobileThread(event);
       return;
     }
+    if (event.action === "worker_run_start") {
+      const runId = event.text.trim() || activeWorkerRun?.run.id;
+      if (runId) void approveWorkerRun(runId);
+      return;
+    }
+    if (event.action === "worker_run_continue_solo") {
+      const runId = event.text.trim() || activeWorkerRun?.run.id;
+      if (runId) void continueWorkerRunSolo(runId);
+      return;
+    }
+    if (event.action === "worker_run_stop") {
+      const runId = event.text.trim() || activeWorkerRun?.run.id;
+      if (runId) void stopActiveWorkerRun(runId);
+      return;
+    }
     if (event.action === "stop") {
       stop();
       setChatNotice({
@@ -7530,12 +8062,14 @@ export function ChatView({
           background_fit: backgroundFit,
           background_treatment: backgroundTreatment,
         },
+        worker_run: mobileWorkerRun(activeWorkerRun),
       }).catch(() => {});
     }, 300);
     return () => window.clearTimeout(timer);
   }, [
     activeId,
     activeTheme,
+    activeWorkerRun,
     activeTitle,
     backgroundFit,
     backgroundTreatment,
@@ -7694,6 +8228,22 @@ export function ChatView({
           <span>Git</span>
         </button>
       )}
+      <button
+        id="inspector-tab-workers"
+        type="button"
+        className={inspectorTab === "workers" ? "active" : ""}
+        role="tab"
+        aria-selected={inspectorTab === "workers"}
+        aria-controls="inspector-panel-workers"
+        tabIndex={inspectorTab === "workers" ? 0 : -1}
+        onClick={openWorkersInspector}
+      >
+        <Cube size={14} />
+        <span>Workers</span>
+        {activeWorkerRun?.run.status === "running" && (
+          <span className="inspector-live-badge" aria-label="Workers running" />
+        )}
+      </button>
     </div>
   );
 
@@ -7730,42 +8280,38 @@ export function ChatView({
     >
       <div
         ref={chatBodyRef}
-        className={`chat-body${inspectorStacked ? " inspector-stacked" : ""}`}
+        className={`chat-body${panelsStacked ? " inspector-stacked" : ""}`}
       >
         <div className="chat-main">
-          {!sidePanelVisible && (
-            <button
-              className="icon-btn preview-open-btn"
-              data-testid="open-artifact-browser"
-              title={inspectorLauncherLabel}
-              aria-label={inspectorLauncherLabel}
-              onClick={openSelectedSidePanel}
-            >
-              <PanelIcon size={16} />
-            </button>
-          )}
-          <QuickSummaryPanel
-            summary={quickSummary}
-            open={quickSummaryOpen}
-            canOpenGit={canOpenGitPanel}
-            reserveSidePanelButtonSpace={!sidePanelVisible}
-            onOpenChange={setQuickSummaryOpen}
-            onOpenGit={() => {
-              setQuickSummaryOpen(false);
-              openGitPanel();
-            }}
-            onOpenGoal={() => {
-              setQuickSummaryOpen(false);
-              openGoalPanel();
-            }}
-            onFocusComposer={() => {
-              setQuickSummaryOpen(false);
-              focusComposerInput();
-            }}
-            workspaceLauncher={
-              <WorkspaceLauncherButton folder={folder} variant="quick-summary" />
-            }
-          />
+          <div className="chat-main-actions">
+            <WorkspaceLauncherButton folder={folder} />
+            {!contextPanelOpen && (
+              <button
+                ref={contextLauncherRef}
+                className="icon-btn context-open-btn"
+                data-testid="open-context-panel"
+                type="button"
+                title="Open context"
+                aria-label="Open context"
+                aria-expanded="false"
+                aria-controls="quick-summary-panel"
+                onClick={openContextPanel}
+              >
+                <FileText size={15} />
+              </button>
+            )}
+            {!sidePanelVisible && (
+              <button
+                className="icon-btn preview-open-btn"
+                data-testid="open-artifact-browser"
+                title={inspectorLauncherLabel}
+                aria-label={inspectorLauncherLabel}
+                onClick={openSelectedSidePanel}
+              >
+                <PanelIcon size={16} />
+              </button>
+            )}
+          </div>
           <div
             className="chat-scroll"
             ref={chatScrollRef}
@@ -7963,9 +8509,18 @@ export function ChatView({
             )}
           </div>
         </div>
+        <QuickSummaryPanel
+          summary={quickSummary}
+          open={contextPanelOpen}
+          canOpenGit={canOpenGitPanel}
+          onOpenChange={(open) => open ? openContextPanel() : closeContextPanel()}
+          onOpenGit={openGitPanel}
+          onOpenGoal={() => openGoalPanel()}
+          onOpenWorkers={openWorkersInspector}
+        />
         {sidePanelVisible && (
           <>
-            {!inspectorStacked && (
+            {!panelsStacked && (
               <div
                 className={`preview-resize-handle${previewResizing ? " dragging" : ""}${previewPanelClosing ? " closing" : ""}${sidePanelAlreadyOpen ? " no-enter" : ""}`}
                 data-testid="preview-resize-handle"
@@ -7974,18 +8529,44 @@ export function ChatView({
                 title="Drag to resize; double-click to reset"
                 aria-orientation="vertical"
                 aria-valuemin={PREVIEW_PANEL_MIN_WIDTH}
-                aria-valuemax={maxPreviewPanelWidth(chatBodyWidth)}
+                aria-valuemax={maxPreviewPanelWidth(chatBodyWidth, reservedContextWidth)}
                 aria-valuenow={resolvedPreviewPanelWidth}
                 tabIndex={previewPanelClosing ? -1 : 0}
                 onKeyDown={resizePreviewWithKeyboard}
                 onPointerDown={startPreviewResize}
-                onPointerMove={movePreviewResize}
-                onPointerUp={endPreviewResize}
-                onPointerCancel={endPreviewResize}
                 onDoubleClick={() => resizePreviewPanel(DEFAULT_PREVIEW_PANEL_WIDTH)}
               />
             )}
-            {inspectorTab === "git" ? (
+            {inspectorTab === "workers" ? (
+              <WorkersInspector
+                record={activeWorkerRun}
+                policy={delegationPolicy}
+                workerModel={workerModel}
+                agents={agents}
+                modelOptions={pickerModels.map((item) => ({
+                  id: item.id,
+                  label: item.id,
+                }))}
+                busy={workerActionBusy}
+                closing={previewPanelClosing}
+                noEnterMotion={sidePanelAlreadyOpen}
+                modeSwitcher={inspectorTabSwitcher}
+                style={previewPanelStyle}
+                onPolicyChange={(next) =>
+                  updateThreadSettings(activeId, { delegationPolicy: next })
+                }
+                onWorkerModelChange={(next) =>
+                  updateThreadSettings(activeId, { workerModel: next })
+                }
+                onStart={(runId) => void approveWorkerRun(runId)}
+                onStop={(runId) => void stopActiveWorkerRun(runId)}
+                onContinueSolo={(runId) => void continueWorkerRunSolo(runId)}
+                onStopWorker={stopOneWorker}
+                onLoadDiff={getWorkerDiff}
+                onApplyDiff={applyWorkerDiff}
+                onClose={closeWorkersInspector}
+              />
+            ) : inspectorTab === "git" ? (
               <div
                 id="inspector-panel-git"
                 className="inspector-git-panel"

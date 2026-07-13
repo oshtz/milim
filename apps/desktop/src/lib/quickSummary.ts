@@ -1,6 +1,8 @@
 import type {
   ChatAttachment,
   ChatMessage,
+  ChatStreamPart,
+  WorkerRunRecord,
   WorkspaceGitStatus,
 } from "../api";
 import type { GoalSettings } from "./goals";
@@ -13,7 +15,8 @@ export type QuickSummaryRowKind =
   | "goal"
   | "browser"
   | "model"
-  | "sources"
+  | "workers"
+  | "activity"
   | "privacy"
   | "memory"
   | "usage"
@@ -51,6 +54,8 @@ export interface BuildQuickSummaryInput {
   messages: ChatMessage[];
   pendingAttachments?: ChatAttachment[];
   previewUrl?: string | null;
+  workerRun?: WorkerRunRecord;
+  turnRunning?: boolean;
 }
 
 function basename(path: string): string {
@@ -214,6 +219,39 @@ function summarySources(
   return sources;
 }
 
+function workerRow(record?: WorkerRunRecord): QuickSummaryRow | null {
+  if (!record || (record.run.status !== "proposed" && record.run.status !== "running")) return null;
+  const active = record.workers.filter(
+    (worker) => worker.status === "queued" || worker.status === "running",
+  ).length;
+  const total = record.workers.length || record.run.tasks.length;
+  return {
+    kind: "workers",
+    label: "Workers",
+    value: record.run.status === "proposed" ? "Needs approval" : active ? `${active} working` : "Starting",
+    meta: plural(total, "task"),
+    tone: record.run.status === "proposed" ? "warning" : undefined,
+  };
+}
+
+function activityRow(messages: ChatMessage[], turnRunning = false): QuickSummaryRow | null {
+  if (!turnRunning) return null;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const running = (messages[index].streamParts ?? []).filter(
+      (part): part is Extract<ChatStreamPart, { kind: "event" }> =>
+        part.kind === "event" && part.eventType === "tool" && part.status === "running",
+    );
+    if (!running.length) continue;
+    return {
+      kind: "activity",
+      label: "Tool activity",
+      value: `${plural(running.length, "tool")} running`,
+      meta: clip(running.map((part) => part.label).join(" - "), 86),
+    };
+  }
+  return null;
+}
+
 export function buildQuickSummary(input: BuildQuickSummaryInput): QuickSummary {
   const folder = input.folder.trim();
   const plan = latestPlan(input.messages);
@@ -253,6 +291,11 @@ export function buildQuickSummary(input: BuildQuickSummaryInput): QuickSummary {
       title: input.previewUrl ?? undefined,
     });
   }
+
+  const workers = workerRow(input.workerRun);
+  if (workers) rows.push(workers);
+  const activity = activityRow(input.messages, input.turnRunning);
+  if (activity) rows.push(activity);
 
   rows.push({
     kind: "model",
@@ -298,15 +341,6 @@ export function buildQuickSummary(input: BuildQuickSummaryInput): QuickSummary {
       tone: "muted",
     });
   }
-
-  rows.push({
-    kind: "sources",
-    label: "Sources",
-    value: sources.length ? plural(sources.length, "source") : "None",
-    meta: sources.slice(0, 2).map((source) => source.label).join(" - ") || undefined,
-    title: sources.map((source) => source.label).join("\n") || undefined,
-    tone: sources.length ? undefined : "muted",
-  });
 
   return {
     rows,

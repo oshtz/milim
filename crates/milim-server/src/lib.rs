@@ -194,6 +194,26 @@ pub fn build_router(state: AppState) -> Router {
         .route("/threads/{id}/children", get(routes::thread_children))
         .route("/threads/{id}/events", get(routes::thread_events))
         .route("/threads/{id}/stop", post(routes::thread_stop))
+        .route(
+            "/worker-runs",
+            get(routes::worker_runs_list).post(routes::worker_run_create),
+        )
+        .route("/worker-runs/{id}", get(routes::worker_run_get))
+        .route("/worker-runs/{id}/events", get(routes::worker_run_events))
+        .route("/worker-runs/{id}/start", post(routes::worker_run_start))
+        .route("/worker-runs/{id}/stop", post(routes::worker_run_stop))
+        .route(
+            "/worker-runs/{id}/workers/{worker_id}/stop",
+            post(routes::worker_run_worker_stop),
+        )
+        .route(
+            "/worker-runs/{id}/workers/{worker_id}/diff",
+            get(routes::worker_run_worker_diff),
+        )
+        .route(
+            "/worker-runs/{id}/workers/{worker_id}/apply",
+            post(routes::worker_run_worker_apply),
+        )
         // Memory / RAG
         .route("/memory/ingest", post(routes::memory_ingest))
         .route("/memory/search", post(routes::memory_search))

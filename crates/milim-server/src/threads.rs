@@ -11,8 +11,9 @@ use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 
 use milim_agents::{
-    thread_status_terminal, AgentEvent, AgentThread, ThreadEvent, ThreadStore, THREAD_STATUS_DONE,
-    THREAD_STATUS_ERROR, THREAD_STATUS_RUNNING, THREAD_STATUS_STOPPED,
+    thread_status_terminal, AgentEvent, AgentThread, ThreadEvent, ThreadStore, WorkerAccess,
+    WorkerRun, WorkerRunStatus, WorkerRuntime, THREAD_STATUS_DONE, THREAD_STATUS_ERROR,
+    THREAD_STATUS_RUNNING, THREAD_STATUS_STOPPED,
 };
 use milim_core::api::openai::ChatMessage;
 use milim_core::{Error, Result};
@@ -36,6 +37,10 @@ pub struct ChildRunSpec {
     pub agent_id: Option<String>,
     pub system_prompt: Option<String>,
     pub prompt: String,
+    pub run_id: Option<String>,
+    pub runtime: WorkerRuntime,
+    pub access: WorkerAccess,
+    pub worktree_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -80,6 +85,9 @@ impl ThreadSupervisor {
         {
             tracing::warn!("failed to sweep interrupted child threads: {err}");
         }
+        if let Err(err) = store.update_non_terminal_worker_runs("interrupted by restart") {
+            tracing::warn!("failed to sweep interrupted worker runs: {err}");
+        }
         let (events, _) = broadcast::channel(512);
         Self {
             store: Arc::new(store),
@@ -102,10 +110,32 @@ impl ThreadSupervisor {
         tools: ToolRegistry,
         spec: ChildRunSpec,
     ) -> Result<AgentThread> {
+        self.spawn_batch(service, tools, vec![spec])?
+            .pop()
+            .ok_or_else(|| Error::Other("worker batch created no worker".to_string()))
+    }
+
+    pub fn spawn_batch(
+        &self,
+        service: SharedService,
+        tools: ToolRegistry,
+        specs: Vec<ChildRunSpec>,
+    ) -> Result<Vec<AgentThread>> {
         const MAX_ACTIVE_CHILDREN: usize = 16;
         const MAX_ACTIVE_CHILDREN_PER_PARENT: usize = 4;
+        if specs.is_empty() || specs.len() > MAX_ACTIVE_CHILDREN_PER_PARENT {
+            return Err(Error::InvalidRequest(
+                "worker runs require 1 to 4 tasks".to_string(),
+            ));
+        }
+        let parent_id = specs[0].parent_id.clone();
+        if specs.iter().any(|spec| spec.parent_id != parent_id) {
+            return Err(Error::InvalidRequest(
+                "all workers in a run must share one parent thread".to_string(),
+            ));
+        }
         let mut active = self.handles.lock().expect("thread handles poisoned");
-        if active.len() >= MAX_ACTIVE_CHILDREN {
+        if active.len() + specs.len() > MAX_ACTIVE_CHILDREN {
             return Err(Error::InvalidRequest(format!(
                 "at most {MAX_ACTIVE_CHILDREN} child threads may run at once"
             )));
@@ -113,46 +143,62 @@ impl ThreadSupervisor {
         let parent_active = active
             .keys()
             .filter_map(|id| self.store.get(id).ok().flatten())
-            .filter(|thread| thread.parent_id == spec.parent_id)
+            .filter(|thread| thread.parent_id == parent_id)
             .count();
-        if parent_active >= MAX_ACTIVE_CHILDREN_PER_PARENT {
+        if parent_active + specs.len() > MAX_ACTIVE_CHILDREN_PER_PARENT {
             return Err(Error::InvalidRequest(format!(
                 "at most {MAX_ACTIVE_CHILDREN_PER_PARENT} child threads may run for one parent"
             )));
         }
-        let thread = self.store.create(
-            &spec.parent_id,
-            &spec.title,
-            &spec.model,
-            spec.agent_id.as_deref(),
-            &spec.prompt,
-        )?;
-        let thread = self
-            .store
-            .update_status(&thread.id, THREAD_STATUS_RUNNING, None, None)?
-            .unwrap_or(thread);
-        if let Ok(event) = self.store.append_event(&thread.id, "started", json!({})) {
-            let _ = self.events.send(SupervisorEvent::ChildThreadEvent {
+        let tools = Arc::new(tools);
+        let mut workers = Vec::with_capacity(specs.len());
+        for spec in specs {
+            let thread = self.store.create_worker(
+                &spec.parent_id,
+                &spec.title,
+                &spec.model,
+                spec.agent_id.as_deref(),
+                &spec.prompt,
+                spec.run_id.as_deref(),
+                spec.runtime,
+                spec.access,
+            )?;
+            let thread = if let Some(path) = spec.worktree_path.as_deref() {
+                self.store
+                    .update_worker_worktree(&thread.id, path)?
+                    .unwrap_or(thread)
+            } else {
+                thread
+            };
+            let thread = self
+                .store
+                .update_status(&thread.id, THREAD_STATUS_RUNNING, None, None)?
+                .unwrap_or(thread);
+            if let Ok(event) = self.store.append_event(&thread.id, "started", json!({})) {
+                let _ = self.events.send(SupervisorEvent::ChildThreadEvent {
+                    thread: thread.clone(),
+                    event,
+                });
+            }
+            let _ = self.events.send(SupervisorEvent::ChildThreadStarted {
                 thread: thread.clone(),
-                event,
             });
+            let id = thread.id.clone();
+            let task_id = id.clone();
+            let task_thread = thread.clone();
+            let store = self.store.clone();
+            let handles = self.handles.clone();
+            let events = self.events.clone();
+            let service = service.clone();
+            let tools = tools.clone();
+            let handle = tokio::spawn(async move {
+                run_child_thread(store, events, service, tools, task_thread, spec).await;
+                let _ = handles.lock().map(|mut h| h.remove(&task_id));
+            });
+            active.insert(id, handle);
+            workers.push(thread);
         }
-        let _ = self.events.send(SupervisorEvent::ChildThreadStarted {
-            thread: thread.clone(),
-        });
-
-        let id = thread.id.clone();
-        let task_id = id.clone();
-        let task_thread = thread.clone();
-        let store = self.store.clone();
-        let handles = self.handles.clone();
-        let events = self.events.clone();
-        let handle = tokio::spawn(async move {
-            run_child_thread(store, events, service, Arc::new(tools), task_thread, spec).await;
-            let _ = handles.lock().map(|mut h| h.remove(&task_id));
-        });
-        active.insert(id, handle);
-        Ok(thread)
+        Ok(workers)
     }
 
     pub fn get(&self, id: &str) -> Result<Option<AgentThread>> {
@@ -192,6 +238,66 @@ impl ThreadSupervisor {
 
     pub fn event_count(&self, thread_id: &str) -> Result<usize> {
         self.store.event_count(thread_id)
+    }
+
+    pub fn worker_run(&self, id: &str) -> Result<Option<WorkerRun>> {
+        self.store.get_worker_run(id)
+    }
+
+    pub fn worker_runs(&self, parent_id: &str, limit: usize) -> Result<Vec<WorkerRun>> {
+        self.store.list_worker_runs(parent_id, limit)
+    }
+
+    pub fn workers_for_run(&self, run_id: &str) -> Result<Vec<AgentThread>> {
+        self.store.workers_for_run(run_id)
+    }
+
+    pub fn worker_events_after(
+        &self,
+        run_id: &str,
+        after_seq: i64,
+        limit: usize,
+    ) -> Result<Vec<(AgentThread, ThreadEvent)>> {
+        self.store.worker_events_after(run_id, after_seq, limit)
+    }
+
+    pub async fn wait_run(&self, run_id: &str, timeout_ms: u64) -> Result<Option<WorkerRun>> {
+        let mut events = self.subscribe();
+        let timeout = tokio::time::sleep(Duration::from_millis(timeout_ms));
+        tokio::pin!(timeout);
+        loop {
+            let run = self.store.refresh_worker_run_status(run_id)?;
+            if run
+                .as_ref()
+                .map(|run| {
+                    !matches!(
+                        run.status,
+                        WorkerRunStatus::Proposed | WorkerRunStatus::Running
+                    )
+                })
+                .unwrap_or(true)
+            {
+                return Ok(run);
+            }
+            tokio::select! {
+                _ = &mut timeout => return self.store.get_worker_run(run_id),
+                received = events.recv() => match received {
+                    Ok(event) if event.thread().run_id.as_deref() == Some(run_id) => {},
+                    Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {},
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return self.store.get_worker_run(run_id),
+                }
+            }
+        }
+    }
+
+    pub fn stop_run(&self, run_id: &str, message: &str) -> Result<Option<WorkerRun>> {
+        for worker in self.store.workers_for_run(run_id)? {
+            if !thread_status_terminal(&worker.status) {
+                self.stop(&worker.id)?;
+            }
+        }
+        self.store
+            .update_worker_run_status(run_id, WorkerRunStatus::Stopped, Some(message))
     }
 
     pub async fn wait(&self, id: &str, timeout_ms: u64) -> Result<Option<AgentThread>> {
@@ -254,6 +360,9 @@ impl ThreadSupervisor {
                     .clone()
                     .unwrap_or_else(|| "stopped by parent".to_string()),
             });
+            if let Some(run_id) = thread.run_id.as_deref() {
+                let _ = self.store.refresh_worker_run_status(run_id);
+            }
             return Ok(updated);
         }
         self.store.get(id)
@@ -327,7 +436,7 @@ async fn run_child_thread(
     }
     messages.push(ChatMessage::text(
         "system",
-        "You are a Milim child thread. Do the delegated task with the tools Milim exposes to you and return a concise final report. Do not spawn other child threads.",
+        "You are a Milim Worker. Complete only the delegated task and return a concise final report. Do not delegate more work.",
     ));
     messages.push(ChatMessage::text("user", spec.prompt));
 
@@ -438,6 +547,9 @@ async fn run_child_thread(
                     });
                 }
                 let _ = events.send(SupervisorEvent::ChildThreadDone { thread });
+                if let Some(run_id) = spec.run_id.as_deref() {
+                    let _ = store.refresh_worker_run_status(run_id);
+                }
                 return;
             }
             AgentEvent::Error { message } => {
@@ -456,13 +568,20 @@ async fn run_child_thread(
                     });
                 }
                 let _ = events.send(SupervisorEvent::ChildThreadError { thread, message });
+                if let Some(run_id) = spec.run_id.as_deref() {
+                    let _ = store.refresh_worker_run_status(run_id);
+                }
                 return;
             }
             AgentEvent::Start { .. }
             | AgentEvent::MemoryRegistered { .. }
             | AgentEvent::ChildThreadStarted { .. }
             | AgentEvent::ChildThreadDone { .. }
-            | AgentEvent::ChildThreadError { .. } => {}
+            | AgentEvent::ChildThreadError { .. }
+            | AgentEvent::WorkerRunProposed { .. }
+            | AgentEvent::WorkerRunStarted { .. }
+            | AgentEvent::WorkerRunDone { .. }
+            | AgentEvent::WorkerRunError { .. } => {}
         }
     }
 
@@ -475,6 +594,9 @@ async fn run_child_thread(
             thread: error_thread,
             message: message.to_string(),
         });
+    }
+    if let Some(run_id) = spec.run_id.as_deref() {
+        let _ = store.refresh_worker_run_status(run_id);
     }
 }
 

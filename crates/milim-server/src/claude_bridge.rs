@@ -7,7 +7,7 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use axum::response::sse::Event;
-use futures::Stream;
+use futures::{Stream, StreamExt};
 use milim_core::api::openai::{ReasoningEffort, Usage};
 use milim_core::Result;
 use serde::{Deserialize, Serialize};
@@ -15,6 +15,9 @@ use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::process::Command;
 
+use crate::codex_bridge::{
+    AccountNativeWorkerLifecycle, AccountNativeWorkerState, AccountWorkerEvent,
+};
 use crate::privacy::Unredactor;
 
 const CLAUDE_STATUS_TIMEOUT: Duration = Duration::from_secs(10);
@@ -143,11 +146,58 @@ pub(crate) fn run_stream(
     redactions: BTreeMap<String, String>,
 ) -> impl Stream<Item = std::result::Result<Event, Infallible>> {
     async_stream::stream! {
+        let (worker_tx, mut worker_rx) = tokio::sync::mpsc::unbounded_channel();
+        let stream = run_stream_with_worker_events(req, redactions, Some(worker_tx));
+        futures::pin_mut!(stream);
+        while let Some(event) = stream.next().await {
+            yield event;
+            while let Ok(worker) = worker_rx.try_recv() {
+                if matches!(worker, AccountWorkerEvent::NativeWorker { .. }) {
+                    yield sse_event(&worker);
+                }
+            }
+        }
+    }
+}
+
+pub(crate) fn run_read_only_worker_events(
+    prompt: String,
+    model: Option<String>,
+    cwd: Option<String>,
+    redactions: BTreeMap<String, String>,
+) -> impl Stream<Item = AccountWorkerEvent> {
+    let req = read_only_worker_request(prompt, model, cwd);
+    async_stream::stream! {
+        let (worker_tx, mut worker_rx) = tokio::sync::mpsc::unbounded_channel();
+        let stream = run_stream_with_worker_events(req, redactions, Some(worker_tx));
+        futures::pin_mut!(stream);
+        while stream.next().await.is_some() {
+            while let Ok(event) = worker_rx.try_recv() {
+                yield event;
+            }
+        }
+        while let Ok(event) = worker_rx.try_recv() {
+            yield event;
+        }
+    }
+}
+
+fn run_stream_with_worker_events(
+    req: ClaudeRunRequest,
+    redactions: BTreeMap<String, String>,
+    worker_events: Option<tokio::sync::mpsc::UnboundedSender<AccountWorkerEvent>>,
+) -> impl Stream<Item = std::result::Result<Event, Infallible>> {
+    async_stream::stream! {
         let mut retried_locked_session = false;
         loop {
             let mut command = claude_command();
             for arg in claude_run_args(&req) {
                 command.arg(arg);
+            }
+            if worker_events.is_some() {
+                for denied in ["Agent", "Task"] {
+                    command.arg("--disallowedTools").arg(denied);
+                }
             }
             command
                 .stdin(Stdio::null())
@@ -165,24 +215,24 @@ pub(crate) fn run_stream(
                 Err(e) => {
                     let message = claude_spawn_error_message(&e);
                     if is_cli_path_warning(&message) {
-                        yield sse_event(&ClaudeStreamEvent::Warning { message });
+                        yield sse_event_with_worker(&ClaudeStreamEvent::Warning { message }, &worker_events);
                     } else {
-                        yield sse_event(&ClaudeStreamEvent::Error {
+                        yield sse_event_with_worker(&ClaudeStreamEvent::Error {
                             message,
                             usage: None,
                             cost_usd: None,
-                        });
+                        }, &worker_events);
                     }
                     yield Ok(Event::default().data("[DONE]"));
                     return;
                 }
             };
             let Some(stdout) = child.stdout.take() else {
-                yield sse_event(&ClaudeStreamEvent::Error {
+                yield sse_event_with_worker(&ClaudeStreamEvent::Error {
                     message: "claude stdout was not available".to_string(),
                     usage: None,
                     cost_usd: None,
-                });
+                }, &worker_events);
                 yield Ok(Event::default().data("[DONE]"));
                 return;
             };
@@ -205,6 +255,11 @@ pub(crate) fn run_stream(
             loop {
                 match lines.next_line().await {
                     Ok(Some(line)) => {
+                        if let Ok(value) = serde_json::from_str::<Value>(&line) {
+                            if let Some(lifecycle) = claude_native_worker_event(&value) {
+                                publish_worker(&worker_events, AccountWorkerEvent::NativeWorker { lifecycle });
+                            }
+                        }
                         for event in handle_line(&line, &mut content, &mut reasoning, &mut tools, &mut saw_terminal_event) {
                             if matches!(&event, ClaudeStreamEvent::Error { message, .. } if claude_session_in_use_error(message) && !retried_locked_session)
                             {
@@ -212,17 +267,17 @@ pub(crate) fn run_stream(
                                     locked_session_error = Some(message);
                                 }
                             } else {
-                                yield sse_event(&event);
+                                yield sse_event_with_worker(&event, &worker_events);
                             }
                         }
                     }
                     Ok(None) => break,
                     Err(e) => {
-                        yield sse_event(&ClaudeStreamEvent::Error {
+                        yield sse_event_with_worker(&ClaudeStreamEvent::Error {
                             message: format!("claude stream failed: {e}"),
                             usage: None,
                             cost_usd: None,
-                        });
+                        }, &worker_events);
                         yield Ok(Event::default().data("[DONE]"));
                         return;
                     }
@@ -234,29 +289,29 @@ pub(crate) fn run_stream(
             let stderr = stderr_task.await.unwrap_or_default();
             let tail = content.flush();
             if !tail.is_empty() {
-                yield sse_event(&ClaudeStreamEvent::Token { text: tail });
+                yield sse_event_with_worker(&ClaudeStreamEvent::Token { text: tail }, &worker_events);
             }
             let rtail = reasoning.flush();
             if !rtail.is_empty() {
-                yield sse_event(&ClaudeStreamEvent::Reasoning { text: rtail });
+                yield sse_event_with_worker(&ClaudeStreamEvent::Reasoning { text: rtail }, &worker_events);
             }
 
             match status {
                 Ok(status) if status.success() => {
                     if let Some(message) = locked_session_error {
                         if maybe_recover_locked_session(&req, &mut retried_locked_session).await {
-                            yield sse_event(&ClaudeStreamEvent::Warning {
+                            yield sse_event_with_worker(&ClaudeStreamEvent::Warning {
                                 message: "Claude session was already in use; Milim stopped the matching local Claude CLI process and retried.".to_string(),
-                            });
+                            }, &worker_events);
                             continue;
                         }
                         yield locked_session_error_event(&req, message);
                     } else if !saw_terminal_event {
-                        yield sse_event(&ClaudeStreamEvent::Done {
+                        yield sse_event_with_worker(&ClaudeStreamEvent::Done {
                             status: "completed".to_string(),
                             usage: None,
                             cost_usd: None,
-                        });
+                        }, &worker_events);
                     }
                     break;
                 }
@@ -266,28 +321,28 @@ pub(crate) fn run_stream(
                     if claude_session_in_use_error(&message)
                         && maybe_recover_locked_session(&req, &mut retried_locked_session).await
                     {
-                        yield sse_event(&ClaudeStreamEvent::Warning {
+                        yield sse_event_with_worker(&ClaudeStreamEvent::Warning {
                             message: "Claude session was already in use; Milim stopped the matching local Claude CLI process and retried.".to_string(),
-                        });
+                        }, &worker_events);
                         continue;
                     }
                     if claude_session_in_use_error(&message) {
                         yield locked_session_error_event(&req, message);
                     } else {
-                        yield sse_event(&ClaudeStreamEvent::Error {
+                        yield sse_event_with_worker(&ClaudeStreamEvent::Error {
                             message,
                             usage: None,
                             cost_usd: None,
-                        });
+                        }, &worker_events);
                     }
                     break;
                 }
                 Err(e) => {
-                    yield sse_event(&ClaudeStreamEvent::Error {
+                    yield sse_event_with_worker(&ClaudeStreamEvent::Error {
                         message: format!("claude exit status failed: {e}"),
                         usage: None,
                         cost_usd: None,
-                    });
+                    }, &worker_events);
                     break;
                 }
             }
@@ -518,6 +573,74 @@ fn sse_event<T: Serialize>(value: &T) -> std::result::Result<Event, Infallible> 
     Ok(Event::default().data(serde_json::to_string(value).unwrap_or_else(|_| "{}".to_string())))
 }
 
+fn sse_event_with_worker(
+    value: &ClaudeStreamEvent,
+    worker_events: &Option<tokio::sync::mpsc::UnboundedSender<AccountWorkerEvent>>,
+) -> std::result::Result<Event, Infallible> {
+    if let Some(event) = account_worker_event_from_claude(value) {
+        publish_worker(worker_events, event);
+    }
+    sse_event(value)
+}
+
+fn publish_worker(
+    worker_events: &Option<tokio::sync::mpsc::UnboundedSender<AccountWorkerEvent>>,
+    event: AccountWorkerEvent,
+) {
+    if let Some(worker_events) = worker_events {
+        let _ = worker_events.send(event);
+    }
+}
+
+fn account_worker_event_from_claude(value: &ClaudeStreamEvent) -> Option<AccountWorkerEvent> {
+    match value {
+        ClaudeStreamEvent::Token { text } => Some(AccountWorkerEvent::Token { text: text.clone() }),
+        ClaudeStreamEvent::Reasoning { text } => {
+            Some(AccountWorkerEvent::Reasoning { text: text.clone() })
+        }
+        ClaudeStreamEvent::Tool {
+            id,
+            name,
+            status,
+            label,
+            detail,
+            icon,
+        } => Some(AccountWorkerEvent::Tool {
+            id: id.clone(),
+            name: name.clone(),
+            status: status.clone(),
+            label: label.clone(),
+            detail: detail.clone(),
+            icon: icon.clone(),
+        }),
+        ClaudeStreamEvent::Done {
+            status,
+            usage,
+            cost_usd,
+        } => Some(AccountWorkerEvent::Done {
+            status: status.clone(),
+            usage: *usage,
+            cost_usd: *cost_usd,
+        }),
+        ClaudeStreamEvent::Error {
+            message,
+            usage,
+            cost_usd,
+        } => Some(AccountWorkerEvent::Error {
+            message: message.clone(),
+            usage: *usage,
+            cost_usd: *cost_usd,
+        }),
+        ClaudeStreamEvent::Warning { message }
+        | ClaudeStreamEvent::SessionRecoveryRequired { message } => {
+            Some(AccountWorkerEvent::Warning {
+                message: message.clone(),
+            })
+        }
+        ClaudeStreamEvent::RateLimit { .. } => None,
+    }
+}
+
 fn first_error(stderr: &str, fallback: &str) -> String {
     stderr
         .lines()
@@ -729,6 +852,54 @@ fn clean_optional(value: Option<&str>) -> Option<String> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string)
+}
+
+fn read_only_worker_request(
+    prompt: String,
+    model: Option<String>,
+    cwd: Option<String>,
+) -> ClaudeRunRequest {
+    ClaudeRunRequest {
+        prompt,
+        model,
+        cwd,
+        reasoning_effort: None,
+        session_id: None,
+        tool_approval_policy: Some("guarded".to_string()),
+        tool_approval_grant: false,
+        plan_mode: false,
+        allow_session_recovery: false,
+    }
+}
+
+fn claude_native_worker_event(value: &Value) -> Option<AccountNativeWorkerLifecycle> {
+    if value.get("type").and_then(Value::as_str) != Some("system") {
+        return None;
+    }
+    let subtype = value.get("subtype").and_then(Value::as_str)?;
+    let status = match subtype {
+        "agent_started" => "running",
+        "agent_completed" => "completed",
+        "agent_failed" => "error",
+        "agent_stopped" => "stopped",
+        _ => return None,
+    };
+    let agent_id = string_field(value, "agent_id")?;
+    Some(AccountNativeWorkerLifecycle {
+        runtime: "claude".to_string(),
+        call_id: string_field(value, "tool_use_id").unwrap_or_else(|| agent_id.clone()),
+        operation: "native_agent".to_string(),
+        status: status.to_string(),
+        parent_runtime_id: string_field(value, "parent_agent_id"),
+        worker_runtime_ids: vec![agent_id.clone()],
+        workers: vec![AccountNativeWorkerState {
+            runtime_id: agent_id,
+            status: status.to_string(),
+            message: string_field(value, "message"),
+        }],
+        prompt: string_field(value, "prompt").or_else(|| string_field(value, "description")),
+        model: string_field(value, "model"),
+    })
 }
 
 fn claude_run_args(req: &ClaudeRunRequest) -> Vec<String> {
@@ -1187,6 +1358,73 @@ mod tests {
 
         req.plan_mode = true;
         assert_eq!(claude_permission_mode(&req), "plan");
+    }
+
+    #[test]
+    fn read_only_workers_are_ephemeral_and_deny_mutations() {
+        let req = read_only_worker_request(
+            "inspect the repository".to_string(),
+            Some("sonnet".to_string()),
+            Some("C:\\repo".to_string()),
+        );
+        let args = claude_run_args(&req);
+        assert!(args.iter().any(|arg| arg == "--no-session-persistence"));
+        assert!(!args
+            .iter()
+            .any(|arg| arg == "--session-id" || arg == "--resume"));
+        assert_eq!(claude_permission_mode(&req), "dontAsk");
+        assert_eq!(
+            claude_denied_tools(&req),
+            vec!["Bash", "PowerShell", "Edit", "Write", "NotebookEdit"]
+        );
+    }
+
+    #[test]
+    fn maps_only_explicit_claude_agent_lineage() {
+        let event = claude_native_worker_event(&json!({
+            "type": "system",
+            "subtype": "agent_started",
+            "agent_id": "agent-2",
+            "parent_agent_id": "agent-1",
+            "tool_use_id": "toolu-1",
+            "description": "review the parser",
+            "model": "sonnet"
+        }))
+        .expect("native worker event");
+        assert_eq!(event.call_id, "toolu-1");
+        assert_eq!(event.status, "running");
+        assert_eq!(event.parent_runtime_id.as_deref(), Some("agent-1"));
+        assert_eq!(event.worker_runtime_ids, vec!["agent-2"]);
+
+        let tool_use = json!({
+            "type": "stream_event",
+            "event": {
+                "type": "content_block_start",
+                "content_block": {
+                    "type": "tool_use",
+                    "id": "toolu-2",
+                    "name": "Agent",
+                    "input": { "description": "review" }
+                }
+            }
+        });
+        assert!(claude_native_worker_event(&tool_use).is_none());
+
+        let mut content = Unredactor::new(BTreeMap::new());
+        let mut reasoning = Unredactor::new(BTreeMap::new());
+        let mut tools = BTreeMap::new();
+        let mut done = false;
+        let events = handle_line(
+            &tool_use.to_string(),
+            &mut content,
+            &mut reasoning,
+            &mut tools,
+            &mut done,
+        );
+        assert!(matches!(
+            events.first(),
+            Some(ClaudeStreamEvent::Tool { name, .. }) if name == "Agent"
+        ));
     }
 
     #[test]

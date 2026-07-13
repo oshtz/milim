@@ -1,5 +1,6 @@
 import type {
   ChatMessage,
+  DelegationPolicy,
   ModelInfo,
   ReasoningEffort,
   ToolApprovalMode,
@@ -46,6 +47,8 @@ type TurnSetupSettings = {
   memory: boolean;
   activeAgentId?: string | null;
   toolApproval: ToolApprovalMode;
+  delegationPolicy: DelegationPolicy;
+  workerModel: string;
   planMode: boolean;
 };
 

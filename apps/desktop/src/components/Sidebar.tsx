@@ -21,6 +21,8 @@ import { useContextMenu } from "./ContextMenu";
 import { Archive, ArrowUp, Bolt, Calendar, ChevronDown, Cube, Download, Folder, FolderOpen, Gear, GitBranch, Lightbulb, MoreHorizontal, Pin, Plus, Search, Sidebar as PanelIcon } from "./icons";
 
 const SIDEBAR_KEYBOARD_STEP = 32;
+const SIDEBAR_COLLAPSE_OVERSHOOT = 96;
+const SIDEBAR_SNAP_ANIMATION_MS = 100;
 const SIDEBAR_DRAG_THRESHOLD = 5;
 const SIDEBAR_SECTION_PREVIEW_LIMIT = 5;
 const inTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -57,6 +59,7 @@ export type SidebarSessionLike = {
   updatedAt: number;
   archivedAt?: number;
   retryWorkspace?: { originalFolder: string };
+  worker?: unknown;
 };
 
 type SidebarSession = Omit<Session, "messages">;
@@ -133,7 +136,7 @@ export function groupSessionsByProjects<T extends SidebarSessionLike>(sessions: 
   };
 
   const isVisibleSession = (session: SidebarSessionLike) => {
-    if (session.archivedAt) return false;
+    if (session.archivedAt || session.worker) return false;
     const folder = projectFolderForSession(session);
     return !folder || !archivedProjectFolders.has(folder);
   };
@@ -295,7 +298,15 @@ export function Sidebar({
   const [confirmArchiveProjectId, setConfirmArchiveProjectId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const projectMenuRef = useRef<HTMLDivElement>(null);
-  const sidebarResizeStartRef = useRef<{ clientX: number; width: number } | null>(null);
+  const sidebarResizeStartRef = useRef<{
+    clientX: number;
+    width: number;
+    pointerId: number;
+    target: HTMLDivElement;
+    snappedClosed: boolean;
+    resumeTimer: number | null;
+  } | null>(null);
+  const sidebarResizeCleanupRef = useRef<(() => void) | null>(null);
   const pointerDragRef = useRef<SidebarPointerDrag | null>(null);
   const dragOverRef = useRef<SidebarDragTarget | null>(null);
   const suppressNextClickRef = useRef(false);
@@ -699,23 +710,66 @@ export function Sidebar({
   function startSidebarResize(event: ReactPointerEvent<HTMLDivElement>) {
     if (event.button !== 0) return;
     event.preventDefault();
-    sidebarResizeStartRef.current = { clientX: event.clientX, width: resolvedSidebarWidth };
+    const target = event.currentTarget;
+    sidebarResizeStartRef.current = {
+      clientX: event.clientX,
+      width: resolvedSidebarWidth,
+      pointerId: event.pointerId,
+      target,
+      snappedClosed: false,
+      resumeTimer: null,
+    };
     setSidebarResizing(true);
-    event.currentTarget.setPointerCapture(event.pointerId);
+    target.setPointerCapture(event.pointerId);
+    const move = (nextEvent: PointerEvent) => moveSidebarResize(nextEvent);
+    const end = (nextEvent: PointerEvent) => endSidebarResize(nextEvent);
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", end);
+    window.addEventListener("pointercancel", end);
+    sidebarResizeCleanupRef.current = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", end);
+      window.removeEventListener("pointercancel", end);
+      sidebarResizeCleanupRef.current = null;
+    };
   }
 
-  function moveSidebarResize(event: ReactPointerEvent<HTMLDivElement>) {
+  function moveSidebarResize(event: PointerEvent) {
     const start = sidebarResizeStartRef.current;
-    if (!start) return;
-    resizeSidebar(start.width + event.clientX - start.clientX);
+    if (!start || event.pointerId !== start.pointerId) return;
+    const width = start.width + event.clientX - start.clientX;
+    if (width < MIN_SIDEBAR_WIDTH - SIDEBAR_COLLAPSE_OVERSHOOT) {
+      if (!start.snappedClosed) {
+        start.snappedClosed = true;
+        if (start.resumeTimer != null) window.clearTimeout(start.resumeTimer);
+        start.resumeTimer = null;
+        setSidebarResizing(false);
+        onToggle();
+      }
+      return;
+    }
+    if (start.snappedClosed) {
+      start.snappedClosed = false;
+      onToggle();
+      start.resumeTimer = window.setTimeout(() => {
+        if (sidebarResizeStartRef.current === start && !start.snappedClosed) {
+          setSidebarResizing(true);
+        }
+        start.resumeTimer = null;
+      }, SIDEBAR_SNAP_ANIMATION_MS);
+    }
+    resizeSidebar(width);
   }
 
-  function endSidebarResize(event: ReactPointerEvent<HTMLDivElement>) {
-    if (!sidebarResizeStartRef.current) return;
+  function endSidebarResize(event: PointerEvent) {
+    const start = sidebarResizeStartRef.current;
+    if (!start || event.pointerId !== start.pointerId) return;
     sidebarResizeStartRef.current = null;
+    if (start.resumeTimer != null) window.clearTimeout(start.resumeTimer);
+    sidebarResizeCleanupRef.current?.();
     setSidebarResizing(false);
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId);
+    if (start.target.hasPointerCapture(event.pointerId)) {
+      start.target.releasePointerCapture(event.pointerId);
     }
   }
 
@@ -1194,9 +1248,6 @@ export function Sidebar({
         tabIndex={0}
         onKeyDown={resizeSidebarWithKeyboard}
         onPointerDown={startSidebarResize}
-        onPointerMove={moveSidebarResize}
-        onPointerUp={endSidebarResize}
-        onPointerCancel={endSidebarResize}
         onDoubleClick={() => resizeSidebar(DEFAULT_SIDEBAR_WIDTH)}
       />
     </aside>

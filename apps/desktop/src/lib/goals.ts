@@ -1,6 +1,13 @@
 import type { ChatMessage } from "../api";
 
-export type GoalStatus = "idle" | "running" | "paused" | "complete" | "blocked" | "error";
+export type GoalStatus =
+  | "idle"
+  | "running"
+  | "waiting_for_worker_approval"
+  | "paused"
+  | "complete"
+  | "blocked"
+  | "error";
 export type GoalDecisionStatus = "continue" | "complete" | "blocked";
 
 export interface GoalSettings {
@@ -37,7 +44,15 @@ export const DEFAULT_GOAL_SETTINGS: GoalSettings = {
   developerMaxTurns: null,
 };
 
-const GOAL_STATUSES: GoalStatus[] = ["idle", "running", "paused", "complete", "blocked", "error"];
+const GOAL_STATUSES: GoalStatus[] = [
+  "idle",
+  "running",
+  "waiting_for_worker_approval",
+  "paused",
+  "complete",
+  "blocked",
+  "error",
+];
 const DECISION_STATUSES: GoalDecisionStatus[] = ["continue", "complete", "blocked"];
 
 function stringValue(value: unknown): string {
@@ -86,7 +101,7 @@ export function goalConfigured(goal: GoalSettings): boolean {
 
 export function goalChipVisible(goal: GoalSettings): boolean {
   const completeUnread = goal.status === "complete" && (goal.updatedAt ?? 0) > (goal.lastSeenAt ?? 0);
-  return goal.status === "running" || goal.status === "paused" || goal.status === "blocked" || goal.status === "error" || completeUnread;
+  return goal.status === "running" || goal.status === "waiting_for_worker_approval" || goal.status === "paused" || goal.status === "blocked" || goal.status === "error" || completeUnread;
 }
 
 export function goalInstructionMessage(goal: GoalSettings): ChatMessage | null {

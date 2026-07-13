@@ -381,6 +381,11 @@ const MOBILE_COMPANION_HTML: &str = r##"<!doctype html>
     .thread-state { flex: none; border: 1px solid #323237; border-radius: 7px; padding: 4px 7px; color: #a0a0a8; font-size: 11px; }
     .thread-switch { min-height: 28px; padding: 0 9px; background: transparent; color: #ededf0; border-color: #323237; font-size: 12px; }
     .thread-list { max-height: 34svh; overflow: auto; display: grid; gap: 6px; border-bottom: 1px solid #262629; padding-bottom: 12px; scrollbar-width: thin; }
+    .worker-run-mobile { display: grid; gap: 9px; border: 1px solid #323237; border-radius: 8px; padding: 10px; background: #0d0d0f; }
+    .worker-run-mobile-head, .worker-run-mobile-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .worker-run-mobile-tasks { display: grid; gap: 6px; color: #a0a0a8; font-size: 11px; }
+    .worker-run-mobile-task { display: flex; justify-content: space-between; gap: 8px; }
+    .worker-run-mobile-actions button { min-height: 32px; padding: 0 9px; font-size: 11px; }
     .thread-item { min-height: 0; display: grid; gap: 3px; text-align: left; border-color: #262629; background: #0d0d0f; color: #ededf0; padding: 9px 10px; }
     .thread-item.active { background: #ededf0; color: #0d0d0f; border-color: transparent; }
     .thread-item small { color: #71717a; font-size: 11px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1151,6 +1156,15 @@ const MOBILE_COMPANION_HTML: &str = r##"<!doctype html>
         </label>
         <div id="threadList" class="thread-list"></div>
       </aside>
+      <section id="workerRunPanel" class="worker-run-mobile hidden" aria-label="Worker run">
+        <div class="worker-run-mobile-head"><strong id="workerRunTitle">Workers</strong><span id="workerRunStatus"></span></div>
+        <div id="workerRunTasks" class="worker-run-mobile-tasks"></div>
+        <div class="worker-run-mobile-actions">
+          <button id="workerRunStart" type="button">Run workers</button>
+          <button id="workerRunSolo" class="secondary" type="button">Continue solo</button>
+          <button id="workerRunStop" class="danger hidden" type="button">Stop</button>
+        </div>
+      </section>
       <div id="threadMessages" class="thread-messages"></div>
       <form id="relayForm" class="compose">
         <select id="modelSelect" class="composer-model-select" aria-label="Model"></select>
@@ -1239,6 +1253,13 @@ const MOBILE_COMPANION_HTML: &str = r##"<!doctype html>
     const modelSelect = document.getElementById("modelSelect");
     const sendButton = document.getElementById("sendButton");
     const stopButton = document.getElementById("stopButton");
+    const workerRunPanel = document.getElementById("workerRunPanel");
+    const workerRunTitle = document.getElementById("workerRunTitle");
+    const workerRunStatus = document.getElementById("workerRunStatus");
+    const workerRunTasks = document.getElementById("workerRunTasks");
+    const workerRunStart = document.getElementById("workerRunStart");
+    const workerRunSolo = document.getElementById("workerRunSolo");
+    const workerRunStop = document.getElementById("workerRunStop");
     const attachmentTray = document.getElementById("attachmentTray");
     const fileInput = document.getElementById("fileInput");
     const installButton = document.getElementById("installButton");
@@ -1629,11 +1650,37 @@ const MOBILE_COMPANION_HTML: &str = r##"<!doctype html>
       }
       if (!target.childNodes.length && source) target.textContent = source;
     }
+    function renderWorkerRun(run) {
+      workerRunPanel.classList.toggle("hidden", !run);
+      workerRunTasks.replaceChildren();
+      if (!run) return;
+      workerRunTitle.textContent = `${(run.tasks || []).length} worker${(run.tasks || []).length === 1 ? "" : "s"}`;
+      workerRunStatus.textContent = run.status || "unknown";
+      for (const task of run.tasks || []) {
+        const row = document.createElement("div");
+        row.className = "worker-run-mobile-task";
+        const title = document.createElement("span");
+        title.textContent = task.title || "Worker";
+        const status = document.createElement("span");
+        status.textContent = task.status || "queued";
+        row.append(title, status);
+        workerRunTasks.append(row);
+      }
+      const proposed = run.status === "proposed";
+      const running = run.status === "running";
+      workerRunStart.classList.toggle("hidden", !proposed);
+      workerRunSolo.classList.toggle("hidden", !proposed);
+      workerRunStop.classList.toggle("hidden", !running);
+      workerRunStart.dataset.runId = run.id || "";
+      workerRunSolo.dataset.runId = run.id || "";
+      workerRunStop.dataset.runId = run.id || "";
+    }
     function renderThread(thread) {
       state.thread = thread;
       applyThemeSnapshot(thread?.theme);
       threadMessages.replaceChildren();
       renderModelSelect(thread);
+      renderWorkerRun(thread?.worker_run);
       if (!thread) {
         threadTitle.textContent = "No active thread";
         threadMeta.textContent = "Open Milim on desktop to publish the current chat.";
@@ -1991,6 +2038,9 @@ const MOBILE_COMPANION_HTML: &str = r##"<!doctype html>
       relay("new_thread");
     });
     document.getElementById("stopButton").addEventListener("click", () => relayAction("stop").catch(showRelayError));
+    workerRunStart.addEventListener("click", () => relayAction("worker_run_start", workerRunStart.dataset.runId || "").catch(showRelayError));
+    workerRunSolo.addEventListener("click", () => relayAction("worker_run_continue_solo", workerRunSolo.dataset.runId || "").catch(showRelayError));
+    workerRunStop.addEventListener("click", () => relayAction("worker_run_stop", workerRunStop.dataset.runId || "").catch(showRelayError));
     document.getElementById("renameButton").addEventListener("click", () => {
       const next = prompt("Rename thread", state.thread?.title || "");
       if (next) {
@@ -3351,6 +3401,7 @@ fn mcp_catalog_registry(st: &AppState) -> ToolRegistry {
             supervisor.clone(),
             AgentMemoryContext::default(),
             ToolRegistry::new(),
+            false,
         );
     }
     registry
@@ -7393,6 +7444,9 @@ struct AgentMemoryContext {
     project_locator: Option<String>,
     project_label: Option<String>,
     message_id: Option<String>,
+    delegation_policy: milim_agents::DelegationPolicy,
+    worker_model: Option<String>,
+    worker_context: Option<String>,
 }
 
 const DESKTOP_WORKSPACE_TOOL_NAMES: &[&str] = &[
@@ -7422,6 +7476,7 @@ const PREVIEW_TOOL_NAMES: &[&str] = &[
     "preview_scroll",
 ];
 const CHILD_THREAD_TOOL_NAMES: &[&str] = &[
+    "delegate_workers",
     "child_thread_spawn",
     "child_thread_list",
     "child_thread_read",
@@ -7519,7 +7574,42 @@ fn memory_context_from_request(req: &ChatCompletionRequest, model: String) -> Ag
         project_locator: string_extra(req, "project_locator"),
         project_label: string_extra(req, "project_label"),
         message_id: string_extra(req, "message_id"),
+        delegation_policy: match string_extra(req, "delegation_policy").as_deref() {
+            Some("off") => milim_agents::DelegationPolicy::Off,
+            Some("auto") => milim_agents::DelegationPolicy::Auto,
+            _ => milim_agents::DelegationPolicy::Ask,
+        },
+        worker_model: string_extra(req, "worker_model"),
+        worker_context: worker_context_from_request(req),
     }
+}
+
+fn worker_context_from_request(req: &ChatCompletionRequest) -> Option<String> {
+    let instructions = req
+        .messages
+        .iter()
+        .filter(|message| message.role == "system")
+        .map(ChatMessage::text_content)
+        .filter(|text| !text.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let request = req
+        .messages
+        .iter()
+        .rev()
+        .find(|message| message.role == "user")
+        .map(ChatMessage::text_content)
+        .unwrap_or_default();
+    let context = [
+        (!request.trim().is_empty()).then(|| format!("Current request:\n{request}")),
+        (!instructions.trim().is_empty())
+            .then(|| format!("Resolved instructions and skills:\n{instructions}")),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join("\n\n");
+    (!context.is_empty()).then(|| context.chars().take(32_000).collect())
 }
 
 fn workspace_is_selected(st: &AppState) -> bool {
@@ -7679,6 +7769,8 @@ fn agent_registry_for_mode(
                 supervisor.clone(),
                 memory,
                 child_registry_for_policy(st, policy, inherited),
+                policy.approval == ToolApprovalPolicy::Open
+                    || (policy.approval == ToolApprovalPolicy::Review && policy.approval_granted),
             );
         }
     }
@@ -7858,29 +7950,17 @@ fn register_child_thread_tools(
     supervisor: Arc<ThreadSupervisor>,
     context: AgentMemoryContext,
     child_tools: ToolRegistry,
+    allow_write_review: bool,
 ) {
-    reg.register(Arc::new(ChildThreadSpawnTool {
-        state: state.clone(),
-        supervisor: supervisor.clone(),
-        context: context.clone(),
-        child_tools,
-    }));
-    reg.register(Arc::new(ChildThreadListTool {
-        supervisor: supervisor.clone(),
-        context: context.clone(),
-    }));
-    reg.register(Arc::new(ChildThreadReadTool {
-        supervisor: supervisor.clone(),
-        context: context.clone(),
-    }));
-    reg.register(Arc::new(ChildThreadWaitTool {
-        supervisor: supervisor.clone(),
-        context: context.clone(),
-    }));
-    reg.register(Arc::new(ChildThreadStopTool {
-        supervisor,
-        context,
-    }));
+    if context.delegation_policy != milim_agents::DelegationPolicy::Off {
+        reg.register(Arc::new(DelegateWorkersTool {
+            state,
+            supervisor,
+            context,
+            child_tools,
+            allow_write_review,
+        }));
+    }
 }
 
 fn child_read_only_registry(st: &AppState) -> ToolRegistry {
@@ -7895,12 +7975,22 @@ fn child_read_only_registry(st: &AppState) -> ToolRegistry {
     reg
 }
 
+fn worker_review_registry(st: &AppState) -> ToolRegistry {
+    static_registry_for_run(st)
+        .without(CHILD_THREAD_TOOL_NAMES)
+        .without(SANDBOX_TOOL_NAMES)
+        .without(COMPUTER_TOOL_NAMES)
+        .without(PREVIEW_TOOL_NAMES)
+}
+
 fn child_registry_for_policy(
     st: &AppState,
     policy: &ToolRunPolicy,
     inherited: ToolRegistry,
 ) -> ToolRegistry {
-    if policy.approval == ToolApprovalPolicy::Open {
+    if policy.approval == ToolApprovalPolicy::Open
+        || (policy.approval == ToolApprovalPolicy::Review && policy.approval_granted)
+    {
         inherited.without(CHILD_THREAD_TOOL_NAMES)
     } else {
         child_read_only_registry(st)
@@ -7962,6 +8052,332 @@ fn child_thread_notice(thread: &milim_agents::AgentThread) -> Value {
         "thread": thread,
         "message": message
     })
+}
+
+fn worker_run_notice(run: &milim_agents::WorkerRun, workers: &[milim_agents::Worker]) -> Value {
+    let event = match run.status {
+        milim_agents::WorkerRunStatus::Proposed => "proposed",
+        milim_agents::WorkerRunStatus::Running => "started",
+        milim_agents::WorkerRunStatus::Done | milim_agents::WorkerRunStatus::Partial => "done",
+        milim_agents::WorkerRunStatus::Stopped | milim_agents::WorkerRunStatus::Error => "error",
+    };
+    json!({ "event": event, "run": run, "workers": workers, "message": run.error })
+}
+
+struct DelegateWorkersTool {
+    state: AppState,
+    supervisor: Arc<ThreadSupervisor>,
+    context: AgentMemoryContext,
+    child_tools: ToolRegistry,
+    allow_write_review: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct DelegateWorkerTaskArgs {
+    prompt: String,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    role: Option<String>,
+    #[serde(default)]
+    agent_id: Option<String>,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    access: Option<milim_agents::WorkerAccess>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DelegateWorkersArgs {
+    tasks: Vec<DelegateWorkerTaskArgs>,
+}
+
+async fn resolve_worker_plan(
+    state: &AppState,
+    parent_model: &str,
+    worker_model: Option<&str>,
+    tasks: Vec<DelegateWorkerTaskArgs>,
+) -> milim_core::Result<(Vec<milim_agents::WorkerPlanTask>, Vec<Option<String>>)> {
+    if !(1..=4).contains(&tasks.len()) {
+        return Err(Error::InvalidRequest(
+            "delegate_workers requires 1 to 4 independent tasks".to_string(),
+        ));
+    }
+    let available = state.service.list_models().await?;
+    let mut plan = Vec::with_capacity(tasks.len());
+    let mut system_prompts = Vec::with_capacity(tasks.len());
+    for task in tasks {
+        let prompt = trim_required_tool_arg(task.prompt, "tasks[].prompt")?;
+        let model = task
+            .model
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .or(worker_model)
+            .filter(|v| !v.trim().is_empty())
+            .unwrap_or(parent_model)
+            .trim()
+            .to_string();
+        if !available.iter().any(|candidate| candidate.id == model) {
+            return Err(Error::InvalidRequest(format!(
+                "worker model '{model}' is not available"
+            )));
+        }
+        let agent_id = trim_optional_agent_id(task.agent_id);
+        let system_prompt = if let Some(agent_id) = agent_id.as_deref() {
+            let store = state
+                .agents
+                .as_ref()
+                .ok_or_else(|| Error::InvalidRequest("named agents are not enabled".to_string()))?;
+            let agent = store
+                .get(agent_id)?
+                .ok_or_else(|| Error::ModelNotFound(format!("agent {agent_id}")))?;
+            (!agent.system_prompt.trim().is_empty()).then_some(agent.system_prompt)
+        } else {
+            None
+        };
+        let title = child_thread_title(task.title, &prompt);
+        plan.push(milim_agents::WorkerPlanTask {
+            id: uuid::Uuid::new_v4().to_string(),
+            title,
+            prompt,
+            role: task.role,
+            agent_id,
+            model,
+            access: task.access.unwrap_or_default(),
+        });
+        system_prompts.push(system_prompt);
+    }
+    Ok((plan, system_prompts))
+}
+
+fn worker_specs(
+    run: &milim_agents::WorkerRun,
+    system_prompts: Vec<Option<String>>,
+) -> Vec<ChildRunSpec> {
+    run.tasks
+        .iter()
+        .cloned()
+        .zip(system_prompts)
+        .map(|(task, system_prompt)| {
+            let system_prompt = [run.context.as_deref(), system_prompt.as_deref()]
+                .into_iter()
+                .flatten()
+                .filter(|value| !value.trim().is_empty())
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            ChildRunSpec {
+                parent_id: run.parent_thread_id.clone(),
+                title: task.title,
+                model: task.model,
+                agent_id: task.agent_id,
+                system_prompt: (!system_prompt.is_empty()).then_some(system_prompt),
+                prompt: task.prompt,
+                run_id: Some(run.id.clone()),
+                runtime: run.runtime,
+                access: task.access,
+                worktree_path: None,
+            }
+        })
+        .collect()
+}
+
+fn managed_worker_context(state: &AppState, base: Option<&str>) -> Option<String> {
+    let mut sections = Vec::new();
+    if let Some(base) = base.filter(|value| !value.trim().is_empty()) {
+        sections.push(base.to_string());
+    }
+    if let Some(workspace) = workspace_snapshot(state) {
+        let branch = git_text(&workspace, &["branch", "--show-current"]);
+        sections.push(format!(
+            "Workspace: {}{}",
+            workspace.display(),
+            branch
+                .filter(|value| !value.is_empty())
+                .map(|value| format!("\nBranch: {value}"))
+                .unwrap_or_default(),
+        ));
+    }
+    (!sections.is_empty()).then(|| sections.join("\n\n"))
+}
+
+async fn start_managed_worker_run(
+    state: &AppState,
+    supervisor: &ThreadSupervisor,
+    run: &milim_agents::WorkerRun,
+    tools: ToolRegistry,
+) -> milim_core::Result<(milim_agents::WorkerRun, Vec<milim_agents::Worker>)> {
+    if run.status != milim_agents::WorkerRunStatus::Proposed {
+        return Err(Error::InvalidRequest(
+            "worker run is not awaiting approval".to_string(),
+        ));
+    }
+    let task_args = run
+        .tasks
+        .iter()
+        .map(|task| DelegateWorkerTaskArgs {
+            prompt: task.prompt.clone(),
+            title: Some(task.title.clone()),
+            role: task.role.clone(),
+            agent_id: task.agent_id.clone(),
+            model: Some(task.model.clone()),
+            access: Some(task.access),
+        })
+        .collect();
+    let (resolved, prompts) = resolve_worker_plan(state, "default", None, task_args).await?;
+    if resolved
+        .iter()
+        .map(|t| (&t.prompt, &t.model, &t.agent_id))
+        .ne(run.tasks.iter().map(|t| (&t.prompt, &t.model, &t.agent_id)))
+    {
+        return Err(Error::InvalidRequest(
+            "frozen worker plan no longer resolves exactly".to_string(),
+        ));
+    }
+    let running = supervisor
+        .store()
+        .update_worker_run_status(&run.id, milim_agents::WorkerRunStatus::Running, None)?
+        .ok_or_else(|| Error::ModelNotFound(format!("worker run {}", run.id)))?;
+    let mut workers = Vec::with_capacity(running.tasks.len());
+    for mut spec in worker_specs(&running, prompts) {
+        let worker_tools = if spec.access == milim_agents::WorkerAccess::WriteReview {
+            match create_worker_worktree(state).await {
+                Some(path) => {
+                    spec.worktree_path = Some(path.to_string_lossy().to_string());
+                    tools.scoped_to_workspace(&path)
+                }
+                None => {
+                    spec.access = milim_agents::WorkerAccess::ReadOnly;
+                    tools.read_only()
+                }
+            }
+        } else {
+            tools.read_only()
+        };
+        workers.push(supervisor.spawn(state.service.clone(), worker_tools, spec)?);
+    }
+    Ok((running, workers))
+}
+
+async fn create_worker_worktree(state: &AppState) -> Option<PathBuf> {
+    let folder = workspace_snapshot(state)?;
+    tokio::task::spawn_blocking(move || {
+        let status = workspace_git_status_blocking(Some(folder));
+        if !status.is_repo {
+            return None;
+        }
+        let root = PathBuf::from(status.root.as_deref()?);
+        let checkpoint =
+            workspace_git_checkpoint_action(&root, &status, Some("worker-run-base".to_string()))
+                .checkpoint?;
+        let worktree_root = milim_core::paths::Paths::resolve()
+            .root()
+            .join("runtime")
+            .join("hot-swap");
+        let created =
+            workspace_git_create_retry_worktree_action(&root, Some(checkpoint), &worktree_root);
+        created
+            .ok
+            .then(|| created.worktree)
+            .flatten()
+            .map(PathBuf::from)
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
+fn schedule_worker_run_deadline(supervisor: Arc<ThreadSupervisor>, run_id: String) {
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(MAX_CHILD_THREAD_WAIT_MS)).await;
+        let still_running = supervisor
+            .worker_run(&run_id)
+            .ok()
+            .flatten()
+            .is_some_and(|run| run.status == milim_agents::WorkerRunStatus::Running);
+        if still_running {
+            let _ = supervisor.stop_run(&run_id, "worker run exceeded the five-minute deadline");
+        }
+    });
+}
+
+#[async_trait]
+impl Tool for DelegateWorkersTool {
+    fn name(&self) -> &str {
+        "delegate_workers"
+    }
+    fn effect(&self) -> ToolEffect {
+        ToolEffect::ReadOnly
+    }
+    fn description(&self) -> &str {
+        "Delegate 1 to 4 genuinely independent tasks as one Worker Run. Do not delegate short or sequential work. Ask mode proposes a frozen plan for approval; Auto runs managed read-only workers and joins their results."
+    }
+    fn input_schema(&self) -> Value {
+        json!({
+            "type": "object", "properties": { "tasks": { "type": "array", "minItems": 1, "maxItems": 4,
+                "items": { "type": "object", "properties": {
+                    "prompt": {"type":"string"}, "title":{"type":"string"}, "role":{"type":"string"},
+                    "agent_id":{"type":["string","null"]}, "model":{"type":"string"},
+                    "access":{"type":"string","enum":["read_only","write_review"]}
+                }, "required":["prompt"], "additionalProperties":false }
+            } }, "required":["tasks"], "additionalProperties":false
+        })
+    }
+    async fn invoke(&self, args: Value) -> milim_core::Result<Value> {
+        let args: DelegateWorkersArgs = serde_json::from_value(args).map_err(|error| {
+            Error::InvalidRequest(format!("invalid delegate_workers arguments: {error}"))
+        })?;
+        let parent_id = child_thread_parent_id(&self.context)?;
+        let (mut tasks, _) = resolve_worker_plan(
+            &self.state,
+            &self.context.model,
+            self.context.worker_model.as_deref(),
+            args.tasks,
+        )
+        .await?;
+        if self.context.delegation_policy != milim_agents::DelegationPolicy::Ask
+            || !self.allow_write_review
+        {
+            for task in &mut tasks {
+                task.access = milim_agents::WorkerAccess::ReadOnly;
+            }
+        }
+        let run = self.supervisor.store().create_worker_run(
+            &parent_id,
+            self.context.message_id.as_deref(),
+            self.context.delegation_policy,
+            milim_agents::WorkerRuntime::Managed,
+            tasks,
+            managed_worker_context(&self.state, self.context.worker_context.as_deref()).as_deref(),
+        )?;
+        if self.context.delegation_policy == milim_agents::DelegationPolicy::Ask {
+            return Ok(
+                json!({ "ok": true, "run": run, "workers": [], "worker_run_notice": worker_run_notice(&run, &[]) }),
+            );
+        }
+        let (mut run, _) = start_managed_worker_run(
+            &self.state,
+            &self.supervisor,
+            &run,
+            self.child_tools.clone(),
+        )
+        .await?;
+        run = self
+            .supervisor
+            .wait_run(&run.id, MAX_CHILD_THREAD_WAIT_MS)
+            .await?
+            .unwrap_or(run);
+        if run.status == milim_agents::WorkerRunStatus::Running {
+            run = self
+                .supervisor
+                .stop_run(&run.id, "worker run exceeded the five-minute deadline")?
+                .unwrap_or(run);
+        }
+        let workers = self.supervisor.workers_for_run(&run.id)?;
+        Ok(
+            json!({ "ok": true, "run": run, "workers": workers, "worker_run_notice": worker_run_notice(&run, &workers) }),
+        )
+    }
 }
 
 struct ChildThreadSpawnTool {
@@ -8120,6 +8536,10 @@ impl Tool for ChildThreadSpawnTool {
                 agent_id,
                 system_prompt,
                 prompt,
+                run_id: None,
+                runtime: milim_agents::WorkerRuntime::Legacy,
+                access: milim_agents::WorkerAccess::ReadOnly,
+                worktree_path: None,
             },
         )?;
 
@@ -8850,7 +9270,7 @@ pub(crate) async fn agent_run_by_id(
     let reasoning_effort = req.reasoning_effort;
     let agent_config = agent_run_config_from_request(&req);
     let tool_policy = tool_run_policy_from_request(&req);
-    let memory = memory_context_from_request(&req, requested_model.clone());
+    let mut memory = memory_context_from_request(&req, requested_model.clone());
     let mut messages = Vec::new();
     if !agent.system_prompt.is_empty() {
         messages.push(ChatMessage::text("system", agent.system_prompt.clone()));
@@ -8863,6 +9283,25 @@ pub(crate) async fn agent_run_by_id(
         .map(ChatMessage::text_content)
         .unwrap_or_default();
     messages.extend(crate::agent_skill_messages(&st, &agent, &skill_query));
+    let resolved_role = messages
+        .iter()
+        .filter(|message| message.role == "system")
+        .map(ChatMessage::text_content)
+        .filter(|text| !text.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    if !resolved_role.is_empty() {
+        memory.worker_context = Some(
+            [
+                memory.worker_context.as_deref(),
+                Some(resolved_role.as_str()),
+            ]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join("\n\n"),
+        );
+    }
     messages.extend(req.messages);
     let model = requested_model;
     let memory = AgentMemoryContext {
@@ -9146,6 +9585,315 @@ pub(crate) async fn thread_delete(
     let supervisor = thread_supervisor(&st)?;
     let deleted = supervisor.delete_tree(&id).map_err(ApiError)?;
     Ok(Json(json!({ "deleted": deleted.len() })).into_response())
+}
+
+#[derive(Deserialize)]
+pub(crate) struct WorkerRunsListQuery {
+    parent_thread_id: String,
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct WorkerRunCreateRequest {
+    parent_thread_id: String,
+    #[serde(default)]
+    parent_turn_id: Option<String>,
+    #[serde(default)]
+    policy: milim_agents::DelegationPolicy,
+    #[serde(default)]
+    runtime: milim_agents::WorkerRuntime,
+    #[serde(default)]
+    model: Option<String>,
+    tasks: Vec<DelegateWorkerTaskArgs>,
+}
+
+pub(crate) async fn worker_runs_list(
+    State(st): State<AppState>,
+    Query(query): Query<WorkerRunsListQuery>,
+    headers: HeaderMap,
+    peer: Peer,
+) -> Result<Response, ApiError> {
+    authorize(&st, &headers, peer_addr(peer))?;
+    let parent_id =
+        trim_required_tool_arg(query.parent_thread_id, "parent_thread_id").map_err(ApiError)?;
+    let supervisor = thread_supervisor(&st)?;
+    let runs = supervisor
+        .worker_runs(&parent_id, query.limit.unwrap_or(50).clamp(1, 200))
+        .map_err(ApiError)?;
+    let mut records = Vec::with_capacity(runs.len());
+    for run in runs {
+        let workers = supervisor.workers_for_run(&run.id).map_err(ApiError)?;
+        records.push(json!({ "run": run, "workers": workers }));
+    }
+    Ok(Json(json!({ "runs": records })).into_response())
+}
+
+pub(crate) async fn worker_run_create(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    peer: Peer,
+    Json(req): Json<WorkerRunCreateRequest>,
+) -> Result<Response, ApiError> {
+    authorize(&st, &headers, peer_addr(peer))?;
+    if req.policy == milim_agents::DelegationPolicy::Off {
+        return Err(ApiError(Error::InvalidRequest(
+            "delegation is off for this thread".to_string(),
+        )));
+    }
+    let parent_id =
+        trim_required_tool_arg(req.parent_thread_id, "parent_thread_id").map_err(ApiError)?;
+    let default_model = if let Some(model) = req
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+    {
+        model.to_string()
+    } else {
+        st.service
+            .list_models()
+            .await
+            .map_err(ApiError)?
+            .first()
+            .map(|m| m.id.clone())
+            .ok_or_else(|| {
+                ApiError(Error::InvalidRequest(
+                    "no worker model is available".to_string(),
+                ))
+            })?
+    };
+    let (mut tasks, _) = resolve_worker_plan(&st, &default_model, req.model.as_deref(), req.tasks)
+        .await
+        .map_err(ApiError)?;
+    for task in &mut tasks {
+        task.access = milim_agents::WorkerAccess::ReadOnly;
+    }
+    // Native adapters normalize their own activity into this contract. This endpoint safely falls back to managed workers.
+    let _requested_runtime = req.runtime;
+    let supervisor = thread_supervisor(&st)?;
+    let mut run = supervisor
+        .store()
+        .create_worker_run(
+            &parent_id,
+            req.parent_turn_id.as_deref(),
+            req.policy,
+            milim_agents::WorkerRuntime::Managed,
+            tasks,
+            None,
+        )
+        .map_err(ApiError)?;
+    let mut workers = Vec::new();
+    if req.policy == milim_agents::DelegationPolicy::Auto {
+        (run, workers) =
+            start_managed_worker_run(&st, &supervisor, &run, child_read_only_registry(&st))
+                .await
+                .map_err(ApiError)?;
+        schedule_worker_run_deadline(supervisor.clone(), run.id.clone());
+    }
+    Ok(Json(json!({ "run": run, "workers": workers })).into_response())
+}
+
+pub(crate) async fn worker_run_get(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    peer: Peer,
+) -> Result<Response, ApiError> {
+    authorize(&st, &headers, peer_addr(peer))?;
+    let supervisor = thread_supervisor(&st)?;
+    let run = supervisor
+        .worker_run(&id)
+        .map_err(ApiError)?
+        .ok_or_else(|| ApiError(Error::ModelNotFound(format!("worker run {id}"))))?;
+    let workers = supervisor.workers_for_run(&id).map_err(ApiError)?;
+    Ok(Json(json!({ "run": run, "workers": workers })).into_response())
+}
+
+pub(crate) async fn worker_run_start(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    peer: Peer,
+) -> Result<Response, ApiError> {
+    authorize(&st, &headers, peer_addr(peer))?;
+    let supervisor = thread_supervisor(&st)?;
+    let run = supervisor
+        .worker_run(&id)
+        .map_err(ApiError)?
+        .ok_or_else(|| ApiError(Error::ModelNotFound(format!("worker run {id}"))))?;
+    let (run, workers) =
+        start_managed_worker_run(&st, &supervisor, &run, worker_review_registry(&st))
+            .await
+            .map_err(ApiError)?;
+    schedule_worker_run_deadline(supervisor, run.id.clone());
+    Ok(Json(json!({ "run": run, "workers": workers })).into_response())
+}
+
+pub(crate) async fn worker_run_stop(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    peer: Peer,
+) -> Result<Response, ApiError> {
+    authorize(&st, &headers, peer_addr(peer))?;
+    let supervisor = thread_supervisor(&st)?;
+    let run = supervisor
+        .stop_run(&id, "stopped by parent")
+        .map_err(ApiError)?
+        .ok_or_else(|| ApiError(Error::ModelNotFound(format!("worker run {id}"))))?;
+    let workers = supervisor.workers_for_run(&id).map_err(ApiError)?;
+    Ok(Json(json!({ "run": run, "workers": workers })).into_response())
+}
+
+fn owned_worker(
+    supervisor: &ThreadSupervisor,
+    run_id: &str,
+    worker_id: &str,
+) -> Result<milim_agents::Worker, ApiError> {
+    let worker = supervisor
+        .get(worker_id)
+        .map_err(ApiError)?
+        .filter(|worker| worker.run_id.as_deref() == Some(run_id))
+        .ok_or_else(|| ApiError(Error::ModelNotFound(format!("worker {worker_id}"))))?;
+    Ok(worker)
+}
+
+pub(crate) async fn worker_run_worker_stop(
+    State(st): State<AppState>,
+    Path((id, worker_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    peer: Peer,
+) -> Result<Response, ApiError> {
+    authorize(&st, &headers, peer_addr(peer))?;
+    let supervisor = thread_supervisor(&st)?;
+    let worker = owned_worker(&supervisor, &id, &worker_id)?;
+    let worker = supervisor
+        .stop(&worker_id)
+        .map_err(ApiError)?
+        .unwrap_or(worker);
+    let run = supervisor
+        .store()
+        .refresh_worker_run_status(&id)
+        .map_err(ApiError)?;
+    Ok(Json(json!({ "run": run, "worker": worker })).into_response())
+}
+
+pub(crate) async fn worker_run_worker_diff(
+    State(st): State<AppState>,
+    Path((id, worker_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    peer: Peer,
+) -> Result<Response, ApiError> {
+    authorize(&st, &headers, peer_addr(peer))?;
+    let supervisor = thread_supervisor(&st)?;
+    let worker = owned_worker(&supervisor, &id, &worker_id)?;
+    let worktree = worker
+        .worktree_path
+        .as_deref()
+        .map(PathBuf::from)
+        .ok_or_else(|| {
+            ApiError(Error::InvalidRequest(
+                "worker has no review worktree".into(),
+            ))
+        })?;
+    let payload = tokio::task::spawn_blocking(move || {
+        let status = workspace_git_status_blocking(Some(worktree.clone()));
+        let checkpoint =
+            workspace_git_checkpoint_action(&worktree, &status, Some("worker-review".to_string()));
+        let diff = checkpoint
+            .checkpoint
+            .as_deref()
+            .and_then(|reference| {
+                git_text(&worktree, &["diff", "--binary", "HEAD", reference, "--"])
+            })
+            .unwrap_or_default();
+        json!({ "worker_id": worker_id, "status": status, "diff": diff })
+    })
+    .await
+    .map_err(|error| ApiError(Error::Other(format!("worker diff task failed: {error}"))))?;
+    Ok(Json(payload).into_response())
+}
+
+pub(crate) async fn worker_run_worker_apply(
+    State(st): State<AppState>,
+    Path((id, worker_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    peer: Peer,
+) -> Result<Response, ApiError> {
+    authorize(&st, &headers, peer_addr(peer))?;
+    let supervisor = thread_supervisor(&st)?;
+    let worker = owned_worker(&supervisor, &id, &worker_id)?;
+    let worktree = worker.worktree_path.clone().ok_or_else(|| {
+        ApiError(Error::InvalidRequest(
+            "worker has no review worktree".into(),
+        ))
+    })?;
+    let root = workspace_snapshot(&st)
+        .ok_or_else(|| ApiError(Error::InvalidRequest("no working folder selected".into())))?;
+    let worktree_root = milim_core::paths::Paths::resolve()
+        .root()
+        .join("runtime")
+        .join("hot-swap");
+    let result = tokio::task::spawn_blocking(move || {
+        let checkpoint = git_text(FsPath::new(&worktree), &["rev-parse", "HEAD"]);
+        workspace_git_apply_retry_worktree_action(&root, checkpoint, Some(worktree), &worktree_root)
+    })
+    .await
+    .map_err(|error| ApiError(Error::Other(format!("worker apply task failed: {error}"))))?;
+    Ok(Json(result).into_response())
+}
+
+pub(crate) async fn worker_run_events(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+    Query(query): Query<ThreadEventsQuery>,
+    headers: HeaderMap,
+    peer: Peer,
+) -> Result<Response, ApiError> {
+    authorize(&st, &headers, peer_addr(peer))?;
+    let supervisor = thread_supervisor(&st)?;
+    if supervisor.worker_run(&id).map_err(ApiError)?.is_none() {
+        return Err(ApiError(Error::ModelNotFound(format!("worker run {id}"))));
+    }
+    let mut events = supervisor.subscribe();
+    let limit = thread_event_limit(query.event_limit.unwrap_or(DEFAULT_THREAD_EVENT_LIMIT));
+    let initial_after_seq = query.after_seq.unwrap_or(0).max(0);
+    let stream = async_stream::stream! {
+        let mut last_seq = initial_after_seq;
+        if let Ok(backfill) = supervisor.worker_events_after(&id, last_seq, limit) {
+            for (worker, event) in backfill {
+                last_seq = last_seq.max(event.seq);
+                let data = serde_json::to_string(&json!({"type":"worker_run_worker_event","run_id":id,"worker":worker,"event":event})).unwrap_or_else(|_| "{}".to_string());
+                yield Ok::<Event, Infallible>(Event::default().data(data));
+            }
+        }
+        loop {
+            match events.recv().await {
+                Ok(event) if event.thread().run_id.as_deref() == Some(id.as_str()) => {
+                    if let SupervisorEvent::ChildThreadEvent { event: stored, .. } = &event {
+                        if stored.seq <= last_seq { continue; }
+                        last_seq = stored.seq;
+                    }
+                    let run = supervisor.worker_run(&id).ok().flatten();
+                    let kind = match &event {
+                        SupervisorEvent::ChildThreadStarted { .. } => "worker_run_worker_started",
+                        SupervisorEvent::ChildThreadDone { .. } => "worker_run_worker_done",
+                        SupervisorEvent::ChildThreadError { .. } => "worker_run_worker_error",
+                        SupervisorEvent::ChildThreadStopped { .. } => "worker_run_worker_stopped",
+                        SupervisorEvent::ChildThreadEvent { .. } => "worker_run_worker_event",
+                    };
+                    let data = serde_json::to_string(&json!({"type":kind,"run":run,"worker":event.thread(),"event":event})).unwrap_or_else(|_| "{}".to_string());
+                    yield Ok::<Event, Infallible>(Event::default().data(data));
+                }
+                Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {},
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    };
+    Ok(Sse::new(stream)
+        .keep_alive(KeepAlive::default())
+        .into_response())
 }
 
 // ----- Schedules -----

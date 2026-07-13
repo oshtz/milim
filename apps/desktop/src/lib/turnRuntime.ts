@@ -3,6 +3,7 @@ import type {
   AgentEvent,
   AgentMemoryContext,
   AgentToolContext,
+  AccountNativeWorkerLifecycle,
   ChatMessage,
   ChatStreamPart,
   ChildThreadInfo,
@@ -16,6 +17,7 @@ import type {
   RunTrace,
   ToolApprovalMode,
   TokenUsage,
+  WorkerRunRecord,
 } from "../api.js";
 import {
   prepareAndStartTurn,
@@ -382,6 +384,7 @@ export function createAccountRuntimeEventHandler({
   captureProviderLimit,
   setCodexThreadId,
   appendImage,
+  onNativeWorker,
 }: {
   append: (text: string) => void;
   appendThinking: (text: string) => void;
@@ -395,6 +398,7 @@ export function createAccountRuntimeEventHandler({
   captureProviderLimit?: (limit?: ProviderLimitInfo) => void;
   setCodexThreadId?: (threadId: string) => void;
   appendImage?: (event: AccountRuntimeImageEvent) => void;
+  onNativeWorker?: (lifecycle: AccountNativeWorkerLifecycle) => void;
 }): {
   state: AccountRuntimeEventState;
   handle: (event: AccountRuntimeEvent) => void;
@@ -420,6 +424,8 @@ export function createAccountRuntimeEventHandler({
         setCodexThreadId?.(event.thread_id);
       } else if (event.type === "image") {
         appendImage?.(event);
+      } else if (event.type === "native_worker") {
+        onNativeWorker?.(event.lifecycle);
       } else if (event.type === "rate_limit") {
         captureProviderLimit?.(event.limit);
       } else if (event.type === "done") {
@@ -513,6 +519,7 @@ type RunAccountRuntimeTurnParams = {
     cost_usd?: number;
   }) => void;
   captureProviderLimit?: (limit?: ProviderLimitInfo) => void;
+  onNativeWorker?: (lifecycle: AccountNativeWorkerLifecycle) => void;
   signal?: AbortSignal;
 } & (
   | {
@@ -554,6 +561,7 @@ export async function runAccountRuntimeTurn(
     completeStreamEvent,
     captureRuntimeMetrics,
     captureProviderLimit,
+    onNativeWorker,
     signal,
   } = params;
   const contextMessages = contextMessagesForTurn(promptContext, "model");
@@ -587,6 +595,7 @@ export async function runAccountRuntimeTurn(
     completeStreamEvent,
     captureRuntimeMetrics,
     captureProviderLimit,
+    onNativeWorker,
     setCodexThreadId: params.kind === "codex" ? params.setThreadId : undefined,
     appendImage: params.kind === "codex" ? params.appendImage : undefined,
   });
@@ -919,6 +928,7 @@ export function createAgentRunEventHandler({
   appendMemoryNotice,
   upsertChildThread,
   updateChildThread,
+  upsertWorkerRun,
   captureUsage,
   captureUsageDelta,
   snapshot,
@@ -937,6 +947,7 @@ export function createAgentRunEventHandler({
   appendMemoryNotice: (notice: MemoryNotice) => void;
   upsertChildThread: (thread: ChildThreadInfo) => void;
   updateChildThread: (thread: ChildThreadInfo) => void;
+  upsertWorkerRun?: (record: WorkerRunRecord) => void;
   captureUsage: (usage?: TokenUsage) => void;
   captureUsageDelta: (usage?: TokenUsage) => void;
   snapshot: () => void;
@@ -1022,6 +1033,29 @@ export function createAgentRunEventHandler({
           statusPart(
             "Worker stopped",
             event.message ?? childThreadDetail(event.thread),
+          ),
+        );
+        break;
+      case "worker_run_proposed":
+      case "worker_run_started":
+      case "worker_run_done":
+      case "worker_run_error":
+        flush();
+        if (event.run)
+          upsertWorkerRun?.({ run: event.run, workers: event.workers ?? [] });
+        appendStreamEvent(
+          statusPart(
+            event.type === "worker_run_proposed"
+              ? "Worker plan ready"
+              : event.type === "worker_run_started"
+                ? "Workers started"
+                : event.type === "worker_run_done"
+                  ? "Workers done"
+                  : "Worker run error",
+            event.run
+              ? `${event.run.tasks.length} task${event.run.tasks.length === 1 ? "" : "s"}`
+              : event.message,
+            event.type === "worker_run_error" ? "error" : "status",
           ),
         );
         break;

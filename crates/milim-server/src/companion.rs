@@ -135,6 +135,9 @@ pub enum MobileRelayAction {
     DeleteThread,
     SetModel,
     Attach,
+    WorkerRunStart,
+    WorkerRunContinueSolo,
+    WorkerRunStop,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -189,6 +192,8 @@ pub struct MobileThreadUpdateRequest {
     pub models: Vec<MobileModelSummary>,
     #[serde(default)]
     pub theme: Option<MobileThemeSnapshot>,
+    #[serde(default)]
+    pub worker_run: Option<MobileWorkerRunSnapshot>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -210,6 +215,25 @@ pub struct MobileThreadSnapshot {
     pub groups: Vec<MobileThreadGroup>,
     pub models: Vec<MobileModelSummary>,
     pub theme: Option<MobileThemeSnapshot>,
+    pub worker_run: Option<MobileWorkerRunSnapshot>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct MobileWorkerRunSnapshot {
+    pub id: String,
+    pub status: String,
+    #[serde(default)]
+    pub tasks: Vec<MobileWorkerTaskSnapshot>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct MobileWorkerTaskSnapshot {
+    pub title: String,
+    pub model: String,
+    pub access: String,
+    pub status: String,
+    #[serde(default)]
+    pub result: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -495,6 +519,7 @@ impl MobileCompanionBridge {
                 .filter_map(clean_model_summary)
                 .collect(),
             theme: request.theme.map(clean_mobile_theme),
+            worker_run: request.worker_run.map(clean_mobile_worker_run),
         };
         inner.thread = Some(snapshot.clone());
         let _ = self.thread_updates.send(snapshot.version);
@@ -735,6 +760,27 @@ fn clean_model_summary(model: MobileModelSummary) -> Option<MobileModelSummary> 
             .map(|value| clean_limited(value, MAX_THREAD_MODEL_CHARS))
             .filter(|value| !value.is_empty()),
     })
+}
+
+fn clean_mobile_worker_run(mut run: MobileWorkerRunSnapshot) -> MobileWorkerRunSnapshot {
+    run.id = clean_limited(&run.id, MAX_THREAD_MODEL_CHARS);
+    run.status = clean_limited(&run.status, 40);
+    run.tasks = run
+        .tasks
+        .into_iter()
+        .take(4)
+        .map(|mut task| {
+            task.title = clean_limited(&task.title, MAX_THREAD_TITLE_CHARS);
+            task.model = clean_limited(&task.model, MAX_THREAD_MODEL_CHARS);
+            task.access = clean_limited(&task.access, 40);
+            task.status = clean_limited(&task.status, 40);
+            task.result = task
+                .result
+                .map(|value| trim_limited(&value, MAX_THREAD_MESSAGE_CHARS));
+            task
+        })
+        .collect();
+    run
 }
 
 fn clean_mobile_theme(theme: MobileThemeSnapshot) -> MobileThemeSnapshot {

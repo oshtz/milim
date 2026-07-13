@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
-import { createElement, type ComponentType, type ReactNode } from "react";
+import { createElement, type ComponentType } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createServer } from "vite";
-import type { ChatMessage, WorkspaceGitStatus } from "../src/api.js";
+import type { ChatMessage, WorkerRunRecord, WorkspaceGitStatus } from "../src/api.js";
 import { DEFAULT_GOAL_SETTINGS } from "../src/lib/goals.js";
 import { buildQuickSummary, type QuickSummary, type QuickSummaryRowKind } from "../src/lib/quickSummary.js";
 
@@ -10,12 +10,10 @@ type QuickSummaryPanelProps = {
   summary: QuickSummary;
   open: boolean;
   canOpenGit: boolean;
-  reserveSidePanelButtonSpace: boolean;
   onOpenChange: (open: boolean) => void;
   onOpenGit: () => void;
   onOpenGoal: () => void;
-  onFocusComposer: () => void;
-  workspaceLauncher?: ReactNode;
+  onOpenWorkers: () => void;
 };
 
 function gitStatus(patch: Partial<WorkspaceGitStatus> = {}): WorkspaceGitStatus {
@@ -65,10 +63,9 @@ const empty = buildQuickSummary({
 
 assert.deepEqual(
   empty.rows.map((item) => item.label),
-  ["No workspace", "Model", "Sources"],
+  ["No workspace", "Model"],
 );
 assert.equal(row(empty, "workspace").value, "Pick a folder");
-assert.equal(row(empty, "sources").value, "None");
 assert.equal(empty.sources.length, 0);
 
 const clean = buildQuickSummary({
@@ -156,11 +153,77 @@ assert.match(row(active, "workspace").value, /1 conflict/);
 assert.equal(row(active, "workspace").tone, "error");
 assert.equal(active.rows.some((item) => item.kind === "plan"), false);
 assert.equal(row(active, "goal").label, "Running goal");
-assert.equal(row(active, "sources").value, "4 sources");
-assert.match(row(active, "sources").meta ?? "", /Pending: todo\.txt/);
 assert.deepEqual(
   active.sources.map((source) => source.kind),
   ["attachment", "attachment", "artifact", "memory"],
+);
+
+const workerRun: WorkerRunRecord = {
+  run: {
+    id: "run-1",
+    parent_thread_id: "thread-1",
+    policy: "ask",
+    runtime: "managed",
+    status: "running",
+    tasks: [
+      { id: "task-1", title: "Inspect", prompt: "Inspect", model: "gpt-5", access: "read_only" },
+    ],
+    created_at: "2026-07-13T00:00:00Z",
+    updated_at: "2026-07-13T00:00:00Z",
+  },
+  workers: [
+    {
+      id: "worker-1",
+      parent_id: "thread-1",
+      root_id: "thread-1",
+      title: "Inspect",
+      status: "running",
+      model: "gpt-5",
+      prompt: "Inspect",
+      created_at: "2026-07-13T00:00:00Z",
+      updated_at: "2026-07-13T00:00:00Z",
+      runtime: "managed",
+      access: "read_only",
+    },
+  ],
+};
+
+const withActivity = buildQuickSummary({
+  folder: "C:\\work\\milim",
+  model: "gpt-5",
+  privacy: "off",
+  memory: true,
+  planMode: false,
+  goal: DEFAULT_GOAL_SETTINGS,
+  gitStatus: gitStatus(),
+  workerRun,
+  turnRunning: true,
+  messages: [{
+    role: "assistant",
+    content: "",
+    streamParts: [{ kind: "event", eventType: "tool", label: "Searching files", status: "running" }],
+  }],
+});
+assert.equal(row(withActivity, "workers").value, "1 working");
+assert.equal(row(withActivity, "activity").value, "1 tool running");
+assert.equal(
+  buildQuickSummary({
+    folder: "",
+    model: "gpt-5",
+    privacy: "off",
+    memory: true,
+    planMode: false,
+    goal: DEFAULT_GOAL_SETTINGS,
+    gitStatus: null,
+    workerRun: { ...workerRun, run: { ...workerRun.run, status: "done" } },
+    turnRunning: false,
+    messages: [{
+      role: "assistant",
+      content: "",
+      streamParts: [{ kind: "event", eventType: "tool", label: "Searching files", status: "running" }],
+    }],
+  }).rows.some((item) => item.kind === "workers" || item.kind === "activity"),
+  false,
 );
 
 const server = await createServer({
@@ -179,29 +242,54 @@ try {
       summary: { sources: [] } as unknown as QuickSummary,
       open: true,
       canOpenGit: false,
-      reserveSidePanelButtonSpace: false,
       onOpenChange: () => {},
       onOpenGit: () => {},
       onOpenGoal: () => {},
-      onFocusComposer: () => {},
+      onOpenWorkers: () => {},
     }),
   );
   assert.match(missingRowsMarkup, /data-testid="quick-summary-panel"/);
+  assert.match(missingRowsMarkup, />Sources</);
+  assert.match(missingRowsMarkup, />None</);
 
-  const openWithLauncherMarkup = renderToStaticMarkup(
+  const groupedMarkup = renderToStaticMarkup(
     createElement(QuickSummaryPanel, {
-      summary: empty,
+      summary: {
+        ...withActivity,
+        rows: [...withActivity.rows, row(active, "goal")],
+        sources: Array.from({ length: 7 }, (_, index) => ({
+          kind: "attachment" as const,
+          label: `source-${index + 1}`,
+        })),
+      },
       open: true,
-      canOpenGit: false,
-      reserveSidePanelButtonSpace: true,
+      canOpenGit: true,
       onOpenChange: () => {},
       onOpenGit: () => {},
       onOpenGoal: () => {},
-      onFocusComposer: () => {},
-      workspaceLauncher: createElement("span", { "data-testid": "launcher-placeholder" }),
+      onOpenWorkers: () => {},
     }),
   );
-  assert.match(openWithLauncherMarkup, /data-testid="launcher-placeholder"/);
+  for (const section of ["Environment", "Task", "Activity", "Context", "Sources"]) {
+    assert.match(groupedMarkup, new RegExp(`>${section}<`));
+  }
+  assert.match(groupedMarkup, />2 more</);
+  assert.match(groupedMarkup, /source-5/);
+  assert.doesNotMatch(groupedMarkup, /source-6/);
+
+  const closedMarkup = renderToStaticMarkup(
+    createElement(QuickSummaryPanel, {
+      summary: empty,
+      open: false,
+      canOpenGit: false,
+      onOpenChange: () => {},
+      onOpenGit: () => {},
+      onOpenGoal: () => {},
+      onOpenWorkers: () => {},
+    }),
+  );
+  assert.match(closedMarkup, /aria-hidden="true"/);
+  assert.doesNotMatch(closedMarkup, />Context</);
 } finally {
   await server.close();
 }
