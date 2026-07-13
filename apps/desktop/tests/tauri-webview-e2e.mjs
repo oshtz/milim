@@ -1354,7 +1354,9 @@ async function runMicroUiCheck(page) {
       value: { writeText: async () => undefined },
     });
   });
+  await page.evaluate(() => window.localStorage.setItem("milim.perf", "1"));
   await seedChatSearchFixture(page);
+  await dismissOnboardingIfPresent(page);
   await page.keyboard.press("Control+K");
   await page.getByTestId("chat-search-input").fill("volcano ledger");
   await page.getByTestId("chat-search-result").filter({ hasText: "Older Search Fixture" }).click();
@@ -1387,6 +1389,27 @@ async function runMicroUiCheck(page) {
   await assertAttribute(sidebarHandle, "aria-valuenow", "248");
   await page.keyboard.press("ArrowRight");
   await sidebarHandle.dblclick();
+  await assertAttribute(sidebarHandle, "aria-valuenow", "248");
+  await delay(150);
+
+  await resetUiPersistenceWrites(page);
+  const sidebarDragBox = await sidebarHandle.boundingBox();
+  if (!sidebarDragBox) throw new Error("Sidebar resize handle should have measurable bounds.");
+  const sidebarDragX = sidebarDragBox.x + 4;
+  const sidebarDragY = sidebarDragBox.y + sidebarDragBox.height / 2;
+  await page.mouse.move(sidebarDragX, sidebarDragY);
+  await page.mouse.down();
+  for (let step = 1; step <= 24; step += 1) {
+    await page.mouse.move(sidebarDragX + step * 4, sidebarDragY);
+    await delay(8);
+  }
+  await assertAttribute(sidebarHandle, "aria-valuenow", "344");
+  await assertUiPersistenceWrites(page, 0, "Sidebar drag before pointer-up");
+  await page.mouse.up();
+  await assertAttribute(sidebarHandle, "aria-valuenow", "344");
+  await assertUiPersistenceWrites(page, 1, "Completed sidebar drag");
+  await sidebarHandle.focus();
+  await page.keyboard.press("Enter");
   await assertAttribute(sidebarHandle, "aria-valuenow", "248");
   await delay(150);
 
@@ -1429,6 +1452,26 @@ async function runMicroUiCheck(page) {
   await previewHandle.dblclick();
   await assertAttribute(previewHandle, "aria-valuenow", "420");
 
+  await resetUiPersistenceWrites(page);
+  const previewDragBox = await previewHandle.boundingBox();
+  if (!previewDragBox) throw new Error("Inspector resize handle should have measurable bounds.");
+  const previewDragX = previewDragBox.x + 4;
+  const previewDragY = previewDragBox.y + previewDragBox.height / 2;
+  await page.mouse.move(previewDragX, previewDragY);
+  await page.mouse.down();
+  for (let step = 1; step <= 24; step += 1) {
+    await page.mouse.move(previewDragX - step * 4, previewDragY);
+    await delay(8);
+  }
+  await assertAttribute(previewHandle, "aria-valuenow", "516");
+  await assertUiPersistenceWrites(page, 0, "Inspector drag before pointer-up");
+  await page.mouse.up();
+  await assertAttribute(previewHandle, "aria-valuenow", "516");
+  await assertUiPersistenceWrites(page, 1, "Completed inspector drag");
+  await previewHandle.focus();
+  await page.keyboard.press("Enter");
+  await assertAttribute(previewHandle, "aria-valuenow", "420");
+
   const previewHandleBox = await previewHandle.boundingBox();
   if (!previewHandleBox) throw new Error("Inspector resize handle should have measurable bounds.");
   await page.mouse.move(previewHandleBox.x + 4, previewHandleBox.y + previewHandleBox.height / 2);
@@ -1463,6 +1506,24 @@ async function runMicroUiCheck(page) {
     throw new Error("Reopened inspector should remain resizable.");
   }
   await page.keyboard.press("Enter");
+}
+
+async function resetUiPersistenceWrites(page) {
+  const ready = await page.evaluate(() => {
+    if (!window.__MILIM_PERF__) return false;
+    window.__MILIM_PERF__.reset();
+    return true;
+  });
+  if (!ready) throw new Error("UI persistence performance counters should be enabled.");
+}
+
+async function assertUiPersistenceWrites(page, expected, label) {
+  const actual = await page.evaluate(() =>
+    window.__MILIM_PERF__?.snapshot().counters["persist.milim.ui.write"] ?? 0,
+  );
+  if (actual !== expected) {
+    throw new Error(`${label} should persist milim.ui ${expected} time(s), got ${actual}.`);
+  }
 }
 
 async function closeChatSearch(page) {

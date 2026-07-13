@@ -298,9 +298,12 @@ export function Sidebar({
   const [confirmArchiveProjectId, setConfirmArchiveProjectId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const projectMenuRef = useRef<HTMLDivElement>(null);
+  const sidebarElementRef = useRef<HTMLElement>(null);
+  const sidebarResizeHandleRef = useRef<HTMLDivElement>(null);
   const sidebarResizeStartRef = useRef<{
     clientX: number;
     width: number;
+    latestWidth: number;
     pointerId: number;
     target: HTMLDivElement;
     snappedClosed: boolean;
@@ -692,7 +695,9 @@ export function Sidebar({
     endSidebarDrag();
   }
 
-  const resolvedSidebarWidth = normalizeSidebarWidth(sidebarWidth);
+  const resolvedSidebarWidth = normalizeSidebarWidth(
+    sidebarResizeStartRef.current?.latestWidth ?? sidebarWidth,
+  );
   const sidebarStyle = {
     "--sidebar-width": `${resolvedSidebarWidth}px`,
   } as CSSProperties;
@@ -707,6 +712,15 @@ export function Sidebar({
     setSidebarWidth(normalizeSidebarWidth(width));
   }
 
+  function resizeSidebarDuringDrag(width: number) {
+    const start = sidebarResizeStartRef.current;
+    if (!start) return;
+    const nextWidth = normalizeSidebarWidth(width);
+    start.latestWidth = nextWidth;
+    sidebarElementRef.current?.style.setProperty("--sidebar-width", `${nextWidth}px`);
+    sidebarResizeHandleRef.current?.setAttribute("aria-valuenow", String(nextWidth));
+  }
+
   function startSidebarResize(event: ReactPointerEvent<HTMLDivElement>) {
     if (event.button !== 0) return;
     event.preventDefault();
@@ -714,6 +728,7 @@ export function Sidebar({
     sidebarResizeStartRef.current = {
       clientX: event.clientX,
       width: resolvedSidebarWidth,
+      latestWidth: resolvedSidebarWidth,
       pointerId: event.pointerId,
       target,
       snappedClosed: false,
@@ -750,6 +765,7 @@ export function Sidebar({
     }
     if (start.snappedClosed) {
       start.snappedClosed = false;
+      start.latestWidth = normalizeSidebarWidth(width);
       onToggle();
       start.resumeTimer = window.setTimeout(() => {
         if (sidebarResizeStartRef.current === start && !start.snappedClosed) {
@@ -758,12 +774,13 @@ export function Sidebar({
         start.resumeTimer = null;
       }, SIDEBAR_SNAP_ANIMATION_MS);
     }
-    resizeSidebar(width);
+    resizeSidebarDuringDrag(width);
   }
 
   function endSidebarResize(event: PointerEvent) {
     const start = sidebarResizeStartRef.current;
     if (!start || event.pointerId !== start.pointerId) return;
+    if (start.latestWidth !== start.width) setSidebarWidth(start.latestWidth);
     sidebarResizeStartRef.current = null;
     if (start.resumeTimer != null) window.clearTimeout(start.resumeTimer);
     sidebarResizeCleanupRef.current?.();
@@ -854,7 +871,7 @@ export function Sidebar({
   }
 
   return (
-    <aside className={"sidebar" + (sidebarResizing ? " resizing" : "")} aria-label="Chats" style={sidebarStyle}>
+    <aside ref={sidebarElementRef} className={"sidebar" + (sidebarResizing ? " resizing" : "")} aria-label="Chats" style={sidebarStyle}>
       <div className="sidebar-inner">
         <div className="sidebar-head">
           <button className="icon-btn" title="Collapse sidebar" onClick={onToggle}>
@@ -1236,6 +1253,7 @@ export function Sidebar({
         </div>
       </div>
       <div
+        ref={sidebarResizeHandleRef}
         className={`sidebar-resize-handle${sidebarResizing ? " dragging" : ""}`}
         data-testid="sidebar-resize-handle"
         role="separator"
