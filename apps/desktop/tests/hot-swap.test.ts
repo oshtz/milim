@@ -75,6 +75,14 @@ assert.equal(assessHotSwap({
   session: imageSession,
 }).issues.some((issue) => issue.code === "image_pixels_unavailable"), true);
 
+assert.equal(assessHotSwap({
+  currentModel: "model-a",
+  target: models[5],
+  models,
+  providers,
+  session: imageSession,
+}).issues.some((issue) => issue.code === "image_pixels_unavailable"), false);
+
 const stale = {
   messages: [
     { id: "a1", role: "assistant", content: "Codex answer" },

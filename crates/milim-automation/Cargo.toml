@@ -17,6 +17,7 @@ serde_json.workspace = true
 cron.workspace = true
 chrono.workspace = true
 tracing.workspace = true
+base64.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true }

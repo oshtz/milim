@@ -6,7 +6,7 @@ title: HTTP API surface
 summary: OpenAI-compatible, Anthropic-compatible, Ollama-compatible, providers, media, workspace, MCP, Agents, Worker Runs, memory, privacy, skills, schedules, mobile, and account runtime routes.
 group: Reference
 order: 90
-updated: 2026-07-11
+updated: 2026-07-13
 ---
 
 The standalone server accepts static bearer keys or `msk-v1` access keys when configured in `~/.milim/config/server.json`. The desktop app uses its own per-launch bearer token and resolves the actual loopback port through Tauri.
@@ -26,6 +26,8 @@ The standalone server accepts static bearer keys or `msk-v1` access keys when co
 | Ollama tags | `GET /api/tags` | Ollama-style model discovery. |
 
 Structured-output controls are passed through to the selected backend: OpenAI `response_format`, Responses `text.format`, and Ollama `format` are normalized onto the internal completion request where supported.
+
+Multimodal compatibility inputs remain provider-native: OpenAI Chat uses `image_url` content parts, Responses accepts `input_image`, Ollama accepts message `images`, and Anthropic Messages accepts base64 or HTTP(S) URL image sources. Malformed or unsupported Anthropic sources return an invalid-request error instead of being discarded. Gemini receives uploaded bytes as `inline_data`; only genuine `generativelanguage.googleapis.com/.../files/...` URIs become `file_data`, and arbitrary web image URLs fail validation without a server-side downloader.
 
 Root aliases are also mounted for OpenAI chat, completions, models, and embeddings: `/chat/completions`, `/completions`, `/models`, and `/embeddings`.
 
@@ -52,7 +54,9 @@ Root aliases are also mounted for OpenAI chat, completions, models, and embeddin
 
 `http_fetch` accepts public HTTP(S) destinations only, validates every redirect, applies DNS/address checks, and limits transfer time and body size. It rejects loopback, private, link-local, multicast, and metadata-service addresses.
 
-`POST /schedules` and `PUT /schedules/{id}` require a `model` for deterministic unattended execution and accept an optional `attachments` array using the desktop chat attachment shape (`id`, `name`, `mime`, `size`, `content`, `truncated`, `sourcePath`). Existing stored schedules may have an empty model for compatibility; the runner falls back to their linked Agent's deprecated model, and editing persists that fallback. If neither exists, a visible schedule error is recorded. Saved attachment content is appended to the scheduled prompt each time the automation fires. `GET /schedules/events` drains completed background run results for the desktop to land as local threads.
+`POST /schedules` and `PUT /schedules/{id}` require a provider/local API `model` for deterministic unattended execution; `codex:*` and `claude:*` account models are rejected. The optional `attachments` array uses the desktop chat shape (`id`, `name`, `mime`, `size`, `content`, `dataUrl`, `truncated`, `sourcePath`). Text content is appended to the scheduled prompt and stored image data becomes a real image part each time the automation fires. A legacy image without `dataUrl` records a visible error asking for reattachment. Existing schedules may have an empty model for compatibility; the runner falls back to their linked Agent's deprecated model, and records a visible error if neither exists. `GET /schedules/events` drains completed results for the desktop to land as local threads.
+
+`POST /codex/run` and `POST /claude/run` accept an optional `images` array of `{ "media_type": "image/png", "data": "<base64 bytes>" }`. PNG, JPEG, WebP, and GIF are limited to 2 MB each, and either a non-empty `prompt` or at least one valid image is required. Codex materializes validated bytes into temporary per-turn files and sends app-server `localImage` inputs; Claude pipes a native multimodal user message with base64 image blocks through `--input-format stream-json`. Account-runtime images require Privacy Off.
 
 The built-in `memory_register` tool accepts `content`, optional `title`, and optional `scope` (`personal` or `project`). The lower-level `/memory/*` HTTP routes remain compatible with scoped node records.
 

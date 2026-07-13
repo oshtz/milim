@@ -1,5 +1,6 @@
 //! Translation between wire DTOs and the backend-neutral request type.
 
+use base64::Engine;
 use milim_core::api::anthropic::{
     self, ContentBlock, MessageContent, MessagesRequest, ResponseBlock,
 };
@@ -8,6 +9,7 @@ use milim_core::api::openai::{
     ChatCompletionRequest, ChatMessage, Content, ContentPart, FunctionCall, ImageUrl,
     ReasoningEffort, Tool, ToolCall, ToolFunction,
 };
+use milim_core::{Error, Result};
 use milim_inference::{CompletionRequest, SamplingParams};
 use serde_json::Value;
 
@@ -105,7 +107,7 @@ pub(crate) fn ollama_think_effort(think: Option<&Value>) -> Option<ReasoningEffo
 }
 
 /// Build a neutral request from an Anthropic Messages request.
-pub fn anthropic_to_completion(req: MessagesRequest) -> CompletionRequest {
+pub fn anthropic_to_completion(req: MessagesRequest) -> Result<CompletionRequest> {
     let mut messages: Vec<ChatMessage> = Vec::new();
 
     if let Some(system) = &req.system {
@@ -116,17 +118,17 @@ pub fn anthropic_to_completion(req: MessagesRequest) -> CompletionRequest {
         match m.content {
             MessageContent::Text(t) => messages.push(ChatMessage::text(m.role, t)),
             MessageContent::Blocks(blocks) => {
-                let mut text = String::new();
+                let mut content_parts = Vec::new();
                 let mut tool_calls: Vec<ToolCall> = Vec::new();
                 let mut tool_results: Vec<(String, String)> = Vec::new();
 
                 for b in blocks {
                     match b {
-                        ContentBlock::Text { text: t } => {
-                            if !text.is_empty() {
-                                text.push('\n');
-                            }
-                            text.push_str(&t);
+                        ContentBlock::Text { text } => {
+                            content_parts.push(ContentPart::Text { text });
+                        }
+                        ContentBlock::Image { source } => {
+                            content_parts.push(anthropic_image_part(source)?);
                         }
                         ContentBlock::ToolUse { id, name, input } => tool_calls.push(ToolCall {
                             id: Some(id),
@@ -141,14 +143,19 @@ pub fn anthropic_to_completion(req: MessagesRequest) -> CompletionRequest {
                             content,
                             ..
                         } => tool_results.push((tool_use_id, anthropic::value_to_text(&content))),
-                        _ => {}
+                        ContentBlock::Unknown => {}
                     }
                 }
 
-                if !text.is_empty() || !tool_calls.is_empty() {
+                if !content_parts.is_empty() || !tool_calls.is_empty() {
+                    let content = match content_parts.as_slice() {
+                        [] => None,
+                        [ContentPart::Text { text }] => Some(Content::Text(text.clone())),
+                        _ => Some(Content::Parts(content_parts)),
+                    };
                     messages.push(ChatMessage {
                         role: m.role.clone(),
-                        content: (!text.is_empty()).then_some(Content::Text(text)),
+                        content,
                         name: None,
                         tool_calls: (!tool_calls.is_empty()).then_some(tool_calls),
                         tool_call_id: None,
@@ -194,7 +201,7 @@ pub fn anthropic_to_completion(req: MessagesRequest) -> CompletionRequest {
         })
         .collect();
 
-    CompletionRequest {
+    Ok(CompletionRequest {
         model: req.model,
         messages,
         tools,
@@ -204,7 +211,78 @@ pub fn anthropic_to_completion(req: MessagesRequest) -> CompletionRequest {
         suffix: None,
         sampling,
         reasoning_effort: None,
-    }
+    })
+}
+
+fn anthropic_image_part(source: Value) -> Result<ContentPart> {
+    const MAX_IMAGE_BYTES: usize = 2 * 1024 * 1024;
+    let source_type = source.get("type").and_then(Value::as_str).ok_or_else(|| {
+        Error::InvalidRequest("Anthropic image source type is required".to_string())
+    })?;
+    let url = match source_type {
+        "base64" => {
+            let media_type = source
+                .get("media_type")
+                .and_then(Value::as_str)
+                .filter(|value| {
+                    matches!(
+                        *value,
+                        "image/png" | "image/jpeg" | "image/webp" | "image/gif"
+                    )
+                })
+                .ok_or_else(|| {
+                    Error::InvalidRequest(
+                        "Anthropic base64 images must use PNG, JPEG, WebP, or GIF".to_string(),
+                    )
+                })?;
+            let data = source
+                .get("data")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| {
+                    Error::InvalidRequest("Anthropic image data is required".to_string())
+                })?;
+            if data.len() > MAX_IMAGE_BYTES * 4 / 3 + 8 {
+                return Err(Error::InvalidRequest(
+                    "Anthropic images must be no larger than 2 MB".to_string(),
+                ));
+            }
+            let decoded = base64::engine::general_purpose::STANDARD
+                .decode(data)
+                .map_err(|_| {
+                    Error::InvalidRequest("Anthropic image data is not valid base64".to_string())
+                })?;
+            if decoded.is_empty() || decoded.len() > MAX_IMAGE_BYTES {
+                return Err(Error::InvalidRequest(
+                    "Anthropic images must contain 1 byte to 2 MB of data".to_string(),
+                ));
+            }
+            if !crate::codex_bridge::image_bytes_match_media_type(media_type, &decoded) {
+                return Err(Error::InvalidRequest(format!(
+                    "Anthropic image bytes do not match {media_type}"
+                )));
+            }
+            format!("data:{media_type};base64,{data}")
+        }
+        "url" => source
+            .get("url")
+            .and_then(Value::as_str)
+            .filter(|url| url.starts_with("https://") || url.starts_with("http://"))
+            .map(ToString::to_string)
+            .ok_or_else(|| {
+                Error::InvalidRequest(
+                    "Anthropic URL images require an http:// or https:// URL".to_string(),
+                )
+            })?,
+        other => {
+            return Err(Error::InvalidRequest(format!(
+                "unsupported Anthropic image source type '{other}'"
+            )))
+        }
+    };
+    Ok(ContentPart::ImageUrl {
+        image_url: ImageUrl { url, detail: None },
+    })
 }
 
 pub fn ollama_format_to_response_format(format: Value) -> Value {
@@ -281,6 +359,8 @@ fn opt_stops(v: &Value) -> Vec<String> {
 mod tests {
     use super::*;
 
+    const GEOMETRIC_PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEklEQVR4nGP4z8DAAMIM/4EAAB/uBfsL2WiLAAAAAElFTkSuQmCC";
+
     #[test]
     fn maps_openai_sampling() {
         let req: ChatCompletionRequest = serde_json::from_str(
@@ -336,6 +416,47 @@ mod tests {
             }
             _ => panic!("expected image part"),
         }
+    }
+
+    #[test]
+    fn maps_anthropic_base64_and_url_images_to_multimodal_parts() {
+        let req: MessagesRequest = serde_json::from_value(serde_json::json!({
+            "model": "claude-sonnet-4",
+            "max_tokens": 64,
+            "messages": [{
+                "role": "user",
+                "content": [
+                    { "type": "text", "text": "Compare these shapes" },
+                    { "type": "image", "source": { "type": "base64", "media_type": "image/png", "data": GEOMETRIC_PNG } },
+                    { "type": "image", "source": { "type": "url", "url": "https://example.com/shape.webp" } }
+                ]
+            }]
+        })).unwrap();
+        let completion = anthropic_to_completion(req).unwrap();
+        let Some(Content::Parts(parts)) = &completion.messages[0].content else {
+            panic!("expected multimodal parts");
+        };
+        assert_eq!(parts.len(), 3);
+        assert!(matches!(parts[0], ContentPart::Text { .. }));
+        assert!(
+            matches!(&parts[1], ContentPart::ImageUrl { image_url } if image_url.url == format!("data:image/png;base64,{GEOMETRIC_PNG}"))
+        );
+        assert!(
+            matches!(&parts[2], ContentPart::ImageUrl { image_url } if image_url.url == "https://example.com/shape.webp")
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_anthropic_image_sources() {
+        let req: MessagesRequest = serde_json::from_value(serde_json::json!({
+            "model": "claude-sonnet-4",
+            "max_tokens": 64,
+            "messages": [{
+                "role": "user",
+                "content": [{ "type": "image", "source": { "type": "base64", "media_type": "image/svg+xml", "data": "AAAA" } }]
+            }]
+        })).unwrap();
+        assert!(anthropic_to_completion(req).is_err());
     }
 
     #[test]

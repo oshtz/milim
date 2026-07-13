@@ -40,7 +40,9 @@ User and assistant message bodies render Markdown in the transcript, and message
 
 The composer keeps prompt storage plain text. Recognized `@Skill Name`, `/Skill Name`, and `/server__tool` tags render as compact pills, while workspace `@file` references and bare HTTP(S) URLs render with link-like highlighting in the editor mirror layer; MCP slash suggestions insert the visible tag only and do not force a tool call or bypass approval/exposure policy.
 
-Image attachments are preserved as image content parts for provider chat and server-side agent runs when the backend supports vision. Codex and Claude account runtimes still receive prompt text plus attachment metadata because their bridge APIs are prompt-string only. Desktop file attachments come from the native file picker or workspace-relative `@file` suggestions under the selected folder; binary images are sent as image data, not decoded as text.
+PNG, JPEG, WebP, and GIF attachments up to 2 MB each are preserved as real image content for provider chat, server-side agent runs, Codex app-server, Claude CLI, and provider-backed schedules. Browser and native attachment paths use the same validation and reject unsupported, oversized, empty, or unreadable images before attaching them. Codex receives temporary `localImage` inputs; Claude receives native base64 image blocks over `stream-json`; neither path uses OCR. Desktop files come from the native picker or workspace-relative `@file` suggestions under the selected folder.
+
+Schedules accept the same stored `dataUrl` pixels and build a multimodal user message when they fire. A legacy scheduled image without stored pixel data records a visible reattachment error. Background schedules list and accept provider/local API models only; Codex and Claude account runtimes remain interactive because their approval and session semantics are not safe for unattended runs.
 
 ## Session controls
 

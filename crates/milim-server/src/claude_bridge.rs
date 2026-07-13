@@ -9,14 +9,14 @@ use std::time::Duration;
 use axum::response::sse::Event;
 use futures::{Stream, StreamExt};
 use milim_core::api::openai::{ReasoningEffort, Usage};
-use milim_core::Result;
+use milim_core::{Error, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 
 use crate::codex_bridge::{
-    AccountNativeWorkerLifecycle, AccountNativeWorkerState, AccountWorkerEvent,
+    AccountImage, AccountNativeWorkerLifecycle, AccountNativeWorkerState, AccountWorkerEvent,
 };
 use crate::privacy::Unredactor;
 
@@ -27,6 +27,8 @@ const CLAUDE_PROJECT_DIR_NAME_LIMIT: usize = 200;
 #[derive(Debug, Deserialize)]
 pub(crate) struct ClaudeRunRequest {
     pub prompt: String,
+    #[serde(default)]
+    pub images: Vec<AccountImage>,
     #[serde(default)]
     pub model: Option<String>,
     #[serde(default)]
@@ -137,6 +139,11 @@ pub(crate) async fn status() -> Result<Value> {
         "authenticated": authenticated,
         "auth": auth,
         "models": if authenticated { CLAUDE_MODEL_ALIASES } else { &[] as &[&str] },
+        "model_capabilities": if authenticated {
+            json!(CLAUDE_MODEL_ALIASES.iter().map(|model| (model.to_string(), json!({ "image_input": true }))).collect::<serde_json::Map<_, _>>())
+        } else {
+            json!({})
+        },
         "error": if output.status.success() { Value::Null } else { Value::String(stderr) },
     }))
 }
@@ -178,7 +185,7 @@ fn run_stream_with_worker_events(
                 }
             }
             command
-                .stdin(Stdio::null())
+                .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .kill_on_drop(true);
@@ -205,6 +212,37 @@ fn run_stream_with_worker_events(
                     return;
                 }
             };
+            let Some(mut stdin) = child.stdin.take() else {
+                yield sse_event_with_worker(&ClaudeStreamEvent::Error {
+                    message: "claude stdin was not available".to_string(),
+                    usage: None,
+                    cost_usd: None,
+                }, &worker_events);
+                yield Ok(Event::default().data("[DONE]"));
+                return;
+            };
+            let input = match claude_stream_input(&req) {
+                Ok(input) => input,
+                Err(e) => {
+                    yield sse_event_with_worker(&ClaudeStreamEvent::Error {
+                        message: e.to_string(),
+                        usage: None,
+                        cost_usd: None,
+                    }, &worker_events);
+                    yield Ok(Event::default().data("[DONE]"));
+                    return;
+                }
+            };
+            if let Err(e) = stdin.write_all(format!("{input}\n").as_bytes()).await {
+                yield sse_event_with_worker(&ClaudeStreamEvent::Error {
+                    message: format!("failed to send Claude multimodal input: {e}"),
+                    usage: None,
+                    cost_usd: None,
+                }, &worker_events);
+                yield Ok(Event::default().data("[DONE]"));
+                return;
+            }
+            let _ = stdin.shutdown().await;
             let Some(stdout) = child.stdout.take() else {
                 yield sse_event_with_worker(&ClaudeStreamEvent::Error {
                     message: "claude stdout was not available".to_string(),
@@ -865,7 +903,8 @@ fn claude_native_worker_event(value: &Value) -> Option<AccountNativeWorkerLifecy
 fn claude_run_args(req: &ClaudeRunRequest) -> Vec<String> {
     let mut args = vec![
         "-p".to_string(),
-        req.prompt.clone(),
+        "--input-format".to_string(),
+        "stream-json".to_string(),
         "--output-format".to_string(),
         "stream-json".to_string(),
         "--verbose".to_string(),
@@ -894,6 +933,38 @@ fn claude_run_args(req: &ClaudeRunRequest) -> Vec<String> {
         args.extend(["--effort".to_string(), effort.to_string()]);
     }
     args
+}
+
+fn claude_stream_input(req: &ClaudeRunRequest) -> Result<Value> {
+    let mut content = Vec::new();
+    if !req.prompt.trim().is_empty() {
+        content.push(json!({ "type": "text", "text": req.prompt }));
+    }
+    for image in &req.images {
+        if !matches!(
+            image.media_type.as_str(),
+            "image/png" | "image/jpeg" | "image/webp" | "image/gif"
+        ) || image.data.is_empty()
+        {
+            return Err(Error::InvalidRequest(
+                "Claude images must contain PNG, JPEG, WebP, or GIF base64 data".to_string(),
+            ));
+        }
+        content.push(json!({
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": image.media_type,
+                "data": image.data,
+            }
+        }));
+    }
+    Ok(json!({
+        "type": "user",
+        "session_id": "",
+        "message": { "role": "user", "content": content },
+        "parent_tool_use_id": Value::Null,
+    }))
 }
 
 fn claude_project_session_exists(req: &ClaudeRunRequest, session_id: &str) -> bool {
@@ -1247,6 +1318,7 @@ mod tests {
     fn persistent_run_args_use_session_id_without_turn_cap() {
         let args = claude_run_args(&ClaudeRunRequest {
             prompt: "hello".into(),
+            images: Vec::new(),
             model: Some("sonnet".into()),
             cwd: None,
             reasoning_effort: Some(ReasoningEffort::High),
@@ -1268,6 +1340,7 @@ mod tests {
 
         let args = claude_run_args(&ClaudeRunRequest {
             prompt: "hello".into(),
+            images: Vec::new(),
             model: None,
             cwd: None,
             reasoning_effort: None,
@@ -1279,6 +1352,36 @@ mod tests {
         });
         assert!(args.iter().any(|arg| arg == "--no-session-persistence"));
         assert!(!args.iter().any(|arg| arg == "--max-turns"));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--input-format", "stream-json"]));
+    }
+
+    #[test]
+    fn claude_stream_input_preserves_image_only_turns() {
+        let req = ClaudeRunRequest {
+            prompt: String::new(),
+            images: vec![AccountImage {
+                media_type: "image/png".to_string(),
+                data: "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEklEQVR4nGP4z8DAAMIM/4EAAB/uBfsL2WiLAAAAAElFTkSuQmCC".to_string(),
+            }],
+            model: Some("sonnet".to_string()),
+            cwd: None,
+            reasoning_effort: None,
+            session_id: None,
+            tool_approval_policy: None,
+            tool_approval_grant: false,
+            plan_mode: false,
+            allow_session_recovery: false,
+        };
+        let input = claude_stream_input(&req).unwrap();
+        assert_eq!(input["type"], "user");
+        assert_eq!(input["message"]["content"].as_array().unwrap().len(), 1);
+        assert_eq!(input["message"]["content"][0]["type"], "image");
+        assert_eq!(
+            input["message"]["content"][0]["source"]["media_type"],
+            "image/png"
+        );
     }
 
     #[test]
@@ -1297,6 +1400,7 @@ mod tests {
     fn maps_milim_tool_modes_to_claude_permissions() {
         let mut req = ClaudeRunRequest {
             prompt: "hello".into(),
+            images: Vec::new(),
             model: None,
             cwd: None,
             reasoning_effort: None,

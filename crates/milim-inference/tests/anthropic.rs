@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 
-use milim_core::api::openai::{ChatMessage, ReasoningEffort, Tool, ToolFunction};
+use milim_core::api::openai::{
+    ChatMessage, Content, ContentPart, ImageUrl, ReasoningEffort, Tool, ToolFunction,
+};
 use milim_inference::{
     anthropic::AnthropicBackend, CompletionRequest, ModelService, SamplingParams,
 };
@@ -186,6 +188,52 @@ async fn streams_text_and_builds_messages_body() {
     assert_eq!(out.usage.prompt_tokens, 7);
     assert_eq!(out.usage.completion_tokens, 3);
     assert_eq!(out.usage.total_tokens, 10);
+}
+
+#[tokio::test]
+async fn sends_image_bytes_as_native_anthropic_blocks() {
+    let sse = concat!(
+        "event: message_start\n",
+        r#"data: {"type":"message_start","message":{"usage":{"input_tokens":1,"output_tokens":0}}}"#,
+        "\n\n",
+        "event: message_stop\n",
+        r#"data: {"type":"message_stop"}"#,
+        "\n\n"
+    );
+    let (base, captured) = spawn_once(sse, "text/event-stream").await;
+    let backend = AnthropicBackend::new("anthropic", base, Some("sk-ant-test".to_string()));
+    let png = include_str!("fixtures/geometric-png.base64").trim();
+    let mut req = basic_req("claude-sonnet-4-20250514");
+    req.messages = vec![ChatMessage {
+        role: "user".to_string(),
+        content: Some(Content::Parts(vec![
+            ContentPart::Text {
+                text: "What colors are present?".to_string(),
+            },
+            ContentPart::ImageUrl {
+                image_url: ImageUrl {
+                    url: format!("data:image/png;base64,{png}"),
+                    detail: None,
+                },
+            },
+        ])),
+        name: None,
+        tool_calls: None,
+        tool_call_id: None,
+        reasoning_content: None,
+    }];
+
+    backend.complete(req).await.unwrap();
+    let sent = captured.await.unwrap();
+    assert_eq!(sent.body["messages"][0]["content"][1]["type"], "image");
+    assert_eq!(
+        sent.body["messages"][0]["content"][1]["source"]["media_type"],
+        "image/png"
+    );
+    assert_eq!(
+        sent.body["messages"][0]["content"][1]["source"]["data"],
+        png
+    );
 }
 
 #[tokio::test]

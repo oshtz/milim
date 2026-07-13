@@ -2,12 +2,33 @@ import { deepEqual, equal } from "node:assert/strict";
 import type { ModelInfo, ProviderInfo } from "../src/api";
 import {
   modelDevProfile,
+  modelDevCapabilities,
   mergeModelListsForPicker,
   modelPickerGroups,
   providerOwnsModel,
   qualifyDuplicateProviderModels,
   rawModelId,
 } from "../src/lib/modelPicker.js";
+
+equal(
+  modelDevCapabilities({
+    id: "gpt-5",
+    owned_by: "OpenAI",
+    capabilities: { imageInput: false },
+  }).includes("vision"),
+  false,
+  "explicit false must beat model-family vision fallbacks",
+);
+equal(
+  modelDevCapabilities({ id: "gpt-5.4", owned_by: "OpenAI" }).includes("vision"),
+  true,
+  "unknown current OpenAI vision families may advertise a conservative fallback",
+);
+equal(
+  modelDevCapabilities({ id: "codex:gpt-5.4", owned_by: "Codex" }).includes("vision"),
+  false,
+  "missing Codex modality metadata stays unknown instead of claiming vision",
+);
 
 const duplicated = qualifyDuplicateProviderModels([
   { id: "same-model", owned_by: "OpenAI", provider_id: "prov-a" },

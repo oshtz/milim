@@ -349,6 +349,7 @@ impl ModelService for RemoteBackend {
     }
 
     async fn stream(&self, req: CompletionRequest) -> Result<EventStream> {
+        crate::image_input::validate_request_images(&req)?;
         if req.prompt.is_some() {
             return self.stream_legacy_completion(req).await;
         }
@@ -1564,6 +1565,37 @@ mod tests {
         assert!(matches!(parse_sse_line("event: foo"), LineOutcome::Ignore));
         let line = r#"data: {"id":"x","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"content":"hi"}}]}"#;
         assert!(matches!(parse_sse_line(line), LineOutcome::Event(_)));
+    }
+
+    #[test]
+    fn openai_compatible_body_preserves_image_url_parts() {
+        let backend = RemoteBackend::new("OpenAI", "https://api.openai.com/v1", None);
+        let png = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEklEQVR4nGP4z8DAAMIM/4EAAB/uBfsL2WiLAAAAAElFTkSuQmCC";
+        let mut req = empty_req();
+        req.messages = vec![milim_core::api::openai::ChatMessage {
+            role: "user".to_string(),
+            content: Some(Content::Parts(vec![
+                ContentPart::Text {
+                    text: "What colors are present?".to_string(),
+                },
+                ContentPart::ImageUrl {
+                    image_url: milim_core::api::openai::ImageUrl {
+                        url: format!("data:image/png;base64,{png}"),
+                        detail: Some("high".to_string()),
+                    },
+                },
+            ])),
+            name: None,
+            tool_calls: None,
+            tool_call_id: None,
+            reasoning_content: None,
+        }];
+        let value = serde_json::to_value(backend.build_body(&req, true)).unwrap();
+        assert_eq!(value["messages"][0]["content"][1]["type"], "image_url");
+        assert_eq!(
+            value["messages"][0]["content"][1]["image_url"]["url"],
+            format!("data:image/png;base64,{png}")
+        );
     }
 
     #[test]

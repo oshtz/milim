@@ -11,6 +11,7 @@ import type {
 } from "../src/api.js";
 import {
   claudeCompactionSummaryRequest,
+  accountRuntimeInputFromMessages,
   accountRuntimePromptMessages,
   codexCompactionSummaryRequest,
   codexPromptFromMessages,
@@ -103,9 +104,27 @@ const codexImageAttachmentPrompt = codexPromptFromMessages([
 assert.match(codexImageAttachmentPrompt, /Look at this\./);
 assert.match(
   codexImageAttachmentPrompt,
-  /prompt-string-only runtime cannot receive image pixels/,
+  /Image attached as multimodal input/,
 );
 assert.doesNotMatch(codexImageAttachmentPrompt, /OCR/);
+assert.deepEqual(
+  accountRuntimeInputFromMessages([
+    {
+      role: "user",
+      content: "Look at this.",
+      attachments: [
+        {
+          id: "att-image",
+          name: "screen.png",
+          mime: "image/png",
+          size: 4,
+          dataUrl: "data:image/png;base64,AAAA",
+        },
+      ],
+    },
+  ]).images,
+  [{ media_type: "image/png", data: "AAAA" }],
+);
 
 const turnMetrics = createTurnMetricsCapture();
 turnMetrics.captureUsage({
@@ -539,7 +558,17 @@ const codexResult = await runAccountRuntimeTurn({
       conversation: [
         ...conversation,
         { role: "assistant", content: "old assistant" },
-        { role: "user", content: "latest user" },
+        {
+          role: "user",
+          content: "latest user",
+          attachments: [{
+            id: "shape",
+            name: "shape.png",
+            mime: "image/png",
+            size: 4,
+            dataUrl: "data:image/png;base64,AAAA",
+          }],
+        },
       ],
       outbound: [],
     };
@@ -569,6 +598,7 @@ const codexResult = await runAccountRuntimeTurn({
     assert.equal(request.thread_id, "codex-thread-1");
     assert.equal(request.persist_thread, true);
     assert.equal(request.tool_approval_grant, true);
+    assert.deepEqual(request.images, [{ media_type: "image/png", data: "AAAA" }]);
     codexPrompt = request.prompt;
     onEvent({ type: "thread", thread_id: "codex-thread-2", model: "gpt-5" });
     onEvent({

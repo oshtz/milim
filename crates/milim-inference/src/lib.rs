@@ -13,6 +13,7 @@
 
 pub mod anthropic;
 pub mod gemini;
+mod image_input;
 pub mod remote;
 pub mod service;
 #[cfg(any(test, feature = "test-backend"))]

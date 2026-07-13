@@ -3,6 +3,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { qualifyDuplicateProviderModels } from "./lib/modelPicker";
 import { wireMessages } from "./lib/attachmentWire.js";
+import { assertValidImageAttachment } from "./lib/attachmentInput.js";
 export {
   attachmentsToPromptContext,
   wireMessageContent,
@@ -24,6 +25,11 @@ export interface ChatAttachment {
   dataUrl?: string;
   truncated?: boolean;
   sourcePath?: string;
+}
+
+export interface AccountRuntimeImageInput {
+  media_type: string;
+  data: string;
 }
 
 export interface WorkspaceFileSuggestion {
@@ -399,7 +405,7 @@ type AttachmentFilePayload = {
 function attachmentFromPayload(
   payload: AttachmentFilePayload,
 ): Omit<ChatAttachment, "id"> {
-  return {
+  const attachment = {
     name: payload.name,
     mime: payload.mime || inferAttachmentMime(payload.name),
     size: payload.size,
@@ -408,6 +414,8 @@ function attachmentFromPayload(
     truncated: payload.truncated,
     sourcePath: payload.path,
   };
+  assertValidImageAttachment(attachment);
+  return attachment;
 }
 
 export async function pickAttachmentFiles(): Promise<
@@ -1490,14 +1498,14 @@ async function listCodexModelsForPicker(): Promise<ModelInfo[]> {
       if (!raw) continue;
       const inputModalities = Array.isArray(item?.inputModalities)
         ? item.inputModalities
-        : [];
+        : null;
       byId.set(`${CODEX_MODEL_PREFIX}${raw}`, {
         id: `${CODEX_MODEL_PREFIX}${raw}`,
         owned_by: "Codex",
         reasoning: normalizeCodexReasoning(item),
-        capabilities: {
-          imageInput: inputModalities.includes("image"),
-        },
+        capabilities: inputModalities
+          ? { imageInput: inputModalities.includes("image") }
+          : undefined,
       });
     }
     return Array.from(byId.values());
@@ -1528,6 +1536,7 @@ export interface ClaudeStatusResponse {
     subscriptionType?: string;
   };
   models?: string[];
+  model_capabilities?: Record<string, { image_input?: boolean }>;
   error?: string | null;
 }
 
@@ -1656,6 +1665,10 @@ async function listClaudeModelsForPicker(): Promise<ModelInfo[]> {
       .map((model) => ({
         id: `${CLAUDE_MODEL_PREFIX}${model.trim()}`,
         owned_by: "Local Claude CLI",
+        capabilities: {
+          imageInput:
+            status.model_capabilities?.[model.trim()]?.image_input ?? true,
+        },
         reasoning: {
           supported_efforts: ["low", "medium", "high", "xhigh", "max"],
           default_effort: "high",
@@ -1718,6 +1731,7 @@ export async function streamCodexRun(
     tool_approval_policy?: ToolApprovalMode;
     tool_approval_grant?: boolean;
     plan_mode?: boolean;
+    images?: AccountRuntimeImageInput[];
   },
   onEvent: (ev: CodexRunEvent) => void,
   signal?: AbortSignal,
@@ -1746,6 +1760,7 @@ export async function streamClaudeRun(
     tool_approval_grant?: boolean;
     plan_mode?: boolean;
     allow_session_recovery?: boolean;
+    images?: AccountRuntimeImageInput[];
   },
   onEvent: (ev: ClaudeRunEvent) => void,
   signal?: AbortSignal,

@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 
-use milim_core::api::openai::{ChatMessage, ReasoningEffort, Tool, ToolFunction};
+use milim_core::api::openai::{
+    ChatMessage, Content, ContentPart, ImageUrl, ReasoningEffort, Tool, ToolFunction,
+};
 use milim_inference::{gemini::GeminiBackend, CompletionRequest, ModelService, SamplingParams};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::oneshot;
@@ -180,6 +182,47 @@ async fn streams_text_and_builds_generate_content_body() {
     assert_eq!(out.usage.prompt_tokens, 7);
     assert_eq!(out.usage.completion_tokens, 3);
     assert_eq!(out.usage.total_tokens, 10);
+}
+
+#[tokio::test]
+async fn sends_uploaded_image_bytes_as_gemini_inline_data() {
+    let sse = concat!(
+        r#"data: {"candidates":[{"content":{"parts":[{"text":"red, green, blue, white"}],"role":"model"},"finishReason":"STOP"}]}"#,
+        "\n\n"
+    );
+    let (base, captured) = spawn_once(sse, "text/event-stream").await;
+    let backend = GeminiBackend::new("gemini", base, Some("AIza-test".to_string()));
+    let png = include_str!("fixtures/geometric-png.base64").trim();
+    let mut req = basic_req("gemini-2.5-flash");
+    req.messages = vec![ChatMessage {
+        role: "user".to_string(),
+        content: Some(Content::Parts(vec![
+            ContentPart::Text {
+                text: "What colors are present?".to_string(),
+            },
+            ContentPart::ImageUrl {
+                image_url: ImageUrl {
+                    url: format!("data:image/png;base64,{png}"),
+                    detail: None,
+                },
+            },
+        ])),
+        name: None,
+        tool_calls: None,
+        tool_call_id: None,
+        reasoning_content: None,
+    }];
+
+    backend.complete(req).await.unwrap();
+    let sent = captured.await.unwrap();
+    assert_eq!(
+        sent.body["contents"][0]["parts"][1]["inline_data"]["mime_type"],
+        "image/png"
+    );
+    assert_eq!(
+        sent.body["contents"][0]["parts"][1]["inline_data"]["data"],
+        png
+    );
 }
 
 #[tokio::test]

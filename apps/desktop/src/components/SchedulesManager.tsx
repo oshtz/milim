@@ -5,6 +5,7 @@ import {
   createSchedule,
   deleteSchedule,
   inferAttachmentMime,
+  isAccountRuntimeModel,
   listModels,
   listSchedules,
   pickAttachmentFiles,
@@ -12,6 +13,7 @@ import {
   type ChatAttachment,
   type ScheduleInfo,
 } from "../api";
+import { readBrowserAttachmentDataUrl } from "../lib/attachmentInput";
 import { useSessions } from "../sessions/store";
 import { Calendar, Paperclip, Plus, Trash, X } from "./icons";
 import { AgentAvatar } from "./AgentAvatar";
@@ -145,6 +147,9 @@ function attachmentFingerprint(attachments: ChatAttachment[]): string {
       mime: attachment.mime,
       size: attachment.size,
       content: attachment.content,
+      dataUrl: attachment.dataUrl
+        ? `${attachment.dataUrl.length}:${attachment.dataUrl.slice(-32)}`
+        : "",
       truncated: Boolean(attachment.truncated),
       sourcePath: attachment.sourcePath ?? "",
     })),
@@ -162,13 +167,19 @@ function textLikeMime(mime: string): boolean {
 
 async function browserFileAttachment(file: File): Promise<ChatAttachment> {
   const mime = file.type || inferAttachmentMime(file.name);
-  const content = textLikeMime(mime) ? await file.slice(0, MAX_ATTACHMENT_BYTES).text() : undefined;
+  const [content, dataUrl] = await Promise.all([
+    textLikeMime(mime)
+      ? file.slice(0, MAX_ATTACHMENT_BYTES).text()
+      : Promise.resolve(undefined),
+    readBrowserAttachmentDataUrl(file, mime),
+  ]);
   return {
     id: attachmentId(),
     name: file.name || "attachment",
     mime,
     size: file.size,
     content,
+    dataUrl,
     truncated: textLikeMime(mime) ? file.size > MAX_ATTACHMENT_BYTES : false,
   };
 }
@@ -429,7 +440,10 @@ export function SchedulesManager({ onClose }: { onClose: () => void }) {
   const agents = useAgents((s) => s.agents);
   const refreshAgents = useAgents((s) => s.refresh);
   const activeSession = useSessions((s) => s.sessions.find((session) => session.id === s.activeId));
-  const currentThreadModel = activeSession?.settings?.model?.trim() ?? "";
+  const activeThreadModel = activeSession?.settings?.model?.trim() ?? "";
+  const currentThreadModel = isAccountRuntimeModel(activeThreadModel)
+    ? ""
+    : activeThreadModel;
 
   const [schedules, setSchedules] = useState<ScheduleInfo[]>([]);
   const [models, setModels] = useState<string[]>([]);
@@ -447,14 +461,14 @@ export function SchedulesManager({ onClose }: { onClose: () => void }) {
 
   useEffect(() => {
     void listSchedules().then(setSchedules);
-    void listModels().then(setModels);
+    void listModels().then((items) => setModels(items.filter((item) => !isAccountRuntimeModel(item))));
     void refreshAgents();
   }, [refreshAgents]);
 
   useEffect(() => {
     if (!sel || sel === "new" || model || scheduleModel(sel)) return;
     const fallback = agents.find((agent) => agent.id === sel.agent_id)?.model?.trim();
-    if (fallback) setModel(fallback);
+    if (fallback && !isAccountRuntimeModel(fallback)) setModel(fallback);
   }, [agents, model, sel]);
 
   async function refresh() {
@@ -477,7 +491,8 @@ export function SchedulesManager({ onClose }: { onClose: () => void }) {
       setName(s.name);
       setCron(s.cron);
       setAgentId(s.agent_id ?? "");
-      setModel(effectiveScheduleModel(s, agents));
+      const selectedModel = effectiveScheduleModel(s, agents);
+      setModel(isAccountRuntimeModel(selectedModel) ? "" : selectedModel);
       setPrompt(s.prompt);
       setAttachments(s.attachments ?? []);
       setEnabled(s.enabled);
@@ -587,7 +602,7 @@ export function SchedulesManager({ onClose }: { onClose: () => void }) {
   );
   const modelOptions = useMemo(
     () =>
-      Array.from(new Set([model, currentThreadModel, ...models].map((value) => value.trim()).filter(Boolean))).map(
+      Array.from(new Set([model, currentThreadModel, ...models].map((value) => value.trim()).filter((value) => value && !isAccountRuntimeModel(value)))).map(
         (value) => ({ label: value, value }),
       ),
     [currentThreadModel, model, models],

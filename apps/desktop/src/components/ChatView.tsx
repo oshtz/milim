@@ -160,6 +160,10 @@ import {
 } from "../lib/artifactRevisions";
 import { hiddenArtifactIdsForMessage } from "../lib/artifactVisibility";
 import {
+  assertValidImageAttachment,
+  readBrowserAttachmentDataUrl,
+} from "../lib/attachmentInput";
+import {
   buildEmptyStarterStrip,
   type EmptyStarterStrip,
   type EmptyStarterSuggestionIcon,
@@ -264,9 +268,9 @@ import {
 } from "../lib/turnPrompt";
 import {
   CLAUDE_SESSION_RECOVERY_REQUIRED,
+  accountRuntimeInputFromMessages,
   claudeCompactionSummaryRequest,
   codexCompactionSummaryRequest,
-  codexPromptFromMessages,
   createAgentRunEventHandler,
   createTurnAssistantStarter,
   createTurnMetricsCapture,
@@ -354,7 +358,6 @@ const inTauri =
 const EMPTY: ChatMessage[] = [];
 const EMPTY_QUEUE: QueuedMessage[] = [];
 const NON_EMPTY_USAGE_MESSAGES: ChatMessage[] = [{ role: "user", content: "" }];
-const MAX_ATTACHMENT_IMAGE_PREVIEW_BYTES = 2 * 1024 * 1024;
 const PREVIEW_PANEL_MIN_WIDTH = 360;
 const MESSAGE_VIRTUALIZE_AFTER = 80;
 const MESSAGE_ESTIMATED_HEIGHT = 152;
@@ -684,31 +687,8 @@ async function browserFileAttachment(file: File): Promise<ChatAttachment> {
     size: file.size,
     content,
     dataUrl,
-    truncated: textLike
-      ? file.size > MAX_ATTACHMENT_BYTES
-      : mime.startsWith("image/")
-        ? file.size > MAX_ATTACHMENT_IMAGE_PREVIEW_BYTES
-        : false,
+    truncated: textLike ? file.size > MAX_ATTACHMENT_BYTES : false,
   };
-}
-
-function readBrowserAttachmentDataUrl(
-  file: File,
-  mime: string,
-): Promise<string | undefined> {
-  if (
-    !mime.startsWith("image/") ||
-    file.size > MAX_ATTACHMENT_IMAGE_PREVIEW_BYTES
-  ) {
-    return Promise.resolve(undefined);
-  }
-  return new Promise((resolve) => {
-    const reader = new FileReader();
-    reader.onload = () =>
-      resolve(typeof reader.result === "string" ? reader.result : undefined);
-    reader.onerror = () => resolve(undefined);
-    reader.readAsDataURL(file);
-  });
 }
 
 function renderMessageAttachments(attachments?: ChatAttachment[]) {
@@ -5358,12 +5338,14 @@ export function ChatView({
     let warning: string | null = null;
     let usage: TokenUsage | undefined;
     let costUsd: number | undefined;
+    const runtimeInput = accountRuntimeInputFromMessages(promptMessages);
     await streamCodexRun(
       codexCompactionSummaryRequest({
         model,
-        prompt: codexPromptFromMessages(promptMessages),
+        prompt: runtimeInput.prompt,
         cwd: folder.trim() || undefined,
         reasoningEffort,
+        images: runtimeInput.images,
       }),
       (ev: CodexRunEvent) => {
         if (ev.type === "token" && ev.text) text += ev.text;
@@ -5396,12 +5378,14 @@ export function ChatView({
     let warning: string | null = null;
     let usage: TokenUsage | undefined;
     let costUsd: number | undefined;
+    const runtimeInput = accountRuntimeInputFromMessages(promptMessages);
     await streamClaudeRun(
       claudeCompactionSummaryRequest({
         model,
-        prompt: codexPromptFromMessages(promptMessages),
+        prompt: runtimeInput.prompt,
         cwd: folder.trim() || undefined,
         reasoningEffort,
+        images: runtimeInput.images,
       }),
       (ev: ClaudeRunEvent) => {
         if (ev.type === "token" && ev.text) text += ev.text;
@@ -5816,6 +5800,7 @@ export function ChatView({
       );
       const codexModel = codexRuntimeModel(turnModel);
       const claudeModel = claudeRuntimeModel(turnModel);
+      const runtimeInput = accountRuntimeInputFromMessages(decisionMessages);
       let content = "";
       if (codexModel) {
         let codexError: string | null = null;
@@ -5823,7 +5808,8 @@ export function ChatView({
         await streamCodexRun(
           {
             model: codexModel,
-            prompt: codexPromptFromMessages(decisionMessages),
+            prompt: runtimeInput.prompt,
+            images: runtimeInput.images,
             cwd: folder.trim() || undefined,
             reasoning_effort: decisionReasoningEffort,
             tool_approval_policy: "review",
@@ -5845,7 +5831,8 @@ export function ChatView({
         await streamClaudeRun(
           {
             model: claudeModel,
-            prompt: codexPromptFromMessages(decisionMessages),
+            prompt: runtimeInput.prompt,
+            images: runtimeInput.images,
             cwd: folder.trim() || undefined,
             reasoning_effort: decisionReasoningEffort,
             tool_approval_policy: "review",
@@ -7619,15 +7606,27 @@ export function ChatView({
         (attachment) =>
           attachment.name && attachment.mime && attachment.size >= 0,
       )
-      .map((attachment) => ({
-        id: attachment.id || attachmentId(),
-        name: attachment.name,
-        mime: attachment.mime,
-        size: attachment.size,
-        content: attachment.content,
-        dataUrl: attachment.dataUrl,
-        truncated: Boolean(attachment.truncated),
-      }));
+      .flatMap((attachment) => {
+        const next = {
+          id: attachment.id || attachmentId(),
+          name: attachment.name,
+          mime: attachment.mime,
+          size: attachment.size,
+          content: attachment.content,
+          dataUrl: attachment.dataUrl,
+          truncated: Boolean(attachment.truncated),
+        };
+        try {
+          assertValidImageAttachment(next);
+          return [next];
+        } catch (error) {
+          setChatNotice({
+            tone: "error",
+            message: error instanceof Error ? error.message : String(error),
+          });
+          return [];
+        }
+      });
   }
 
   function appendMobileRelayText(

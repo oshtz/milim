@@ -795,13 +795,15 @@ fn read_attachment_file_blocking(
     let mut truncated = false;
 
     if attachment_is_image_mime(&mime) {
-        truncated = metadata.len() > MAX_ATTACHMENT_IMAGE_PREVIEW_BYTES;
-        if !truncated {
-            let bytes =
-                fs::read(path).map_err(|e| format!("failed to read attachment file: {e}"))?;
-            let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
-            data_url = Some(format!("data:{mime};base64,{encoded}"));
+        if metadata.len() == 0 || metadata.len() > MAX_ATTACHMENT_IMAGE_PREVIEW_BYTES {
+            return Err(format!(
+                "image attachments must contain 1 byte to {} bytes",
+                MAX_ATTACHMENT_IMAGE_PREVIEW_BYTES
+            ));
         }
+        let bytes = fs::read(path).map_err(|e| format!("failed to read attachment file: {e}"))?;
+        let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+        data_url = Some(format!("data:{mime};base64,{encoded}"));
     } else if attachment_is_text_like_mime(&mime) {
         let limit = max_bytes
             .unwrap_or(MAX_ATTACHMENT_BYTES)
@@ -3463,6 +3465,29 @@ mod artifact_save_tests {
             Some("data:image/png;base64,AAEC")
         );
         assert!(!payload.truncated);
+
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn attachment_reader_rejects_images_over_two_megabytes() {
+        let root = std::env::temp_dir().join(format!(
+            "milim-large-image-attachment-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let image = root.join("large.png");
+        fs::write(&image, vec![0_u8; MAX_ATTACHMENT_IMAGE_PREVIEW_BYTES as usize + 1]).unwrap();
+
+        let error = match read_attachment_file_blocking(&image, Some(MAX_ATTACHMENT_BYTES)) {
+            Err(error) => error,
+            Ok(_) => panic!("expected oversized image rejection"),
+        };
+        assert!(error.contains("image attachments must contain 1 byte"));
 
         fs::remove_dir_all(root).ok();
     }

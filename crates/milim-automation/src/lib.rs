@@ -8,15 +8,18 @@
 use std::str::FromStr;
 use std::sync::Mutex;
 
+use base64::Engine;
 use chrono::{DateTime, Utc};
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
+use milim_core::api::openai::{ChatMessage, Content, ContentPart, ImageUrl};
 use milim_core::{Error, Result};
 use milim_storage::{Database, Migration};
 
 pub const MAX_SCHEDULE_ATTACHMENTS: usize = 12;
 pub const MAX_SCHEDULE_ATTACHMENT_BYTES: usize = 128 * 1024;
+pub const MAX_SCHEDULE_IMAGE_BYTES: usize = 2 * 1024 * 1024;
 
 /// File context saved with a schedule and appended to the prompt on each fire.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -138,6 +141,116 @@ pub fn prompt_with_attachments(prompt: &str, attachments: &[ScheduleAttachment])
     }
 }
 
+pub fn message_with_attachments(
+    prompt: &str,
+    attachments: &[ScheduleAttachment],
+) -> Result<ChatMessage> {
+    let text = prompt_with_attachments(prompt, attachments);
+    let mut parts = Vec::new();
+    if !text.is_empty() {
+        parts.push(ContentPart::Text { text });
+    }
+    for attachment in attachments {
+        if !attachment.mime.to_ascii_lowercase().starts_with("image/") {
+            continue;
+        }
+        if !matches!(
+            attachment.mime.as_str(),
+            "image/png" | "image/jpeg" | "image/webp" | "image/gif"
+        ) {
+            return Err(Error::InvalidRequest(format!(
+                "scheduled image '{}' must be PNG, JPEG, WebP, or GIF",
+                attachment.name
+            )));
+        }
+        let data_url = attachment.data_url.as_deref().ok_or_else(|| {
+            Error::InvalidRequest(format!(
+                "scheduled image '{}' has no image data; reattach it before this schedule can run",
+                attachment.name
+            ))
+        })?;
+        validate_schedule_image(data_url, &attachment.mime, &attachment.name)?;
+        parts.push(ContentPart::ImageUrl {
+            image_url: ImageUrl {
+                url: data_url.to_string(),
+                detail: None,
+            },
+        });
+    }
+    Ok(ChatMessage {
+        role: "user".to_string(),
+        content: Some(Content::Parts(parts)),
+        name: None,
+        tool_calls: None,
+        tool_call_id: None,
+        reasoning_content: None,
+    })
+}
+
+fn validate_schedule_image(data_url: &str, mime: &str, name: &str) -> Result<()> {
+    let prefix = format!("data:{mime};base64,");
+    let data = data_url.strip_prefix(&prefix).ok_or_else(|| {
+        Error::InvalidRequest(format!(
+            "scheduled image '{name}' has malformed image data; reattach it"
+        ))
+    })?;
+    if data.len() > MAX_SCHEDULE_IMAGE_BYTES * 4 / 3 + 8 {
+        return Err(Error::InvalidRequest(format!(
+            "scheduled image '{name}' exceeds the 2 MB image limit"
+        )));
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data)
+        .map_err(|_| {
+            Error::InvalidRequest(format!(
+                "scheduled image '{name}' has malformed image data; reattach it"
+            ))
+        })?;
+    if bytes.is_empty() || bytes.len() > MAX_SCHEDULE_IMAGE_BYTES {
+        return Err(Error::InvalidRequest(format!(
+            "scheduled image '{name}' must contain 1 byte to 2 MB of data"
+        )));
+    }
+    let signature_matches = match mime {
+        "image/png" => bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
+        "image/jpeg" => bytes.starts_with(&[0xff, 0xd8, 0xff]),
+        "image/gif" => bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a"),
+        "image/webp" => bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP",
+        _ => false,
+    };
+    if !signature_matches {
+        return Err(Error::InvalidRequest(format!(
+            "scheduled image '{name}' bytes do not match {mime}; reattach it"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_schedule_attachments(attachments: &[ScheduleAttachment]) -> Result<()> {
+    for attachment in attachments {
+        if !attachment.mime.to_ascii_lowercase().starts_with("image/") {
+            continue;
+        }
+        if !matches!(
+            attachment.mime.as_str(),
+            "image/png" | "image/jpeg" | "image/webp" | "image/gif"
+        ) {
+            return Err(Error::InvalidRequest(format!(
+                "scheduled image '{}' must be PNG, JPEG, WebP, or GIF",
+                attachment.name
+            )));
+        }
+        let data_url = attachment.data_url.as_deref().ok_or_else(|| {
+            Error::InvalidRequest(format!(
+                "scheduled image '{}' has no image data; reattach it",
+                attachment.name
+            ))
+        })?;
+        validate_schedule_image(data_url, &attachment.mime, &attachment.name)?;
+    }
+    Ok(())
+}
+
 pub fn attachments_prompt_context(attachments: &[ScheduleAttachment]) -> String {
     if attachments.is_empty() {
         return String::new();
@@ -179,7 +292,7 @@ pub fn attachments_prompt_context(attachments: &[ScheduleAttachment]) -> String 
                 || attachment.mime.to_lowercase().starts_with("image/");
             let body = content.map(ToString::to_string).unwrap_or_else(|| {
                 if image_note {
-                    "[Image attachment is available in Milim, but this text-only scheduled prompt cannot receive image pixels.]".to_string()
+                    "[Image attached as multimodal input.]".to_string()
                 } else {
                     "[No text content available for this attachment.]".to_string()
                 }
@@ -280,6 +393,8 @@ impl ScheduleStore {
         workspace: Option<String>,
     ) -> Result<Schedule> {
         validate_cron(cron)?;
+        let attachments = normalize_attachments(attachments);
+        validate_schedule_attachments(&attachments)?;
         let schedule = Schedule {
             id: uuid::Uuid::new_v4().to_string(),
             name: name.to_string(),
@@ -287,7 +402,7 @@ impl ScheduleStore {
             agent_id,
             model: model.trim().to_string(),
             prompt: prompt.to_string(),
-            attachments: normalize_attachments(attachments),
+            attachments,
             enabled,
             workspace,
             created_unix: Utc::now().timestamp(),
@@ -331,6 +446,8 @@ impl ScheduleStore {
     /// Update an existing schedule, preserving the supplied id.
     pub fn update(&self, update: ScheduleUpdate<'_>) -> Result<Schedule> {
         validate_cron(update.cron)?;
+        let attachments = normalize_attachments(update.attachments);
+        validate_schedule_attachments(&attachments)?;
         let schedule = Schedule {
             id: update.id.to_string(),
             name: update.name.to_string(),
@@ -338,7 +455,7 @@ impl ScheduleStore {
             agent_id: update.agent_id,
             model: update.model.trim().to_string(),
             prompt: update.prompt.to_string(),
-            attachments: normalize_attachments(update.attachments),
+            attachments,
             enabled: update.enabled,
             workspace: update.workspace,
             created_unix: update.created_unix,
@@ -571,6 +688,51 @@ mod tests {
         assert!(prompt.contains("name=notes.md"));
         assert!(prompt.contains("path=C:\\tmp\\notes.md"));
         assert!(prompt.contains("hello\nworld"));
+    }
+
+    #[test]
+    fn scheduled_images_become_multimodal_user_parts() {
+        let png = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEklEQVR4nGP4z8DAAMIM/4EAAB/uBfsL2WiLAAAAAElFTkSuQmCC";
+        let message = message_with_attachments(
+            "Describe the shape",
+            &[ScheduleAttachment {
+                id: "image-1".to_string(),
+                name: "geometry.png".to_string(),
+                mime: "image/png".to_string(),
+                size: 75,
+                content: None,
+                data_url: Some(format!("data:image/png;base64,{png}")),
+                truncated: false,
+                source_path: None,
+            }],
+        )
+        .unwrap();
+        let Some(Content::Parts(parts)) = message.content else {
+            panic!("expected multimodal scheduled message");
+        };
+        assert_eq!(parts.len(), 2);
+        assert!(matches!(parts[0], ContentPart::Text { .. }));
+        assert!(matches!(parts[1], ContentPart::ImageUrl { .. }));
+    }
+
+    #[test]
+    fn legacy_scheduled_images_without_pixels_fail_visibly() {
+        let error = message_with_attachments(
+            "Describe the shape",
+            &[ScheduleAttachment {
+                id: "legacy".to_string(),
+                name: "lost.png".to_string(),
+                mime: "image/png".to_string(),
+                size: 75,
+                content: None,
+                data_url: None,
+                truncated: false,
+                source_path: None,
+            }],
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("has no image data; reattach it"));
     }
 
     #[test]

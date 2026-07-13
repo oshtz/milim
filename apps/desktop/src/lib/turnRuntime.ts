@@ -1,4 +1,8 @@
 import { createChatMessageId } from "./messageIds.js";
+import {
+  accountRuntimeImage,
+  type AccountRuntimeImage,
+} from "./attachmentInput.js";
 import type {
   AgentEvent,
   AgentMemoryContext,
@@ -54,6 +58,7 @@ type StreamCodexRunFn = (
     tool_approval_policy?: ToolApprovalMode;
     tool_approval_grant?: boolean;
     plan_mode?: boolean;
+    images?: AccountRuntimeImage[];
   },
   onEvent: (event: CodexRunEvent) => void,
   signal?: AbortSignal,
@@ -69,6 +74,7 @@ type StreamClaudeRunFn = (
     tool_approval_grant?: boolean;
     plan_mode?: boolean;
     allow_session_recovery?: boolean;
+    images?: AccountRuntimeImage[];
   },
   onEvent: (event: ClaudeRunEvent) => void,
   signal?: AbortSignal,
@@ -101,17 +107,20 @@ export function codexCompactionSummaryRequest({
   prompt,
   cwd,
   reasoningEffort,
+  images,
 }: {
   model: string;
   prompt: string;
   cwd?: string;
   reasoningEffort?: ReasoningEffort;
+  images?: AccountRuntimeImage[];
 }): CodexRunRequest {
   return {
     model,
     prompt,
     cwd,
     reasoning_effort: reasoningEffort,
+    images,
     persist_thread: false,
     tool_approval_policy: "guarded",
     tool_approval_grant: false,
@@ -124,17 +133,20 @@ export function claudeCompactionSummaryRequest({
   prompt,
   cwd,
   reasoningEffort,
+  images,
 }: {
   model: string;
   prompt: string;
   cwd?: string;
   reasoningEffort?: ReasoningEffort;
+  images?: AccountRuntimeImage[];
 }): ClaudeRunRequest {
   return {
     model,
     prompt,
     cwd,
     reasoning_effort: reasoningEffort,
+    images,
     tool_approval_policy: "guarded",
     tool_approval_grant: false,
     plan_mode: true,
@@ -314,6 +326,22 @@ export function codexPromptFromMessages(messages: ChatMessage[]): string {
     .join("\n\n");
 }
 
+export function accountRuntimeInputFromMessages(messages: ChatMessage[]): {
+  prompt: string;
+  images: AccountRuntimeImage[];
+} {
+  return {
+    prompt: codexPromptFromMessages(messages),
+    images: messages.flatMap((message) =>
+      message.role === "user"
+        ? (message.attachments ?? [])
+            .map(accountRuntimeImage)
+            .filter((image): image is AccountRuntimeImage => image !== null)
+        : [],
+    ),
+  };
+}
+
 function wireRuntimeMessageContent(message: ChatMessage): string {
   if (message.approval) return "";
   const attachmentContext = attachmentsToPromptContext(message.attachments);
@@ -339,7 +367,7 @@ function attachmentsToPromptContext(
       .join(" ");
     const content = attachment.content?.trimEnd();
     const imageNote = attachment.dataUrl
-      ? "[Image attachment is available in Milim, but this prompt-string-only runtime cannot receive image pixels.]"
+      ? "[Image attached as multimodal input.]"
       : "";
     return [
       `--- attachment ${meta} ---`,
@@ -599,12 +627,14 @@ export async function runAccountRuntimeTurn(
     setCodexThreadId: params.kind === "codex" ? params.setThreadId : undefined,
     appendImage: params.kind === "codex" ? params.appendImage : undefined,
   });
+  const input = accountRuntimeInputFromMessages(outbound);
 
   if (params.kind === "codex") {
     await params.stream(
       {
         model,
-        prompt: codexPromptFromMessages(outbound),
+        prompt: input.prompt,
+        images: input.images,
         cwd: workspace,
         reasoning_effort: reasoningEffort,
         thread_id: params.threadId,
@@ -620,7 +650,8 @@ export async function runAccountRuntimeTurn(
     await params.stream(
       {
         model,
-        prompt: codexPromptFromMessages(outbound),
+        prompt: input.prompt,
+        images: input.images,
         cwd: workspace,
         reasoning_effort: reasoningEffort,
         session_id: params.sessionId,

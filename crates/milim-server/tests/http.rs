@@ -2874,6 +2874,36 @@ async fn media_generate_blocks_remote_prompt_when_privacy_gate_blocks_pii() {
 }
 
 #[tokio::test]
+async fn account_runtime_images_require_privacy_off() {
+    let base = spawn(test_state()).await;
+    let client = reqwest::Client::new();
+    client
+        .post(format!("{base}/privacy/mode"))
+        .json(&json!({ "mode": "redact" }))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap();
+
+    let response = client
+        .post(format!("{base}/codex/run"))
+        .json(&json!({
+            "prompt": "",
+            "images": [{ "media_type": "image/png", "data": "AAAA" }]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+    let body: Value = response.json().await.unwrap();
+    assert!(body["error"]["message"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("image pixels can only be sent in Privacy Off"));
+}
+
+#[tokio::test]
 async fn anthropic_provider_kind_routes_via_messages_api() {
     let (upstream_base, upstream_requests) = spawn_two_request_anthropic_upstream().await;
     let tmp = std::env::temp_dir().join(format!("milim-provider-kind-test-{}", std::process::id()));
@@ -3166,6 +3196,96 @@ async fn openai_responses_non_streaming() {
         "Echo: hello responses"
     );
     assert!(v["usage"]["total_tokens"].as_u64().unwrap() > 0);
+}
+
+#[tokio::test]
+async fn compatibility_routes_accept_multimodal_image_inputs() {
+    let base = spawn(test_state()).await;
+    let client = reqwest::Client::new();
+    let png = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEklEQVR4nGP4z8DAAMIM/4EAAB/uBfsL2WiLAAAAAElFTkSuQmCC";
+    let data_url = format!("data:image/png;base64,{png}");
+
+    let chat: Value = client
+        .post(format!("{base}/v1/chat/completions"))
+        .json(&json!({
+            "model": "test-echo",
+            "messages": [{ "role": "user", "content": [
+                { "type": "text", "text": "chat image" },
+                { "type": "image_url", "image_url": { "url": data_url.clone() } }
+            ] }]
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(chat["choices"][0]["message"]["content"], "Echo: chat image");
+
+    let responses: Value = client
+        .post(format!("{base}/v1/responses"))
+        .json(&json!({
+            "model": "test-echo",
+            "input": [{ "role": "user", "content": [
+                { "type": "input_text", "text": "responses image" },
+                { "type": "input_image", "image_url": data_url }
+            ] }]
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        responses["output"][0]["content"][0]["text"],
+        "Echo: responses image"
+    );
+
+    let ollama: Value = client
+        .post(format!("{base}/api/chat"))
+        .json(&json!({
+            "model": "test-echo",
+            "stream": false,
+            "messages": [{ "role": "user", "content": "ollama image", "images": [png] }]
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(ollama["message"]["content"], "Echo: ollama image");
+
+    let anthropic: Value = client
+        .post(format!("{base}/anthropic/v1/messages"))
+        .json(&json!({
+            "model": "test-echo",
+            "max_tokens": 100,
+            "messages": [{ "role": "user", "content": [
+                { "type": "text", "text": "anthropic images" },
+                { "type": "image", "source": { "type": "base64", "media_type": "image/png", "data": png } },
+                { "type": "image", "source": { "type": "url", "url": "https://example.com/shape.png" } }
+            ] }]
+        }))
+        .send().await.unwrap().json().await.unwrap();
+    assert_eq!(anthropic["content"][0]["text"], "Echo: anthropic images");
+}
+
+#[tokio::test]
+async fn anthropic_compatibility_rejects_malformed_image_sources() {
+    let base = spawn(test_state()).await;
+    let response = reqwest::Client::new()
+        .post(format!("{base}/anthropic/v1/messages"))
+        .json(&json!({
+            "model": "test-echo",
+            "max_tokens": 100,
+            "messages": [{ "role": "user", "content": [
+                { "type": "image", "source": { "type": "base64", "media_type": "image/svg+xml", "data": "AAAA" } }
+            ] }]
+        }))
+        .send().await.unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]
@@ -5399,14 +5519,23 @@ async fn schedules_crud_and_fire_due() {
             "cron":"0 0 0 * * *",
             "model":"test-model",
             "prompt":"hi",
-            "attachments":[{
-                "id":"att-http",
-                "name":"brief.txt",
-                "mime":"text/plain",
-                "size":5,
-                "content":"hello",
-                "sourcePath":"C:\\tmp\\brief.txt"
-            }]
+            "attachments":[
+                {
+                    "id":"att-http",
+                    "name":"brief.txt",
+                    "mime":"text/plain",
+                    "size":5,
+                    "content":"hello",
+                    "sourcePath":"C:\\tmp\\brief.txt"
+                },
+                {
+                    "id":"att-image",
+                    "name":"shape.png",
+                    "mime":"image/png",
+                    "size":75,
+                    "dataUrl":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEklEQVR4nGP4z8DAAMIM/4EAAB/uBfsL2WiLAAAAAElFTkSuQmCC"
+                }
+            ]
         }))
         .send()
         .await
@@ -5416,6 +5545,10 @@ async fn schedules_crud_and_fire_due() {
         .unwrap();
     let id = created["id"].as_str().unwrap().to_string();
     assert_eq!(created["attachments"][0]["name"], "brief.txt");
+    assert_eq!(
+        created["attachments"][1]["dataUrl"],
+        "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEklEQVR4nGP4z8DAAMIM/4EAAB/uBfsL2WiLAAAAAElFTkSuQmCC"
+    );
     assert_eq!(
         created["attachments"][0]["sourcePath"],
         "C:\\tmp\\brief.txt"
@@ -5473,6 +5606,19 @@ async fn schedules_crud_and_fire_due() {
         .await
         .unwrap();
     assert_eq!(bad.status(), reqwest::StatusCode::BAD_REQUEST);
+
+    let account_model = client
+        .post(format!("{base}/schedules"))
+        .json(&json!({
+            "name":"interactive-only",
+            "cron":"0 0 * * * *",
+            "model":"codex:gpt-5",
+            "prompt":"hi"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(account_model.status(), reqwest::StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]

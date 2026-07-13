@@ -91,12 +91,20 @@ export function providerOwnsModel(provider: ProviderInfo, model: string): boolea
 export function modelDevCapabilities(model: ModelInfo): ModelDevCapability[] {
   const id = model.id;
   const s = id.toLowerCase();
+  const owner = model.owned_by.toLowerCase();
   const out: ModelDevCapability[] = [];
-  if (model.capabilities?.imageInput) out.push("vision");
+  if (model.capabilities?.imageInput === true) out.push("vision");
   if (model.capabilities?.toolUse) out.push("tools");
   if (model.capabilities?.imageOutput) out.push("image");
   if (model.capabilities?.videoOutput) out.push("video");
-  if (/(vision|llava|pixtral|gpt-4o|gemini|claude-3|claude-opus|claude-sonnet|-vl|qwen2-vl)/.test(s) && !out.includes("vision")) out.push("vision");
+  if (
+    model.capabilities?.imageInput === undefined &&
+    (/(vision|llava|pixtral|llama-4|(?:^|[-/])qwen\d[^/]*vl|(?:^|[-/])qwen3\.6|-vl)/.test(s) ||
+      (/openai/.test(owner) && /(gpt-4o|gpt-4\.1|gpt-5(?:[.:-]|$)|o[134](?:[.:-]|$))/.test(s)) ||
+      (/anthropic/.test(owner) && /claude-(?:3|opus|sonnet|haiku)/.test(s)) ||
+      (/(gemini|google)/.test(owner) && /gemini/.test(s)) ||
+      (/groq/.test(owner) && /(llama-4|qwen3\.6)/.test(s)))
+  ) out.push("vision");
   if (model.reasoning || /(r1|reason|qwq|o1|o3|-think|deepseek-r)/.test(s)) out.push("reasoning");
   if (/(flash|mini|haiku|turbo|instant|nano|0\.5b|1\.5b|-1b|-3b|-8b|small)/.test(s)) out.push("fast");
   return out;

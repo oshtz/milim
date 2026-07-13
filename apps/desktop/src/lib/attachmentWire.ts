@@ -1,4 +1,5 @@
 import type { ChatAttachment, ChatMessage } from "../api.js";
+import { assertValidImageAttachment } from "./attachmentInput.js";
 
 // ponytail: local copy keeps pure wire tests from importing browser/Tauri API code.
 const MAX_ATTACHMENT_BYTES = 128 * 1024;
@@ -52,10 +53,11 @@ export function wireMessageContent(message: ChatMessage): string {
 }
 
 function imageAttachments(attachments?: ChatAttachment[]): ChatAttachment[] {
-  return (attachments ?? []).filter(
-    (attachment) =>
-      attachment.dataUrl && attachment.mime.toLowerCase().startsWith("image/"),
-  );
+  return (attachments ?? []).filter((attachment) => {
+    if (!attachment.mime.toLowerCase().startsWith("image/")) return false;
+    assertValidImageAttachment(attachment);
+    return true;
+  });
 }
 
 function wireImageMessageText(message: ChatMessage): string {

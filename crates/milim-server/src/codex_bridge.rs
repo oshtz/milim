@@ -2,12 +2,14 @@
 
 use std::collections::BTreeMap;
 use std::convert::Infallible;
+#[cfg(windows)]
+use std::env;
+use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
-#[cfg(windows)]
-use std::{env, path::PathBuf};
 
 use axum::response::sse::Event;
+use base64::Engine;
 use futures::{Stream, StreamExt};
 use milim_core::api::openai::{ReasoningEffort, Usage};
 use milim_core::{Error, Result};
@@ -22,10 +24,94 @@ const CODEX_MODEL_FALLBACK: &str = "gpt-5.4";
 const CODEX_LOGIN_TIMEOUT: Duration = Duration::from_secs(300);
 const CODEX_CLIENT_NAME: &str = "milim";
 const CODEX_CLIENT_TITLE: &str = "Milim";
+pub(crate) const MAX_ACCOUNT_IMAGE_BYTES: usize = 2 * 1024 * 1024;
+const MAX_ACCOUNT_IMAGES: usize = 12;
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub(crate) struct AccountImage {
+    pub media_type: String,
+    pub data: String,
+}
+
+impl AccountImage {
+    fn extension(&self) -> Result<&'static str> {
+        match self.media_type.as_str() {
+            "image/png" => Ok("png"),
+            "image/jpeg" => Ok("jpg"),
+            "image/webp" => Ok("webp"),
+            "image/gif" => Ok("gif"),
+            other => Err(Error::InvalidRequest(format!(
+                "unsupported account-runtime image type '{other}'; use PNG, JPEG, WebP, or GIF"
+            ))),
+        }
+    }
+
+    fn decode(&self) -> Result<Vec<u8>> {
+        self.extension()?;
+        if self.data.is_empty() {
+            return Err(Error::InvalidRequest(
+                "account-runtime image data is required".to_string(),
+            ));
+        }
+        if self.data.len() > MAX_ACCOUNT_IMAGE_BYTES * 4 / 3 + 8 {
+            return Err(Error::InvalidRequest(format!(
+                "account-runtime images must be no larger than {} bytes",
+                MAX_ACCOUNT_IMAGE_BYTES
+            )));
+        }
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(&self.data)
+            .map_err(|_| {
+                Error::InvalidRequest("account-runtime image data is not valid base64".to_string())
+            })?;
+        if bytes.is_empty() {
+            return Err(Error::InvalidRequest(
+                "account-runtime image data is required".to_string(),
+            ));
+        }
+        if bytes.len() > MAX_ACCOUNT_IMAGE_BYTES {
+            return Err(Error::InvalidRequest(format!(
+                "account-runtime images must be no larger than {} bytes",
+                MAX_ACCOUNT_IMAGE_BYTES
+            )));
+        }
+        if !image_bytes_match_media_type(&self.media_type, &bytes) {
+            return Err(Error::InvalidRequest(format!(
+                "account-runtime image bytes do not match {}",
+                self.media_type
+            )));
+        }
+        Ok(bytes)
+    }
+}
+
+pub(crate) fn image_bytes_match_media_type(media_type: &str, bytes: &[u8]) -> bool {
+    match media_type {
+        "image/png" => bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
+        "image/jpeg" => bytes.starts_with(&[0xff, 0xd8, 0xff]),
+        "image/gif" => bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a"),
+        "image/webp" => bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP",
+        _ => false,
+    }
+}
+
+pub(crate) fn validate_account_images(images: &[AccountImage]) -> Result<()> {
+    if images.len() > MAX_ACCOUNT_IMAGES {
+        return Err(Error::InvalidRequest(format!(
+            "account-runtime turns accept at most {MAX_ACCOUNT_IMAGES} images"
+        )));
+    }
+    for image in images {
+        image.decode()?;
+    }
+    Ok(())
+}
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct CodexRunRequest {
     pub prompt: String,
+    #[serde(default)]
+    pub images: Vec<AccountImage>,
     #[serde(default)]
     pub model: Option<String>,
     #[serde(default)]
@@ -42,6 +128,57 @@ pub(crate) struct CodexRunRequest {
     pub tool_approval_grant: bool,
     #[serde(default)]
     pub plan_mode: bool,
+}
+
+struct CodexTurnImages {
+    dir: PathBuf,
+    paths: Vec<PathBuf>,
+}
+
+impl CodexTurnImages {
+    fn materialize(images: &[AccountImage]) -> Result<Option<Self>> {
+        if images.is_empty() {
+            return Ok(None);
+        }
+        let dir = std::env::temp_dir().join(format!("milim-codex-images-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&dir)
+            .map_err(|e| Error::Other(format!("failed to create Codex image directory: {e}")))?;
+        let mut materialized = Self {
+            dir,
+            paths: Vec::new(),
+        };
+        for (index, image) in images.iter().enumerate() {
+            let path = materialized
+                .dir
+                .join(format!("image-{index}.{}", image.extension()?));
+            std::fs::write(&path, image.decode()?)
+                .map_err(|e| Error::Other(format!("failed to write Codex image: {e}")))?;
+            materialized.paths.push(path);
+        }
+        Ok(Some(materialized))
+    }
+}
+
+impl Drop for CodexTurnImages {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+fn codex_turn_input(req: &CodexRunRequest, images: Option<&CodexTurnImages>) -> Vec<Value> {
+    let mut input = Vec::new();
+    if !req.prompt.trim().is_empty() {
+        input.push(json!({ "type": "text", "text": req.prompt }));
+    }
+    if let Some(images) = images {
+        input.extend(
+            images
+                .paths
+                .iter()
+                .map(|path| json!({ "type": "localImage", "path": path.to_string_lossy() })),
+        );
+    }
+    input
 }
 
 #[derive(Debug, Deserialize)]
@@ -401,6 +538,18 @@ fn run_stream_with_worker_events(
     worker_events: Option<tokio::sync::mpsc::UnboundedSender<AccountWorkerEvent>>,
 ) -> impl Stream<Item = std::result::Result<Event, Infallible>> {
     async_stream::stream! {
+        let turn_images = match CodexTurnImages::materialize(&req.images) {
+            Ok(images) => images,
+            Err(e) => {
+                yield sse_event_with_worker(&CodexStreamEvent::Error {
+                    message: e.to_string(),
+                    usage: None,
+                    cost_usd: None,
+                }, &worker_events);
+                yield Ok(Event::default().data("[DONE]"));
+                return;
+            }
+        };
         let mut proc = match CodexProcess::start().await {
             Ok(proc) => proc,
             Err(e) => {
@@ -454,7 +603,7 @@ fn run_stream_with_worker_events(
         let cwd = clean_optional(req.cwd.as_deref());
         let mut turn_params = json!({
             "threadId": thread_id,
-            "input": [{ "type": "text", "text": req.prompt }],
+            "input": codex_turn_input(&req, turn_images.as_ref()),
             "model": model,
             "approvalPolicy": codex_approval_policy(&req),
             "sandboxPolicy": codex_sandbox_policy(&req, cwd.as_deref()),
@@ -1392,9 +1541,54 @@ mod tests {
     }
 
     #[test]
+    fn codex_turn_materializes_local_images_and_cleans_them_up() {
+        let req = CodexRunRequest {
+            prompt: String::new(),
+            images: vec![AccountImage {
+                media_type: "image/png".to_string(),
+                data: "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEklEQVR4nGP4z8DAAMIM/4EAAB/uBfsL2WiLAAAAAElFTkSuQmCC".to_string(),
+            }],
+            model: None,
+            cwd: None,
+            reasoning_effort: None,
+            thread_id: None,
+            persist_thread: false,
+            tool_approval_policy: None,
+            tool_approval_grant: false,
+            plan_mode: false,
+        };
+        let materialized = CodexTurnImages::materialize(&req.images).unwrap().unwrap();
+        let path = materialized.paths[0].clone();
+        assert!(path.is_file());
+        let input = codex_turn_input(&req, Some(&materialized));
+        assert_eq!(input.len(), 1);
+        assert_eq!(input[0]["type"], "localImage");
+        assert_eq!(input[0]["path"], path.to_string_lossy().as_ref());
+        drop(materialized);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn account_images_reject_unsupported_mime_and_oversize_data() {
+        let unsupported = AccountImage {
+            media_type: "image/svg+xml".to_string(),
+            data: "AAAA".to_string(),
+        };
+        assert!(validate_account_images(&[unsupported]).is_err());
+
+        let oversized = AccountImage {
+            media_type: "image/png".to_string(),
+            data: base64::engine::general_purpose::STANDARD
+                .encode(vec![0; MAX_ACCOUNT_IMAGE_BYTES + 1]),
+        };
+        assert!(validate_account_images(&[oversized]).is_err());
+    }
+
+    #[test]
     fn thread_request_resumes_or_starts_with_expected_persistence() {
         let req = CodexRunRequest {
             prompt: "hi".into(),
+            images: Vec::new(),
             model: None,
             cwd: Some("C:\\repo".into()),
             reasoning_effort: None,
@@ -1432,6 +1626,7 @@ mod tests {
     fn maps_milim_tool_modes_to_codex_permissions() {
         let mut req = CodexRunRequest {
             prompt: "hi".into(),
+            images: Vec::new(),
             model: None,
             cwd: Some("C:\\repo".into()),
             reasoning_effort: None,

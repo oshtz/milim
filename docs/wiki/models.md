@@ -6,7 +6,7 @@ title: Models and providers
 summary: Model-agnostic dev chat routing across OpenAI-compatible APIs, Anthropic, Gemini, Replicate, fal, Ollama, LM Studio, Codex, and Claude runtime bridges.
 group: Core
 order: 40
-updated: 2026-07-12
+updated: 2026-07-13
 ---
 
 Model routing is provider-agnostic and centered on the active dev thread. The provider registry stores enabled remotes and their model metadata, then the desktop model picker merges local API runtime models, provider models, account runtime models, and media-capable models. Duplicate provider model ids stay provider-scoped in the picker and route back to the selected provider; provider sections with fewer visible models appear first.
@@ -21,19 +21,19 @@ Worker routing is a separate thread setting. A thread may choose an optional Wor
 
 Favorites are the only model shortcut. The picker switches between Models and Favorites, and each model keeps its own persisted reasoning-effort choice. Agents do not pin models, so changing the thread model keeps the active Agent enabled and changes the model used by its next interactive run.
 
-Hot Swap assesses the selected target before committing the change. Full-parity swaps stay one-click. Smaller context windows, unsupported image/tool input, unavailable setup, or stale account-runtime history open a preflight. Codex and Claude native sessions record the last Milim message they completed; after another model contributes, the user chooses a fresh canonical handoff or a resumed session with the missing Milim turns injected.
+Hot Swap assesses the selected target before committing the change. Full-parity swaps stay one-click. Smaller context windows, explicitly unsupported image/tool input, unavailable setup, or stale account-runtime history open a preflight. Unknown image capability allows an attempted send without falsely claiming support; explicit false blocks the capability claim, and explicit provider metadata wins over model-name fallbacks. Codex and Claude native sessions can receive image pixels, so account-runtime targets are no longer degraded solely because they are account runtimes.
 
 ## Provider kinds
 
 | Kind | Examples | Implements |
 |---|---|---|
 | OpenAI-compatible | OpenAI, OpenRouter, Groq, Ollama, LM Studio, vLLM, custom `/v1` servers | Chat, Responses, legacy completions, model list, embeddings, structured output, and reasoning plus vision/tool-use metadata where provided. |
-| Anthropic | Claude Messages API through a stored provider key | Chat, streaming, model routing, token usage. |
-| Gemini | Google Generative Language API | Chat, model discovery, model routing. |
+| Anthropic | Claude Messages API through a stored provider key | Chat, streaming, model routing, token usage, and native base64 or URL image blocks. |
+| Gemini | Google Generative Language API | Chat, model discovery, model routing, inline image bytes, and genuine Gemini Files API URIs. Arbitrary web image URLs are rejected instead of downloaded server-side. |
 | Replicate | Remote image/video provider | Media model catalog, schemas, generation status polling. |
 | fal | Remote image/video provider | Queued generation, status polling, normalized media results. |
 | Local API runtimes | Ollama and LM Studio on this machine | Chat, prompt generation, Ollama `keep_alive` lifecycle calls, Responses or completions where the runtime exposes them, model list, embeddings, structured output, native vision/tool-use labels where available, and reasoning effort for supported local reasoning models. |
-| Codex and Claude runtime | Installed CLIs, not provider API keys | Resumable agent-style turns with visible tool events and Milim approval modes. |
+| Codex and Claude runtime | Installed CLIs, not provider API keys | Resumable agent-style turns with real image input, visible tool events, and Milim approval modes. |
 
 ## Runtime lanes
 
@@ -63,6 +63,8 @@ Codex and the installed Claude CLI are separate from saved provider records. The
 |---|---|---|
 | Codex | Use `/codex/login/device`, `/codex/login/chatgpt-device`, or `/codex/login/api-key`. | Milim stores the returned Codex thread id on the Milim chat when persistence is enabled. |
 | Installed Claude CLI | Install Anthropic's official `claude` CLI separately and run `claude auth login` outside Milim. | Milim stores one Claude session id per Milim chat, uses `--session-id` for new native sessions and `--resume` for existing project transcripts, and asks before stopping a matching local Claude CLI process if Claude reports the session is already in use. |
+
+Codex model metadata is authoritative when `inputModalities` is present. Claude aliases advertise image input. For OpenAI, Anthropic, Gemini, and Groq families without explicit metadata, the picker uses conservative current-family Vision labels; custom compatible servers with unknown metadata are allowed to attempt standard `image_url` parts but cannot be guaranteed.
 
 The repo-level account runtime reference lives at `docs/account-runtimes.md`.
 

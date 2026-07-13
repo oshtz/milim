@@ -1954,11 +1954,19 @@ const MOBILE_COMPANION_HTML: &str = r##"<!doctype html>
       return crypto.randomUUID ? crypto.randomUUID() : `att-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     }
     function fileDataUrl(file) {
-      return new Promise((resolve) => {
-        if (!file.type.startsWith("image/") || file.size > MAX_IMAGE_PREVIEW_BYTES) return resolve(undefined);
+      return new Promise((resolve, reject) => {
+        if (!file.type.startsWith("image/")) return resolve(undefined);
+        if (!["image/png", "image/jpeg", "image/webp", "image/gif"].includes(file.type)) {
+          return reject(new Error(`${file.name || "Image"} must be PNG, JPEG, WebP, or GIF.`));
+        }
+        if (!file.size || file.size > MAX_IMAGE_PREVIEW_BYTES) {
+          return reject(new Error(`${file.name || "Image"} must be no larger than 2 MB.`));
+        }
         const reader = new FileReader();
-        reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : undefined);
-        reader.onerror = () => resolve(undefined);
+        reader.onload = () => typeof reader.result === "string"
+          ? resolve(reader.result)
+          : reject(new Error(`${file.name || "Image"} could not be read as image data.`));
+        reader.onerror = () => reject(new Error(`${file.name || "Image"} could not be read as image data.`));
         reader.readAsDataURL(file);
       });
     }
@@ -1976,7 +1984,7 @@ const MOBILE_COMPANION_HTML: &str = r##"<!doctype html>
         size: file.size,
         content,
         dataUrl,
-        truncated: textLike ? file.size > MAX_TEXT_ATTACHMENT_BYTES : file.type.startsWith("image/") ? file.size > MAX_IMAGE_PREVIEW_BYTES : false,
+        truncated: textLike ? file.size > MAX_TEXT_ATTACHMENT_BYTES : false,
       };
     }
     function renderAttachments() {
@@ -1999,8 +2007,13 @@ const MOBILE_COMPANION_HTML: &str = r##"<!doctype html>
     async function addFiles(files) {
       const incoming = Array.from(files || []).slice(0, MAX_ATTACHMENTS - state.attachments.length);
       if (!incoming.length) return;
-      state.attachments = [...state.attachments, ...(await Promise.all(incoming.map(fileAttachment)))].slice(0, MAX_ATTACHMENTS);
-      renderAttachments();
+      try {
+        state.attachments = [...state.attachments, ...(await Promise.all(incoming.map(fileAttachment)))].slice(0, MAX_ATTACHMENTS);
+        renderAttachments();
+      } catch (error) {
+        relayNotice.textContent = String(error.message || error);
+        relayNotice.className = "notice error";
+      }
     }
     async function relay(action) {
       const text = relayText.value.trim();
@@ -3167,7 +3180,7 @@ pub(crate) async fn anthropic_messages(
 
     let model = req.model.clone();
     let want_stream = req.wants_stream();
-    let creq = anthropic_to_completion(req);
+    let creq = anthropic_to_completion(req).map_err(ApiError)?;
     let id = gen_id("msg");
 
     if want_stream {
@@ -3298,13 +3311,14 @@ pub(crate) async fn codex_run(
     Json(mut req): Json<crate::codex_bridge::CodexRunRequest>,
 ) -> Result<Response, ApiError> {
     authorize(&st, &headers, peer_addr(peer))?;
-    if req.prompt.trim().is_empty() {
+    if req.prompt.trim().is_empty() && req.images.is_empty() {
         return Err(ApiError(Error::InvalidRequest(
-            "Codex prompt is required".to_string(),
+            "Codex requires a prompt or at least one image".to_string(),
         )));
     }
     let (prompt, redactions) =
         account_runtime_prompt_for_remote(&st, &req.prompt, "Codex").map_err(ApiError)?;
+    account_runtime_images_for_remote(&st, &req.images, "Codex").map_err(ApiError)?;
     req.prompt = prompt;
     Ok(Sse::new(crate::codex_bridge::run_stream(req, redactions))
         .keep_alive(KeepAlive::default())
@@ -3330,13 +3344,14 @@ pub(crate) async fn claude_run(
     Json(mut req): Json<crate::claude_bridge::ClaudeRunRequest>,
 ) -> Result<Response, ApiError> {
     authorize(&st, &headers, peer_addr(peer))?;
-    if req.prompt.trim().is_empty() {
+    if req.prompt.trim().is_empty() && req.images.is_empty() {
         return Err(ApiError(Error::InvalidRequest(
-            "Claude prompt is required".to_string(),
+            "Claude requires a prompt or at least one image".to_string(),
         )));
     }
     let (prompt, redactions) =
         account_runtime_prompt_for_remote(&st, &req.prompt, "Claude").map_err(ApiError)?;
+    account_runtime_images_for_remote(&st, &req.images, "Claude").map_err(ApiError)?;
     req.prompt = prompt;
     Ok(Sse::new(crate::claude_bridge::run_stream(req, redactions))
         .keep_alive(KeepAlive::default())
@@ -3367,6 +3382,22 @@ fn account_runtime_prompt_for_remote(
             Ok((redaction.text, redaction.map))
         }
     }
+}
+
+fn account_runtime_images_for_remote(
+    st: &AppState,
+    images: &[crate::codex_bridge::AccountImage],
+    runtime: &str,
+) -> milim_core::Result<()> {
+    if images.is_empty() {
+        return Ok(());
+    }
+    if st.privacy.mode() != PrivacyMode::Off {
+        return Err(Error::InvalidRequest(format!(
+            "blocked by the privacy gate: {runtime} image pixels can only be sent in Privacy Off because images cannot be safely redacted"
+        )));
+    }
+    crate::codex_bridge::validate_account_images(images)
 }
 
 // ----- MCP (tools) -----
@@ -8483,6 +8514,7 @@ impl Tool for ScheduleCreateTool {
                             "mime": { "type": "string" },
                             "size": { "type": "integer" },
                             "content": { "type": "string" },
+                            "dataUrl": { "type": "string" },
                             "truncated": { "type": "boolean" },
                             "sourcePath": { "type": "string" }
                         },
@@ -8506,7 +8538,7 @@ impl Tool for ScheduleCreateTool {
         let name = trim_required_tool_arg(args.name, "name")?;
         let cron = trim_required_tool_arg(args.cron, "cron")?;
         let prompt = trim_required_tool_arg(args.prompt, "prompt")?;
-        let model = trim_required_tool_arg(args.model, "model")?;
+        let model = provider_schedule_model(trim_required_tool_arg(args.model, "model")?)?;
         let schedule = self.store.create_with_model_context(
             &name,
             &cron,
@@ -8554,6 +8586,7 @@ impl Tool for ScheduleUpdateTool {
                             "mime": { "type": "string" },
                             "size": { "type": "integer" },
                             "content": { "type": "string" },
+                            "dataUrl": { "type": "string" },
                             "truncated": { "type": "boolean" },
                             "sourcePath": { "type": "string" }
                         },
@@ -8596,6 +8629,7 @@ impl Tool for ScheduleUpdateTool {
             .map(|value| trim_required_tool_arg(value, "model"))
             .transpose()?
             .unwrap_or_else(|| current.model.clone());
+        let model = provider_schedule_model(model)?;
         let attachments = args
             .attachments
             .unwrap_or_else(|| current.attachments.clone());
@@ -9514,6 +9548,17 @@ pub(crate) struct UpdateScheduleRequest {
     last_run: Option<i64>,
 }
 
+fn provider_schedule_model(model: String) -> milim_core::Result<String> {
+    let lower = model.to_ascii_lowercase();
+    if lower.starts_with("codex:") || lower.starts_with("claude:") {
+        return Err(Error::InvalidRequest(
+            "schedules require a configured provider model; Codex and Claude account runtimes are interactive only"
+                .to_string(),
+        ));
+    }
+    Ok(model)
+}
+
 fn default_true() -> bool {
     true
 }
@@ -9556,12 +9601,15 @@ pub(crate) async fn schedule_create(
             "schedules are not enabled".to_string(),
         ))
     })?;
+    let model =
+        provider_schedule_model(trim_required_tool_arg(req.model, "model").map_err(ApiError)?)
+            .map_err(ApiError)?;
     let schedule = store
         .create_with_model_context(
             &req.name,
             &req.cron,
             req.agent_id,
-            &trim_required_tool_arg(req.model, "model").map_err(ApiError)?,
+            &model,
             &req.prompt,
             req.attachments,
             true,
@@ -9587,7 +9635,9 @@ pub(crate) async fn schedule_update(
         ))
     })?;
     let current = find_schedule(store, &id).map_err(ApiError)?;
-    let model = trim_required_tool_arg(req.model, "model").map_err(ApiError)?;
+    let model =
+        provider_schedule_model(trim_required_tool_arg(req.model, "model").map_err(ApiError)?)
+            .map_err(ApiError)?;
     let schedule = store
         .update(milim_automation::ScheduleUpdate {
             id: &id,

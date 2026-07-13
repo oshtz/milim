@@ -67,9 +67,9 @@ impl GeminiBackend {
         }
     }
 
-    fn build_body(&self, req: &CompletionRequest) -> Value {
+    fn build_body(&self, req: &CompletionRequest) -> Result<Value> {
         let mut body = json!({
-            "contents": build_contents(&req.messages),
+            "contents": build_contents(&req.messages)?,
         });
 
         if let Some(system) = system_text(&req.messages) {
@@ -93,7 +93,7 @@ impl GeminiBackend {
             body["toolConfig"] = tool_config;
         }
 
-        body
+        Ok(body)
     }
 }
 
@@ -147,7 +147,8 @@ impl ModelService for GeminiBackend {
     }
 
     async fn stream(&self, req: CompletionRequest) -> Result<EventStream> {
-        let body = self.build_body(&req);
+        crate::image_input::validate_request_images(&req)?;
+        let body = self.build_body(&req)?;
         let endpoint = format!(
             "{}?alt=sse",
             self.endpoint(&format!("{}:streamGenerateContent", model_path(&req.model)))
@@ -330,7 +331,7 @@ fn system_text(messages: &[ChatMessage]) -> Option<String> {
     (!text.is_empty()).then_some(text)
 }
 
-fn build_contents(messages: &[ChatMessage]) -> Vec<Value> {
+fn build_contents(messages: &[ChatMessage]) -> Result<Vec<Value>> {
     let mut tool_names = HashMap::new();
     messages
         .iter()
@@ -339,7 +340,7 @@ fn build_contents(messages: &[ChatMessage]) -> Vec<Value> {
         .collect()
 }
 
-fn message_to_gemini(msg: &ChatMessage, tool_names: &mut HashMap<String, String>) -> Value {
+fn message_to_gemini(msg: &ChatMessage, tool_names: &mut HashMap<String, String>) -> Result<Value> {
     if msg.role == "tool" {
         let name = msg
             .name
@@ -351,7 +352,7 @@ fn message_to_gemini(msg: &ChatMessage, tool_names: &mut HashMap<String, String>
             })
             .or_else(|| msg.tool_call_id.clone())
             .unwrap_or_else(|| "tool_result".to_string());
-        return json!({
+        return Ok(json!({
             "role": "user",
             "parts": [{
                 "functionResponse": {
@@ -359,7 +360,7 @@ fn message_to_gemini(msg: &ChatMessage, tool_names: &mut HashMap<String, String>
                     "response": tool_response_value(&msg.text_content())
                 }
             }]
-        });
+        }));
     }
 
     let role = if msg.role == "assistant" {
@@ -367,7 +368,7 @@ fn message_to_gemini(msg: &ChatMessage, tool_names: &mut HashMap<String, String>
     } else {
         "user"
     };
-    let mut parts = content_parts(msg);
+    let mut parts = content_parts(msg)?;
 
     if let Some(calls) = &msg.tool_calls {
         for call in calls {
@@ -388,39 +389,57 @@ fn message_to_gemini(msg: &ChatMessage, tool_names: &mut HashMap<String, String>
     if parts.is_empty() {
         parts.push(json!({ "text": "" }));
     }
-    json!({ "role": role, "parts": parts })
+    Ok(json!({ "role": role, "parts": parts }))
 }
 
-fn content_parts(msg: &ChatMessage) -> Vec<Value> {
+fn content_parts(msg: &ChatMessage) -> Result<Vec<Value>> {
     match &msg.content {
-        Some(Content::Text(text)) if !text.is_empty() => vec![json!({ "text": text })],
-        Some(Content::Parts(parts)) => parts.iter().filter_map(part_to_gemini).collect(),
-        _ => Vec::new(),
+        Some(Content::Text(text)) if !text.is_empty() => Ok(vec![json!({ "text": text })]),
+        Some(Content::Parts(parts)) => parts
+            .iter()
+            .filter_map(|part| part_to_gemini(part).transpose())
+            .collect(),
+        _ => Ok(Vec::new()),
     }
 }
 
-fn part_to_gemini(part: &ContentPart) -> Option<Value> {
+fn part_to_gemini(part: &ContentPart) -> Result<Option<Value>> {
     match part {
-        ContentPart::Text { text } => Some(json!({ "text": text })),
+        ContentPart::Text { text } => Ok(Some(json!({ "text": text }))),
         ContentPart::ImageUrl { image_url } => {
             let url = &image_url.url;
             if let Some((mime_type, data)) = parse_data_url(url) {
-                Some(json!({
+                Ok(Some(json!({
                     "inline_data": {
                         "mime_type": mime_type,
                         "data": data
                     }
-                }))
-            } else {
-                Some(json!({
+                })))
+            } else if is_gemini_file_uri(url) {
+                Ok(Some(json!({
                     "file_data": {
                         "file_uri": url
                     }
-                }))
+                })))
+            } else {
+                Err(Error::InvalidRequest(
+                    "Gemini image URLs must be inline data URLs or Gemini Files API URIs; arbitrary HTTP image URLs are not supported"
+                        .to_string(),
+                ))
             }
         }
-        _ => None,
+        _ => Ok(None),
     }
+}
+
+fn is_gemini_file_uri(url: &str) -> bool {
+    let Some(rest) = url.strip_prefix("https://generativelanguage.googleapis.com/") else {
+        return false;
+    };
+    let path = rest.split_once('?').map(|(path, _)| path).unwrap_or(rest);
+    ["v1beta/files/", "v1/files/"]
+        .iter()
+        .any(|prefix| path.strip_prefix(prefix).is_some_and(|id| !id.is_empty()))
 }
 
 fn tool_response_value(text: &str) -> Value {
@@ -577,4 +596,37 @@ fn opt_u32(v: &Value, key: &str) -> Option<u32> {
 
 fn upstream(e: impl std::fmt::Display) -> Error {
     Error::Upstream(e.to_string())
+}
+
+#[cfg(test)]
+mod image_tests {
+    use super::*;
+    use milim_core::api::openai::ImageUrl;
+
+    #[test]
+    fn rejects_arbitrary_http_image_urls() {
+        let part = ContentPart::ImageUrl {
+            image_url: ImageUrl {
+                url: "https://example.com/image.png".to_string(),
+                detail: None,
+            },
+        };
+        let error = part_to_gemini(&part).unwrap_err().to_string();
+        assert!(error.contains("Gemini Files API URIs"));
+    }
+
+    #[test]
+    fn accepts_genuine_gemini_files_api_uris() {
+        let part = ContentPart::ImageUrl {
+            image_url: ImageUrl {
+                url: "https://generativelanguage.googleapis.com/v1beta/files/abc123".to_string(),
+                detail: None,
+            },
+        };
+        let value = part_to_gemini(&part).unwrap().unwrap();
+        assert_eq!(
+            value["file_data"]["file_uri"],
+            "https://generativelanguage.googleapis.com/v1beta/files/abc123"
+        );
+    }
 }

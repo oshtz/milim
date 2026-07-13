@@ -505,7 +505,23 @@ async fn fire_schedule(
     });
     state.workspace = std::sync::Arc::new(std::sync::RwLock::new(workspace));
 
-    let prompt = milim_automation::prompt_with_attachments(&schedule.prompt, &schedule.attachments);
+    let user_message =
+        match milim_automation::message_with_attachments(&schedule.prompt, &schedule.attachments) {
+            Ok(message) => message,
+            Err(error) => {
+                state.schedule_runs.push(state::ScheduleRunEvent {
+                    id: format!("{}-{now_unix}-{index}", schedule.id),
+                    schedule_id: schedule.id,
+                    schedule_name: schedule.name,
+                    prompt: schedule.prompt,
+                    response: format!("Schedule error: {error}"),
+                    model: schedule.model,
+                    ran_at: now_unix,
+                });
+                return true;
+            }
+        };
+    let prompt = user_message.text_content();
     let agent = schedule
         .agent_id
         .as_deref()
@@ -533,7 +549,20 @@ async fn fire_schedule(
         });
         return true;
     }
-    messages.push(ChatMessage::text("user", prompt));
+    let lower_model = model.to_ascii_lowercase();
+    if lower_model.starts_with("codex:") || lower_model.starts_with("claude:") {
+        state.schedule_runs.push(state::ScheduleRunEvent {
+            id: format!("{}-{now_unix}-{index}", schedule.id),
+            schedule_id: schedule.id,
+            schedule_name: schedule.name,
+            prompt: schedule.prompt,
+            response: "Schedule error: account-runtime models are interactive only. Choose a configured provider model for background schedules.".to_string(),
+            model,
+            ran_at: now_unix,
+        });
+        return true;
+    }
+    messages.push(user_message);
     let tools = agent
         .as_ref()
         .map(|agent| routes::scheduled_agent_registry(&state, agent))
@@ -696,5 +725,36 @@ mod tests {
         assert!(fire_schedule(state.clone(), schedule, 10, 0).await);
         let events = state.schedule_runs.take();
         assert!(events[0].response.contains("no model is configured"));
+    }
+
+    #[tokio::test]
+    async fn legacy_schedule_image_without_pixels_records_visible_error() {
+        let state = AppState::new(Arc::new(TestBackend::new()), ServerConfiguration::default());
+        let schedule = milim_automation::Schedule {
+            id: "legacy-image".to_string(),
+            name: "Legacy image".to_string(),
+            cron: "0 0 * * * *".to_string(),
+            agent_id: None,
+            model: "test-echo".to_string(),
+            prompt: "describe it".to_string(),
+            attachments: vec![milim_automation::ScheduleAttachment {
+                id: "image".to_string(),
+                name: "missing.png".to_string(),
+                mime: "image/png".to_string(),
+                size: 75,
+                content: None,
+                data_url: None,
+                truncated: false,
+                source_path: None,
+            }],
+            enabled: true,
+            workspace: None,
+            created_unix: 0,
+            last_run: None,
+        };
+
+        assert!(fire_schedule(state.clone(), schedule, 10, 0).await);
+        let events = state.schedule_runs.take();
+        assert!(events[0].response.contains("reattach it"));
     }
 }

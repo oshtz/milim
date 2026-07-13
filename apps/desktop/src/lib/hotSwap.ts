@@ -1,7 +1,7 @@
 import type { ChatMessage, ModelInfo, ProviderInfo } from "../api.js";
 import type { Session } from "../sessions/store.js";
 import { contextSendPlan, messagesForModelContext } from "./contextCompaction.js";
-import { modelDevProfile, modelDevCapabilities } from "./modelPicker.js";
+import { modelDevProfile } from "./modelPicker.js";
 
 export type HotSwapParity = "full" | "translated" | "degraded" | "blocked";
 export type HotSwapIssueCode =
@@ -139,18 +139,15 @@ export function assessHotSwap({
 
   const visibleMessages = messagesForModelContext(contextMessages, session.messages);
   const targetRuntime = runtimeKind(target.id);
-  const targetHasVision =
-    target.capabilities?.imageInput === true ||
-    (target.capabilities?.imageInput === undefined &&
-      modelDevCapabilities(target).includes("vision"));
-  if (hasImagePixels(visibleMessages) && (targetRuntime || !targetHasVision)) {
+  if (
+    hasImagePixels(visibleMessages) &&
+    target.capabilities?.imageInput === false
+  ) {
     issues.push({
       code: "image_pixels_unavailable",
       parity: "degraded",
       title: "Image pixels will not transfer",
-      detail: targetRuntime
-        ? "Account runtimes receive text prompts and attachment metadata, not image pixels."
-        : "The target model does not advertise image input support.",
+      detail: "The target model explicitly reports that it does not support image input.",
     });
   }
 

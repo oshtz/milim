@@ -1150,6 +1150,7 @@ dependencies = [
 name = "milim-automation"
 version = "0.1.28"
 dependencies = [
+ "base64",
  "chrono",
  "cron",
  "milim-core",
@@ -1216,6 +1217,7 @@ version = "0.1.28"
 dependencies = [
  "async-stream",
  "async-trait",
+ "base64",
  "bytes",
  "futures",
  "milim-core",
@@ -1279,6 +1281,7 @@ dependencies = [
  "async-stream",
  "async-trait",
  "axum",
+ "base64",
  "bytes",
  "futures",
  "milim-agents",

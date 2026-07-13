@@ -160,6 +160,7 @@ impl ModelService for AnthropicBackend {
     }
 
     async fn stream(&self, req: CompletionRequest) -> Result<EventStream> {
+        crate::image_input::validate_request_images(&req)?;
         let body = self.build_body(&req);
         let resp = self
             .auth(self.client.post(self.endpoint("messages")))
