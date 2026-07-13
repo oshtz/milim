@@ -940,8 +940,8 @@ export function Sidebar({
                 : baseVisibleSessions;
               const currentShownCount = visibleSessions.length;
               const nextRevealCount = sidebarSectionNextRevealCount(totalSessions, visibleLimit, activeIndex);
-              const canShowMore = !collapsed && !searchActive && nextRevealCount > 0;
-              const canShowLess = !collapsed && !searchActive && visibleLimit > SIDEBAR_SECTION_PREVIEW_LIMIT;
+              const canShowMore = !searchActive && nextRevealCount > 0;
+              const canShowLess = !searchActive && visibleLimit > SIDEBAR_SECTION_PREVIEW_LIMIT;
               const sectionManuallyExpanded = visibleLimit > SIDEBAR_SECTION_PREVIEW_LIMIT;
               const shownCountLabel = `${currentShownCount} of ${totalSessions} shown`;
               const showMoreLabel = `Show ${nextRevealCount} more ${nextRevealCount === 1 ? "thread" : "threads"} in ${group.label}, ${shownCountLabel}`;
@@ -1057,7 +1057,13 @@ export function Sidebar({
                       )}
                     </div>
                   </div>
-                  {!collapsed && visibleSessions.map((s) => {
+                  <div
+                    className="context-section-reveal"
+                    data-collapsed={collapsed || undefined}
+                    aria-hidden={collapsed}
+                  >
+                    <div className="context-section-inner session-section-content">
+                  {visibleSessions.map((s) => {
                   const workerRunning = s.worker?.status === "queued" || s.worker?.status === "running";
                   const generating = generatingSessions.has(s.id) || workerRunning;
                   const unread = unreadSessions.has(s.id);
@@ -1210,7 +1216,7 @@ export function Sidebar({
                       {showLessButton}
                     </div>
                   )}
-                  {!collapsed && group.sessions.length === 0 && group.id !== SIDEBAR_PINNED_SECTION_ID && (
+                  {group.sessions.length === 0 && group.id !== SIDEBAR_PINNED_SECTION_ID && (
                     <button
                       className={"session-empty project-empty" + (group.id === SIDEBAR_CHATS_SECTION_ID ? " chat-empty" : "")}
                       type="button"
@@ -1219,6 +1225,8 @@ export function Sidebar({
                       {group.id === SIDEBAR_CHATS_SECTION_ID ? "Start a chat" : "New chat in this project"}
                     </button>
                   )}
+                    </div>
+                  </div>
                 </section>
               );
             })

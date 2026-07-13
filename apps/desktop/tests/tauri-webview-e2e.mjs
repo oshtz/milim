@@ -16,6 +16,7 @@ const zoomOnly = process.argv.includes("--zoom-only");
 const microUiOnly = process.argv.includes("--micro-ui-only");
 const workersOnly = process.argv.includes("--workers-only");
 const mcpAppsOnly = process.argv.includes("--mcp-apps-only");
+const sidebarMotionOnly = process.argv.includes("--sidebar-motion-only");
 const screenshots = {
   avatars: join(tmpdir(), "milim-tauri-webview-agent-avatars.png"),
   avatarsLight: join(tmpdir(), "milim-tauri-webview-agent-avatars-light.png"),
@@ -85,7 +86,11 @@ let failure;
 try {
   session = await launchTauri(milimHome);
   await resetFrontendStorage(session.page);
-  if (mcpAppsOnly) {
+  if (sidebarMotionOnly) {
+    const errors = collectErrors(session.page);
+    await runSidebarSectionMotionCheck(session.page);
+    consoleErrors.push(...errors);
+  } else if (mcpAppsOnly) {
     await session.page.getByTestId("chat-shell").waitFor();
     await dismissOnboardingIfPresent(session.page);
     await runMcpAppsCheck(session.page);
@@ -222,6 +227,50 @@ async function runPersistenceAndChat(page, pid) {
   await closeAgents(page);
 
   return errors;
+}
+
+async function runSidebarSectionMotionCheck(page) {
+  const collapse = page.getByRole("button", { name: "Collapse Chats", exact: true });
+  await collapse.waitFor();
+  const section = page.locator('[data-sidebar-section-id="chats"]');
+  const reveal = section.locator(".context-section-reveal");
+  const expanded = await reveal.evaluate((element) => {
+    const style = getComputedStyle(element);
+    return {
+      height: element.getBoundingClientRect().height,
+      transitionDuration: style.transitionDuration,
+      transitionProperty: style.transitionProperty,
+      visibility: style.visibility,
+    };
+  });
+  if (expanded.height <= 0 || expanded.visibility !== "visible") {
+    throw new Error(`Expected the Chats section to start expanded, got ${JSON.stringify(expanded)}.`);
+  }
+  if (!expanded.transitionDuration.includes("0.12s") || !expanded.transitionProperty.includes("grid-template-rows")) {
+    throw new Error(`Chats section did not reuse the app collapse motion: ${JSON.stringify(expanded)}.`);
+  }
+
+  await collapse.click();
+  await assertAttribute(reveal, "aria-hidden", "true");
+  if (await reveal.count() !== 1) throw new Error("Collapsed Chats content should remain mounted for its exit motion.");
+  await delay(160);
+  const collapsed = await reveal.evaluate((element) => ({
+    height: element.getBoundingClientRect().height,
+    visibility: getComputedStyle(element).visibility,
+  }));
+  if (collapsed.height > 0.5 || collapsed.visibility !== "hidden") {
+    throw new Error(`Expected the Chats section collapse motion to finish hidden, got ${JSON.stringify(collapsed)}.`);
+  }
+
+  await page.getByRole("button", { name: "Expand Chats", exact: true }).click();
+  await delay(160);
+  const reopened = await reveal.evaluate((element) => ({
+    height: element.getBoundingClientRect().height,
+    visibility: getComputedStyle(element).visibility,
+  }));
+  if (reopened.height <= 0 || reopened.visibility !== "visible") {
+    throw new Error(`Expected the Chats section expand motion to restore its content, got ${JSON.stringify(reopened)}.`);
+  }
 }
 
 async function runMcpAppsCheck(page) {

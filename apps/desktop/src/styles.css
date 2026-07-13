@@ -1293,6 +1293,15 @@ body.sidebar-pointer-dragging .session-section-title {
   flex-direction: column;
   gap: 3px;
   border-radius: 8px;
+  transition: gap 0.12s ease;
+}
+.session-section.collapsed {
+  gap: 0;
+}
+.session-section-content {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
 }
 .session-section-title {
   position: relative;
@@ -5451,6 +5460,7 @@ html[data-dark="true"] .preview-control-cursor {
 }
 @media (prefers-reduced-motion: reduce) {
   .context-section-reveal,
+  .session-section,
   .quick-summary-section-toggle svg,
   .workers-collapse-toggle svg {
     transition: none;

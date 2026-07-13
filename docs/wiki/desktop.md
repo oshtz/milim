@@ -22,7 +22,7 @@ Milim has one model-agnostic workbench. Project, Agent, MCP, media, memory, sand
 | Area | Role |
 |---|---|
 | Top bar | Theme, update, provider, and global app controls. |
-| Sidebar | Projects, canonical parent threads, pinned groups, archives, unread state, five-at-a-time per-section ellipsis toggles, quick switching, and the Tools launcher for MCP servers, Skills, and Schedules. Workers never become sidebar rows. |
+| Sidebar | Projects, canonical parent threads, pinned groups, archives, unread state, animated section collapse, five-at-a-time per-section ellipsis toggles, quick switching, and the Tools launcher for MCP servers, Skills, and Schedules. Workers never become sidebar rows. |
 | Thread header | The model chip is the sole model selector. The Session chip names only non-default states; its menu uses explicit Privacy and Approval choices instead of cycling. |
 | Composer | Prompt text, visually highlighted plain-text skill/MCP/file/link tokens, persisted per-thread unsent drafts, thread-local sent-history recall with temporary position feedback, slash commands, file attachments, an interruptible and reorderable queued-send tray, send controls, and local repository-aware empty-state starters that prefill without submitting. |
 | Run timeline | Reasoning, compact live tool activity with expandable details, workspace checkpoint notices, memory notices, one compact Worker Run event, and usage metrics. Built-in tool-agent usage updates after each model request completes; account runtimes remain terminal-only unless their CLIs report more. |
