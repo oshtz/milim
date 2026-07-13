@@ -20,6 +20,12 @@ export type UpdateInfo = {
   checksumUrl: string;
 };
 
+export type UpdateDownloadProgress = {
+  phase: "downloading" | "verifying" | "preparing" | "restarting";
+  downloadedBytes: number;
+  totalBytes: number | null;
+};
+
 type AssetConfig = {
   name: string;
   extension: string;
@@ -139,22 +145,37 @@ export type UpdateDownloadFileRequest = {
 
 export type UpdateDownloadServices = {
   getPlatform: () => Promise<string>;
-  downloadUpdateFile: (request: UpdateDownloadFileRequest) => Promise<string>;
+  downloadUpdateFile: (
+    request: UpdateDownloadFileRequest,
+    onProgress?: (progress: UpdateDownloadProgress) => void,
+  ) => Promise<string>;
   extractAppZip: (zipPath: string) => Promise<string>;
 };
 
 export async function downloadUpdateWithServices(
   update: UpdateInfo,
   services: UpdateDownloadServices,
+  onProgress?: (progress: UpdateDownloadProgress) => void,
 ): Promise<string> {
   const os = await services.getPlatform();
+  let latestProgress: UpdateDownloadProgress = {
+    phase: "downloading",
+    downloadedBytes: 0,
+    totalBytes: null,
+  };
+  const reportProgress = (progress: UpdateDownloadProgress) => {
+    latestProgress = progress;
+    onProgress?.(progress);
+  };
   const updatePath = await services.downloadUpdateFile({
     downloadUrl: update.downloadUrl,
     checksumUrl: update.checksumUrl,
     assetName: update.assetName,
     fileName: getUpdateFileName(update, os),
-  });
-  return os === "darwin" ? services.extractAppZip(updatePath) : updatePath;
+  }, reportProgress);
+  if (os !== "darwin") return updatePath;
+  reportProgress({ ...latestProgress, phase: "preparing", totalBytes: null });
+  return services.extractAppZip(updatePath);
 }
 
 export async function checkForUpdate(): Promise<UpdateInfo | null> {
@@ -179,15 +200,22 @@ export async function checkForUpdate(): Promise<UpdateInfo | null> {
   };
 }
 
-export async function downloadUpdate(update: UpdateInfo): Promise<string> {
+export async function downloadUpdate(
+  update: UpdateInfo,
+  onProgress?: (progress: UpdateDownloadProgress) => void,
+): Promise<string> {
   if (!isTauriRuntime()) throw new Error("Updates require the desktop app.");
 
-  const { invoke } = await import("@tauri-apps/api/core");
+  const { Channel, invoke } = await import("@tauri-apps/api/core");
   return downloadUpdateWithServices(update, {
     getPlatform: () => invoke<string>("get_update_platform"),
-    downloadUpdateFile: (request) => invoke<string>("download_update_file", request),
+    downloadUpdateFile: (request, reportProgress) => {
+      const progress = new Channel<UpdateDownloadProgress>();
+      progress.onmessage = (event) => reportProgress?.(event);
+      return invoke<string>("download_update_file", { ...request, onProgress: progress });
+    },
     extractAppZip: (zipPath) => invoke<string>("extract_app_zip", { zipPath }),
-  });
+  }, onProgress);
 }
 
 export async function installUpdate(updatePath: string): Promise<void> {

@@ -20,6 +20,7 @@ import {
   useUiPreferences,
 } from "../ui/store";
 import { useUpdateStore } from "../update/store";
+import { UpdateProgress } from "../update/UpdateProgress";
 import { Download, Pin } from "./icons";
 import { Logo } from "./Logo";
 import { WindowControls } from "./WindowControls";
@@ -53,6 +54,8 @@ export function TopBar() {
   const showAccountUsage = useUiPreferences((s) => s.showAccountUsageInTitleBar);
   const updateStatus = useUpdateStore((s) => s.status);
   const updateInfo = useUpdateStore((s) => s.updateInfo);
+  const updateProgress = useUpdateStore((s) => s.downloadProgress);
+  const updateError = useUpdateStore((s) => s.error);
   const downloadNow = useUpdateStore((s) => s.downloadNow);
   const installNow = useUpdateStore((s) => s.installNow);
   const activeSession = useSessions((s) => s.sessions.find((session) => session.id === s.activeId));
@@ -70,6 +73,11 @@ export function TopBar() {
   const updateBusy = updateActionRunning || updateStatus === "downloading" || updateStatus === "installing";
   const showUpdateButton = !!updateInfo && (updateStatus === "available" || updateStatus === "ready" || updateBusy);
   const updateVersionLabel = updateInfo ? `v${updateInfo.version.replace(/^v/i, "")}` : "";
+  const visibleUpdateProgress = updateProgress ?? {
+    phase: updateStatus === "installing" ? "restarting" as const : "downloading" as const,
+    downloadedBytes: 0,
+    totalBytes: null,
+  };
 
   useEffect(() => {
     if (!inTauri) return;
@@ -177,7 +185,6 @@ export function TopBar() {
 
   async function confirmTopBarUpdate() {
     if (!updateInfo || updateBusy) return;
-    setConfirmingUpdate(false);
 
     setUpdateActionRunning(true);
     try {
@@ -310,23 +317,49 @@ export function TopBar() {
         <WindowControls />
       </div>
       {typeof document !== "undefined" && confirmingUpdate && updateInfo && createPortal(
-        <div className="git-modal-backdrop" data-native-preview-blocker="true" onMouseDown={(event) => event.target === event.currentTarget && setConfirmingUpdate(false)}>
+        <div
+          className="git-modal-backdrop"
+          data-native-preview-blocker="true"
+          onMouseDown={(event) => {
+            if (!updateActionRunning && event.target === event.currentTarget) setConfirmingUpdate(false);
+          }}
+        >
           <section className="git-modal update-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="update-confirm-title">
             <div className="git-modal-head">
               <span>
                 <Download size={14} />
-                <strong id="update-confirm-title">Install update</strong>
+                <strong id="update-confirm-title">
+                  {updateActionRunning ? "Installing update" : updateError ? "Update failed" : "Install update"}
+                </strong>
               </span>
             </div>
-            <p>Install milim {updateVersionLabel}? The app will download the update, close, replace itself, and reopen.</p>
-            <div className="update-confirm-actions">
-              <button className="btn-ghost" type="button" onClick={() => setConfirmingUpdate(false)}>
-                Cancel
-              </button>
-              <button className="btn-accent" type="button" onClick={() => void confirmTopBarUpdate()}>
-                Update now
-              </button>
-            </div>
+            {updateActionRunning ? (
+              <UpdateProgress progress={visibleUpdateProgress} />
+            ) : updateError ? (
+              <>
+                <p className="error">{updateError}</p>
+                <div className="update-confirm-actions">
+                  <button className="btn-ghost" type="button" onClick={() => setConfirmingUpdate(false)}>
+                    Close
+                  </button>
+                  <button className="btn-accent" type="button" onClick={() => void confirmTopBarUpdate()}>
+                    Retry
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <p>Install milim {updateVersionLabel}? The app will download the update, close, replace itself, and reopen.</p>
+                <div className="update-confirm-actions">
+                  <button className="btn-ghost" type="button" onClick={() => setConfirmingUpdate(false)}>
+                    Cancel
+                  </button>
+                  <button className="btn-accent" type="button" onClick={() => void confirmTopBarUpdate()}>
+                    Update now
+                  </button>
+                </div>
+              </>
+            )}
           </section>
         </div>,
         document.body,

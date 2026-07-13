@@ -1012,6 +1012,34 @@ body.sidebar-pointer-dragging .session-section-title {
   font-size: 12px;
   line-height: 1.45;
 }
+.update-confirm-modal p.error {
+  color: var(--error);
+}
+.update-progress {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+}
+.update-progress-copy {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  color: var(--secondary-text);
+  font-size: 11px;
+}
+.update-progress-copy strong {
+  color: var(--primary-text);
+  font-size: 12px;
+  font-weight: 600;
+}
+.update-progress-copy span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
 .update-confirm-actions {
   display: flex;
   justify-content: flex-end;
@@ -8883,6 +8911,11 @@ html[data-dark="true"] .preview-control-cursor {
   color: var(--tertiary-text);
   font-size: 12px;
   line-height: 1.35;
+}
+.settings-update-progress {
+  margin-top: 4px;
+  padding-top: 9px;
+  border-top: 1px solid color-mix(in srgb, var(--border-primary) 76%, transparent);
 }
 .shortcut-recorder-row {
   display: grid;

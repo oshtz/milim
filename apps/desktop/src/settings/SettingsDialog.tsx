@@ -28,6 +28,7 @@ import type { Theme } from "../theme/types";
 import { useOnboarding } from "../onboarding/store";
 import { DAY_MS, useSessions, type ArchiveRetentionDays, type Project, type Session } from "../sessions/store";
 import { useUpdateStore, type UpdateStatus } from "../update/store";
+import { UpdateProgress } from "../update/UpdateProgress";
 import {
   APP_SHORTCUT_ACTIONS,
   APP_SHORTCUT_LABELS,
@@ -223,6 +224,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
   const updateStatus = useUpdateStore((s) => s.status);
   const updateInfo = useUpdateStore((s) => s.updateInfo);
   const updatePath = useUpdateStore((s) => s.updatePath);
+  const updateProgress = useUpdateStore((s) => s.downloadProgress);
   const updateError = useUpdateStore((s) => s.error);
   const updateLastCheckedAt = useUpdateStore((s) => s.lastCheckedAt);
   const loadCurrentVersion = useUpdateStore((s) => s.loadCurrentVersion);
@@ -1063,6 +1065,16 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
                   Check
                 </button>
               </div>
+              {(updateStatus === "downloading" || updateStatus === "installing") ? (
+                <UpdateProgress
+                  className="settings-update-progress"
+                  progress={updateProgress ?? {
+                    phase: updateStatus === "installing" ? "restarting" : "downloading",
+                    downloadedBytes: 0,
+                    totalBytes: null,
+                  }}
+                />
+              ) : null}
               {canDownloadUpdate ? (
                 <div className="settings-action-row">
                   <div>

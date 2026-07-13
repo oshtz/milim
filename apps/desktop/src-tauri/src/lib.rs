@@ -26,8 +26,10 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use reqwest::header::ACCEPT;
+use serde::Serialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use tauri::ipc::Channel;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Manager, WindowEvent};
@@ -2340,6 +2342,46 @@ const UPDATE_DIR_NAME: &str = "milim-updates";
 const UPDATE_RECOVERY_ERROR_NAME: &str = "install-error.txt";
 const MAX_UPDATE_PACKAGE_BYTES: usize = 512 * 1024 * 1024;
 const MAX_UPDATE_CHECKSUM_BYTES: usize = 1024 * 1024;
+const UPDATE_PROGRESS_UNKNOWN_STEP_BYTES: u64 = 1024 * 1024;
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateDownloadProgress {
+    phase: &'static str,
+    downloaded_bytes: u64,
+    total_bytes: Option<u64>,
+}
+
+fn send_update_progress(
+    channel: &Channel<UpdateDownloadProgress>,
+    phase: &'static str,
+    downloaded_bytes: u64,
+    total_bytes: Option<u64>,
+) {
+    let _ = channel.send(UpdateDownloadProgress {
+        phase,
+        downloaded_bytes,
+        total_bytes,
+    });
+}
+
+fn update_progress_percent(downloaded_bytes: u64, total_bytes: Option<u64>) -> Option<u8> {
+    total_bytes
+        .filter(|total| *total > 0)
+        .map(|total| downloaded_bytes.saturating_mul(100).checked_div(total).unwrap_or(0).min(100) as u8)
+}
+
+fn should_report_update_progress(
+    downloaded_bytes: u64,
+    total_bytes: Option<u64>,
+    last_reported_bytes: u64,
+    last_reported_percent: Option<u8>,
+) -> bool {
+    match update_progress_percent(downloaded_bytes, total_bytes) {
+        Some(percent) => Some(percent) != last_reported_percent,
+        None => downloaded_bytes.saturating_sub(last_reported_bytes) >= UPDATE_PROGRESS_UNKNOWN_STEP_BYTES,
+    }
+}
 
 fn update_dir(app: &tauri::AppHandle) -> std::result::Result<PathBuf, String> {
     let data_dir = app
@@ -2550,6 +2592,7 @@ async fn fetch_update_bytes(
     accept: &str,
     label: &str,
     max_bytes: usize,
+    on_progress: Option<&Channel<UpdateDownloadProgress>>,
 ) -> std::result::Result<Vec<u8>, String> {
     let response = client
         .get(url)
@@ -2561,23 +2604,45 @@ async fn fetch_update_bytes(
     if !status.is_success() {
         return Err(format!("{label} download failed ({status})."));
     }
-    if response
-        .content_length()
-        .is_some_and(|length| length > max_bytes as u64)
-    {
+    let total_bytes = response.content_length();
+    if total_bytes.is_some_and(|length| length > max_bytes as u64) {
         return Err(format!("{label} is too large."));
+    }
+    if let Some(channel) = on_progress {
+        send_update_progress(channel, "downloading", 0, total_bytes);
     }
     let mut response = response;
     let mut bytes = Vec::new();
+    let mut last_reported_bytes = 0;
+    let mut last_reported_percent = update_progress_percent(0, total_bytes);
     while let Some(chunk) = response
         .chunk()
         .await
         .map_err(|e| format!("{label} download failed: {e}"))?
     {
         append_update_chunk(&mut bytes, &chunk, label, max_bytes)?;
+        let downloaded_bytes = bytes.len() as u64;
+        if let Some(channel) = on_progress {
+            if should_report_update_progress(
+                downloaded_bytes,
+                total_bytes,
+                last_reported_bytes,
+                last_reported_percent,
+            ) {
+                send_update_progress(channel, "downloading", downloaded_bytes, total_bytes);
+                last_reported_bytes = downloaded_bytes;
+                last_reported_percent = update_progress_percent(downloaded_bytes, total_bytes);
+            }
+        }
     }
     if bytes.is_empty() {
         return Err(format!("{label} returned no bytes."));
+    }
+    if let Some(channel) = on_progress {
+        let downloaded_bytes = bytes.len() as u64;
+        if downloaded_bytes != last_reported_bytes {
+            send_update_progress(channel, "downloading", downloaded_bytes, total_bytes);
+        }
     }
     Ok(bytes)
 }
@@ -2589,6 +2654,7 @@ async fn download_update_file(
     checksum_url: String,
     asset_name: String,
     file_name: String,
+    on_progress: Channel<UpdateDownloadProgress>,
 ) -> std::result::Result<String, String> {
     validate_update_archive_name(&asset_name)?;
     let download_url = validate_update_download_url(&download_url, "Update download URL")?;
@@ -2607,14 +2673,22 @@ async fn download_update_file(
         "application/octet-stream",
         "Update package",
         MAX_UPDATE_PACKAGE_BYTES,
+        Some(&on_progress),
     )
     .await?;
+    send_update_progress(
+        &on_progress,
+        "verifying",
+        package.len() as u64,
+        Some(package.len() as u64),
+    );
     let checksum = fetch_update_bytes(
         &client,
         &checksum_url,
         "text/plain, application/octet-stream",
         "Update checksum",
         MAX_UPDATE_CHECKSUM_BYTES,
+        None,
     )
     .await?;
     let checksum_text =
@@ -3595,6 +3669,25 @@ mod artifact_save_tests {
         let err = append_update_chunk(&mut bytes, &[4, 5], "Update package", 4).unwrap_err();
         assert!(err.contains("too large"));
         assert_eq!(bytes, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn updater_coalesces_known_and_unknown_download_progress() {
+        assert_eq!(update_progress_percent(500, Some(1_000)), Some(50));
+        assert!(!should_report_update_progress(509, Some(1_000), 500, Some(50)));
+        assert!(should_report_update_progress(510, Some(1_000), 500, Some(50)));
+        assert!(!should_report_update_progress(
+            UPDATE_PROGRESS_UNKNOWN_STEP_BYTES - 1,
+            None,
+            0,
+            None,
+        ));
+        assert!(should_report_update_progress(
+            UPDATE_PROGRESS_UNKNOWN_STEP_BYTES,
+            None,
+            0,
+            None,
+        ));
     }
 
     #[test]

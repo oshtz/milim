@@ -7,6 +7,7 @@ import {
   installUpdate,
   shouldRunAutoUpdateCheck,
   STARTUP_UPDATE_INTERVAL_MS,
+  type UpdateDownloadProgress,
   type UpdateInfo,
 } from "./service";
 
@@ -26,6 +27,7 @@ interface UpdateState {
   status: UpdateStatus;
   updateInfo: UpdateInfo | null;
   updatePath: string | null;
+  downloadProgress: UpdateDownloadProgress | null;
   error: string | null;
   lastCheckedAt: number | null;
   ignoredVersion: string | null;
@@ -84,6 +86,7 @@ export const useUpdateStore = create<UpdateState>()(
       status: "idle",
       updateInfo: null,
       updatePath: null,
+      downloadProgress: null,
       error: null,
       lastCheckedAt: null,
       ignoredVersion: null,
@@ -116,6 +119,7 @@ export const useUpdateStore = create<UpdateState>()(
             status: state.status === "error" ? state.status : "up-to-date",
             updateInfo: null,
             updatePath: null,
+            downloadProgress: null,
             error: state.status === "error" ? state.error : null,
             ignoredVersion: null,
           });
@@ -144,12 +148,12 @@ export const useUpdateStore = create<UpdateState>()(
           return null;
         }
 
-        set({ status: "checking", error: null });
+        set({ status: "checking", downloadProgress: null, error: null });
 
         try {
           const info = await checkForUpdate();
           if (!info) {
-            set({ status: "up-to-date", updateInfo: null, updatePath: null, lastCheckedAt: Date.now() });
+            set({ status: "up-to-date", updateInfo: null, updatePath: null, downloadProgress: null, lastCheckedAt: Date.now() });
             return null;
           }
           if (options?.automatic && get().ignoredVersion === info.version) {
@@ -159,7 +163,7 @@ export const useUpdateStore = create<UpdateState>()(
           set({ status: "available", updateInfo: info, updatePath: null, lastCheckedAt: Date.now() });
           return info;
         } catch (error) {
-          set({ status: "error", error: formatError(error), lastCheckedAt: Date.now() });
+          set({ status: "error", downloadProgress: null, error: formatError(error), lastCheckedAt: Date.now() });
           return null;
         }
       },
@@ -169,13 +173,18 @@ export const useUpdateStore = create<UpdateState>()(
         if (!updateInfo) return null;
         if (get().status === "ready" && get().updatePath) return get().updatePath;
 
-        set({ status: "downloading", error: null, updateInfo });
+        set({
+          status: "downloading",
+          downloadProgress: { phase: "downloading", downloadedBytes: 0, totalBytes: null },
+          error: null,
+          updateInfo,
+        });
         try {
-          const updatePath = await downloadUpdate(updateInfo);
-          set({ status: "ready", updatePath, updateInfo, ignoredVersion: null });
+          const updatePath = await downloadUpdate(updateInfo, (downloadProgress) => set({ downloadProgress }));
+          set({ status: "ready", updatePath, updateInfo, downloadProgress: null, ignoredVersion: null });
           return updatePath;
         } catch (error) {
-          set({ status: "error", error: formatError(error) });
+          set({ status: "error", downloadProgress: null, error: formatError(error) });
           return null;
         }
       },
@@ -186,11 +195,15 @@ export const useUpdateStore = create<UpdateState>()(
           set({ status: "error", error: "Update package not downloaded yet." });
           return;
         }
-        set({ status: "installing", error: null });
+        set({
+          status: "installing",
+          downloadProgress: { phase: "restarting", downloadedBytes: 1, totalBytes: 1 },
+          error: null,
+        });
         try {
           await installUpdate(updatePath);
         } catch (error) {
-          set({ status: "ready", error: formatError(error) });
+          set({ status: "ready", downloadProgress: null, error: formatError(error) });
         }
       },
 

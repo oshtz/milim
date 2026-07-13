@@ -1,5 +1,6 @@
 import { deepEqual, equal, throws } from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { renderToStaticMarkup } from "react-dom/server";
 import {
   AUTO_UPDATE_INTERVAL_MS,
   STARTUP_UPDATE_INTERVAL_MS,
@@ -11,9 +12,11 @@ import {
   selectUpdateAssets,
   shouldRunAutoUpdateCheck,
   type GitHubReleaseAsset,
+  type UpdateDownloadProgress,
   type UpdateDownloadServices,
   type UpdateInfo,
 } from "../src/update/service.js";
+import { UpdateProgress } from "../src/update/UpdateProgress.js";
 
 const SHA_A = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 const SHA_B = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
@@ -47,9 +50,11 @@ function createDownloadServices(os: string, events: string[]): UpdateDownloadSer
       events.push("platform");
       return os;
     },
-    downloadUpdateFile: async (request) => {
+    downloadUpdateFile: async (request, onProgress) => {
       events.push(`native:${request.fileName}:${request.assetName}:${request.downloadUrl}:${request.checksumUrl}`);
       events.push(`native-checksum:${request.checksumUrl.includes(".sha256") ? SHA_A : SHA_B}`);
+      onProgress?.({ phase: "downloading", downloadedBytes: 5, totalBytes: 10 });
+      onProgress?.({ phase: "verifying", downloadedBytes: 10, totalBytes: 10 });
       return `C:/Users/USER/AppData/Local/com.omershatz.milim/milim-updates/${request.fileName}`;
     },
     extractAppZip: async (zipPath) => {
@@ -91,6 +96,12 @@ equal(
   true,
   "stale update packages should be detected by semantic version comparison",
 );
+equal(updateStoreSource.includes("downloadProgress: state.downloadProgress"), false, "download progress should not persist");
+equal(
+  (updateStoreSource.match(/downloadProgress: null/g) ?? []).length >= 4,
+  true,
+  "download progress should reset after checks, success, and errors",
+);
 equal(autoUpdaterSource.includes("window.confirm"), false, "automatic update checks should not prompt on startup");
 equal(autoUpdaterSource.includes("downloadNow"), false, "automatic update checks should not download before the user clicks update");
 equal(autoUpdaterSource.includes("installNow"), false, "automatic update checks should not install before the user clicks update");
@@ -129,9 +140,11 @@ equal(
 throws(() => getAssetDownloadUrl({ name: "milim.app.zip" }), /no download URL/);
 
 const events: string[] = [];
+const windowsProgress: UpdateDownloadProgress[] = [];
 const downloaded = await downloadUpdateWithServices(
   updateInfo(),
   createDownloadServices("win32", events),
+  (progress) => windowsProgress.push(progress),
 );
 equal(downloaded.endsWith("milim-0.1.30.exe"), true);
 deepEqual(events, [
@@ -139,8 +152,13 @@ deepEqual(events, [
   "native:milim-0.1.30.exe:milim_0.1.30_x64-portable.exe:https://example.test/milim_0.1.30_x64-portable.exe:https://example.test/milim_0.1.30_x64-portable.exe.sha256",
   `native-checksum:${SHA_A}`,
 ]);
+deepEqual(windowsProgress, [
+  { phase: "downloading", downloadedBytes: 5, totalBytes: 10 },
+  { phase: "verifying", downloadedBytes: 10, totalBytes: 10 },
+]);
 
 const macEvents: string[] = [];
+const macProgress: UpdateDownloadProgress[] = [];
 await downloadUpdateWithServices(
   updateInfo({
     assetName: "milim.app.zip",
@@ -148,5 +166,20 @@ await downloadUpdateWithServices(
     checksumUrl: "https://example.test/milim.app.zip.sha256",
   }),
   createDownloadServices("darwin", macEvents),
+  (progress) => macProgress.push(progress),
 );
 equal(macEvents.at(-1)?.includes("extract:"), true);
+deepEqual(macProgress.at(-1), { phase: "preparing", downloadedBytes: 10, totalBytes: null });
+
+const determinateProgress = renderToStaticMarkup(UpdateProgress({
+  progress: { phase: "downloading", downloadedBytes: 5, totalBytes: 10 },
+}));
+equal(determinateProgress.includes('aria-valuenow="50"'), true);
+equal(determinateProgress.includes("50% · 5 B of 10 B"), true);
+equal(determinateProgress.includes("width:50%"), true);
+
+const indeterminateProgress = renderToStaticMarkup(UpdateProgress({
+  progress: { phase: "downloading", downloadedBytes: 5, totalBytes: null },
+}));
+equal(indeterminateProgress.includes("progress-fill indeterminate"), true);
+equal(indeterminateProgress.includes("aria-valuenow"), false);
