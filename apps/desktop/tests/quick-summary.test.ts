@@ -241,7 +241,8 @@ try {
     assert.match(groupedMarkup, new RegExp(`>${section}<`));
   }
   assert.match(groupedMarkup, /data-testid="worker-panel"/);
-  assert.match(groupedMarkup, />2 more</);
+  assert.match(groupedMarkup, /class="quick-summary-more"[^>]*aria-expanded="false"/);
+  assert.match(groupedMarkup, />2 more<\/button>/);
   assert.match(groupedMarkup, /source-5/);
   assert.doesNotMatch(groupedMarkup, /source-6/);
 

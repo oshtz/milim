@@ -3628,7 +3628,8 @@ button.git-row:hover svg {
 .quick-summary-scroll > .workers-panel .workers-plan,
 .quick-summary-scroll > .workers-panel .workers-body { flex: none; overflow: visible; }
 .quick-summary-section {
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: 2px;
   padding: 8px;
   border-bottom: 1px solid var(--border-primary);
@@ -3652,7 +3653,17 @@ button.git-row:hover svg {
   font-size: 11px;
 }
 .quick-summary-more {
+  width: 100%;
+  border: 0;
   border-top: 1px solid var(--border-primary);
+  background: transparent;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+.quick-summary-more:hover {
+  background: var(--panel-row-hover);
+  color: var(--secondary-text);
 }
 .quick-summary-row {
   display: flex;

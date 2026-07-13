@@ -1057,6 +1057,14 @@ async function runWorkersInspectorCheck(page, milimHome) {
   await assertTextContains(inspector.locator(".workers-status"), "Running");
   const fits = await inspector.evaluate((element) => element.scrollWidth <= element.clientWidth + 1);
   if (!fits) throw new Error("Workers Context panel overflows at narrow width.");
+  const sourceToggle = page.locator(".quick-summary-more");
+  await assertTextContains(sourceToggle, "2 more");
+  await sourceToggle.click();
+  await assertTextContains(sourceToggle, "Show less");
+  const sourceSeven = page.getByTestId("quick-summary-panel").getByText("source-7.txt", { exact: true });
+  await sourceSeven.waitFor();
+  await sourceToggle.click();
+  await assertHidden(sourceSeven, "collapsed source");
   await page.screenshot({ path: screenshots.workersNarrow, fullPage: false });
 }
 
@@ -1078,7 +1086,11 @@ async function seedWorkerFixture(page, milimHome, status) {
           id: sessionId,
           title: "Worker Context fixture",
           messages: [
-            { role: "user", content: "Use workers to inspect this change." },
+            {
+              role: "user",
+              content: "Use workers to inspect this change.",
+              attachments: Array.from({ length: 7 }, (_, index) => ({ id: `source-${index + 1}`, name: `source-${index + 1}.txt`, mime: "text/plain", size: 1 })),
+            },
             { id: "turn-a", role: "assistant", content: "", workerRunId: runId },
           ],
           settings: { model: "", instructions: "", activeAgentId: null, folder: "", sandbox: false, computerUse: false, memory: false, privacy: "off", toolApproval: "guarded", delegationPolicy: "ask", workerModel: "", planMode: false },

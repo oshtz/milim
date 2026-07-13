@@ -89,6 +89,7 @@ export function QuickSummaryPanel({
   const rows = Array.isArray(summary?.rows) ? summary.rows : [];
   const sources = Array.isArray(summary?.sources) ? summary.sources : [];
   const [liveQuota, setLiveQuota] = useState("");
+  const [sourcesExpanded, setSourcesExpanded] = useState(false);
   const model = summary?.model?.trim() ?? "";
 
   useEffect(() => {
@@ -173,11 +174,19 @@ export function QuickSummaryPanel({
               <h3 id="quick-summary-sources">Sources</h3>
               {sources.length ? (
                 <>
-                  {sources.slice(0, SOURCE_LIMIT).map((source) => (
+                  {sources.slice(0, sourcesExpanded ? sources.length : SOURCE_LIMIT).map((source) => (
                     <SourceRow key={`${source.kind}:${source.label}`} source={source} />
                   ))}
                   {sources.length > SOURCE_LIMIT && (
-                    <div className="quick-summary-more">{sources.length - SOURCE_LIMIT} more</div>
+                    <button
+                      className="quick-summary-more"
+                      type="button"
+                      aria-expanded={sourcesExpanded}
+                      aria-label={sourcesExpanded ? "Show fewer sources" : `Show ${sources.length - SOURCE_LIMIT} more sources`}
+                      onClick={() => setSourcesExpanded((expanded) => !expanded)}
+                    >
+                      {sourcesExpanded ? "Show less" : `${sources.length - SOURCE_LIMIT} more`}
+                    </button>
                   )}
                 </>
               ) : (
