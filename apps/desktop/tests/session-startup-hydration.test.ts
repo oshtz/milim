@@ -164,14 +164,19 @@ const { flushDeferredUserStateWrites } =
   await import("../src/persistence/userStateStorage.js");
 
 purgeExpiredArchivesAfterHydration();
+useSessions.getState().setPreviewRuntime(useSessions.getState().activeId, {
+  status: "idle",
+});
 await new Promise((resolve) => setTimeout(resolve, 0));
+await flushDeferredUserStateWrites("milim.sessions");
 
 assert(
   !calls.some(
     (call) =>
-      call.command === "user_state_set" && call.args?.key === "milim.sessions",
+      call.command === "user_sessions_set" ||
+      call.command === "user_sessions_apply_delta",
   ),
-  "startup archive cleanup should not write sessions before hydration",
+  "startup mutations should not write sessions before hydration",
 );
 
 releaseSessionGet?.();

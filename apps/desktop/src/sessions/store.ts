@@ -95,6 +95,7 @@ export async function hydrateSessionComposerDraftsFromUserState(): Promise<void>
 const sessionPersistStorage = {
   ...sessionStateStorage,
   setItem: (name, value) => {
+    if (!useSessions.persist.hasHydrated()) return undefined;
     if (
       value.state &&
       typeof value.state === "object" &&
@@ -3039,7 +3040,7 @@ export const useSessions = create<SessionState>()(
       name: "milim.sessions",
       storage: sessionPersistStorage as PersistStorage<Partial<SessionState>>,
       merge: (persisted, current) => {
-        const state = persisted as Partial<SessionState>;
+        const state = (persisted ?? {}) as Partial<SessionState>;
         if ((state as Record<string, unknown> | undefined)?.[STREAMING_PERSIST_MARKER])
           return current;
         const normalizedSessions =
