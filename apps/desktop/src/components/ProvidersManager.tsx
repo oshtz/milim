@@ -472,27 +472,12 @@ export function ProvidersManager({ onClose }: { onClose: () => void }) {
     setSel(null);
   }
 
-  const mediaReady = providers.some(
-    (p) =>
-      p.enabled && isMediaProvider(p) && (!providerNeedsKey(p) || p.has_key),
-  );
-  const localReady = providers.some(
-    (p) => p.enabled && isLocalEndpoint(p.base_url) && p.models.length,
-  );
-  const hostedReady = providers.some(
-    (p) =>
-      p.enabled &&
-      !isLocalEndpoint(p.base_url) &&
-      !isMediaProvider(p) &&
-      p.models.length,
-  );
   const codexReady = Boolean(
     codexAccount?.account || (codexAccount && !codexAccount.requiresOpenaiAuth),
   );
   const claudeReady = Boolean(
     claudeStatus?.available && claudeStatus.authenticated,
   );
-  const accountReady = codexReady || claudeReady;
   const claudeAccountLabel =
     claudeStatus?.auth?.email ?? claudeStatus?.auth?.subscriptionType ?? null;
   const selectedProvider = sel && sel !== "new" ? sel : null;
@@ -535,33 +520,6 @@ export function ProvidersManager({ onClose }: { onClose: () => void }) {
       items: providers.filter((provider) => providerGroup(provider) === label),
     }))
     .filter((group) => group.items.length > 0);
-  const readinessItems: Array<{
-    label: string;
-    value: string;
-    tone: StatusTone;
-  }> = [
-    {
-      label: "Local",
-      value: localReady ? "Ready" : "Not set",
-      tone: localReady ? "ready" : "off",
-    },
-    {
-      label: "Hosted",
-      value: hostedReady ? "Ready" : "Not set",
-      tone: hostedReady ? "ready" : "off",
-    },
-    {
-      label: "Media",
-      value: mediaReady ? "Ready" : "Optional",
-      tone: mediaReady ? "ready" : "warning",
-    },
-    {
-      label: "Accounts",
-      value: accountReady ? "Ready" : "Not connected",
-      tone: accountReady ? "ready" : "off",
-    },
-  ];
-
   return (
     <SheetDialog
       title="Providers"
@@ -601,27 +559,22 @@ export function ProvidersManager({ onClose }: { onClose: () => void }) {
 
       <div className="agents-body providers-body">
         <aside className="providers-rail" aria-label="Provider connections">
-          <div className="providers-rail-actions">
-            <button
-              className="provider-rail-action"
-              type="button"
-              onClick={() => edit("new")}
-            >
-              <Plus size={14} />
-              <span>New</span>
-            </button>
-            <button
-              className="provider-rail-action"
-              type="button"
-              onClick={detectLocal}
-              disabled={detecting}
-            >
-              <Search size={14} />
-              <span>{detecting ? "Detecting..." : "Detect local"}</span>
-            </button>
-          </div>
-
           <div className="providers-list" role="list">
+            <button
+              className={"provider-list-row" + (!sel ? " active" : "")}
+              data-testid="provider-overview"
+              type="button"
+              onClick={() => {
+                setSel(null);
+                setNote(null);
+                setConfirmDeleteId(null);
+              }}
+            >
+              <span className="provider-row-top">
+                <span className="provider-row-name">Overview</span>
+              </span>
+              <span className="provider-row-meta">Accounts and setup</span>
+            </button>
             {providerGroups.map((group) => (
               <div className="provider-group" key={group.label}>
                 <span className="provider-group-label">{group.label}</span>
@@ -672,27 +625,10 @@ export function ProvidersManager({ onClose }: { onClose: () => void }) {
         </aside>
 
         <main className="providers-detail">
-          <div
-            className="provider-readiness-grid"
-            data-testid="provider-readiness"
-          >
-            {readinessItems.map((item) => (
-              <div
-                className={"provider-readiness-tile " + item.tone}
-                key={item.label}
-              >
-                <span className={"provider-status-dot " + item.tone} />
-                <div>
-                  <strong>{item.label}</strong>
-                  <span>{item.value}</span>
-                </div>
-              </div>
-            ))}
-          </div>
-
           <section
             className="provider-account-panel"
             aria-labelledby="provider-account-title"
+            hidden={Boolean(sel)}
           >
             <div className="providers-section-head">
               <h4 id="provider-account-title">Account runtimes</h4>
@@ -790,6 +726,7 @@ export function ProvidersManager({ onClose }: { onClose: () => void }) {
           <section
             className="provider-quick-panel"
             aria-labelledby="provider-quick-title"
+            hidden={Boolean(sel)}
           >
             <div className="providers-section-head">
               <h4 id="provider-quick-title">Add providers</h4>
@@ -844,7 +781,7 @@ export function ProvidersManager({ onClose }: { onClose: () => void }) {
           </section>
 
           {discoveries.length > 0 && (
-            <div className="provider-discovery">
+            <div className="provider-discovery" hidden={Boolean(sel)}>
               <div className="provider-discovery-head">
                 <span className="setting-mini-title">Local providers</span>
                 <span>
@@ -882,7 +819,11 @@ export function ProvidersManager({ onClose }: { onClose: () => void }) {
             </div>
           )}
 
-          {sel ? (
+          {!sel && note && (
+            <p className={"provider-note " + noteTone(note)}>{note}</p>
+          )}
+
+          {sel && (
             <>
               <div className="providers-detail-head">
                 <div>
@@ -1105,24 +1046,6 @@ export function ProvidersManager({ onClose }: { onClose: () => void }) {
                 </button>
               </div>
             </>
-          ) : (
-            <div className="providers-empty">
-              <div>
-                <strong>Select a provider to edit</strong>
-                <span>
-                  Use the rail for saved providers, or start from the setup
-                  actions above.
-                </span>
-              </div>
-              <button
-                className="btn-accent providers-add-button"
-                type="button"
-                onClick={() => edit("new")}
-              >
-                <Plus size={14} />
-                <span>Add provider</span>
-              </button>
-            </div>
           )}
         </main>
       </div>
