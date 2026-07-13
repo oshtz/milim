@@ -10,6 +10,7 @@ use std::sync::Mutex;
 
 use milim_core::{Error, Result};
 use rusqlite::{params, Connection, OptionalExtension};
+use serde::Deserialize;
 
 use crate::crypto::EncryptedStore;
 
@@ -73,7 +74,16 @@ impl Database {
             JournalMode::Wal => "WAL",
             JournalMode::Delete => "DELETE",
         };
-        let _ = conn.pragma_update(None, "journal_mode", journal_mode);
+        conn.pragma_update(None, "journal_mode", journal_mode)
+            .map_err(sqlite)?;
+        let actual: String = conn
+            .pragma_query_value(None, "journal_mode", |row| row.get(0))
+            .map_err(sqlite)?;
+        if actual != "memory" && !actual.eq_ignore_ascii_case(journal_mode) {
+            return Err(Error::Other(format!(
+                "sqlite journal mode mismatch: requested {journal_mode}, got {actual}"
+            )));
+        }
         conn.pragma_update(None, "foreign_keys", "ON")
             .map_err(sqlite)?;
         conn.busy_timeout(std::time::Duration::from_secs(5))
@@ -326,6 +336,31 @@ pub struct UserDataStore {
     db: Mutex<Database>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionsDelta {
+    pub meta_json: String,
+    pub session_order: Vec<String>,
+    pub upserts: Vec<SessionDelta>,
+    pub deleted_session_ids: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionDelta {
+    pub id: String,
+    pub session_json: Option<String>,
+    pub message_count: usize,
+    pub messages: Vec<SessionMessageDelta>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionMessageDelta {
+    pub index: usize,
+    pub message_json: String,
+}
+
 impl UserDataStore {
     pub fn new(db: Database) -> Result<Self> {
         db.migrate_scoped("user_data", USER_DATA_MIGRATIONS)?;
@@ -393,6 +428,14 @@ impl UserDataStore {
             return Ok(());
         }
         set_sessions_snapshot_locked(conn, value_json)
+    }
+
+    pub fn apply_sessions_delta(&self, delta: SessionsDelta) -> Result<()> {
+        let db = self
+            .db
+            .lock()
+            .map_err(|_| Error::Other("user data DB lock poisoned".into()))?;
+        apply_sessions_delta_locked(db.conn(), delta)
     }
 
     pub fn delete_sessions_snapshot(&self) -> Result<bool> {
@@ -695,6 +738,203 @@ fn should_ignore_default_sessions_snapshot(
     Ok(messages == 0 && title == "New chat")
 }
 
+fn apply_sessions_delta_locked(conn: &Connection, delta: SessionsDelta) -> Result<()> {
+    let mut meta = parse_json(&delta.meta_json)?;
+    let state = meta
+        .get_mut("state")
+        .and_then(serde_json::Value::as_object_mut)
+        .ok_or_else(|| Error::InvalidRequest("sessions metadata must include state".into()))?;
+    state.remove("sessions");
+    state.remove("workerRuns");
+    let meta_json = serde_json::to_string(&meta).map_err(json_error)?;
+
+    let session_order = delta
+        .session_order
+        .iter()
+        .map(|id| id.trim())
+        .collect::<BTreeSet<_>>();
+    if session_order.len() != delta.session_order.len() || session_order.contains("") {
+        return Err(Error::InvalidRequest(
+            "session order must contain unique non-empty ids".into(),
+        ));
+    }
+    let deleted_ids = delta
+        .deleted_session_ids
+        .iter()
+        .map(|id| id.trim())
+        .collect::<BTreeSet<_>>();
+    if deleted_ids.len() != delta.deleted_session_ids.len() || deleted_ids.contains("") {
+        return Err(Error::InvalidRequest(
+            "deleted session ids must be unique and non-empty".into(),
+        ));
+    }
+    if deleted_ids.iter().any(|id| session_order.contains(id)) {
+        return Err(Error::InvalidRequest(
+            "deleted sessions cannot remain in session order".into(),
+        ));
+    }
+
+    let mut upsert_ids = BTreeSet::new();
+    for session in &delta.upserts {
+        let id = session.id.trim();
+        if id.is_empty() || !upsert_ids.insert(id) || !session_order.contains(id) {
+            return Err(Error::InvalidRequest(
+                "session upserts require unique ordered ids".into(),
+            ));
+        }
+        if deleted_ids.contains(id) {
+            return Err(Error::InvalidRequest(
+                "a session cannot be deleted and upserted together".into(),
+            ));
+        }
+        if let Some(session_json) = &session.session_json {
+            let value = parse_json(session_json)?;
+            let object = value
+                .as_object()
+                .ok_or_else(|| Error::InvalidRequest("session row must be a JSON object".into()))?;
+            if object.get("id").and_then(serde_json::Value::as_str) != Some(id)
+                || object.contains_key("messages")
+            {
+                return Err(Error::InvalidRequest(
+                    "session row id must match and messages must be separate".into(),
+                ));
+            }
+        }
+        let mut message_indices = BTreeSet::new();
+        for message in &session.messages {
+            if message.index >= session.message_count || !message_indices.insert(message.index) {
+                return Err(Error::InvalidRequest(
+                    "message deltas require unique in-range indices".into(),
+                ));
+            }
+            if !parse_json(&message.message_json)?.is_object() {
+                return Err(Error::InvalidRequest(
+                    "message rows must be JSON objects".into(),
+                ));
+            }
+        }
+    }
+
+    conn.execute_batch("BEGIN IMMEDIATE TRANSACTION;")
+        .map_err(sqlite)?;
+    let result = (|| -> Result<()> {
+        for id in &delta.deleted_session_ids {
+            conn.execute("DELETE FROM user_sessions WHERE id = ?1", params![id])
+                .map_err(sqlite)?;
+        }
+
+        let now = now_ms();
+        for session in &delta.upserts {
+            if let Some(session_json) = &session.session_json {
+                conn.execute(
+                    "INSERT INTO user_sessions (id, session_json, sort_order, updated_at_ms)
+                     VALUES (?1, ?2, 0, ?3)
+                     ON CONFLICT(id) DO UPDATE SET
+                        session_json = excluded.session_json,
+                        updated_at_ms = excluded.updated_at_ms",
+                    params![session.id, session_json, now],
+                )
+                .map_err(sqlite)?;
+            } else {
+                let exists = conn
+                    .query_row(
+                        "SELECT 1 FROM user_sessions WHERE id = ?1",
+                        params![session.id],
+                        |_| Ok(true),
+                    )
+                    .optional()
+                    .map_err(sqlite)?
+                    .unwrap_or(false);
+                if !exists {
+                    return Err(Error::InvalidRequest(format!(
+                        "missing session metadata for {}",
+                        session.id
+                    )));
+                }
+            }
+
+            conn.execute(
+                "DELETE FROM user_session_messages
+                 WHERE session_id = ?1 AND message_index >= ?2",
+                params![session.id, session.message_count as i64],
+            )
+            .map_err(sqlite)?;
+            for message in &session.messages {
+                conn.execute(
+                    "INSERT INTO user_session_messages
+                     (session_id, message_index, message_json)
+                     VALUES (?1, ?2, ?3)
+                     ON CONFLICT(session_id, message_index) DO UPDATE SET
+                        message_json = excluded.message_json",
+                    params![session.id, message.index as i64, message.message_json],
+                )
+                .map_err(sqlite)?;
+            }
+            let (message_count, max_message_index): (i64, i64) = conn
+                .query_row(
+                    "SELECT COUNT(*), COALESCE(MAX(message_index), -1)
+                     FROM user_session_messages WHERE session_id = ?1",
+                    params![session.id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .map_err(sqlite)?;
+            if message_count != session.message_count as i64
+                || max_message_index + 1 != session.message_count as i64
+            {
+                return Err(Error::InvalidRequest(format!(
+                    "session {} message delta left gaps",
+                    session.id
+                )));
+            }
+        }
+
+        let current_ids = conn
+            .prepare("SELECT id FROM user_sessions")
+            .map_err(sqlite)?
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(sqlite)?
+            .collect::<std::result::Result<BTreeSet<_>, _>>()
+            .map_err(sqlite)?;
+        let expected_ids = delta.session_order.iter().cloned().collect::<BTreeSet<_>>();
+        if current_ids != expected_ids {
+            return Err(Error::InvalidRequest(
+                "session order does not match stored sessions".into(),
+            ));
+        }
+        for (sort_order, id) in delta.session_order.iter().enumerate() {
+            conn.execute(
+                "UPDATE user_sessions SET sort_order = ?1 WHERE id = ?2",
+                params![sort_order as i64, id],
+            )
+            .map_err(sqlite)?;
+        }
+
+        conn.execute(
+            "INSERT INTO user_json_state (key, value_json, updated_at_ms)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(key) DO UPDATE SET
+                value_json = excluded.value_json,
+                updated_at_ms = excluded.updated_at_ms",
+            params![SESSIONS_META_KEY, meta_json, now],
+        )
+        .map_err(sqlite)?;
+        conn.execute(
+            "DELETE FROM user_json_state WHERE key = ?1",
+            params![SESSIONS_STATE_KEY],
+        )
+        .map_err(sqlite)?;
+        Ok(())
+    })();
+
+    match result {
+        Ok(()) => conn.execute_batch("COMMIT;").map_err(sqlite),
+        Err(error) => {
+            let _ = conn.execute_batch("ROLLBACK;");
+            Err(error)
+        }
+    }
+}
+
 fn set_sessions_snapshot_locked(conn: &Connection, value_json: &str) -> Result<()> {
     let mut root = parse_json(value_json)?;
     let state = root
@@ -908,7 +1148,7 @@ mod tests {
     }
 
     #[test]
-    fn syncable_open_uses_delete_journal_mode() {
+    fn configured_delete_journal_mode_is_enforced() {
         let dir =
             std::env::temp_dir().join(format!("milim-syncable-db-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -927,6 +1167,49 @@ mod tests {
             .query_row("PRAGMA journal_mode", [], |r| r.get(0))
             .unwrap();
         assert_eq!(mode.to_lowercase(), "delete");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn wal_allows_writer_while_reader_transaction_is_open() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("milim-wal-test-{unique}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("milim.db");
+        let reader = Database::open(&path).unwrap();
+        reader
+            .conn()
+            .execute_batch(
+                "CREATE TABLE values_table (value INTEGER); INSERT INTO values_table VALUES (1);",
+            )
+            .unwrap();
+        let writer = Database::open(&path).unwrap();
+
+        reader.conn().execute_batch("BEGIN;").unwrap();
+        let _: i64 = reader
+            .conn()
+            .query_row("SELECT COUNT(*) FROM values_table", [], |row| row.get(0))
+            .unwrap();
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let handle = std::thread::spawn(move || {
+            let result = writer
+                .conn()
+                .execute("INSERT INTO values_table VALUES (2)", [])
+                .map(|_| ())
+                .map_err(|error| error.to_string());
+            let _ = tx.send(result);
+        });
+        let result = rx.recv_timeout(std::time::Duration::from_secs(1));
+        reader.conn().execute_batch("COMMIT;").unwrap();
+        handle.join().unwrap();
+        result
+            .expect("WAL writer should not wait for the reader transaction")
+            .unwrap();
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1061,6 +1344,128 @@ mod tests {
             )
             .unwrap();
         assert_eq!(removed_messages, 0);
+    }
+
+    #[test]
+    fn user_sessions_delta_updates_only_changed_rows() {
+        let db = Database::open_in_memory().unwrap();
+        let store = UserDataStore::new(db).unwrap();
+        let initial = r#"{"state":{"sessions":[{"id":"a","title":"A","messages":[{"role":"user","content":"old"}]},{"id":"b","title":"B","messages":[{"role":"assistant","content":"keep"}]}],"activeId":"a"},"version":0}"#;
+        store.set_sessions_snapshot(initial).unwrap();
+        store
+            .db
+            .lock()
+            .unwrap()
+            .conn()
+            .execute(
+                "UPDATE user_sessions SET updated_at_ms = 123 WHERE id = 'b'",
+                [],
+            )
+            .unwrap();
+
+        store
+            .apply_sessions_delta(SessionsDelta {
+                meta_json: r#"{"state":{"activeId":"a","workerRuns":[{"id":"cache"}]},"version":0}"#
+                    .into(),
+                session_order: vec!["b".into(), "a".into()],
+                upserts: vec![SessionDelta {
+                    id: "a".into(),
+                    session_json: Some(r#"{"id":"a","title":"A2"}"#.into()),
+                    message_count: 2,
+                    messages: vec![
+                        SessionMessageDelta {
+                            index: 0,
+                            message_json: r#"{"role":"user","content":"edited"}"#.into(),
+                        },
+                        SessionMessageDelta {
+                            index: 1,
+                            message_json: r#"{"role":"assistant","content":"added"}"#.into(),
+                        },
+                    ],
+                }],
+                deleted_session_ids: Vec::new(),
+            })
+            .unwrap();
+
+        let restored: serde_json::Value =
+            serde_json::from_str(&store.get_sessions_snapshot().unwrap().unwrap()).unwrap();
+        assert_eq!(restored["state"]["sessions"][0]["id"], "b");
+        assert_eq!(restored["state"]["sessions"][1]["title"], "A2");
+        assert_eq!(
+            restored["state"]["sessions"][1]["messages"][0]["content"],
+            "edited"
+        );
+        assert_eq!(
+            restored["state"]["sessions"][1]["messages"][1]["content"],
+            "added"
+        );
+        assert!(restored["state"].get("workerRuns").is_none());
+        let untouched_updated_at: i64 = store
+            .db
+            .lock()
+            .unwrap()
+            .conn()
+            .query_row(
+                "SELECT updated_at_ms FROM user_sessions WHERE id = 'b'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(untouched_updated_at, 123);
+
+        store
+            .apply_sessions_delta(SessionsDelta {
+                meta_json: r#"{"state":{"activeId":"a"},"version":0}"#.into(),
+                session_order: vec!["a".into()],
+                upserts: vec![SessionDelta {
+                    id: "a".into(),
+                    session_json: None,
+                    message_count: 1,
+                    messages: Vec::new(),
+                }],
+                deleted_session_ids: vec!["b".into()],
+            })
+            .unwrap();
+        let restored: serde_json::Value =
+            serde_json::from_str(&store.get_sessions_snapshot().unwrap().unwrap()).unwrap();
+        assert_eq!(restored["state"]["sessions"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            restored["state"]["sessions"][0]["messages"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn user_sessions_delta_rolls_back_incomplete_message_changes() {
+        let db = Database::open_in_memory().unwrap();
+        let store = UserDataStore::new(db).unwrap();
+        let initial = r#"{"state":{"sessions":[{"id":"a","title":"A","messages":[{"role":"user","content":"original"}]},{"id":"b","title":"B","messages":[]}],"activeId":"a"},"version":0}"#;
+        store.set_sessions_snapshot(initial).unwrap();
+
+        let result = store.apply_sessions_delta(SessionsDelta {
+            meta_json: r#"{"state":{"activeId":"a"},"version":0}"#.into(),
+            session_order: vec!["a".into()],
+            upserts: vec![SessionDelta {
+                id: "a".into(),
+                session_json: Some(r#"{"id":"a","title":"Changed"}"#.into()),
+                message_count: 2,
+                messages: vec![SessionMessageDelta {
+                    index: 0,
+                    message_json: r#"{"role":"user","content":"changed"}"#.into(),
+                }],
+            }],
+            deleted_session_ids: vec!["b".into()],
+        });
+        assert!(result.is_err());
+
+        let restored = store.get_sessions_snapshot().unwrap().unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&restored).unwrap(),
+            serde_json::from_str::<serde_json::Value>(initial).unwrap()
+        );
     }
 
     #[test]

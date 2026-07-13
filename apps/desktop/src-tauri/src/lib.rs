@@ -43,7 +43,7 @@ use milim_core::{Error, Result};
 use milim_inference::{remote::RemoteBackend, unavailable::UnavailableBackend, SharedService};
 use milim_sandbox::{DockerBackend, RunOpts};
 use milim_server::AppState;
-use milim_storage::{Database, DatabaseOptions, JournalMode};
+use milim_storage::{Database, DatabaseOptions, JournalMode, SessionsDelta};
 use milim_tools::{Tool, ToolEffect, ToolRegistry};
 
 /// Simple Rust/JS bridge example.
@@ -319,7 +319,11 @@ async fn user_state_delete(
 async fn user_sessions_get(
     state: tauri::State<'_, UserDataState>,
 ) -> std::result::Result<Option<String>, String> {
-    state.0.get_sessions_snapshot().map_err(|e| e.to_string())
+    let store = state.0.clone();
+    tokio::task::spawn_blocking(move || store.get_sessions_snapshot())
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -327,9 +331,22 @@ async fn user_sessions_set(
     state: tauri::State<'_, UserDataState>,
     value: String,
 ) -> std::result::Result<(), String> {
-    state
-        .0
-        .set_sessions_snapshot(&value)
+    let store = state.0.clone();
+    tokio::task::spawn_blocking(move || store.set_sessions_snapshot(&value))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn user_sessions_apply_delta(
+    state: tauri::State<'_, UserDataState>,
+    delta: SessionsDelta,
+) -> std::result::Result<(), String> {
+    let store = state.0.clone();
+    tokio::task::spawn_blocking(move || store.apply_sessions_delta(delta))
+        .await
+        .map_err(|e| e.to_string())?
         .map_err(|e| e.to_string())
 }
 
@@ -780,7 +797,8 @@ fn read_attachment_file_blocking(
     if attachment_is_image_mime(&mime) {
         truncated = metadata.len() > MAX_ATTACHMENT_IMAGE_PREVIEW_BYTES;
         if !truncated {
-            let bytes = fs::read(path).map_err(|e| format!("failed to read attachment file: {e}"))?;
+            let bytes =
+                fs::read(path).map_err(|e| format!("failed to read attachment file: {e}"))?;
             let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
             data_url = Some(format!("data:{mime};base64,{encoded}"));
         }
@@ -830,14 +848,17 @@ fn attachment_mime_for_path(path: &Path) -> &'static str {
         "csv" => "text/csv",
         "html" | "htm" => "text/html",
         "css" => "text/css",
-        "js" | "jsx" | "ts" | "tsx" | "rs" | "py" | "go" | "java" | "c" | "cpp" | "h"
-        | "hpp" | "toml" | "yaml" | "yml" | "xml" | "txt" => "text/plain",
+        "js" | "jsx" | "ts" | "tsx" | "rs" | "py" | "go" | "java" | "c" | "cpp" | "h" | "hpp"
+        | "toml" | "yaml" | "yml" | "xml" | "txt" => "text/plain",
         _ => "application/octet-stream",
     }
 }
 
 fn attachment_is_image_mime(mime: &str) -> bool {
-    matches!(mime, "image/png" | "image/jpeg" | "image/webp" | "image/gif")
+    matches!(
+        mime,
+        "image/png" | "image/jpeg" | "image/webp" | "image/gif"
+    )
 }
 
 fn attachment_is_text_like_mime(mime: &str) -> bool {
@@ -2639,10 +2660,7 @@ struct WindowsUpdateScriptPaths<'a> {
 }
 
 #[cfg(target_os = "windows")]
-fn build_windows_update_script(
-    pid: u32,
-    paths: WindowsUpdateScriptPaths<'_>,
-) -> String {
+fn build_windows_update_script(pid: u32, paths: WindowsUpdateScriptPaths<'_>) -> String {
     let template = r#"
 param([switch]$Elevated)
 $ErrorActionPreference = 'Stop'
@@ -2916,7 +2934,7 @@ fn open_user_data_store_at(path: &Path) -> Result<Arc<milim_storage::UserDataSto
     let db = Database::open_with_options(
         path,
         DatabaseOptions {
-            journal_mode: JournalMode::Delete,
+            journal_mode: JournalMode::Wal,
         },
     )?;
     milim_storage::UserDataStore::new(db).map(Arc::new)
@@ -3046,7 +3064,7 @@ fn build_state(
     match milim_storage::Database::open_with_options(
         &memory_db,
         DatabaseOptions {
-            journal_mode: JournalMode::Delete,
+            journal_mode: JournalMode::Wal,
         },
     )
     .and_then(|db| milim_memory::MemoryStore::new(db, service.clone()))
@@ -3336,6 +3354,7 @@ pub fn run() {
             user_state_delete,
             user_sessions_get,
             user_sessions_set,
+            user_sessions_apply_delta,
             user_sessions_delete,
             user_state_import_legacy,
             quit_after_user_state_flush,
@@ -3598,9 +3617,7 @@ mod artifact_save_tests {
                 target: Path::new(r"C:\Apps\milim\milim.exe"),
                 backup: Path::new(r"C:\Apps\milim\milim.exe.previous"),
                 log: Path::new(r"C:\Users\O'Brien\AppData\Local\milim\install.log"),
-                error_marker: Path::new(
-                    r"C:\Users\O'Brien\AppData\Local\milim\install-error.txt",
-                ),
+                error_marker: Path::new(r"C:\Users\O'Brien\AppData\Local\milim\install-error.txt"),
                 script: Path::new(r"C:\Users\O'Brien\AppData\Local\milim\apply-update.ps1"),
             },
         );
@@ -4003,7 +4020,7 @@ args=['mcp-obsidian']
     }
 
     #[test]
-    fn user_data_store_opens_syncable_database() {
+    fn user_data_store_opens_wal_database() {
         let root = std::env::temp_dir().join(format!(
             "milim-storage-user-data-{}",
             std::time::SystemTime::now()
@@ -4022,8 +4039,154 @@ args=['mcp-obsidian']
             store.get_json("milim.sessions").unwrap().as_deref(),
             Some(r#"{"state":{"sessions":[]},"version":0}"#)
         );
-        assert!(!db_path.with_extension("db-wal").exists());
+        assert!(db_path.with_extension("db-wal").exists());
 
+        let _ = std::fs::remove_dir_all(root);
+    }
+}
+
+#[cfg(test)]
+mod database_concurrency_tests {
+    use super::*;
+    use std::sync::Barrier;
+
+    #[test]
+    fn wal_profile_handles_workers_sessions_and_memory_concurrently() {
+        let root = std::env::temp_dir().join(format!(
+            "milim-database-concurrency-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let profile_path = root.join("milim.db");
+
+        let sessions = open_user_data_store_at(&profile_path).unwrap();
+        sessions
+            .set_sessions_snapshot(
+                r#"{"state":{"sessions":[{"id":"session-1","title":"Test","messages":[]}],"activeId":"session-1"},"version":0}"#,
+            )
+            .unwrap();
+
+        let embedder: SharedService = Arc::new(UnavailableBackend::new());
+        let memory = Arc::new(
+            milim_memory::MemoryStore::new(
+                Database::open_with_options(
+                    &profile_path,
+                    DatabaseOptions {
+                        journal_mode: JournalMode::Wal,
+                    },
+                )
+                .unwrap(),
+                embedder,
+            )
+            .unwrap(),
+        );
+        let threads = Arc::new(
+            milim_agents::ThreadStore::new(Database::open(&root.join("threads.db")).unwrap())
+                .unwrap(),
+        );
+        let worker_ids = (0..4)
+            .map(|index| {
+                threads
+                    .create(
+                        "parent-1",
+                        &format!("Worker {index}"),
+                        "test-echo",
+                        None,
+                        "stress",
+                    )
+                    .unwrap()
+                    .id
+            })
+            .collect::<Vec<_>>();
+
+        let barrier = Arc::new(Barrier::new(7));
+        let mut handles = worker_ids
+            .into_iter()
+            .map(|worker_id| {
+                let threads = threads.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    for index in 0..25 {
+                        threads
+                            .append_event(
+                                &worker_id,
+                                "token",
+                                serde_json::json!({ "index": index }),
+                            )
+                            .unwrap();
+                        std::thread::yield_now();
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+
+        {
+            let threads = threads.clone();
+            let barrier = barrier.clone();
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                for _ in 0..100 {
+                    threads.child_events_after("parent-1", 0, 500).unwrap();
+                    std::thread::yield_now();
+                }
+            }));
+        }
+        {
+            let sessions = sessions.clone();
+            let barrier = barrier.clone();
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                for revision in 0..50 {
+                    sessions
+                        .apply_sessions_delta(SessionsDelta {
+                            meta_json: format!(
+                                r#"{{"state":{{"activeId":"session-1","revision":{revision}}},"version":0}}"#
+                            ),
+                            session_order: vec!["session-1".into()],
+                            upserts: Vec::new(),
+                            deleted_session_ids: Vec::new(),
+                        })
+                        .unwrap();
+                    std::thread::yield_now();
+                }
+            }));
+        }
+        {
+            let memory = memory.clone();
+            let barrier = barrier.clone();
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                for _ in 0..100 {
+                    memory.count().unwrap();
+                    memory.list_scopes().unwrap();
+                    std::thread::yield_now();
+                }
+            }));
+        }
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+        let events = threads.child_events_after("parent-1", 0, 500).unwrap();
+        assert_eq!(events.len(), 100);
+        assert!(events.windows(2).all(|pair| pair[0].1.seq < pair[1].1.seq));
+        assert_eq!(memory.count().unwrap(), 0);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(
+                &sessions.get_sessions_snapshot().unwrap().unwrap()
+            )
+            .unwrap()["state"]["revision"],
+            49
+        );
+
+        drop(memory);
+        drop(sessions);
+        drop(threads);
         let _ = std::fs::remove_dir_all(root);
     }
 }

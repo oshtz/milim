@@ -15,6 +15,116 @@ pub const THREAD_STATUS_DONE: &str = "done";
 pub const THREAD_STATUS_STOPPED: &str = "stopped";
 pub const THREAD_STATUS_ERROR: &str = "error";
 
+#[derive(Debug, Clone, Copy, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DelegationPolicy {
+    Off,
+    #[default]
+    Ask,
+    Auto,
+}
+
+#[derive(Debug, Clone, Copy, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkerRuntime {
+    #[default]
+    Managed,
+    Codex,
+    Claude,
+    Legacy,
+}
+
+#[derive(Debug, Clone, Copy, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkerAccess {
+    #[default]
+    ReadOnly,
+    WriteReview,
+}
+
+#[derive(Debug, Clone, Copy, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkerRunStatus {
+    #[default]
+    Proposed,
+    Running,
+    Done,
+    Partial,
+    Stopped,
+    Error,
+}
+
+impl DelegationPolicy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Ask => "ask",
+            Self::Auto => "auto",
+        }
+    }
+}
+
+impl WorkerRuntime {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Managed => "managed",
+            Self::Codex => "codex",
+            Self::Claude => "claude",
+            Self::Legacy => "legacy",
+        }
+    }
+}
+
+impl WorkerAccess {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ReadOnly => "read_only",
+            Self::WriteReview => "write_review",
+        }
+    }
+}
+
+impl WorkerRunStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Proposed => "proposed",
+            Self::Running => "running",
+            Self::Done => "done",
+            Self::Partial => "partial",
+            Self::Stopped => "stopped",
+            Self::Error => "error",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkerPlanTask {
+    pub id: String,
+    pub title: String,
+    pub prompt: String,
+    pub role: Option<String>,
+    pub agent_id: Option<String>,
+    pub model: String,
+    pub access: WorkerAccess,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkerRun {
+    pub id: String,
+    pub parent_thread_id: String,
+    pub parent_turn_id: Option<String>,
+    pub policy: DelegationPolicy,
+    pub runtime: WorkerRuntime,
+    pub status: WorkerRunStatus,
+    pub tasks: Vec<WorkerPlanTask>,
+    #[serde(default)]
+    pub context: Option<String>,
+    pub error: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub finished_at: Option<String>,
+}
+
 /// Persisted metadata for one child thread.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentThread {
@@ -31,7 +141,19 @@ pub struct AgentThread {
     pub created_at: String,
     pub updated_at: String,
     pub finished_at: Option<String>,
+    #[serde(default)]
+    pub run_id: Option<String>,
+    #[serde(default)]
+    pub runtime: WorkerRuntime,
+    #[serde(default)]
+    pub access: WorkerAccess,
+    #[serde(default)]
+    pub external_runtime_id: Option<String>,
+    #[serde(default)]
+    pub worktree_path: Option<String>,
 }
+
+pub type Worker = AgentThread;
 
 /// One stored event from a child thread run.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -90,6 +212,36 @@ pub const THREAD_MIGRATIONS: &[Migration] = &[
               CREATE INDEX idx_thread_events_thread_seq ON thread_events(thread_id, seq);
               CREATE UNIQUE INDEX idx_thread_events_seq ON thread_events(seq);",
     },
+    Migration {
+        version: 3,
+        name: "worker_runs",
+        sql: "CREATE TABLE worker_runs (
+                id               TEXT PRIMARY KEY,
+                parent_thread_id TEXT NOT NULL,
+                parent_turn_id   TEXT,
+                policy           TEXT NOT NULL,
+                runtime          TEXT NOT NULL,
+                status           TEXT NOT NULL,
+                tasks            TEXT NOT NULL,
+                error            TEXT,
+                created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at       TEXT NOT NULL DEFAULT (datetime('now')),
+                finished_at      TEXT
+              );
+              CREATE INDEX idx_worker_runs_parent ON worker_runs(parent_thread_id, created_at);
+              CREATE INDEX idx_worker_runs_status ON worker_runs(status, updated_at);
+              ALTER TABLE threads ADD COLUMN run_id TEXT;
+              ALTER TABLE threads ADD COLUMN runtime TEXT NOT NULL DEFAULT 'legacy';
+              ALTER TABLE threads ADD COLUMN access TEXT NOT NULL DEFAULT 'read_only';
+              ALTER TABLE threads ADD COLUMN external_runtime_id TEXT;
+              ALTER TABLE threads ADD COLUMN worktree_path TEXT;
+              CREATE INDEX idx_threads_run ON threads(run_id, created_at);",
+    },
+    Migration {
+        version: 4,
+        name: "worker_run_context",
+        sql: "ALTER TABLE worker_runs ADD COLUMN context TEXT;",
+    },
 ];
 
 /// CRUD over parent/child thread rows.
@@ -111,6 +263,30 @@ impl ThreadStore {
         agent_id: Option<&str>,
         prompt: &str,
     ) -> Result<AgentThread> {
+        self.create_worker(
+            parent_id,
+            title,
+            model,
+            agent_id,
+            prompt,
+            None,
+            WorkerRuntime::Legacy,
+            WorkerAccess::ReadOnly,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_worker(
+        &self,
+        parent_id: &str,
+        title: &str,
+        model: &str,
+        agent_id: Option<&str>,
+        prompt: &str,
+        run_id: Option<&str>,
+        runtime: WorkerRuntime,
+        access: WorkerAccess,
+    ) -> Result<AgentThread> {
         let id = uuid::Uuid::new_v4().to_string();
         let db = self.db.lock().expect("threads db poisoned");
         let root_id: Option<String> = db
@@ -124,8 +300,8 @@ impl ThreadStore {
             .map_err(sqlite)?;
         db.conn()
             .execute(
-                "INSERT INTO threads (id, parent_id, root_id, title, status, model, agent_id, prompt)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                "INSERT INTO threads (id, parent_id, root_id, title, status, model, agent_id, prompt, run_id, runtime, access)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                 params![
                     id,
                     parent_id,
@@ -134,7 +310,10 @@ impl ThreadStore {
                     THREAD_STATUS_QUEUED,
                     model,
                     agent_id,
-                    prompt
+                    prompt,
+                    run_id,
+                    runtime.as_str(),
+                    access.as_str()
                 ],
             )
             .map_err(sqlite)?;
@@ -143,12 +322,161 @@ impl ThreadStore {
             .ok_or_else(|| Error::Other("thread insert did not return a row".to_string()))
     }
 
+    pub fn create_worker_run(
+        &self,
+        parent_thread_id: &str,
+        parent_turn_id: Option<&str>,
+        policy: DelegationPolicy,
+        runtime: WorkerRuntime,
+        tasks: Vec<WorkerPlanTask>,
+        context: Option<&str>,
+    ) -> Result<WorkerRun> {
+        let id = uuid::Uuid::new_v4().to_string();
+        let tasks = serde_json::to_string(&tasks)?;
+        let db = self.db.lock().expect("threads db poisoned");
+        db.conn().execute(
+            "INSERT INTO worker_runs (id, parent_thread_id, parent_turn_id, policy, runtime, status, tasks, context)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'proposed', ?6, ?7)",
+            params![id, parent_thread_id, parent_turn_id, policy.as_str(), runtime.as_str(), tasks, context],
+        ).map_err(sqlite)?;
+        drop(db);
+        self.get_worker_run(&id)?
+            .ok_or_else(|| Error::Other("worker run insert did not return a row".to_string()))
+    }
+
+    pub fn get_worker_run(&self, id: &str) -> Result<Option<WorkerRun>> {
+        let db = self.db.lock().expect("threads db poisoned");
+        db.conn().query_row(
+            "SELECT id, parent_thread_id, parent_turn_id, policy, runtime, status, tasks, error, created_at, updated_at, finished_at, context
+             FROM worker_runs WHERE id = ?1",
+            params![id], row_to_worker_run,
+        ).optional().map_err(sqlite)
+    }
+
+    pub fn list_worker_runs(&self, parent_thread_id: &str, limit: usize) -> Result<Vec<WorkerRun>> {
+        let db = self.db.lock().expect("threads db poisoned");
+        let mut stmt = db.conn().prepare(
+            "SELECT id, parent_thread_id, parent_turn_id, policy, runtime, status, tasks, error, created_at, updated_at, finished_at, context
+             FROM worker_runs WHERE parent_thread_id = ?1 ORDER BY created_at DESC LIMIT ?2"
+        ).map_err(sqlite)?;
+        let rows = stmt
+            .query_map(
+                params![parent_thread_id, limit.clamp(1, 200) as i64],
+                row_to_worker_run,
+            )
+            .map_err(sqlite)?;
+        rows.map(|row| row.map_err(sqlite)).collect()
+    }
+
+    pub fn workers_for_run(&self, run_id: &str) -> Result<Vec<Worker>> {
+        let db = self.db.lock().expect("threads db poisoned");
+        let mut stmt = db
+            .conn()
+            .prepare(
+                "SELECT id, parent_id, root_id, title, status, model, agent_id, prompt,
+                    summary, error, created_at, updated_at, finished_at,
+                    run_id, runtime, access, external_runtime_id, worktree_path
+             FROM threads WHERE run_id = ?1 ORDER BY created_at ASC",
+            )
+            .map_err(sqlite)?;
+        let rows = stmt
+            .query_map(params![run_id], row_to_thread)
+            .map_err(sqlite)?;
+        rows.map(|row| row.map_err(sqlite)).collect()
+    }
+
+    pub fn update_worker_run_status(
+        &self,
+        id: &str,
+        status: WorkerRunStatus,
+        error: Option<&str>,
+    ) -> Result<Option<WorkerRun>> {
+        let db = self.db.lock().expect("threads db poisoned");
+        let changed = db.conn().execute(
+            "UPDATE worker_runs SET status = ?2, error = COALESCE(?3, error), updated_at = datetime('now'),
+             finished_at = CASE WHEN ?2 IN ('done','partial','stopped','error') THEN datetime('now') ELSE finished_at END
+             WHERE id = ?1",
+            params![id, status.as_str(), error],
+        ).map_err(sqlite)?;
+        drop(db);
+        if changed == 0 {
+            Ok(None)
+        } else {
+            self.get_worker_run(id)
+        }
+    }
+
+    pub fn update_worker_worktree(
+        &self,
+        id: &str,
+        worktree_path: &str,
+    ) -> Result<Option<AgentThread>> {
+        let db = self.db.lock().expect("threads db poisoned");
+        let changed = db
+            .conn()
+            .execute(
+                "UPDATE threads SET worktree_path = ?2, updated_at = datetime('now') WHERE id = ?1",
+                params![id, worktree_path],
+            )
+            .map_err(sqlite)?;
+        drop(db);
+        if changed == 0 {
+            Ok(None)
+        } else {
+            self.get(id)
+        }
+    }
+
+    pub fn refresh_worker_run_status(&self, run_id: &str) -> Result<Option<WorkerRun>> {
+        let Some(run) = self.get_worker_run(run_id)? else {
+            return Ok(None);
+        };
+        let workers = self.workers_for_run(run_id)?;
+        if workers.is_empty() {
+            return Ok(Some(run));
+        }
+        if workers
+            .iter()
+            .any(|worker| !thread_status_terminal(&worker.status))
+        {
+            return self.update_worker_run_status(run_id, WorkerRunStatus::Running, None);
+        }
+        let done = workers
+            .iter()
+            .filter(|worker| worker.status == THREAD_STATUS_DONE)
+            .count();
+        let stopped = workers
+            .iter()
+            .filter(|worker| worker.status == THREAD_STATUS_STOPPED)
+            .count();
+        let status = if done == workers.len() {
+            WorkerRunStatus::Done
+        } else if stopped == workers.len() {
+            WorkerRunStatus::Stopped
+        } else if done > 0 {
+            WorkerRunStatus::Partial
+        } else {
+            WorkerRunStatus::Error
+        };
+        self.update_worker_run_status(run_id, status, None)
+    }
+
+    pub fn update_non_terminal_worker_runs(&self, error: &str) -> Result<usize> {
+        let db = self.db.lock().expect("threads db poisoned");
+        db.conn().execute(
+            "UPDATE worker_runs SET status = 'error', error = COALESCE(error, ?1), updated_at = datetime('now'), finished_at = datetime('now')
+             WHERE status IN ('proposed','running')",
+            params![error],
+        ).map_err(sqlite)
+    }
+
     pub fn get(&self, id: &str) -> Result<Option<AgentThread>> {
         let db = self.db.lock().expect("threads db poisoned");
         db.conn()
             .query_row(
                 "SELECT id, parent_id, root_id, title, status, model, agent_id, prompt,
-                        summary, error, created_at, updated_at, finished_at
+                        summary, error, created_at, updated_at, finished_at,
+                        run_id, runtime, access, external_runtime_id, worktree_path
                  FROM threads WHERE id = ?1",
                 params![id],
                 row_to_thread,
@@ -171,7 +499,8 @@ impl ThreadStore {
             let mut stmt = conn
                 .prepare(
                     "SELECT id, parent_id, root_id, title, status, model, agent_id, prompt,
-                            summary, error, created_at, updated_at, finished_at
+                            summary, error, created_at, updated_at, finished_at,
+                            run_id, runtime, access, external_runtime_id, worktree_path
                      FROM threads
                      WHERE parent_id = ?1 AND status = ?2
                      ORDER BY created_at DESC
@@ -188,7 +517,8 @@ impl ThreadStore {
             let mut stmt = conn
                 .prepare(
                     "SELECT id, parent_id, root_id, title, status, model, agent_id, prompt,
-                            summary, error, created_at, updated_at, finished_at
+                            summary, error, created_at, updated_at, finished_at,
+                            run_id, runtime, access, external_runtime_id, worktree_path
                      FROM threads
                      WHERE parent_id = ?1
                      ORDER BY created_at DESC
@@ -214,7 +544,8 @@ impl ThreadStore {
             let mut stmt = conn
                 .prepare(
                     "SELECT id, parent_id, root_id, title, status, model, agent_id, prompt,
-                            summary, error, created_at, updated_at, finished_at
+                            summary, error, created_at, updated_at, finished_at,
+                            run_id, runtime, access, external_runtime_id, worktree_path
                      FROM threads
                      WHERE status = ?1
                      ORDER BY created_at DESC
@@ -231,7 +562,8 @@ impl ThreadStore {
             let mut stmt = conn
                 .prepare(
                     "SELECT id, parent_id, root_id, title, status, model, agent_id, prompt,
-                            summary, error, created_at, updated_at, finished_at
+                            summary, error, created_at, updated_at, finished_at,
+                            run_id, runtime, access, external_runtime_id, worktree_path
                      FROM threads
                      ORDER BY created_at DESC
                      LIMIT ?1",
@@ -402,6 +734,7 @@ impl ThreadStore {
             .prepare(
                 "SELECT t.id, t.parent_id, t.root_id, t.title, t.status, t.model, t.agent_id, t.prompt,
                         t.summary, t.error, t.created_at, t.updated_at, t.finished_at,
+                        t.run_id, t.runtime, t.access, t.external_runtime_id, t.worktree_path,
                         e.id, e.thread_id, e.seq, e.kind, e.payload, e.created_at
                  FROM thread_events e
                  JOIN threads t ON t.id = e.thread_id
@@ -414,13 +747,37 @@ impl ThreadStore {
         for row in stmt
             .query_map(
                 params![parent_id, after_seq, limit.clamp(1, 5000) as i64],
-                |r| Ok((row_to_thread(r)?, row_to_event_offset(r, 13)?)),
+                |r| Ok((row_to_thread(r)?, row_to_event_offset(r, 18)?)),
             )
             .map_err(sqlite)?
         {
             out.push(row.map_err(sqlite)?);
         }
         Ok(out)
+    }
+
+    pub fn worker_events_after(
+        &self,
+        run_id: &str,
+        after_seq: i64,
+        limit: usize,
+    ) -> Result<Vec<(Worker, ThreadEvent)>> {
+        let db = self.db.lock().expect("threads db poisoned");
+        let mut stmt = db.conn().prepare(
+            "SELECT t.id, t.parent_id, t.root_id, t.title, t.status, t.model, t.agent_id, t.prompt,
+                    t.summary, t.error, t.created_at, t.updated_at, t.finished_at,
+                    t.run_id, t.runtime, t.access, t.external_runtime_id, t.worktree_path,
+                    e.id, e.thread_id, e.seq, e.kind, e.payload, e.created_at
+             FROM thread_events e JOIN threads t ON t.id = e.thread_id
+             WHERE t.run_id = ?1 AND e.seq > ?2 ORDER BY e.seq ASC LIMIT ?3"
+        ).map_err(sqlite)?;
+        let rows = stmt
+            .query_map(
+                params![run_id, after_seq, limit.clamp(1, 5000) as i64],
+                |r| Ok((row_to_thread(r)?, row_to_event_offset(r, 18)?)),
+            )
+            .map_err(sqlite)?;
+        rows.map(|row| row.map_err(sqlite)).collect()
     }
 
     pub fn event_count(&self, thread_id: &str) -> Result<usize> {
@@ -473,6 +830,14 @@ impl ThreadStore {
             .map_err(sqlite)?;
         db.conn()
             .execute(
+                "DELETE FROM worker_runs WHERE parent_thread_id = ?1 OR id IN (
+                   SELECT DISTINCT run_id FROM threads WHERE id = ?1 OR parent_id = ?1 OR root_id = ?1
+                 )",
+                params![id],
+            )
+            .map_err(sqlite)?;
+        db.conn()
+            .execute(
                 "DELETE FROM threads
                  WHERE id = ?1 OR parent_id = ?1 OR root_id = ?1",
                 params![id],
@@ -516,7 +881,65 @@ fn row_to_thread(r: &rusqlite::Row) -> rusqlite::Result<AgentThread> {
         created_at: r.get(10)?,
         updated_at: r.get(11)?,
         finished_at: r.get(12)?,
+        run_id: r.get(13)?,
+        runtime: parse_runtime(r.get::<_, String>(14)?.as_str()),
+        access: parse_access(r.get::<_, String>(15)?.as_str()),
+        external_runtime_id: r.get(16)?,
+        worktree_path: r.get(17)?,
     })
+}
+
+fn row_to_worker_run(r: &rusqlite::Row) -> rusqlite::Result<WorkerRun> {
+    let tasks: String = r.get(6)?;
+    Ok(WorkerRun {
+        id: r.get(0)?,
+        parent_thread_id: r.get(1)?,
+        parent_turn_id: r.get(2)?,
+        policy: parse_policy(r.get::<_, String>(3)?.as_str()),
+        runtime: parse_runtime(r.get::<_, String>(4)?.as_str()),
+        status: parse_run_status(r.get::<_, String>(5)?.as_str()),
+        tasks: serde_json::from_str(&tasks).unwrap_or_default(),
+        error: r.get(7)?,
+        created_at: r.get(8)?,
+        updated_at: r.get(9)?,
+        finished_at: r.get(10)?,
+        context: r.get(11)?,
+    })
+}
+
+fn parse_policy(value: &str) -> DelegationPolicy {
+    match value {
+        "off" => DelegationPolicy::Off,
+        "auto" => DelegationPolicy::Auto,
+        _ => DelegationPolicy::Ask,
+    }
+}
+
+fn parse_runtime(value: &str) -> WorkerRuntime {
+    match value {
+        "codex" => WorkerRuntime::Codex,
+        "claude" => WorkerRuntime::Claude,
+        "legacy" => WorkerRuntime::Legacy,
+        _ => WorkerRuntime::Managed,
+    }
+}
+
+fn parse_access(value: &str) -> WorkerAccess {
+    match value {
+        "write_review" => WorkerAccess::WriteReview,
+        _ => WorkerAccess::ReadOnly,
+    }
+}
+
+fn parse_run_status(value: &str) -> WorkerRunStatus {
+    match value {
+        "running" => WorkerRunStatus::Running,
+        "done" => WorkerRunStatus::Done,
+        "partial" => WorkerRunStatus::Partial,
+        "stopped" => WorkerRunStatus::Stopped,
+        "error" => WorkerRunStatus::Error,
+        _ => WorkerRunStatus::Proposed,
+    }
 }
 
 fn row_to_event(r: &rusqlite::Row) -> rusqlite::Result<ThreadEvent> {
@@ -581,6 +1004,55 @@ mod tests {
     }
 
     #[test]
+    fn persists_and_finishes_worker_run() {
+        let s = store();
+        let run = s
+            .create_worker_run(
+                "parent-1",
+                Some("turn-1"),
+                DelegationPolicy::Ask,
+                WorkerRuntime::Managed,
+                vec![WorkerPlanTask {
+                    id: "task-1".into(),
+                    title: "Research".into(),
+                    prompt: "check".into(),
+                    role: None,
+                    agent_id: None,
+                    model: "test-echo".into(),
+                    access: WorkerAccess::ReadOnly,
+                }],
+                Some("Current request: check"),
+            )
+            .unwrap();
+        assert_eq!(run.context.as_deref(), Some("Current request: check"));
+        let worker = s
+            .create_worker(
+                "parent-1",
+                "Research",
+                "test-echo",
+                None,
+                "check",
+                Some(&run.id),
+                WorkerRuntime::Managed,
+                WorkerAccess::ReadOnly,
+            )
+            .unwrap();
+        s.update_status(&worker.id, THREAD_STATUS_RUNNING, None, None)
+            .unwrap();
+        s.update_worker_run_status(&run.id, WorkerRunStatus::Running, None)
+            .unwrap();
+        s.update_status(&worker.id, THREAD_STATUS_DONE, Some("done"), None)
+            .unwrap();
+
+        let finished = s.refresh_worker_run_status(&run.id).unwrap().unwrap();
+        assert_eq!(finished.status, WorkerRunStatus::Done);
+        assert_eq!(
+            s.list_worker_runs("parent-1", 10).unwrap()[0].tasks[0].prompt,
+            "check"
+        );
+    }
+
+    #[test]
     fn stores_thread_events() {
         let s = store();
         let thread = s
@@ -597,6 +1069,45 @@ mod tests {
         assert_eq!(events[0].kind, "final");
         assert_eq!(events[0].seq, event.seq);
         assert_eq!(s.event_count(&thread.id).unwrap(), 1);
+    }
+
+    #[test]
+    fn four_workers_append_ordered_events_concurrently() {
+        let store = std::sync::Arc::new(store());
+        let worker_ids = (0..4)
+            .map(|index| {
+                store
+                    .create(
+                        "parent-1",
+                        &format!("Worker {index}"),
+                        "test-echo",
+                        None,
+                        "work",
+                    )
+                    .unwrap()
+                    .id
+            })
+            .collect::<Vec<_>>();
+        let handles = worker_ids
+            .into_iter()
+            .map(|worker_id| {
+                let store = store.clone();
+                std::thread::spawn(move || {
+                    for index in 0..25 {
+                        store
+                            .append_event(&worker_id, "token", serde_json::json!({"index": index}))
+                            .unwrap();
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        let events = store.child_events_after("parent-1", 0, 500).unwrap();
+        assert_eq!(events.len(), 100);
+        assert!(events.windows(2).all(|pair| pair[0].1.seq < pair[1].1.seq));
     }
 
     #[test]

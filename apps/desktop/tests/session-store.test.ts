@@ -53,6 +53,7 @@ const {
 const {
   codexLimitsFromRateLimitPayload,
   estimateResponseCostUsd,
+  formatCompactProviderLimits,
   formatProviderLimits,
   formatResponseMetrics,
   formatThreadMetrics,
@@ -951,6 +952,55 @@ assert(
     codexWindowText.includes("weekly limit"),
   "Codex primary/secondary limits should use window labels",
 );
+equal(
+  formatCompactProviderLimits(codexWindowLimits),
+  "Codex · 5h 52% left · weekly 40% left",
+  "compact Codex limits should show remaining account usage",
+);
+equal(
+  formatCompactProviderLimits([
+    {
+      provider: "Local Claude CLI",
+      status: "rejected",
+      kind: "five_hour",
+      reset_at: 1_782_660_000,
+    },
+  ]),
+  "Claude · 5h limit hit",
+  "compact Claude limits should show the latest CLI status",
+);
+equal(
+  formatCompactProviderLimits([]),
+  null,
+  "compact account usage should hide when no quota is known",
+);
+equal(
+  latestProviderLimits(
+    [
+      {
+        role: "assistant",
+        content: "",
+        metrics: {
+          startedAt: 1,
+          model: "claude:sonnet",
+          limits: [{ provider: "Local Claude CLI", kind: "five_hour", status: "rejected" }],
+        },
+      },
+      {
+        role: "assistant",
+        content: "",
+        metrics: {
+          startedAt: 2,
+          model: "codex:gpt-5.5",
+          limits: [{ provider: "Codex", kind: "primary", used_percent: 48 }],
+        },
+      },
+    ],
+    "claude",
+  )[0]?.provider,
+  "Local Claude CLI",
+  "provider-specific quota lookup should ignore newer limits from another runtime",
+);
 assert(
   !/weekly limit 60% used .*resets/.test(codexWindowText),
   "Codex weekly limit should hide reset time until exhausted",
@@ -1152,6 +1202,30 @@ useSessions.getState().newChat({
 
 const second = useSessions.getState().activeId;
 assert(second !== first, "new chat should create a different active session");
+useSessions.getState().setContextPanelOpen(first, true);
+equal(
+  useSessions.getState().sessions.find((session) => session.id === first)
+    ?.contextPanelOpen,
+  true,
+  "context panel open state should persist per thread",
+);
+equal(
+  useSessions.getState().sessions.find((session) => session.id === second)
+    ?.contextPanelOpen,
+  undefined,
+  "context panel state should not bleed into another thread",
+);
+assert(
+  localStorage.getItem("milim.sessions")?.includes('"contextPanelOpen":true'),
+  "context panel state should persist in session storage",
+);
+useSessions.getState().setContextPanelOpen(first, false);
+equal(
+  useSessions.getState().sessions.find((session) => session.id === first)
+    ?.contextPanelOpen,
+  undefined,
+  "closing the context panel should persist collapsed state",
+);
 useSessions.getState().setInspectorOpen(first, true);
 equal(
   useSessions.getState().sessions.find((session) => session.id === first)
@@ -1404,31 +1478,29 @@ useSessions.getState().upsertChildThread(first, {
 let child = useSessions
   .getState()
   .sessions.find((session) => session.id === "child-thread-1");
-assert(child, "child thread should be upserted as a session");
-equal(child.parentId, first, "child session should persist parent id");
+assert(!child, "legacy workers should not create sidebar sessions");
+let childRun = useSessions
+  .getState()
+  .workerRuns.find((record) => record.run.id === "legacy:child-thread-1");
+assert(childRun, "legacy child records should hydrate as singleton Worker Runs");
 equal(
-  child.worker?.status,
+  childRun.workers[0]?.status,
   "running",
-  "child session should persist worker status",
+  "legacy Worker Run should persist worker status",
 );
 equal(
-  child.settings?.model,
+  childRun.workers[0]?.model,
   "model-a",
-  "child session should use its persisted worker model",
+  "legacy Worker Run should use its persisted worker model",
 );
 equal(
-  child.settings?.activeAgentId,
-  null,
-  "child session should not inherit the parent agent",
-);
-equal(
-  child.messages[0].content,
+  childRun.workers[0]?.prompt,
   "Review this thread",
-  "child session should expose its delegated prompt",
+  "legacy Worker Run should expose its delegated prompt",
 );
 assert(
-  localStorage.getItem("milim.sessions")?.includes(`"parentId":"${first}"`),
-  "child parent id should persist in session storage",
+  !localStorage.getItem("milim.sessions")?.includes("legacy:child-thread-1"),
+  "Worker Runs should reload from threads.db instead of session persistence",
 );
 
 useSessions.getState().updateChildThread({
@@ -1446,14 +1518,14 @@ useSessions.getState().updateChildThread({
   updated_at: "2026-06-22 10:00:02",
   finished_at: "2026-06-22 10:00:02",
 });
-child = useSessions
+childRun = useSessions
   .getState()
-  .sessions.find((session) => session.id === "child-thread-1");
-equal(child?.worker?.status, "done", "child worker status should update");
+  .workerRuns.find((record) => record.run.id === "legacy:child-thread-1");
+equal(childRun?.workers[0]?.status, "done", "legacy worker status should update");
 equal(
-  child?.messages[1].content,
+  childRun?.workers[0]?.messages?.[1]?.content,
   "Looks good.",
-  "child summary should update the child transcript",
+  "legacy worker summary should update its inspector transcript",
 );
 
 useSessions.getState().updateChildThread(
@@ -1507,18 +1579,18 @@ useSessions.getState().updateChildThread(
     },
   ],
 );
-child = useSessions
+childRun = useSessions
   .getState()
-  .sessions.find((session) => session.id === "child-thread-1");
+  .workerRuns.find((record) => record.run.id === "legacy:child-thread-1");
 equal(
-  child?.messages[1].content,
+  childRun?.workers[0]?.messages?.[1]?.content,
   "Live report",
-  "child token events should update visible content",
+  "legacy worker token events should update inspector content",
 );
 deepEqual(
-  child?.messages[1].streamParts?.map((part) => part.kind),
+  childRun?.workers[0]?.messages?.[1]?.streamParts?.map((part) => part.kind),
   ["thinking", "event", "text"],
-  "child events should hydrate stream parts",
+  "legacy worker events should hydrate inspector stream parts",
 );
 
 deepEqual(
@@ -1533,6 +1605,8 @@ deepEqual(
     memory: false,
     privacy: "redact",
     toolApproval: "open",
+    delegationPolicy: "ask",
+    workerModel: "",
     planMode: true,
     goal: DEFAULT_GOAL_SETTINGS,
   },
@@ -1550,6 +1624,8 @@ deepEqual(
     memory: true,
     privacy: "off",
     toolApproval: "guarded",
+    delegationPolicy: "ask",
+    workerModel: "",
     planMode: false,
     goal: DEFAULT_GOAL_SETTINGS,
   },
@@ -1621,6 +1697,8 @@ deepEqual(
     memory: false,
     privacy: "block",
     toolApproval: "open",
+    delegationPolicy: "ask",
+    workerModel: "",
     planMode: false,
     goal: DEFAULT_GOAL_SETTINGS,
   },
@@ -1655,6 +1733,8 @@ deepEqual(
     memory: false,
     privacy: "block",
     toolApproval: "open",
+    delegationPolicy: "ask",
+    workerModel: "",
     planMode: false,
     goal: DEFAULT_GOAL_SETTINGS,
   },

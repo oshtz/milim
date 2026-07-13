@@ -12,7 +12,8 @@ pub use store::{
     normalize_skill_mode, normalize_tool_mode, AgentDef, AgentStore, AGENT_MIGRATIONS,
 };
 pub use threads::{
-    thread_status_terminal, AgentThread, ThreadEvent, ThreadStore, THREAD_MIGRATIONS,
+    thread_status_terminal, AgentThread, DelegationPolicy, ThreadEvent, ThreadStore, Worker,
+    WorkerAccess, WorkerPlanTask, WorkerRun, WorkerRunStatus, WorkerRuntime, THREAD_MIGRATIONS,
     THREAD_STATUS_DONE, THREAD_STATUS_ERROR, THREAD_STATUS_QUEUED, THREAD_STATUS_RUNNING,
     THREAD_STATUS_STOPPED,
 };
@@ -227,6 +228,23 @@ pub enum AgentEvent {
         thread: AgentThread,
         message: String,
     },
+    WorkerRunProposed {
+        run: WorkerRun,
+        workers: Vec<Worker>,
+    },
+    WorkerRunStarted {
+        run: WorkerRun,
+        workers: Vec<Worker>,
+    },
+    WorkerRunDone {
+        run: WorkerRun,
+        workers: Vec<Worker>,
+    },
+    WorkerRunError {
+        run: WorkerRun,
+        workers: Vec<Worker>,
+        message: String,
+    },
     /// The final assistant answer.
     Final { content: String },
     /// Terminal event with the turn count and whether the configured iteration
@@ -376,6 +394,9 @@ pub fn run_agent_stream_with_config(
                 if let Some(ev) = executed.child_event {
                     yield ev;
                 }
+                if let Some(ev) = executed.worker_event {
+                    yield ev;
+                }
                 messages.push(ChatMessage {
                     role: "tool".to_string(),
                     content: Some(Content::Text(tool_replay_content(&visible))),
@@ -457,6 +478,27 @@ fn child_thread_event(result: &Value) -> Option<AgentEvent> {
                 .unwrap_or_else(|| "child thread failed".to_string());
             Some(AgentEvent::ChildThreadError { thread, message })
         }
+        _ => None,
+    }
+}
+
+fn worker_run_event(result: &Value) -> Option<AgentEvent> {
+    let notice = result.get("worker_run_notice")?.as_object()?;
+    let run: WorkerRun = serde_json::from_value(notice.get("run")?.clone()).ok()?;
+    let workers: Vec<Worker> = serde_json::from_value(notice.get("workers")?.clone()).ok()?;
+    match notice.get("event")?.as_str()? {
+        "proposed" => Some(AgentEvent::WorkerRunProposed { run, workers }),
+        "started" => Some(AgentEvent::WorkerRunStarted { run, workers }),
+        "done" => Some(AgentEvent::WorkerRunDone { run, workers }),
+        "error" => Some(AgentEvent::WorkerRunError {
+            message: notice
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("worker run failed")
+                .to_string(),
+            run,
+            workers,
+        }),
         _ => None,
     }
 }
@@ -547,6 +589,7 @@ struct ExecutedToolResult {
     image_uri: Option<String>,
     memory_event: Option<AgentEvent>,
     child_event: Option<AgentEvent>,
+    worker_event: Option<AgentEvent>,
 }
 
 async fn execute_tool_call(
@@ -562,11 +605,13 @@ async fn execute_tool_call(
     let (visible, image_uri) = split_tool_image(result);
     let memory_event = memory_registered_event(&visible);
     let child_event = child_thread_event(&visible);
+    let worker_event = worker_run_event(&visible);
     ExecutedToolResult {
         visible: limit_visible_tool_result(visible),
         image_uri,
         memory_event,
         child_event,
+        worker_event,
     }
 }
 
@@ -814,6 +859,10 @@ mod tests {
                 AgentEvent::ChildThreadStarted { .. } => "child_thread_started",
                 AgentEvent::ChildThreadDone { .. } => "child_thread_done",
                 AgentEvent::ChildThreadError { .. } => "child_thread_error",
+                AgentEvent::WorkerRunProposed { .. } => "worker_run_proposed",
+                AgentEvent::WorkerRunStarted { .. } => "worker_run_started",
+                AgentEvent::WorkerRunDone { .. } => "worker_run_done",
+                AgentEvent::WorkerRunError { .. } => "worker_run_error",
                 AgentEvent::Final { .. } => "final",
                 AgentEvent::Done { .. } => "done",
                 AgentEvent::Error { .. } => "error",

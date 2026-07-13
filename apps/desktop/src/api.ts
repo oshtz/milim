@@ -212,6 +212,8 @@ export interface ChatMessage {
   metrics?: ResponseMetrics;
   /** Git worktree snapshot captured immediately before this assistant turn. */
   workspaceCheckpoint?: WorkspaceCheckpoint;
+  /** UI-only link to the delegation batch represented by this turn. */
+  workerRunId?: string;
 }
 
 export interface ProviderLimitInfo {
@@ -661,7 +663,10 @@ export type MobileRelayAction =
   | "archive_thread"
   | "delete_thread"
   | "set_model"
-  | "attach";
+  | "attach"
+  | "worker_run_start"
+  | "worker_run_continue_solo"
+  | "worker_run_stop";
 
 export type MobileRelayAttachment = Pick<
   ChatAttachment,
@@ -700,6 +705,19 @@ export interface MobileThreadSnapshot {
   groups?: MobileThreadGroup[];
   models?: MobileModelSummary[];
   theme?: MobileThemeSnapshot;
+  worker_run?: MobileWorkerRunSnapshot | null;
+}
+
+export interface MobileWorkerRunSnapshot {
+  id: string;
+  status: WorkerRunStatus;
+  tasks: Array<{
+    title: string;
+    model: string;
+    access: WorkerAccess;
+    status: string;
+    result?: string | null;
+  }>;
 }
 
 export interface MobileThreadSummary {
@@ -1555,6 +1573,7 @@ export type CodexRunEvent =
       usage?: TokenUsage;
       cost_usd?: number;
     }
+  | { type: "native_worker"; lifecycle: AccountNativeWorkerLifecycle }
   | { type: "warning"; message: string }
   | { type: "error"; message: string; usage?: TokenUsage; cost_usd?: number };
 
@@ -1572,9 +1591,26 @@ export type ClaudeRunEvent =
     }
   | { type: "rate_limit"; limit: ProviderLimitInfo }
   | { type: "done"; status: string; usage?: TokenUsage; cost_usd?: number }
+  | { type: "native_worker"; lifecycle: AccountNativeWorkerLifecycle }
   | { type: "warning"; message: string }
   | { type: "session_recovery_required"; message: string }
   | { type: "error"; message: string; usage?: TokenUsage; cost_usd?: number };
+
+export interface AccountNativeWorkerLifecycle {
+  runtime: "codex" | "claude" | string;
+  call_id: string;
+  operation: string;
+  status: string;
+  parent_runtime_id?: string | null;
+  worker_runtime_ids: string[];
+  workers: Array<{
+    runtime_id: string;
+    status: string;
+    message?: string | null;
+  }>;
+  prompt?: string | null;
+  model?: string | null;
+}
 
 export function isCliPathWarningMessage(message?: string | null): boolean {
   return Boolean(message?.includes("CLI was not found on PATH"));
@@ -2103,6 +2139,17 @@ export interface AgentMemoryContext {
 }
 
 export type ToolApprovalMode = "review" | "guarded" | "open";
+export type DelegationPolicy = "off" | "ask" | "auto";
+export type WorkerRunPolicy = Exclude<DelegationPolicy, "off">;
+export type WorkerRunRuntime = "managed" | "codex" | "claude" | "legacy";
+export type WorkerAccess = "read_only" | "write_review";
+export type WorkerRunStatus =
+  | "proposed"
+  | "running"
+  | "done"
+  | "partial"
+  | "stopped"
+  | "error";
 
 export interface AgentToolContext {
   tool_approval_policy?: ToolApprovalMode;
@@ -2113,6 +2160,8 @@ export interface AgentToolContext {
   preview_surface?: PreviewSurfaceTarget | null;
   experimental_hashline_patch?: boolean;
   plan_mode?: boolean;
+  delegation_policy?: DelegationPolicy;
+  worker_model?: string;
 }
 
 export type ChildThreadStatus =
@@ -2132,6 +2181,64 @@ export interface ChildThreadInfo {
   created_at: string;
   updated_at: string;
   finished_at?: string | null;
+  run_id?: string | null;
+  runtime?: WorkerRunRuntime;
+  access?: WorkerAccess;
+  external_runtime_id?: string | null;
+  worktree_path?: string | null;
+}
+
+export interface WorkerPlanTask {
+  id: string;
+  title: string;
+  prompt: string;
+  role?: string | null;
+  agent_id?: string | null;
+  model: string;
+  access: WorkerAccess;
+}
+
+export interface WorkerRun {
+  id: string;
+  parent_thread_id: string;
+  parent_turn_id?: string | null;
+  policy: WorkerRunPolicy;
+  runtime: WorkerRunRuntime;
+  status: WorkerRunStatus;
+  tasks: WorkerPlanTask[];
+  error?: string | null;
+  created_at: string;
+  updated_at: string;
+  finished_at?: string | null;
+}
+
+export type Worker = ChildThreadInfo & {
+  run_id?: string | null;
+  runtime: WorkerRunRuntime;
+  access: WorkerAccess;
+  external_runtime_id?: string | null;
+  worktree_path?: string | null;
+};
+
+export interface WorkerRunRecord {
+  run: WorkerRun;
+  workers: Worker[];
+}
+
+export interface CreateWorkerRunRequest {
+  parent_thread_id: string;
+  parent_turn_id?: string;
+  policy?: WorkerRunPolicy;
+  runtime?: Exclude<WorkerRunRuntime, "legacy">;
+  model?: string;
+  tasks: Array<{
+    title?: string;
+    prompt: string;
+    role?: string;
+    agent_id?: string;
+    model?: string;
+    access?: WorkerAccess;
+  }>;
 }
 
 export interface ThreadEvent {
@@ -2176,6 +2283,134 @@ export async function stopChildThread(id: string): Promise<ChildThreadInfo> {
   return data.thread;
 }
 
+function workerRunRecord(data: {
+  run: WorkerRun;
+  workers?: Worker[];
+}): WorkerRunRecord {
+  return { run: data.run, workers: data.workers ?? [] };
+}
+
+export async function createWorkerRun(
+  request: CreateWorkerRunRequest,
+): Promise<WorkerRunRecord> {
+  return workerRunRecord(
+    await parseJsonResponse<{ run: WorkerRun; workers?: Worker[] }>(
+      await authFetch(`${BASE}/worker-runs`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(request),
+      }),
+      "worker run create HTTP failed",
+    ),
+  );
+}
+
+export async function listWorkerRuns(
+  parentThreadId: string,
+): Promise<WorkerRunRecord[]> {
+  const url = new URL(`${BASE}/worker-runs`);
+  url.searchParams.set("parent_thread_id", parentThreadId);
+  const data = await parseJsonResponse<{
+    runs: Array<WorkerRun | WorkerRunRecord>;
+  }>(await authFetch(url.toString()), "worker runs list HTTP failed");
+  return data.runs.map((item) =>
+    "run" in item
+      ? workerRunRecord(item)
+      : { run: item, workers: [] },
+  );
+}
+
+export async function getWorkerRun(id: string): Promise<WorkerRunRecord> {
+  return workerRunRecord(
+    await parseJsonResponse<{ run: WorkerRun; workers?: Worker[] }>(
+      await authFetch(`${BASE}/worker-runs/${encodeURIComponent(id)}`),
+      "worker run HTTP failed",
+    ),
+  );
+}
+
+export async function startWorkerRun(id: string): Promise<WorkerRunRecord> {
+  return workerRunRecord(
+    await parseJsonResponse<{ run: WorkerRun; workers?: Worker[] }>(
+      await authFetch(`${BASE}/worker-runs/${encodeURIComponent(id)}/start`, {
+        method: "POST",
+      }),
+      "worker run start HTTP failed",
+    ),
+  );
+}
+
+export async function stopWorkerRun(id: string): Promise<WorkerRunRecord> {
+  return workerRunRecord(
+    await parseJsonResponse<{ run: WorkerRun; workers?: Worker[] }>(
+      await authFetch(`${BASE}/worker-runs/${encodeURIComponent(id)}/stop`, {
+        method: "POST",
+      }),
+      "worker run stop HTTP failed",
+    ),
+  );
+}
+
+export async function stopWorker(
+  runId: string,
+  workerId: string,
+): Promise<{ run?: WorkerRun | null; worker: Worker }> {
+  return await parseJsonResponse<{ run?: WorkerRun | null; worker: Worker }>(
+    await authFetch(
+      `${BASE}/worker-runs/${encodeURIComponent(runId)}/workers/${encodeURIComponent(workerId)}/stop`,
+      { method: "POST" },
+    ),
+    "worker stop HTTP failed",
+  );
+}
+
+export interface WorkerDiffReview {
+  worker_id: string;
+  status: WorkspaceGitStatus;
+  diff: string;
+}
+
+export async function getWorkerDiff(
+  runId: string,
+  workerId: string,
+): Promise<WorkerDiffReview> {
+  return await parseJsonResponse<WorkerDiffReview>(
+    await authFetch(
+      `${BASE}/worker-runs/${encodeURIComponent(runId)}/workers/${encodeURIComponent(workerId)}/diff`,
+    ),
+    "worker diff HTTP failed",
+  );
+}
+
+export async function applyWorkerDiff(
+  runId: string,
+  workerId: string,
+): Promise<WorkspaceGitActionResult> {
+  return await parseJsonResponse<WorkspaceGitActionResult>(
+    await authFetch(
+      `${BASE}/worker-runs/${encodeURIComponent(runId)}/workers/${encodeURIComponent(workerId)}/apply`,
+      { method: "POST" },
+    ),
+    "worker diff apply HTTP failed",
+  );
+}
+
+export async function streamWorkerRunEvents(
+  id: string,
+  onEvent: (ev: AgentEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const resp = await authFetch(
+    `${BASE}/worker-runs/${encodeURIComponent(id)}/events`,
+    signal ? { signal } : undefined,
+  );
+  if (!resp.ok || !resp.body)
+    throw new Error(
+      await responseErrorMessage(resp, `worker run events HTTP ${resp.status}`),
+    );
+  await streamJsonSse(resp, onEvent);
+}
+
 export async function deleteThreadTree(id: string): Promise<void> {
   await parseJsonResponse<{ deleted: number }>(
     await authFetch(`${BASE}/threads/${encodeURIComponent(id)}`, {
@@ -2201,6 +2436,15 @@ export interface AgentEvent {
     | "child_thread_error"
     | "child_thread_stopped"
     | "child_thread_event"
+    | "worker_run_proposed"
+    | "worker_run_started"
+    | "worker_run_done"
+    | "worker_run_error"
+    | "worker_run_worker_event"
+    | "worker_run_worker_started"
+    | "worker_run_worker_done"
+    | "worker_run_worker_error"
+    | "worker_run_worker_stopped"
     | "final"
     | "done"
     | "error";
@@ -2225,6 +2469,10 @@ export interface AgentEvent {
   created_at?: string;
   thread?: ChildThreadInfo;
   event?: ThreadEvent;
+  run?: WorkerRun;
+  workers?: Worker[];
+  worker?: Worker;
+  run_id?: string;
 }
 
 // ----- Providers (LLM remotes and media credentials) -----

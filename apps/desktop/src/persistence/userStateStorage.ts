@@ -1,5 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { StateStorage } from "zustand/middleware";
+import type {
+  PersistStorage,
+  StateStorage,
+  StorageValue,
+} from "zustand/middleware";
 import { incrementPerfCounter, recordPerfMeasure } from "../lib/perf.js";
 
 const CANONICAL_USER_STATE_KEYS = [
@@ -38,15 +42,32 @@ const memoryStorage = new Map<string, string>();
 const lastWrittenValues = new Map<string, string>();
 let legacyImportPromise: Promise<void> | null = null;
 
-type DeferredWrite = {
-  value: string;
+type SessionStorageValue = StorageValue<Record<string, unknown>>;
+type SessionMessageDelta = { index: number; messageJson: string };
+type SessionDelta = {
+  id: string;
+  sessionJson?: string;
+  messageCount: number;
+  messages: SessionMessageDelta[];
+};
+type SessionsDelta = {
+  metaJson: string;
+  sessionOrder: string[];
+  upserts: SessionDelta[];
+  deletedSessionIds: string[];
+};
+type DeferredSessionWrite = {
+  value: SessionStorageValue;
   timer: ReturnType<typeof setTimeout> | null;
   maxTimer: ReturnType<typeof setTimeout> | null;
   resolve: Array<() => void>;
   reject: Array<(error: unknown) => void>;
 };
 
-const deferredWrites = new Map<string, DeferredWrite>();
+let committedSessionValue: SessionStorageValue | null = null;
+let inFlightSessionValue: SessionStorageValue | null = null;
+let deferredSessionWrite: DeferredSessionWrite | null = null;
+let sessionFlushPromise: Promise<void> | null = null;
 let lifecycleFlushHandlersInstalled = false;
 
 function inTauri(): boolean {
@@ -90,6 +111,131 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : null;
+}
+
+function parseSessionStorageValue(value: string): SessionStorageValue {
+  const parsed = asRecord(JSON.parse(value));
+  if (!parsed || !asRecord(parsed.state)) {
+    throw new Error("Invalid persisted session state");
+  }
+  return parsed as SessionStorageValue;
+}
+
+function persistedSessions(value: SessionStorageValue | null): Array<
+  Record<string, unknown>
+> {
+  if (!value) return [];
+  const sessions = asRecord(value.state)?.sessions;
+  if (!Array.isArray(sessions)) return [];
+  return sessions.map((session) => {
+    const record = asRecord(session);
+    if (!record || typeof record.id !== "string" || !record.id.trim()) {
+      throw new Error("Persisted sessions require non-empty ids");
+    }
+    return record;
+  });
+}
+
+function sessionMetaJson(value: SessionStorageValue): string {
+  const state = { ...(asRecord(value.state) ?? {}) };
+  delete state.sessions;
+  delete state.workerRuns;
+  return JSON.stringify({ ...value, state });
+}
+
+function sessionRowJson(session: Record<string, unknown>): string {
+  const row = { ...session };
+  delete row.messages;
+  return JSON.stringify(row);
+}
+
+function sessionMessages(session: Record<string, unknown>): unknown[] {
+  return Array.isArray(session.messages) ? session.messages : [];
+}
+
+function sameOrder(left: string[], right: string[]): boolean {
+  return (
+    left.length === right.length &&
+    left.every((value, index) => value === right[index])
+  );
+}
+
+function buildSessionsDelta(
+  previous: SessionStorageValue,
+  next: SessionStorageValue,
+): SessionsDelta | null {
+  const previousSessions = persistedSessions(previous);
+  const nextSessions = persistedSessions(next);
+  const previousById = new Map(
+    previousSessions.map((session) => [String(session.id), session]),
+  );
+  const sessionOrder = nextSessions.map((session) => String(session.id));
+  if (new Set(sessionOrder).size !== sessionOrder.length) {
+    throw new Error("Persisted session ids must be unique");
+  }
+  const nextIds = new Set(sessionOrder);
+  const deletedSessionIds = previousSessions
+    .map((session) => String(session.id))
+    .filter((id) => !nextIds.has(id));
+  const upserts: SessionDelta[] = [];
+
+  for (const session of nextSessions) {
+    const id = String(session.id);
+    const previousSession = previousById.get(id);
+    const messages = sessionMessages(session);
+    const previousMessages = previousSession
+      ? sessionMessages(previousSession)
+      : [];
+    const changedMessages: SessionMessageDelta[] = [];
+    for (let index = 0; index < messages.length; index += 1) {
+      const message = messages[index];
+      const previousMessage = previousMessages[index];
+      if (message === previousMessage) continue;
+      const messageJson = JSON.stringify(message);
+      if (messageJson === undefined) {
+        throw new Error("Persisted messages must be JSON values");
+      }
+      if (
+        previousMessage !== undefined &&
+        messageJson === JSON.stringify(previousMessage)
+      ) {
+        continue;
+      }
+      changedMessages.push({ index, messageJson });
+    }
+
+    const rowJson = sessionRowJson(session);
+    const previousRowJson = previousSession
+      ? sessionRowJson(previousSession)
+      : null;
+    const sessionJson = rowJson === previousRowJson ? undefined : rowJson;
+    if (
+      sessionJson !== undefined ||
+      changedMessages.length > 0 ||
+      messages.length !== previousMessages.length
+    ) {
+      upserts.push({
+        id,
+        sessionJson,
+        messageCount: messages.length,
+        messages: changedMessages,
+      });
+    }
+  }
+
+  const previousOrder = previousSessions.map((session) => String(session.id));
+  const previousState = asRecord(previous.state) ?? {};
+  const metaJson = sessionMetaJson(next);
+  if (
+    upserts.length === 0 &&
+    deletedSessionIds.length === 0 &&
+    sameOrder(previousOrder, sessionOrder) &&
+    !("workerRuns" in previousState) &&
+    sessionMetaJson(previous) === metaJson
+  ) {
+    return null;
+  }
+  return { metaJson, sessionOrder, upserts, deletedSessionIds };
 }
 
 function sanitizeSyncedSettings(value: string): string {
@@ -186,10 +332,6 @@ function stateDeleteCommand(key: string): {
     : { command: "user_state_delete", args: { key } };
 }
 
-function shouldDeferWrite(key: string): boolean {
-  return key === SESSIONS_KEY;
-}
-
 function deferredWriteDelayMs(): number {
   const override = (globalThis as TestGlobal)
     .__MILIM_TEST_DEFERRED_WRITE_DELAY_MS__;
@@ -210,49 +352,77 @@ function deferredWriteMaxLatencyMs(): number {
     : DEFERRED_WRITE_MAX_LATENCY_MS;
 }
 
-async function flushDeferredWrite(key: string): Promise<void> {
-  const entry = deferredWrites.get(key);
+function sessionValuesMatch(
+  left: SessionStorageValue,
+  right: SessionStorageValue,
+): boolean {
+  return left === right || buildSessionsDelta(left, right) === null;
+}
+
+async function flushDeferredSessionWrite(): Promise<void> {
+  if (sessionFlushPromise) {
+    await sessionFlushPromise;
+    if (deferredSessionWrite) await flushDeferredSessionWrite();
+    return;
+  }
+  const entry = deferredSessionWrite;
   if (!entry) return;
-  deferredWrites.delete(key);
+  deferredSessionWrite = null;
   if (entry.timer != null) clearTimeout(entry.timer);
   if (entry.maxTimer != null) clearTimeout(entry.maxTimer);
   entry.timer = null;
   entry.maxTimer = null;
 
-  const hadPrevious = lastWrittenValues.has(key);
-  const previousValue = lastWrittenValues.get(key);
-  lastWrittenValues.set(key, entry.value);
-  try {
-    incrementPerfCounter(`persist.${key}.flush`);
-    const command = stateSetCommand(key, entry.value);
-    await invokeUserState<void>(command.command, command.args);
-    entry.resolve.forEach((resolve) => resolve());
-  } catch (error) {
-    if (lastWrittenValues.get(key) === entry.value) {
-      if (hadPrevious && previousValue !== undefined)
-        lastWrittenValues.set(key, previousValue);
-      else lastWrittenValues.delete(key);
+  inFlightSessionValue = entry.value;
+  sessionFlushPromise = (async () => {
+    try {
+      incrementPerfCounter(`persist.${SESSIONS_KEY}.flush`);
+      if (committedSessionValue) {
+        const delta = buildSessionsDelta(committedSessionValue, entry.value);
+        if (delta) {
+          recordPerfMeasure(
+            `persist.${SESSIONS_KEY}.bytes`,
+            JSON.stringify(delta).length,
+          );
+          await invokeUserState<void>("user_sessions_apply_delta", { delta });
+        }
+      } else {
+        const value = JSON.stringify(entry.value);
+        recordPerfMeasure(`persist.${SESSIONS_KEY}.bytes`, value.length);
+        await invokeUserState<void>("user_sessions_set", { value });
+      }
+      committedSessionValue = entry.value;
+      entry.resolve.forEach((resolve) => resolve());
+    } catch (error) {
+      entry.reject.forEach((reject) => reject(error));
+      throw error;
     }
-    entry.reject.forEach((reject) => reject(error));
+  })();
+  try {
+    await sessionFlushPromise;
+  } finally {
+    sessionFlushPromise = null;
+    inFlightSessionValue = null;
   }
+  if (deferredSessionWrite) await flushDeferredSessionWrite();
 }
 
-function cancelDeferredWrite(key: string): void {
-  const entry = deferredWrites.get(key);
+function cancelDeferredSessionWrite(): void {
+  const entry = deferredSessionWrite;
   if (!entry) return;
-  deferredWrites.delete(key);
+  deferredSessionWrite = null;
   if (entry.timer != null) clearTimeout(entry.timer);
   if (entry.maxTimer != null) clearTimeout(entry.maxTimer);
   entry.resolve.forEach((resolve) => resolve());
 }
 
-function deferUserStateWrite(key: string, value: string): Promise<void> {
-  let entry = deferredWrites.get(key);
+function deferSessionWrite(value: SessionStorageValue): Promise<void> {
+  let entry = deferredSessionWrite;
   if (!entry) {
     entry = { value, timer: null, maxTimer: null, resolve: [], reject: [] };
-    deferredWrites.set(key, entry);
+    deferredSessionWrite = entry;
     entry.maxTimer = setTimeout(
-      () => void flushDeferredWrite(key),
+      () => void flushDeferredSessionWrite().catch(() => {}),
       deferredWriteMaxLatencyMs(),
     );
   }
@@ -263,7 +433,7 @@ function deferUserStateWrite(key: string, value: string): Promise<void> {
   });
   if (entry.timer != null) clearTimeout(entry.timer);
   entry.timer = setTimeout(
-    () => void flushDeferredWrite(key),
+    () => void flushDeferredSessionWrite().catch(() => {}),
     deferredWriteDelayMs(),
   );
   return promise;
@@ -272,15 +442,7 @@ function deferUserStateWrite(key: string, value: string): Promise<void> {
 export async function flushDeferredUserStateWrites(
   key?: UserStateKey,
 ): Promise<void> {
-  if (key) {
-    await flushDeferredWrite(key);
-    return;
-  }
-  await Promise.all(
-    Array.from(deferredWrites.keys()).map((pendingKey) =>
-      flushDeferredWrite(pendingKey),
-    ),
-  );
+  if (!key || key === SESSIONS_KEY) await flushDeferredSessionWrite();
 }
 
 export function installUserStateFlushHandlers(): void {
@@ -346,15 +508,80 @@ export function importLegacyLocalStorageOnce(): Promise<void> {
   return legacyImportPromise;
 }
 
+function readSessionStorageValue():
+  | SessionStorageValue
+  | null
+  | Promise<SessionStorageValue | null> {
+  if (!inTauri()) {
+    const value = localGetItem(SESSIONS_KEY);
+    committedSessionValue = value ? parseSessionStorageValue(value) : null;
+    return committedSessionValue;
+  }
+  if (deferredSessionWrite) return deferredSessionWrite.value;
+  if (inFlightSessionValue) return inFlightSessionValue;
+  return importLegacyLocalStorageOnce().then(async () => {
+    const value = await invokeUserState<string | null>("user_sessions_get");
+    committedSessionValue = value ? parseSessionStorageValue(value) : null;
+    return committedSessionValue;
+  });
+}
+
+function writeSessionStorageValue(
+  value: SessionStorageValue,
+): void | Promise<void> {
+  if (!inTauri()) {
+    const serialized = JSON.stringify(value);
+    if (localGetItem(SESSIONS_KEY) === serialized) return undefined;
+    incrementPerfCounter(`persist.${SESSIONS_KEY}.write`);
+    recordPerfMeasure(`persist.${SESSIONS_KEY}.bytes`, serialized.length);
+    localSetItem(SESSIONS_KEY, serialized);
+    committedSessionValue = value;
+    return undefined;
+  }
+  if (deferredSessionWrite) {
+    if (sessionValuesMatch(deferredSessionWrite.value, value)) return undefined;
+  } else if (inFlightSessionValue) {
+    if (sessionValuesMatch(inFlightSessionValue, value)) return undefined;
+  } else if (
+    committedSessionValue &&
+    sessionValuesMatch(committedSessionValue, value)
+  ) {
+    return undefined;
+  }
+  incrementPerfCounter(`persist.${SESSIONS_KEY}.write`);
+  return deferSessionWrite(value);
+}
+
+function deleteSessionStorageValue(): void | Promise<boolean> {
+  cancelDeferredSessionWrite();
+  if (!inTauri()) {
+    committedSessionValue = null;
+    localRemoveItem(SESSIONS_KEY);
+    return undefined;
+  }
+  return (async () => {
+    if (sessionFlushPromise) await sessionFlushPromise;
+    cancelDeferredSessionWrite();
+    committedSessionValue = null;
+    return invokeUserState<boolean>("user_sessions_delete");
+  })();
+}
+
 export function readUserStateKey(
   key: UserStateKey,
 ): string | null | Promise<string | null> {
+  if (key === SESSIONS_KEY) {
+    const value = readSessionStorageValue();
+    return value instanceof Promise
+      ? value.then((session) => (session ? JSON.stringify(session) : null))
+      : value
+        ? JSON.stringify(value)
+        : null;
+  }
   if (!inTauri()) {
     const sanitized = sanitizeUserStateValue(key, localGetItem(key));
     return sanitized === null ? null : userStateReadValue(key, sanitized);
   }
-  const pending = deferredWrites.get(key);
-  if (pending) return userStateReadValue(key, pending.value);
   return importLegacyLocalStorageOnce().then(async () => {
     const command = stateGetCommand(key);
     const value = await invokeUserState<string | null>(
@@ -376,6 +603,9 @@ export function writeUserStateKey(
   value: string,
 ): void | Promise<void> {
   const sanitized = sanitizeUserStateValue(key, value) ?? value;
+  if (key === SESSIONS_KEY) {
+    return writeSessionStorageValue(parseSessionStorageValue(sanitized));
+  }
   if (!inTauri()) {
     if (localGetItem(key) === sanitized) return undefined;
     incrementPerfCounter(`persist.${key}.write`);
@@ -384,14 +614,9 @@ export function writeUserStateKey(
     lastWrittenValues.set(key, sanitized);
     return undefined;
   }
-  const pending = deferredWrites.get(key);
-  if (pending?.value === sanitized || lastWrittenValues.get(key) === sanitized)
-    return undefined;
+  if (lastWrittenValues.get(key) === sanitized) return undefined;
   incrementPerfCounter(`persist.${key}.write`);
   recordPerfMeasure(`persist.${key}.bytes`, sanitized.length);
-  if (shouldDeferWrite(key)) {
-    return deferUserStateWrite(key, sanitized);
-  }
   const command = stateSetCommand(key, sanitized);
   return invokeUserState<void>(command.command, command.args).then(() => {
     lastWrittenValues.set(key, sanitized);
@@ -399,7 +624,7 @@ export function writeUserStateKey(
 }
 
 export function deleteUserStateKey(key: UserStateKey): void | Promise<boolean> {
-  cancelDeferredWrite(key);
+  if (key === SESSIONS_KEY) return deleteSessionStorageValue();
   lastWrittenValues.delete(key);
   if (!inTauri()) {
     localRemoveItem(key);
@@ -413,4 +638,10 @@ export const userStateStorage: StateStorage = {
   getItem: readUserStateKey,
   setItem: writeUserStateKey,
   removeItem: deleteUserStateKey,
+};
+
+export const sessionStateStorage: PersistStorage<Record<string, unknown>> = {
+  getItem: () => readSessionStorageValue(),
+  setItem: (_name, value) => writeSessionStorageValue(value),
+  removeItem: () => deleteSessionStorageValue(),
 };

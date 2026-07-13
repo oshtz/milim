@@ -1,3 +1,5 @@
+import { applySessionDeltaSnapshot } from "./session-delta-test-helper.js";
+
 class MemoryStorage implements Storage {
   private values = new Map<string, string>();
 
@@ -50,9 +52,20 @@ Object.defineProperty(globalThis, "__MILIM_TEST_INVOKE__", {
       dbValues.set(String(args?.key), String(args?.value));
       return null;
     }
-    if (command === "user_sessions_set") {
+    if (
+      command === "user_sessions_set" ||
+      command === "user_sessions_apply_delta"
+    ) {
       if (holdNextSessionSet) await holdNextSessionSet;
-      sessionSnapshot = String(args?.value);
+      sessionSnapshot =
+        command === "user_sessions_set"
+          ? String(args?.value)
+          : applySessionDeltaSnapshot(
+              sessionSnapshot ??
+                dbValues.get("milim.sessions") ??
+                '{"state":{"sessions":[]},"version":0}',
+              args?.delta as Parameters<typeof applySessionDeltaSnapshot>[1],
+            );
       dbValues.delete("milim.sessions");
       return null;
     }
@@ -267,10 +280,13 @@ equal(
 );
 
 const sessionWriteCountBefore = calls.filter(
-  (call) => call.command === "user_sessions_set",
+  (call) => call.command === "user_sessions_apply_delta",
 ).length;
-const sessionA = '{"state":{"sessions":[{"id":"a"}]},"version":0}';
-const sessionB = '{"state":{"sessions":[{"id":"b"}]},"version":0}';
+await readUserStateKey("milim.sessions");
+const sessionA =
+  '{"state":{"sessions":[{"id":"a","messages":[]}]},"version":0}';
+const sessionB =
+  '{"state":{"sessions":[{"id":"b","messages":[]}]},"version":0}';
 const writeA = writeUserStateKey("milim.sessions", sessionA);
 const writeB = writeUserStateKey("milim.sessions", sessionB);
 equal(
@@ -290,7 +306,7 @@ assert(
   "session writes should move out of the legacy JSON blob",
 );
 const sessionWriteCountAfter = calls.filter(
-  (call) => call.command === "user_sessions_set",
+  (call) => call.command === "user_sessions_apply_delta",
 ).length;
 equal(
   sessionWriteCountAfter - sessionWriteCountBefore,
@@ -300,7 +316,7 @@ equal(
 await writeUserStateKey("milim.sessions", sessionB);
 await flushDeferredUserStateWrites("milim.sessions");
 const duplicateSessionWriteCount = calls.filter(
-  (call) => call.command === "user_sessions_set",
+  (call) => call.command === "user_sessions_apply_delta",
 ).length;
 equal(
   duplicateSessionWriteCount,
@@ -311,16 +327,17 @@ let releaseHeldSessionSet: (() => void) | undefined;
 holdNextSessionSet = new Promise<void>((resolve) => {
   releaseHeldSessionSet = resolve;
 });
-const sessionC = '{"state":{"sessions":[{"id":"c"}]},"version":0}';
+const sessionC =
+  '{"state":{"sessions":[{"id":"c","messages":[]}]},"version":0}';
 const writeC = writeUserStateKey("milim.sessions", sessionC);
 const flushC = flushDeferredUserStateWrites("milim.sessions");
 await new Promise((resolve) => setTimeout(resolve, 0));
 const inFlightSessionWriteCount = calls.filter(
-  (call) => call.command === "user_sessions_set",
+  (call) => call.command === "user_sessions_apply_delta",
 ).length;
 await writeUserStateKey("milim.sessions", sessionC);
 const duplicateInFlightSessionWriteCount = calls.filter(
-  (call) => call.command === "user_sessions_set",
+  (call) => call.command === "user_sessions_apply_delta",
 ).length;
 equal(
   duplicateInFlightSessionWriteCount,
@@ -350,14 +367,14 @@ equal(
   }
 ).__MILIM_TEST_DEFERRED_WRITE_MAX_LATENCY_MS__ = 35;
 const maxLatencyWriteCountBefore = calls.filter(
-  (call) => call.command === "user_sessions_set",
+  (call) => call.command === "user_sessions_apply_delta",
 ).length;
 const maxLatencyWrites: Array<void | Promise<void>> = [];
 for (let i = 0; i < 3; i += 1) {
   maxLatencyWrites.push(
     writeUserStateKey(
       "milim.sessions",
-      `{"state":{"sessions":[{"id":"max-${i}"}]},"version":0}`,
+      `{"state":{"sessions":[{"id":"max-${i}","messages":[]}]},"version":0}`,
     ),
   );
   await new Promise((resolve) => setTimeout(resolve, 10));
@@ -365,13 +382,13 @@ for (let i = 0; i < 3; i += 1) {
 await new Promise((resolve) => setTimeout(resolve, 50));
 await Promise.all(maxLatencyWrites);
 equal(
-  calls.filter((call) => call.command === "user_sessions_set").length,
+  calls.filter((call) => call.command === "user_sessions_apply_delta").length,
   maxLatencyWriteCountBefore + 1,
   "session writes should flush at max latency under sustained writes",
 );
 equal(
   sessionSnapshot,
-  '{"state":{"sessions":[{"id":"max-2"}]},"version":0}',
+  '{"state":{"sessions":[{"id":"max-2","messages":[]}]},"version":0}',
   "max-latency session flush should persist the latest pending value",
 );
 delete (
@@ -386,5 +403,62 @@ delete (
     __MILIM_TEST_DEFERRED_WRITE_MAX_LATENCY_MS__?: number;
   }
 ).__MILIM_TEST_DEFERRED_WRITE_MAX_LATENCY_MS__;
+
+const largeUnchangedPayload = `unchanged-${"x".repeat(10_000)}`;
+const largeBase = JSON.stringify({
+  state: {
+    sessions: [
+      {
+        id: "stable",
+        messages: [{ role: "user", content: largeUnchangedPayload }],
+      },
+      {
+        id: "changing",
+        messages: [{ role: "user", content: "before" }],
+      },
+    ],
+    workerRuns: [{ id: "server-owned" }],
+  },
+  version: 0,
+});
+await writeUserStateKey("milim.sessions", largeBase);
+await flushDeferredUserStateWrites("milim.sessions");
+const deltaCallStart = calls.length;
+await writeUserStateKey(
+  "milim.sessions",
+  JSON.stringify({
+    state: {
+      sessions: [
+        {
+          id: "stable",
+          messages: [{ role: "user", content: largeUnchangedPayload }],
+        },
+        {
+          id: "changing",
+          messages: [{ role: "user", content: "after" }],
+        },
+      ],
+    },
+    version: 0,
+  }),
+);
+await flushDeferredUserStateWrites("milim.sessions");
+const deltaCall = calls
+  .slice(deltaCallStart)
+  .find((call) => call.command === "user_sessions_apply_delta");
+assert(deltaCall, "changed session state should use the delta command");
+const deltaWire = JSON.stringify(deltaCall.args?.delta);
+assert(
+  !deltaWire.includes(largeUnchangedPayload),
+  "session deltas should not transmit unchanged large messages",
+);
+assert(
+  deltaWire.includes("after"),
+  "session deltas should transmit changed messages",
+);
+assert(
+  !deltaWire.includes("server-owned"),
+  "session metadata should not persist canonical Worker Runs",
+);
 
 export {};

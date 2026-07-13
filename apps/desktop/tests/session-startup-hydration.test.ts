@@ -1,3 +1,5 @@
+import { applySessionDeltaSnapshot } from "./session-delta-test-helper.js";
+
 class MemoryStorage implements Storage {
   private values = new Map<string, string>();
 
@@ -69,6 +71,7 @@ const persistedSessions = JSON.stringify({
         artifactPanelOpen: true,
         sidePanelMode: "artifact",
         artifactPanelTab: "code",
+        contextPanelOpen: true,
         createdAt: 1,
         updatedAt: 1,
       },
@@ -77,6 +80,7 @@ const persistedSessions = JSON.stringify({
         title: "Recovered title only",
         artifactPanelOpen: true,
         artifactPanelTab: "code",
+        contextPanelOpen: "invalid",
         createdAt: 2,
         updatedAt: 2,
       },
@@ -112,6 +116,17 @@ Object.defineProperty(globalThis, "__MILIM_TEST_INVOKE__", {
     }
     if (command === "user_sessions_set") {
       dbValues.set("milim.sessions", String(args?.value));
+      return null;
+    }
+    if (command === "user_sessions_apply_delta") {
+      dbValues.set(
+        "milim.sessions",
+        applySessionDeltaSnapshot(
+          dbValues.get("milim.sessions") ??
+            '{"state":{"sessions":[]},"version":0}',
+          args?.delta as Parameters<typeof applySessionDeltaSnapshot>[1],
+        ),
+      );
       return null;
     }
     if (command === "user_state_get") {
@@ -176,6 +191,11 @@ assert(
   useSessions.getState().sessions[1]?.inspectorOpen === true &&
     useSessions.getState().sessions[1]?.inspectorTab === "code",
   "legacy code tabs should migrate even when sidePanelMode was absent",
+);
+assert(
+  useSessions.getState().sessions[0]?.contextPanelOpen === true &&
+    useSessions.getState().sessions[1]?.contextPanelOpen === undefined,
+  "context panel hydration should preserve only explicit true values",
 );
 assert(
   stored.state.projects[0]?.folder === "C:\\keep",

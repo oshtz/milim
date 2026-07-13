@@ -265,7 +265,7 @@ pub struct Choice {
 }
 
 /// Token accounting.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub struct Usage {
     pub prompt_tokens: u32,
     pub completion_tokens: u32,

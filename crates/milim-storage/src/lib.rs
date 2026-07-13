@@ -10,5 +10,6 @@ mod db;
 
 pub use crypto::EncryptedStore;
 pub use db::{
-    Database, DatabaseOptions, JournalMode, Migration, SecretKv, UserDataStore, SECRETS_MIGRATIONS,
+    Database, DatabaseOptions, JournalMode, Migration, SecretKv, SessionsDelta, UserDataStore,
+    SECRETS_MIGRATIONS,
 };

@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { createJSONStorage, persist } from "zustand/middleware";
+import { persist, type PersistStorage } from "zustand/middleware";
 import { createChatMessageId } from "../lib/messageIds.js";
 import type {
   ChatArtifact,
@@ -8,6 +8,7 @@ import type {
   ChatStreamPart,
   ChildThreadInfo,
   ChildThreadStatus,
+  DelegationPolicy,
   MemoryNotice,
   PreviewAppFile,
   PreviewAppError,
@@ -20,6 +21,9 @@ import type {
   SavedArtifactFile,
   ThreadEvent,
   ToolApprovalMode,
+  Worker,
+  WorkerRun,
+  WorkerRunRecord,
 } from "../api";
 import {
   extractArtifactsFromMessage,
@@ -35,7 +39,7 @@ import { previewRuntimeKeyForThread } from "../lib/previewRuntimeKeys.js";
 import { deriveThreadTitle, NEW_CHAT_TITLE } from "../lib/threadTitles.js";
 import {
   readUserStateKey,
-  userStateStorage,
+  sessionStateStorage,
   writeUserStateKey,
 } from "../persistence/userStateStorage.js";
 
@@ -89,12 +93,18 @@ export async function hydrateSessionComposerDraftsFromUserState(): Promise<void>
 }
 
 const sessionPersistStorage = {
-  ...userStateStorage,
-  setItem: (name: string, value: string) => {
-    if (value.includes(STREAMING_PERSIST_MARKER)) return undefined;
-    return userStateStorage.setItem(name, value);
+  ...sessionStateStorage,
+  setItem: (name, value) => {
+    if (
+      value.state &&
+      typeof value.state === "object" &&
+      STREAMING_PERSIST_MARKER in value.state
+    ) {
+      return undefined;
+    }
+    return sessionStateStorage.setItem(name, value);
   },
-};
+} satisfies typeof sessionStateStorage;
 
 export interface ThreadSettings {
   model: string;
@@ -108,6 +118,10 @@ export interface ThreadSettings {
   privacy: PrivacyMode;
   /** Tool execution gate for shell/computer/sandbox actions. */
   toolApproval: ToolApprovalMode;
+  /** Whether this thread may delegate work, and whether proposals pause. */
+  delegationPolicy: DelegationPolicy;
+  /** Optional model override used for managed workers. */
+  workerModel: string;
   /** Read-only planning mode for implementation planning before execution. */
   planMode: boolean;
   goal: GoalSettings;
@@ -124,6 +138,7 @@ export interface Session {
   title: string;
   messages: ChatMessage[];
   virtualFiles?: Record<string, SessionVirtualFile>;
+  contextPanelOpen?: boolean;
   inspectorOpen?: boolean;
   inspectorTab?: SessionInspectorTab;
   /** @deprecated Read for one-release side-panel migration only. */
@@ -154,6 +169,15 @@ export interface Session {
   updatedAt: number;
   archivedAt?: number;
 }
+
+export type SessionWorker = Worker & {
+  messages?: ChatMessage[];
+  events?: ThreadEvent[];
+};
+
+export type SessionWorkerRunRecord = Omit<WorkerRunRecord, "workers"> & {
+  workers: SessionWorker[];
+};
 
 export type HotSwapAction = "switch" | "continue" | "review" | "retry";
 export type NativeSessionMode = "fresh" | "resume";
@@ -190,7 +214,7 @@ export interface SessionVirtualFile {
 
 export type SessionSidePanelMode = "artifact" | "browser" | "git";
 export type SessionArtifactPanelTab = "preview" | "code";
-export type SessionInspectorTab = "preview" | "code" | "git";
+export type SessionInspectorTab = "preview" | "code" | "git" | "workers";
 
 export interface SessionPreviewRuntime {
   status: PreviewAppState | string;
@@ -251,6 +275,8 @@ export const DEFAULT_THREAD_SETTINGS: ThreadSettings = {
   activeAgentId: null,
   privacy: "off",
   toolApproval: "guarded",
+  delegationPolicy: "ask",
+  workerModel: "",
   planMode: false,
   goal: DEFAULT_GOAL_SETTINGS,
 };
@@ -520,7 +546,12 @@ function normalizeInspectorTab(
   legacyMode?: unknown,
   legacyArtifactTab?: unknown,
 ): SessionInspectorTab | undefined {
-  if (value === "preview" || value === "code" || value === "git")
+  if (
+    value === "preview" ||
+    value === "code" ||
+    value === "git" ||
+    value === "workers"
+  )
     return value;
   if (legacyMode === "git") return "git";
   if (legacyMode === "browser") return "preview";
@@ -557,6 +588,16 @@ function normalizeSettings(
   }
   if (typeof next.planMode !== "boolean") {
     next.planMode = DEFAULT_THREAD_SETTINGS.planMode;
+  }
+  if (
+    next.delegationPolicy !== "off" &&
+    next.delegationPolicy !== "ask" &&
+    next.delegationPolicy !== "auto"
+  ) {
+    next.delegationPolicy = DEFAULT_THREAD_SETTINGS.delegationPolicy;
+  }
+  if (typeof next.workerModel !== "string") {
+    next.workerModel = DEFAULT_THREAD_SETTINGS.workerModel;
   }
   return next;
 }
@@ -1055,6 +1096,7 @@ function normalizeSessionArtifacts(session: Session): Session {
     ...current,
     virtualFiles: normalizeVirtualFiles(session.virtualFiles),
     archivedAt,
+    contextPanelOpen: session.contextPanelOpen === true ? true : undefined,
     inspectorOpen:
       session.inspectorOpen === true ||
       (session.inspectorOpen === undefined && legacyOpen === true)
@@ -1076,6 +1118,36 @@ function normalizeSessionArtifacts(session: Session): Session {
   };
 }
 
+function legacyWorkerRunFromSession(
+  session: Session,
+): SessionWorkerRunRecord | null {
+  if (!session.worker || !session.parentId) return null;
+  const user = session.messages.find((message) => message.role === "user");
+  const thread: ChildThreadInfo = {
+    id: session.id,
+    parent_id: session.parentId,
+    root_id: session.parentId,
+    title: session.title || "Worker",
+    status: session.worker.status,
+    model: session.worker.model,
+    agent_id: session.worker.agentId ?? null,
+    prompt: user?.content ?? "",
+    summary: session.worker.summary ?? null,
+    error: session.worker.error ?? null,
+    created_at: new Date(session.createdAt).toISOString(),
+    updated_at: new Date(session.updatedAt).toISOString(),
+    finished_at:
+      session.worker.status === "queued" || session.worker.status === "running"
+        ? null
+        : new Date(session.updatedAt).toISOString(),
+    runtime: "legacy",
+    access: "read_only",
+  };
+  const record = singletonRunFromThread(session.parentId, thread);
+  record.workers[0] = { ...record.workers[0], messages: session.messages };
+  return record;
+}
+
 function messageForPersistence(
   message: ChatMessage,
   stripBody: boolean,
@@ -1083,6 +1155,12 @@ function messageForPersistence(
   const streamParts = message.streamParts?.filter(
     (part) => part.kind !== "text",
   );
+  if (
+    !stripBody &&
+    streamParts?.length === message.streamParts?.length
+  ) {
+    return message;
+  }
   const next: ChatMessage = {
     ...message,
     content: stripBody ? "" : message.content,
@@ -1099,17 +1177,17 @@ function sessionsForPersistence(
   const generating = new Set(generatingSessionIds);
   return sessions.map((session) => {
     const stripTrailingBody = generating.has(session.id);
-    return {
-      ...session,
-      messages: session.messages.map((message, index) =>
-        messageForPersistence(
-          message,
-          stripTrailingBody &&
-            index === session.messages.length - 1 &&
-            message.role === "assistant",
-        ),
+    const messages = session.messages.map((message, index) =>
+      messageForPersistence(
+        message,
+        stripTrailingBody &&
+          index === session.messages.length - 1 &&
+          message.role === "assistant",
       ),
-    };
+    );
+    return messages.every((message, index) => message === session.messages[index])
+      ? session
+      : { ...session, messages };
   });
 }
 
@@ -1155,19 +1233,103 @@ function withoutQueuedSessions(
   return next;
 }
 
-function threadTime(value?: string | null): number {
-  if (!value) return Date.now();
-  const parsed = Date.parse(value);
-  return Number.isFinite(parsed) ? parsed : Date.now();
+function runStatusFromWorker(status: ChildThreadStatus): WorkerRun["status"] {
+  if (status === "done") return "done";
+  if (status === "stopped") return "stopped";
+  if (status === "error") return "error";
+  return "running";
 }
 
-function workerFromThread(thread: ChildThreadInfo): Session["worker"] {
+function sessionWorkerFromThread(
+  thread: ChildThreadInfo,
+  existing?: SessionWorker,
+  events?: ThreadEvent[],
+): SessionWorker {
   return {
-    status: thread.status,
+    ...thread,
+    run_id: thread.run_id ?? existing?.run_id,
+    runtime: thread.runtime ?? existing?.runtime ?? "legacy",
+    access: thread.access ?? existing?.access ?? "read_only",
+    messages: messagesFromThread(thread, existing?.messages, events),
+    events: events ?? existing?.events,
+  };
+}
+
+function singletonRunFromThread(
+  parentId: string,
+  thread: ChildThreadInfo,
+  existing?: SessionWorkerRunRecord,
+  events?: ThreadEvent[],
+): SessionWorkerRunRecord {
+  const runId = thread.run_id?.trim() || existing?.run.id || `legacy:${thread.id}`;
+  const worker = sessionWorkerFromThread(
+    { ...thread, run_id: runId, parent_id: parentId || thread.parent_id },
+    existing?.workers.find((item) => item.id === thread.id),
+    events,
+  );
+  const currentTask = existing?.run.tasks.find(
+    (task) => task.id === thread.id || task.prompt === thread.prompt,
+  );
+  const task = currentTask ?? {
+    id: thread.id,
+    title: thread.title || "Worker",
+    prompt: thread.prompt,
+    role: null,
+    agent_id: thread.agent_id ?? null,
     model: thread.model,
-    agentId: thread.agent_id ?? undefined,
-    summary: thread.summary ?? undefined,
-    error: thread.error ?? undefined,
+    access: worker.access,
+  };
+  const workers = [
+    ...(existing?.workers.filter((item) => item.id !== worker.id) ?? []),
+    worker,
+  ];
+  const statuses = workers.map((item) => runStatusFromWorker(item.status));
+  const status = statuses.some((item) => item === "running")
+    ? "running"
+    : statuses.some((item) => item === "error")
+      ? statuses.some((item) => item === "done")
+        ? "partial"
+        : "error"
+      : statuses.every((item) => item === "done")
+        ? "done"
+        : statuses.some((item) => item === "stopped")
+          ? "stopped"
+          : runStatusFromWorker(thread.status);
+  return {
+    run: {
+      id: runId,
+      parent_thread_id: parentId || thread.parent_id,
+      policy: existing?.run.policy ?? "auto",
+      runtime: thread.runtime ?? existing?.run.runtime ?? "legacy",
+      status,
+      tasks: [
+        ...(existing?.run.tasks.filter((item) => item.id !== task.id) ?? []),
+        task,
+      ],
+      error: thread.error ?? existing?.run.error,
+      created_at: existing?.run.created_at ?? thread.created_at,
+      updated_at: thread.updated_at,
+      finished_at: thread.finished_at ?? existing?.run.finished_at,
+    },
+    workers,
+  };
+}
+
+function mergeWorkerRunRecord(
+  existing: SessionWorkerRunRecord | undefined,
+  record: WorkerRunRecord,
+): SessionWorkerRunRecord {
+  return {
+    run: { ...existing?.run, ...record.run },
+    workers: [
+      ...(existing?.workers.filter(
+        (current) => !record.workers.some((worker) => worker.id === current.id),
+      ) ?? []),
+      ...record.workers.map((worker) => {
+        const current = existing?.workers.find((item) => item.id === worker.id);
+        return sessionWorkerFromThread(worker, current, current?.events);
+      }),
+    ],
   };
 }
 
@@ -1310,30 +1472,9 @@ function messagesFromThread(
   ];
 }
 
-function sessionFromThread(
-  parent: Session | undefined,
-  existing: Session | undefined,
-  thread: ChildThreadInfo,
-  events?: ThreadEvent[],
-): Session {
-  return {
-    id: thread.id,
-    parentId: thread.parent_id,
-    title: thread.title || existing?.title || "Worker",
-    messages: messagesFromThread(thread, existing?.messages, events),
-    settings: normalizeSettings({
-      ...(existing?.settings ?? parent?.settings),
-      model: thread.model,
-      activeAgentId: thread.agent_id ?? null,
-    }),
-    worker: workerFromThread(thread),
-    createdAt: existing?.createdAt ?? threadTime(thread.created_at),
-    updatedAt: threadTime(thread.updated_at),
-  };
-}
-
 interface SessionState {
   sessions: Session[];
+  workerRuns: SessionWorkerRunRecord[];
   projects: Project[];
   previewRuntimesByKey: Record<string, SessionPreviewRuntime>;
   activeId: string;
@@ -1439,6 +1580,8 @@ interface SessionState {
     events?: ThreadEvent[],
   ) => void;
   updateChildThread: (thread: ChildThreadInfo, events?: ThreadEvent[]) => void;
+  upsertWorkerRun: (record: WorkerRunRecord) => void;
+  setWorkerRunEvent: (runId: string, event: ThreadEvent) => void;
   markArtifactSaved: (
     id: string,
     messageIdOrIndex: string | number,
@@ -1453,6 +1596,7 @@ interface SessionState {
       "sourceMessageIndex" | "sourceRevisionNumber"
     >,
   ) => void;
+  setContextPanelOpen: (id: string, open: boolean) => void;
   setInspectorOpen: (id: string, open: boolean) => void;
   setInspectorTab: (id: string, tab: SessionInspectorTab) => void;
   setPreviewRuntime: (
@@ -1482,6 +1626,7 @@ export const useSessions = create<SessionState>()(
       const first = freshSession();
       return {
         sessions: [first],
+        workerRuns: [],
         projects: [],
         previewRuntimesByKey: {},
         activeId: first.id,
@@ -2524,66 +2669,113 @@ export const useSessions = create<SessionState>()(
 
         upsertChildThread: (parentId, thread, events) =>
           set((st) => {
-            const parent = st.sessions.find(
-              (session) => session.id === parentId,
-            );
-            const existing = st.sessions.find(
-              (session) => session.id === thread.id,
-            );
-            const child = sessionFromThread(
-              parent,
-              existing,
-              { ...thread, parent_id: parentId || thread.parent_id },
+            const runId = thread.run_id?.trim() || `legacy:${thread.id}`;
+            const current = st.workerRuns.find((item) => item.run.id === runId);
+            const record = singletonRunFromThread(
+              parentId,
+              thread,
+              current,
               events,
             );
-            const sessions = existing
-              ? st.sessions.map((session) =>
-                  session.id === thread.id ? child : session,
-                )
-              : (() => {
-                  const insertAt = st.sessions.findIndex(
-                    (session) => session.id === parentId,
-                  );
-                  const next = st.sessions.slice();
-                  next.splice(insertAt >= 0 ? insertAt + 1 : 0, 0, child);
-                  return next;
-                })();
             return {
-              sessions,
-              sidebar: normalizeSidebarState(
-                {
-                  ...st.sidebar,
-                  sessionOrder: orderedUnique(
-                    st.sidebar.sessionOrder,
-                    sessions.map((session) => session.id),
-                  ),
-                },
-                sessions,
-              ),
+              workerRuns: [
+                record,
+                ...st.workerRuns.filter((item) => item.run.id !== runId),
+              ],
             };
           }),
 
         updateChildThread: (thread, events) =>
           set((st) => {
-            const existing = st.sessions.find(
-              (session) => session.id === thread.id,
+            const runId =
+              thread.run_id?.trim() ||
+              st.workerRuns.find((item) =>
+                item.workers.some((worker) => worker.id === thread.id),
+              )?.run.id ||
+              `legacy:${thread.id}`;
+            const current = st.workerRuns.find((item) => item.run.id === runId);
+            const record = singletonRunFromThread(
+              current?.run.parent_thread_id ?? thread.parent_id,
+              thread,
+              current,
+              events,
             );
-            const parent = st.sessions.find(
-              (session) =>
-                session.id === (existing?.parentId ?? thread.parent_id),
-            );
-            if (!existing && !parent) return {};
-            const child = sessionFromThread(parent, existing, thread, events);
-            const sessions = existing
-              ? st.sessions.map((session) =>
-                  session.id === thread.id ? child : session,
-                )
-              : [child, ...st.sessions];
             return {
-              sessions,
-              sidebar: normalizeSidebarState(st.sidebar, sessions),
+              workerRuns: [
+                record,
+                ...st.workerRuns.filter((item) => item.run.id !== runId),
+              ],
             };
           }),
+
+        upsertWorkerRun: (record) =>
+          set((st) => {
+            const existing = st.workerRuns.find(
+              (item) => item.run.id === record.run.id,
+            );
+            const next = mergeWorkerRunRecord(existing, record);
+            return {
+              workerRuns: [
+                next,
+                ...st.workerRuns.filter((item) => item.run.id !== next.run.id),
+              ],
+              sessions: st.sessions.map((session) => {
+                if (session.id !== next.run.parent_thread_id) return session;
+                const targetIndex = next.run.parent_turn_id
+                  ? session.messages.findIndex(
+                      (message) => message.id === next.run.parent_turn_id,
+                    )
+                  : -1;
+                const messages = session.messages.map((message, index) =>
+                  index === targetIndex ||
+                  (targetIndex < 0 &&
+                    index === session.messages.length - 1 &&
+                    message.role === "assistant")
+                    ? { ...message, workerRunId: next.run.id }
+                    : message,
+                );
+                const shouldReveal =
+                  next.run.status === "proposed" || next.run.status === "running";
+                if (!shouldReveal) return { ...session, messages };
+                if (
+                  session.inspectorOpen &&
+                  session.inspectorTab !== "workers"
+                )
+                  return messages === session.messages
+                    ? session
+                    : { ...session, messages };
+                return {
+                  ...session,
+                  messages,
+                  inspectorOpen: true,
+                  inspectorTab: "workers" as const,
+                };
+              }),
+            };
+          }),
+
+        setWorkerRunEvent: (runId, event) =>
+          set((st) => ({
+            workerRuns: st.workerRuns.map((record) => {
+              if (record.run.id !== runId) return record;
+              const workerIndex = record.workers.findIndex(
+                (worker) => worker.id === event.thread_id,
+              );
+              if (workerIndex < 0) return record;
+              const workers = record.workers.slice();
+              const worker = workers[workerIndex];
+              const events = [
+                ...(worker.events ?? []).filter((item) => item.id !== event.id),
+                event,
+              ].sort((a, b) => a.seq - b.seq);
+              workers[workerIndex] = {
+                ...worker,
+                events,
+                messages: messagesFromThread(worker, worker.messages, events),
+              };
+              return { ...record, workers };
+            }),
+          })),
 
         markArtifactSaved: (id, messageIdOrIndex, artifactId, saved) =>
           set((st) => ({
@@ -2636,6 +2828,19 @@ export const useSessions = create<SessionState>()(
               }
               return { ...s, virtualFiles, updatedAt: now };
             }),
+          })),
+
+        setContextPanelOpen: (id, open) =>
+          set((st) => ({
+            sessions: st.sessions.map((s) =>
+              s.id === id
+                ? {
+                    ...s,
+                    contextPanelOpen: open || undefined,
+                    updatedAt: Date.now(),
+                  }
+                : s,
+            ),
           })),
 
         setInspectorOpen: (id, open) =>
@@ -2835,15 +3040,20 @@ export const useSessions = create<SessionState>()(
     },
     {
       name: "milim.sessions",
-      storage: createJSONStorage(() => sessionPersistStorage),
+      storage: sessionPersistStorage as PersistStorage<Partial<SessionState>>,
       merge: (persisted, current) => {
         const state = persisted as Partial<SessionState>;
         if ((state as Record<string, unknown> | undefined)?.[STREAMING_PERSIST_MARKER])
           return current;
-        const sessions =
+        const normalizedSessions =
           state.sessions?.map((session) =>
             normalizeSessionArtifacts(session),
           ) ?? current.sessions;
+        const legacyWorkerRuns = normalizedSessions
+          .map(legacyWorkerRunFromSession)
+          .filter((record): record is SessionWorkerRunRecord => Boolean(record));
+        const sessions = normalizedSessions.filter((session) => !session.worker);
+        const workerRuns = legacyWorkerRuns;
         const previewRuntimesByKey = normalizePreviewRuntimesByKey(
           state.previewRuntimesByKey,
         );
@@ -2879,8 +3089,11 @@ export const useSessions = create<SessionState>()(
               normalizeProjectFolder(sessionProjectFolder(session)),
             ),
         );
+        const legacyActiveParent = normalizedSessions.find(
+          (session) => session.id === state.activeId && session.worker,
+        )?.parentId;
         const active = ensureVisibleActive(
-          state.activeId ?? current.activeId,
+          legacyActiveParent ?? state.activeId ?? current.activeId,
           liveSessions,
           liveProjects,
         );
@@ -2888,6 +3101,7 @@ export const useSessions = create<SessionState>()(
           ...current,
           ...state,
           sessions: active.sessions,
+          workerRuns,
           projects: liveProjects,
           previewRuntimesByKey,
           activeId: active.activeId,
