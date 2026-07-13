@@ -1480,13 +1480,37 @@ function NativeArtifactBrowser({
         };
       }
 
-      async function syncBounds(webview = webviewRef.current) {
-        if (!webview || !hostElement.isConnected) return;
-        const rect = bounds();
-        await Promise.all([
-          webview.setPosition(new LogicalPosition(rect.x, rect.y)),
-          webview.setSize(new LogicalSize(rect.width, rect.height)),
-        ]).catch(() => undefined);
+      const boundsKey = (rect: ReturnType<typeof bounds>) =>
+        `${rect.x}:${rect.y}:${rect.width}:${rect.height}`;
+      let lastBoundsKey: string | null = null;
+      let pendingBounds: ReturnType<typeof bounds> | null = null;
+      let boundsSync: Promise<void> | null = null;
+
+      function syncBounds(webview = webviewRef.current): Promise<void> {
+        if (!webview || !hostElement.isConnected || cancelled) return Promise.resolve();
+        pendingBounds = bounds();
+        if (boundsSync) return boundsSync;
+        boundsSync = (async () => {
+          while (pendingBounds && !cancelled) {
+            const rect = pendingBounds;
+            pendingBounds = null;
+            const key = boundsKey(rect);
+            if (key === lastBoundsKey) continue;
+            try {
+              await Promise.all([
+                webview.setPosition(new LogicalPosition(rect.x, rect.y)),
+                webview.setSize(new LogicalSize(rect.width, rect.height)),
+              ]);
+              lastBoundsKey = key;
+            } catch {
+              // A later observation can retry the latest bounds.
+            }
+          }
+        })().finally(() => {
+          boundsSync = null;
+          if (pendingBounds && !cancelled) void syncBounds(webview);
+        });
+        return boundsSync;
       }
 
       function syncAppUiVisibility() {
@@ -1512,6 +1536,7 @@ function NativeArtifactBrowser({
       }
 
       const rect = bounds();
+      lastBoundsKey = boundsKey(rect);
       const label = `${labelRef.current}-${Math.random().toString(36).slice(2)}`;
       currentNativeUrlRef.current = url;
       setNativeNavigation({ label, url, state: "loading" });
