@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { RunStatus, RunTrace } from "../api";
+import { isNearScrollBottom } from "../lib/scroll";
 
 const STATUS_LABEL: Record<RunStatus, string> = {
   running: "Running",
@@ -91,11 +92,28 @@ function safeJson(value: unknown): string {
  *  and each tool call with its arguments, result, and per-step duration. */
 export function RunTimeline({ run }: { run: RunTrace }) {
   const [now, setNow] = useState(() => Date.now());
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const stickToBottomRef = useRef(true);
   useEffect(() => {
     if (run.status !== "running") return;
     const t = setInterval(() => setNow(Date.now()), 500);
     return () => clearInterval(t);
   }, [run.status]);
+
+  function scrollToLatest() {
+    stickToBottomRef.current = true;
+    const body = bodyRef.current;
+    if (body) body.scrollTop = body.scrollHeight;
+  }
+
+  function updateAutoScrollCoupling() {
+    const body = bodyRef.current;
+    if (body) stickToBottomRef.current = isNearScrollBottom(body);
+  }
+
+  useLayoutEffect(() => {
+    if (stickToBottomRef.current) scrollToLatest();
+  }, [run.steps]);
 
   const elapsed = Math.max(0, (run.endedAt ?? now) - run.startedAt);
   const doneSteps = run.steps.filter((step) => step.endedAt != null).length;
@@ -107,14 +125,23 @@ export function RunTimeline({ run }: { run: RunTrace }) {
   if (run.status === "done") return null;
 
   return (
-    <div className={`run-timeline run-${run.status}`}>
+    <div
+      className={`run-timeline run-${run.status}`}
+      onFocus={scrollToLatest}
+      onMouseEnter={scrollToLatest}
+    >
       <button className="run-pill" type="button" aria-label="Show run steps">
         <span className={`run-dot run-dot-${run.status}`} />
         <span className={"run-status" + (run.status === "running" ? " shiny-text" : "")}>{stepLabel}</span>
         {files && <span className="run-files">{files}</span>}
         <span className="run-meta run-elapsed">{fmtDuration(elapsed)}</span>
       </button>
-      <div className="run-body" role="tooltip">
+      <div
+        className="run-body"
+        ref={bodyRef}
+        role="tooltip"
+        onScroll={updateAutoScrollCoupling}
+      >
         <div className="run-popover-head">
           <span className={"run-status" + (run.status === "running" ? " shiny-text" : "")}>{STATUS_LABEL[run.status]}</span>
           {run.model && <span className="run-model">{run.model}</span>}
