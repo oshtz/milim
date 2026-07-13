@@ -36,6 +36,9 @@ const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 #[cfg(test)]
 const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_millis(50);
 
+const OPENROUTER_HTTP_REFERER: &str = "https://milim.ai/";
+const OPENROUTER_TITLE: &str = "milim";
+
 #[cfg(not(test))]
 const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(60);
 #[cfg(test)]
@@ -71,6 +74,12 @@ impl RemoteBackend {
     }
 
     fn auth(&self, rb: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        let rb = if self.is_openrouter() {
+            rb.header("HTTP-Referer", OPENROUTER_HTTP_REFERER)
+                .header("X-OpenRouter-Title", OPENROUTER_TITLE)
+        } else {
+            rb
+        };
         match &self.api_key {
             Some(k) => rb.bearer_auth(k),
             None => rb,
@@ -1646,6 +1655,35 @@ mod tests {
             backend.endpoint("chat/completions"),
             "https://api.openai.com/v1/chat/completions"
         );
+    }
+
+    #[test]
+    fn attributes_only_openrouter_requests_to_milim() {
+        let openrouter = RemoteBackend::new(
+            "OpenRouter",
+            "https://openrouter.ai/api/v1",
+            Some("secret".into()),
+        );
+        let request = openrouter
+            .auth(openrouter.client.get(openrouter.endpoint("models")))
+            .build()
+            .unwrap();
+        assert_eq!(
+            request.headers()["http-referer"].to_str().unwrap(),
+            OPENROUTER_HTTP_REFERER
+        );
+        assert_eq!(
+            request.headers()["x-openrouter-title"].to_str().unwrap(),
+            OPENROUTER_TITLE
+        );
+
+        let openai = RemoteBackend::new("OpenAI", "https://api.openai.com/v1", None);
+        let request = openai
+            .auth(openai.client.get(openai.endpoint("models")))
+            .build()
+            .unwrap();
+        assert!(!request.headers().contains_key("http-referer"));
+        assert!(!request.headers().contains_key("x-openrouter-title"));
     }
 
     #[test]

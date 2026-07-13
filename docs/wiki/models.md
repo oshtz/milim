@@ -6,7 +6,7 @@ title: Models and providers
 summary: Model-agnostic dev chat routing across OpenAI-compatible APIs, Anthropic, Gemini, Replicate, fal, Ollama, LM Studio, Codex, and Claude runtime bridges.
 group: Core
 order: 40
-updated: 2026-07-13
+updated: 2026-07-14
 ---
 
 Model routing is provider-agnostic and centered on the active dev thread. The provider registry stores enabled remotes and their model metadata, then the desktop model picker merges local API runtime models, provider models, account runtime models, and media-capable models. Duplicate provider model ids stay provider-scoped in the picker and route back to the selected provider; provider sections with fewer visible models appear first.
@@ -34,6 +34,8 @@ Hot Swap assesses the selected target before committing the change. Full-parity 
 | fal | Remote image/video provider | Queued generation, status polling, normalized media results. |
 | Local API runtimes | Ollama and LM Studio on this machine | Chat, prompt generation, Ollama `keep_alive` lifecycle calls, Responses or completions where the runtime exposes them, model list, embeddings, structured output, native vision/tool-use labels where available, and reasoning effort for supported local reasoning models. |
 | Codex and Claude runtime | Installed CLIs, not provider API keys | Resumable agent-style turns with real image input, visible tool events, and Milim approval modes. |
+
+Requests to OpenRouter include its app-attribution headers with `https://milim.ai/` as the identifier and `milim` as the display title.
 
 ## Runtime lanes
 

@@ -965,6 +965,17 @@ struct CapturedUpstreamRequest {
     body: Value,
 }
 
+fn assert_openrouter_attribution(headers: &std::collections::HashMap<String, String>) {
+    assert_eq!(
+        headers.get("http-referer").map(String::as_str),
+        Some("https://milim.ai/")
+    );
+    assert_eq!(
+        headers.get("x-openrouter-title").map(String::as_str),
+        Some("milim")
+    );
+}
+
 async fn spawn_two_request_anthropic_upstream() -> (
     String,
     tokio::task::JoinHandle<Vec<CapturedUpstreamRequest>>,
@@ -1940,6 +1951,7 @@ async fn media_generate_openrouter_normalizes_to_image_only_output_modality() {
         requests[0].headers.get("authorization").map(String::as_str),
         Some("Bearer openrouter-secret")
     );
+    assert_openrouter_attribution(&requests[0].headers);
     let request = &requests[1];
     assert_eq!(request.method, "POST");
     assert_eq!(request.path, "/api/v1/chat/completions");
@@ -1947,6 +1959,7 @@ async fn media_generate_openrouter_normalizes_to_image_only_output_modality() {
         request.headers.get("authorization").map(String::as_str),
         Some("Bearer openrouter-secret")
     );
+    assert_openrouter_attribution(&request.headers);
     assert_eq!(request.body["model"], "black-forest-labs/flux.2-klein-4b");
     assert_eq!(request.body["messages"][0]["role"], "user");
     assert_eq!(
@@ -2042,6 +2055,9 @@ async fn media_openrouter_metadata_lists_image_models_and_schema_controls() {
         .any(|control| control["key"] == "temperature" && control["default"] == 0.7));
 
     let requests = upstream_requests.await.unwrap();
+    for request in &requests {
+        assert_openrouter_attribution(&request.headers);
+    }
     assert_eq!(requests[0].path, "/api/v1/models");
     assert_eq!(requests[1].path, "/api/v1/models?output_modalities=image");
     assert_eq!(

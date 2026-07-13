@@ -6509,12 +6509,16 @@ async fn call_openrouter_image_media(
     body.insert("stream".to_string(), Value::Bool(false));
 
     post_media_json(
-        reqwest::Client::new()
-            .post(url)
-            .bearer_auth(api_key)
-            .json(&Value::Object(body)),
+        openrouter_request(reqwest::Client::new().post(url), api_key).json(&Value::Object(body)),
     )
     .await
+}
+
+fn openrouter_request(builder: reqwest::RequestBuilder, api_key: &str) -> reqwest::RequestBuilder {
+    builder
+        .bearer_auth(api_key)
+        .header("HTTP-Referer", "https://milim.ai/")
+        .header("X-OpenRouter-Title", "milim")
 }
 
 async fn call_openrouter_media_models(
@@ -6524,9 +6528,7 @@ async fn call_openrouter_media_models(
 ) -> Result<Value, ApiError> {
     let url = format!("{}/models", base_url.trim_end_matches('/'));
     get_media_json(
-        reqwest::Client::new()
-            .get(url)
-            .bearer_auth(api_key)
+        openrouter_request(reqwest::Client::new().get(url), api_key)
             .query(&[("output_modalities", kind)]),
     )
     .await
@@ -6551,7 +6553,7 @@ async fn call_openrouter_model_endpoints(
         "{}/models/{author}/{slug}/endpoints",
         base_url.trim_end_matches('/')
     );
-    get_media_json(reqwest::Client::new().get(url).bearer_auth(api_key)).await
+    get_media_json(openrouter_request(reqwest::Client::new().get(url), api_key)).await
 }
 
 async fn call_replicate_media_models(
