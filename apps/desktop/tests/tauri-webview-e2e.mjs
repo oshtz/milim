@@ -7,19 +7,25 @@ import net from "node:net";
 import { chromium } from "playwright-core";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
-const binary = join(root, "src-tauri", "target", "tauri-verify", "debug", "milim-desktop.exe");
+const binary = process.env.MILIM_TAURI_E2E_BINARY || join(root, "src-tauri", "target", "tauri-verify", "debug", "milim-desktop.exe");
 const cdpHost = "127.0.0.1";
 const cdpPort = Number(process.env.MILIM_TAURI_E2E_CDP_PORT || 9333);
 const cdpUrl = `http://${cdpHost}:${cdpPort}`;
 const nativePreviewOnly = process.argv.includes("--native-preview-only");
 const zoomOnly = process.argv.includes("--zoom-only");
 const microUiOnly = process.argv.includes("--micro-ui-only");
+const workersOnly = process.argv.includes("--workers-only");
 const screenshots = {
+  avatars: join(tmpdir(), "milim-tauri-webview-agent-avatars.png"),
+  avatarsLight: join(tmpdir(), "milim-tauri-webview-agent-avatars-light.png"),
   profiles: join(tmpdir(), "milim-tauri-webview-personalized-profiles.png"),
   settings: join(tmpdir(), "milim-tauri-webview-provider-settings.png"),
   chat: join(tmpdir(), "milim-tauri-webview-personalized-chat.png"),
   zoom: join(tmpdir(), "milim-tauri-webview-zoom-chip.png"),
+  accountUsage: join(tmpdir(), "milim-tauri-webview-account-usage.png"),
   microUi: join(tmpdir(), "milim-tauri-webview-micro-ui.png"),
+  workersPlan: join(tmpdir(), "milim-tauri-webview-workers-plan.png"),
+  workersNarrow: join(tmpdir(), "milim-tauri-webview-workers-narrow.png"),
   failure: join(tmpdir(), "milim-tauri-webview-failure.png"),
 };
 
@@ -77,11 +83,16 @@ let failure;
 try {
   session = await launchTauri(milimHome);
   await resetFrontendStorage(session.page);
-  if (zoomOnly || microUiOnly) {
+  if (workersOnly) {
+    const errors = collectErrors(session.page);
+    await runWorkersInspectorCheck(session.page);
+    consoleErrors.push(...errors.filter((message) => !message.includes("/worker-runs/e2e-workers-run/events")));
+  } else if (zoomOnly || microUiOnly) {
     const errors = collectErrors(session.page);
     await session.page.getByTestId("chat-shell").waitFor();
     await dismissOnboardingIfPresent(session.page);
     await runUiZoomShortcutCheck(session.page);
+    await runAccountUsageTitleBarCheck(session.page);
     if (microUiOnly) await runMicroUiCheck(session.page);
     consoleErrors.push(...errors);
   } else {
@@ -139,16 +150,21 @@ async function runProfileSetup(page) {
   }
 
   for (const profile of profiles) {
-    await page.getByTestId(`agent-editor-${profile.name}`).waitFor();
+    const card = page.getByTestId(`agent-editor-${profile.name}`);
+    await card.waitFor();
+    await assertAvatarSeed(card.locator("shatz-avatar"), profile.avatar);
   }
 
   await page.getByTestId("agent-editor-Security Review").click();
   await assertFieldContains(page.getByTestId("agent-system-prompt"), "credential leaks");
   await assertToolMode(page, "custom");
   await assertSelectedTools(page, profiles.find((p) => p.name === "Security Review").tools);
+  await page.screenshot({ path: screenshots.avatars, fullPage: false });
 
   await closeAgents(page);
+  await assertAgentAvatarsInLightTheme(page);
   await assertAgentOptions(page);
+  await assertScheduleAgentAvatar(page, profiles[0]);
   return errors;
 }
 
@@ -852,8 +868,8 @@ async function runContextDrawerCheck(page) {
   await page.getByLabel("Open context").click();
   await page.getByLabel("Thread context").waitFor();
   await page.getByLabel("Thread context").getByText("Model", { exact: true }).waitFor();
-  if (await page.locator(".topbar-model, .topbar-usage, .topbar-limit").count()) {
-    throw new Error("Detailed model and usage status should not render in the title bar.");
+  if (await page.getByTestId("account-usage-pill").count()) {
+    throw new Error("Provider-key models should not render account usage in the title bar.");
   }
   await page.getByLabel("Close context").click();
 }
@@ -1026,6 +1042,85 @@ async function resetFrontendStorage(page) {
   await dismissOnboardingIfPresent(page);
 }
 
+async function runWorkersInspectorCheck(page) {
+  await seedWorkerFixture(page, "proposed");
+  const inspector = page.getByTestId("workers-inspector");
+  await inspector.waitFor();
+  await page.getByTestId("workers-plan").waitFor();
+  await page.screenshot({ path: screenshots.workersPlan, fullPage: false });
+
+  await seedWorkerFixture(page, "running");
+  await page.setViewportSize({ width: 760, height: 720 });
+  await inspector.waitFor();
+  const fits = await inspector.evaluate((element) => element.scrollWidth <= element.clientWidth + 1);
+  if (!fits) throw new Error("Workers inspector overflows at narrow width.");
+  await page.screenshot({ path: screenshots.workersNarrow, fullPage: false });
+}
+
+async function seedWorkerFixture(page, status) {
+  await page.evaluate(async (runStatus) => {
+    const key = "milim.sessions";
+    const invoke = window.__TAURI_INTERNALS__?.invoke;
+    const now = Date.now();
+    const timestamp = new Date(now).toISOString();
+    const sessionId = "e2e-workers-parent";
+    const runId = "e2e-workers-run";
+    const tasks = [
+      { id: "task-a", title: "Inspect API contract", prompt: "Review the Worker Run API contract.", role: "Reviewer", agent_id: null, model: "test-model", access: "read_only" },
+      { id: "task-b", title: "Check desktop states", prompt: "Check normal and narrow inspector states.", role: "UI audit", agent_id: null, model: "test-model", access: "read_only" },
+    ];
+    const workers = runStatus === "proposed" ? [] : tasks.map((task, index) => ({
+      id: `worker-${index}`,
+      parent_id: sessionId,
+      root_id: sessionId,
+      title: task.title,
+      status: "running",
+      model: task.model,
+      agent_id: null,
+      prompt: task.prompt,
+      summary: null,
+      error: null,
+      created_at: timestamp,
+      updated_at: timestamp,
+      finished_at: null,
+      run_id: runId,
+      runtime: "managed",
+      access: "read_only",
+      external_runtime_id: null,
+      worktree_path: null,
+    }));
+    const value = JSON.stringify({
+      state: {
+        sessions: [{
+          id: sessionId,
+          title: "Worker inspector fixture",
+          messages: [
+            { role: "user", content: "Use workers to inspect this change." },
+            { id: "turn-a", role: "assistant", content: "", workerRunId: runId },
+          ],
+          settings: { model: "", instructions: "", activeAgentId: null, folder: "", sandbox: false, computerUse: false, memory: false, privacy: "off", toolApproval: "guarded", delegationPolicy: "ask", workerModel: "", planMode: false },
+          inspectorOpen: true,
+          inspectorTab: "workers",
+          createdAt: now,
+          updatedAt: now,
+        }],
+        activeId: sessionId,
+        workerRuns: [{
+          run: { id: runId, parent_thread_id: sessionId, parent_turn_id: "turn-a", policy: "ask", runtime: "managed", status: runStatus, tasks, error: null, created_at: timestamp, updated_at: timestamp, finished_at: null },
+          workers,
+          events: [],
+        }],
+      },
+      version: 0,
+    });
+    if (invoke) await invoke("user_sessions_set", { value });
+    else window.localStorage.setItem(key, value);
+  }, status);
+  await page.reload();
+  await page.getByTestId("chat-shell").waitFor();
+  await dismissOnboardingIfPresent(page);
+}
+
 async function dismissOnboardingIfPresent(page) {
   await page.getByTestId("onboarding-preflight").waitFor({ state: "hidden", timeout: 10_000 }).catch(() => {});
   const flow = page.getByTestId("onboarding-flow");
@@ -1068,6 +1163,11 @@ async function closeProviders(page) {
 async function openSettings(page) {
   await page.getByTestId("open-settings").click();
   await page.getByTestId("settings-section-app").waitFor();
+  const usageToggle = page.getByTestId("general-titlebar-account-usage-toggle");
+  await usageToggle.waitFor();
+  if (await usageToggle.getAttribute("aria-checked") !== "true") {
+    throw new Error("Title-bar account usage should default on.");
+  }
 }
 
 async function closeSettings(page) {
@@ -1130,13 +1230,96 @@ async function runAppShortcutCheck(page) {
 }
 
 async function runUiZoomShortcutCheck(page) {
+  const chip = page.getByTestId("ui-zoom-chip");
+  const value = page.getByTestId("ui-zoom-value");
+  const composer = page.getByTestId("composer-input");
+
   await page.keyboard.press("Control+=");
-  await delay(300);
-  if (await page.getByTestId("ui-zoom-chip").count()) {
-    throw new Error("The simplified title bar should not render zoom controls.");
-  }
+  await chip.waitFor();
+  await value.filter({ hasText: "110%" }).waitFor();
   await page.screenshot({ path: screenshots.zoom, fullPage: false });
-  await page.keyboard.press("Control+-");
+
+  const increase = page.getByTestId("ui-zoom-increase");
+  for (let step = 0; step < 3; step += 1) await increase.click();
+  await value.filter({ hasText: "140%" }).waitFor();
+  if (!(await increase.isDisabled())) {
+    throw new Error("Zoom in should be disabled at 140%.");
+  }
+
+  await composer.hover();
+  await composer.focus();
+  await delay(3000);
+  await page.keyboard.press("Control+=");
+  await delay(1500);
+  await chip.waitFor();
+
+  const reset = page.getByTestId("ui-zoom-reset");
+  await reset.click();
+  await value.filter({ hasText: "100%" }).waitFor();
+  await page.getByTestId("ui-zoom-decrease").click();
+  await value.filter({ hasText: "90%" }).waitFor();
+  await increase.click();
+  await value.filter({ hasText: "100%" }).waitFor();
+  if (!(await reset.isDisabled())) throw new Error("Zoom reset should be disabled at 100%.");
+
+  await composer.focus();
+  await chip.hover();
+  await delay(4200);
+  await chip.waitFor();
+  await composer.hover();
+  await increase.focus();
+  await delay(4200);
+  await chip.waitFor();
+  await composer.focus();
+  await delay(4200);
+  await chip.waitFor({ state: "hidden" });
+}
+
+async function runAccountUsageTitleBarCheck(page) {
+  const modelLabel = await page.getByTestId("model-picker-trigger").locator(".chip-label").innerText();
+  if (!modelLabel.toLowerCase().includes("codex")) {
+    console.log("accountUsageCheck=skipped:active model is not Codex");
+    return;
+  }
+
+  await page.route("**/codex/rate-limits", (route) => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({
+      rateLimits: {
+        primary: { usedPercent: 48, windowDurationMins: 300, resetsAt: 1_782_660_000 },
+        secondary: { usedPercent: 60, windowDurationMins: 10_080, resetsAt: 1_782_900_000 },
+      },
+    }),
+  }));
+
+  await openSettings(page);
+  const toggle = page.getByTestId("general-titlebar-account-usage-toggle");
+  await toggle.click();
+  await page.getByTestId("account-usage-pill").waitFor({ state: "hidden" });
+  await toggle.click();
+  await closeSettings(page);
+
+  const pill = page.getByTestId("account-usage-pill");
+  await pill.filter({ hasText: "Codex · 5h 52% left · weekly 40% left" }).waitFor();
+  const pillBox = await pill.boundingBox();
+  const controlsBox = await page.locator(".topbar-right").boundingBox();
+  if (pillBox && controlsBox && pillBox.x + pillBox.width > controlsBox.x) {
+    throw new Error("Account usage pill should not overlap title-bar controls.");
+  }
+  await page.screenshot({ path: screenshots.accountUsage, fullPage: false });
+
+  await page.unroute("**/codex/rate-limits");
+  await page.route("**/codex/rate-limits", (route) => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: "{",
+  }));
+  await openSettings(page);
+  await toggle.click();
+  await toggle.click();
+  await closeSettings(page);
+  await pill.waitFor({ state: "hidden" });
 }
 
 async function runMicroUiCheck(page) {
@@ -1180,6 +1363,32 @@ async function runMicroUiCheck(page) {
   await page.keyboard.press("ArrowRight");
   await sidebarHandle.dblclick();
   await assertAttribute(sidebarHandle, "aria-valuenow", "248");
+  await delay(150);
+
+  const sidebarHandleBox = await sidebarHandle.boundingBox();
+  if (!sidebarHandleBox) throw new Error("Sidebar resize handle should have measurable bounds.");
+  await page.mouse.move(sidebarHandleBox.x + 4, sidebarHandleBox.y + sidebarHandleBox.height / 2);
+  await page.mouse.down();
+  await delay(50);
+  await page.mouse.move(sidebarHandleBox.x - 112, sidebarHandleBox.y + sidebarHandleBox.height / 2, { steps: 4 });
+  await assertAttribute(sidebarHandle, "aria-valuenow", "220");
+  await page.mouse.move(sidebarHandleBox.x - 128, sidebarHandleBox.y + sidebarHandleBox.height / 2);
+  await sidebarHandle.waitFor({ state: "hidden" });
+  await delay(150);
+  await page.mouse.move(sidebarHandleBox.x - 112, sidebarHandleBox.y + sidebarHandleBox.height / 2);
+  await sidebarHandle.waitFor();
+  await assertAttribute(sidebarHandle, "aria-valuenow", "220");
+  await page.mouse.move(sidebarHandleBox.x - 128, sidebarHandleBox.y + sidebarHandleBox.height / 2);
+  await sidebarHandle.waitFor({ state: "hidden" });
+  await page.mouse.up();
+  await page.getByTitle("Expand sidebar").click();
+  await sidebarHandle.waitFor();
+  await sidebarHandle.focus();
+  await page.keyboard.press("ArrowRight");
+  if ((await sidebarHandle.getAttribute("aria-valuenow")) === "220") {
+    throw new Error("Reopened sidebar should remain resizable.");
+  }
+  await page.keyboard.press("Enter");
 
   await page.getByTestId("open-artifact-browser").click();
   const previewHandle = page.getByTestId("preview-resize-handle");
@@ -1194,6 +1403,41 @@ async function runMicroUiCheck(page) {
   await page.keyboard.press("ArrowLeft");
   await previewHandle.dblclick();
   await assertAttribute(previewHandle, "aria-valuenow", "420");
+
+  const previewHandleBox = await previewHandle.boundingBox();
+  if (!previewHandleBox) throw new Error("Inspector resize handle should have measurable bounds.");
+  await page.mouse.move(previewHandleBox.x + 4, previewHandleBox.y + previewHandleBox.height / 2);
+  await page.mouse.down();
+  await delay(50);
+  await page.mouse.move(previewHandleBox.x + 152, previewHandleBox.y + previewHandleBox.height / 2, { steps: 4 });
+  await assertAttribute(previewHandle, "aria-valuenow", "360");
+  await page.mouse.move(previewHandleBox.x + 168, previewHandleBox.y + previewHandleBox.height / 2);
+  const closingPreviewPanel = page.locator(".preview-panel.closing");
+  await closingPreviewPanel.waitFor();
+  const closeMotion = await closingPreviewPanel.evaluate((element) => {
+    const style = getComputedStyle(element);
+    return { name: style.animationName, duration: style.animationDuration };
+  });
+  if (closeMotion.name !== "preview-panel-out" || closeMotion.duration !== "0.1s") {
+    throw new Error(`Inspector close motion should match the sidebar, got ${JSON.stringify(closeMotion)}.`);
+  }
+  await page.locator(".preview-panel").waitFor({ state: "detached" });
+  await page.mouse.move(previewHandleBox.x + 152, previewHandleBox.y + previewHandleBox.height / 2);
+  await previewHandle.waitFor();
+  const openMotion = await page.locator(".preview-panel").evaluate((element) => {
+    const style = getComputedStyle(element);
+    return { className: element.className, name: style.animationName, duration: style.animationDuration };
+  });
+  if (openMotion.name !== "preview-panel-in" || openMotion.duration !== "0.1s") {
+    throw new Error(`Inspector open motion should match the sidebar, got ${JSON.stringify(openMotion)}.`);
+  }
+  await page.mouse.up();
+  await previewHandle.focus();
+  await page.keyboard.press("ArrowLeft");
+  if ((await previewHandle.getAttribute("aria-valuenow")) === "360") {
+    throw new Error("Reopened inspector should remain resizable.");
+  }
+  await page.keyboard.press("Enter");
 }
 
 async function closeChatSearch(page) {
@@ -1244,9 +1488,63 @@ async function seedChatSearchFixture(page) {
 async function assertAgentOptions(page) {
   await openAgentMenu(page);
   for (const profile of profiles) {
-    await page.getByTestId(`agent-option-${profile.name}`).waitFor();
+    const option = page.getByTestId(`agent-option-${profile.name}`);
+    await option.waitFor();
+    await assertAvatarSeed(option.locator("shatz-avatar"), profile.avatar);
   }
   await closeAgentMenu(page);
+}
+
+async function assertAvatarSeed(locator, seed) {
+  await locator.waitFor();
+  const actual = await locator.getAttribute("seed");
+  if (actual !== seed) throw new Error(`Expected avatar seed ${JSON.stringify(seed)}, got ${JSON.stringify(actual)}.`);
+  const visual = await locator.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    return {
+      hasSvg: Boolean(element.shadowRoot?.querySelector("svg")),
+      width: rect.width,
+      height: rect.height,
+    };
+  });
+  if (!visual.hasSvg || visual.width < 16 || visual.width > 40 || Math.abs(visual.width - visual.height) > 1) {
+    throw new Error(`Avatar did not render as a square thumbnail: ${JSON.stringify(visual)}.`);
+  }
+}
+
+async function assertScheduleAgentAvatar(page, profile) {
+  const tools = page.getByRole("button", { name: "Tools", exact: true }).last();
+  if ((await tools.getAttribute("aria-expanded")) !== "true") await tools.click();
+  await page.getByRole("button", { name: "Schedules", exact: true }).last().click();
+  await page.getByRole("button", { name: "New schedule", exact: true }).click();
+  const select = page.getByTestId("schedule-agent-select");
+  await select.waitFor();
+  await select.click();
+  const option = page.locator(".ui-select-item").filter({ hasText: profile.name });
+  await assertAvatarSeed(option.locator("shatz-avatar"), profile.avatar);
+  await option.click();
+  await assertAvatarSeed(select.locator("shatz-avatar"), profile.avatar);
+  await page.getByRole("button", { name: "Close schedules" }).click();
+}
+
+async function assertAgentAvatarsInLightTheme(page) {
+  await page.getByTestId("open-settings").click();
+  await page.getByTestId("settings-section-appearance").waitFor();
+  await page.getByTestId("settings-section-appearance").click();
+  await page.locator(".theme-card").filter({ hasText: "Mono Light" }).click();
+  await closeSettings(page);
+  await openAgents(page);
+  const card = page.getByTestId("agent-editor-Security Review");
+  await card.click();
+  await assertAvatarSeed(card.locator("shatz-avatar"), profiles[1].avatar);
+  await page.screenshot({ path: screenshots.avatarsLight, fullPage: false });
+  await closeAgents(page);
+  await page.getByTestId("open-settings").click();
+  await page.getByTestId("settings-section-appearance").waitFor();
+  await page.getByTestId("settings-section-appearance").click();
+  await page.locator(".theme-card").filter({ hasText: "Mono Dark" }).click();
+  await page.getByTestId("settings-section-app").click();
+  await closeSettings(page);
 }
 
 async function selectAgent(page, name) {
@@ -1683,11 +1981,16 @@ async function rmWithRetry(path, options = {}) {
 
 function printEvidencePaths(milimHome) {
   console.log(`milimHome=${milimHome}`);
+  console.log(`avatarsScreenshot=${screenshots.avatars}`);
+  console.log(`avatarsLightScreenshot=${screenshots.avatarsLight}`);
   console.log(`profilesScreenshot=${screenshots.profiles}`);
   console.log(`settingsScreenshot=${screenshots.settings}`);
   console.log(`chatScreenshot=${screenshots.chat}`);
   console.log(`zoomScreenshot=${screenshots.zoom}`);
+  console.log(`accountUsageScreenshot=${screenshots.accountUsage}`);
   console.log(`microUiScreenshot=${screenshots.microUi}`);
+  console.log(`workersPlanScreenshot=${screenshots.workersPlan}`);
+  console.log(`workersNarrowScreenshot=${screenshots.workersNarrow}`);
   console.log(`failureScreenshot=${screenshots.failure}`);
 }
 
