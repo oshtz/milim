@@ -21,6 +21,7 @@ Agents are for repeatable behavior, tool access, and longer work. Keep one-off q
 | Run timeline | Start, token, reasoning, tool call, bounded tool result, memory, Worker Run, per-request usage deltas, final usage, and error events render as structured stream parts. Tool results are capped before timeline persistence and again for model replay. Worker events carry monotonic cursors and reload on demand. Runs stop at 100 model turns by default (`stopped_at_limit: true`), and stream-open failures are retried once before surfacing an error. |
 | Schedules | Cron schedules capture an explicit model, creation workspace, prompt, files, and optional Agent. Legacy schedules with no model temporarily fall back to their Agent's deprecated saved model; editing persists that fallback. Missing both records a visible error. |
 | Tool approval | The UI sends approval policy and grants to the server-side agent loop. |
+| MCP Apps | Negotiated MCP tools may attach a server-authored `ui://` view. The agent sees bounded fallback content while the transcript retains the full structured App result and descriptor. App-only tools stay out of the model catalog. |
 
 ## Approval modes
 
@@ -31,6 +32,8 @@ Agents are for repeatable behavior, tool access, and longer work. Keep one-off q
 | `open` | Eligible tools are exposed according to the selected folder, sandbox, computer-use, MCP, memory, and skill settings. |
 
 Approval is not just UI decoration. The server rebuilds the effective tool registry per run and removes tools that are not allowed by the current policy.
+
+The same policy is rechecked for calls made by an inline MCP App. Review approval is valid only for the exact displayed call; Guarded accepts only a tool whose MCP annotations declare it read-only; Open accepts eligible app-visible tools. An App can call only tools from its fixed originating server, so one server's view cannot use another server's private catalog.
 
 ## Agents, Workers, and Runs
 

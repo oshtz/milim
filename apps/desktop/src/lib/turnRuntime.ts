@@ -1006,6 +1006,7 @@ export function createAgentRunEventHandler({
           callId: event.call_id,
           name: event.name ?? "tool",
           arguments: event.arguments,
+          mcpApp: event.mcp_app,
           startedAt: now(),
         });
         appendStreamEvent(toolStartedPart(event));
@@ -1017,6 +1018,8 @@ export function createAgentRunEventHandler({
         if (step) {
           if (error) step.error = error;
           else step.result = event.result;
+          step.mcpApp = event.mcp_app ?? step.mcpApp;
+          step.mcpAppResult = event.mcp_app_result;
           step.endedAt = now();
         }
         completeStreamEvent(

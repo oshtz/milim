@@ -482,6 +482,7 @@ async fn run_child_thread(
                 call_id,
                 name,
                 arguments,
+                mcp_app,
             } => {
                 flush_token_event(&store, &events, &thread, &mut token_buffer);
                 emit_thread_event(
@@ -489,13 +490,20 @@ async fn run_child_thread(
                     &events,
                     &thread,
                     "tool_call",
-                    json!({ "call_id": call_id, "name": name, "arguments": arguments }),
+                    json!({
+                        "call_id": call_id,
+                        "name": name,
+                        "arguments": arguments,
+                        "mcp_app": mcp_app,
+                    }),
                 );
             }
             AgentEvent::ToolResult {
                 call_id,
                 name,
                 result,
+                mcp_app,
+                mcp_app_result,
             } => {
                 flush_token_event(&store, &events, &thread, &mut token_buffer);
                 emit_thread_event(
@@ -503,7 +511,13 @@ async fn run_child_thread(
                     &events,
                     &thread,
                     "tool_result",
-                    json!({ "call_id": call_id, "name": name, "result": result }),
+                    json!({
+                        "call_id": call_id,
+                        "name": name,
+                        "result": result,
+                        "mcp_app": mcp_app,
+                        "mcp_app_result": mcp_app_result,
+                    }),
                 );
             }
             AgentEvent::Final { content } => {

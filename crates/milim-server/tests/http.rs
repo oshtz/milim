@@ -4345,6 +4345,177 @@ async fn mcp_tools_list_and_call() {
 }
 
 #[tokio::test]
+async fn mcp_apps_http_bridge_auth_validation_and_isolation() {
+    if Command::new("node").arg("--version").output().is_err() {
+        return;
+    }
+    let root = unique_temp_path("milim-mcp-apps-http");
+    fs::create_dir_all(&root).unwrap();
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("milim-mcp-client")
+        .join("tests")
+        .join("fixtures")
+        .join("apps_server.js");
+    let hub = Arc::new(milim_mcp_client::McpHub::open(&root));
+    hub.upsert(milim_mcp_client::McpServerConfig {
+        id: "apps-a".into(),
+        name: "Apps fixture".into(),
+        command: "node".into(),
+        args: vec![fixture.to_string_lossy().into_owned()],
+        cwd: None,
+        env: Vec::new(),
+        enabled: true,
+    })
+    .await
+    .unwrap();
+    let state = test_state()
+        .with_mcp(hub)
+        .with_api_keys(["secret".to_string()])
+        .with_loopback_trust(false);
+    let base = spawn(state).await;
+    let client = reqwest::Client::new();
+
+    let unauthenticated = client
+        .post(format!("{base}/mcp/apps/resources/read"))
+        .json(&json!({"server_id":"apps-a","uri":"ui://milim.test/chart"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(unauthenticated.status(), reqwest::StatusCode::UNAUTHORIZED);
+
+    let resource: Value = client
+        .post(format!("{base}/mcp/apps/resources/read"))
+        .bearer_auth("secret")
+        .json(&json!({"server_id":"apps-a","uri":"ui://milim.test/chart"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        resource["result"]["contents"][0]["mimeType"],
+        "text/html;profile=mcp-app"
+    );
+    let rendered: Value = client
+        .post(format!("{base}/mcp/apps/resources/read"))
+        .bearer_auth("secret")
+        .json(&json!({"server_id":"apps-a","uri":"ui://milim.test/chart","render":true}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(rendered["result"].is_null());
+    let view_path = rendered["view_path"].as_str().unwrap();
+    let view = client
+        .get(format!("{base}{view_path}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(view.status(), reqwest::StatusCode::OK);
+    assert_eq!(view.headers()["cache-control"], "no-store");
+    assert!(view
+        .headers()
+        .get("content-security-policy")
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.contains("default-src 'none'")));
+    assert!(view.text().await.unwrap().contains("Interactive chart"));
+    let consumed_view = client
+        .get(format!("{base}{view_path}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(consumed_view.status(), reqwest::StatusCode::BAD_REQUEST);
+
+    let missing_view = client
+        .get(format!("{base}/mcp/apps/views/not-a-capability"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(missing_view.status(), reqwest::StatusCode::BAD_REQUEST);
+
+    for uri in [
+        "ui://milim.test/not-advertised",
+        "ui://milim.test/bad",
+        "ui://milim.test/large",
+    ] {
+        let response = client
+            .post(format!("{base}/mcp/apps/resources/read"))
+            .bearer_auth("secret")
+            .json(&json!({"server_id":"apps-a","uri":uri}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST, "{uri}");
+    }
+
+    let review_denied = client
+        .post(format!("{base}/mcp/apps/tools/call"))
+        .bearer_auth("secret")
+        .json(&json!({
+            "server_id":"apps-a",
+            "name":"refresh_chart",
+            "arguments":{},
+            "approval":"review"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(review_denied.status(), reqwest::StatusCode::BAD_REQUEST);
+
+    let approved: Value = client
+        .post(format!("{base}/mcp/apps/tools/call"))
+        .bearer_auth("secret")
+        .json(&json!({
+            "server_id":"apps-a",
+            "name":"refresh_chart",
+            "arguments":{},
+            "approval":"review",
+            "approval_granted":true
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(approved["result"].get("structuredContent").is_some());
+
+    let oversized_result = client
+        .post(format!("{base}/mcp/apps/tools/call"))
+        .bearer_auth("secret")
+        .json(&json!({
+            "server_id":"apps-a",
+            "name":"large_result",
+            "arguments":{},
+            "approval":"guarded"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(oversized_result.status(), reqwest::StatusCode::BAD_REQUEST);
+
+    for body in [
+        json!({"server_id":"other-server","name":"refresh_chart","arguments":{},"approval":"open"}),
+        json!({"server_id":"apps-a","name":"model_only","arguments":{},"approval":"open"}),
+    ] {
+        let response = client
+            .post(format!("{base}/mcp/apps/tools/call"))
+            .bearer_auth("secret")
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+    }
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[tokio::test]
 async fn memory_ingest_and_search() {
     use milim_memory::MemoryStore;
     use milim_storage::Database;

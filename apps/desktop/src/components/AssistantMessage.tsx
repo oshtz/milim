@@ -1,5 +1,5 @@
 import { lazy, memo, Suspense, useEffect, useRef, useState } from "react";
-import type { ChatArtifact, ChatStreamEventIcon, ChatStreamPart } from "../api";
+import type { ChatArtifact, ChatStreamEventIcon, ChatStreamPart, ToolApprovalMode } from "../api";
 import { markPerfRender } from "../lib/perf";
 import {
   groupCompletedStreamActivity,
@@ -16,6 +16,9 @@ const Markdown = lazy(() =>
 const MemoizedMarkdown = lazy(() =>
   import("./Markdown").then((mod) => ({ default: mod.MemoizedMarkdown })),
 );
+const McpAppView = lazy(() =>
+  import("./McpAppView").then((mod) => ({ default: mod.McpAppView })),
+);
 const STREAMING_MARKDOWN_CHAR_LIMIT = 12000;
 type ChatStreamEventPart = Extract<ChatStreamPart, { kind: "event" }>;
 
@@ -27,6 +30,7 @@ type AssistantMessageProps = {
   streaming?: boolean;
   previewArtifactsStreaming?: boolean;
   workDurationMs?: number;
+  toolApproval?: ToolApprovalMode;
 };
 
 /** Split out a `<think>...</think>` reasoning span (reasoning models like
@@ -89,33 +93,48 @@ function StreamIcon({
 
 function StreamEvent({
   part,
+  toolApproval,
 }: {
   part: Extract<ChatStreamPart, { kind: "event" }>;
+  toolApproval: ToolApprovalMode;
 }) {
   const status = part.status ?? "done";
   return (
-    <div
-      className={`stream-event stream-event-${part.eventType} stream-event-${status}`}
-      data-testid="assistant-stream-event"
-      role={status === "error" ? "alert" : "status"}
-    >
-      <span className="stream-event-icon" aria-hidden="true">
-        <StreamIcon icon={part.icon} status={status} />
-      </span>
-      <span
-        className={
-          "stream-event-label" + (status === "running" ? " shiny-text" : "")
-        }
+    <>
+      <div
+        className={`stream-event stream-event-${part.eventType} stream-event-${status}`}
+        data-testid="assistant-stream-event"
+        role={status === "error" ? "alert" : "status"}
       >
-        {part.label}
-      </span>
-      {part.detail && (
-        <StreamEventDetail
-          detail={part.detail}
-          running={status === "running"}
-        />
-      )}
-    </div>
+        <span className="stream-event-icon" aria-hidden="true">
+          <StreamIcon icon={part.icon} status={status} />
+        </span>
+        <span
+          className={
+            "stream-event-label" + (status === "running" ? " shiny-text" : "")
+          }
+        >
+          {part.label}
+        </span>
+        {part.detail && (
+          <StreamEventDetail
+            detail={part.detail}
+            running={status === "running"}
+          />
+        )}
+      </div>
+      {part.mcpApp ? (
+        <Suspense fallback={<div className="mcp-app-state">Loading app...</div>}>
+          <McpAppView
+            descriptor={part.mcpApp}
+            argumentsText={part.toolArguments}
+            result={part.mcpAppResult}
+            status={part.status}
+            approval={toolApproval}
+          />
+        </Suspense>
+      ) : null}
+    </>
   );
 }
 
@@ -150,6 +169,7 @@ function StreamToolGroup({ group }: { group: ChatStreamToolGroup }) {
           <StreamEvent
             key={`${part.name ?? part.label}-${index}`}
             part={part}
+            toolApproval="guarded"
           />
         ))}
       </div>
@@ -249,7 +269,7 @@ function StreamWorkGroup({
               />
             );
           if (part.kind === "event")
-            return <StreamEvent key={`${part.kind}-${index}`} part={part} />;
+            return <StreamEvent key={`${part.kind}-${index}`} part={part} toolApproval="guarded" />;
           return null;
         })}
       </div>
@@ -434,6 +454,7 @@ function AssistantMessageView({
   streaming = false,
   previewArtifactsStreaming = false,
   workDurationMs,
+  toolApproval = "guarded",
 }: AssistantMessageProps) {
   markPerfRender("AssistantMessage");
   if (streaming) markPerfRender("StreamingAssistantMessage");
@@ -476,7 +497,7 @@ function AssistantMessageView({
           );
         }
         if (part.kind === "event")
-          return <StreamEvent key={`${part.kind}-${index}`} part={part} />;
+          return <StreamEvent key={`${part.kind}-${index}`} part={part} toolApproval={toolApproval} />;
         return (
           <AnswerText
             key={`${part.kind}-${index}`}

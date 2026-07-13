@@ -163,6 +163,12 @@ pub fn build_router(state: AppState) -> Router {
         // MCP tools (server bridge: exposes our tools to MCP clients)
         .route("/mcp/tools", get(routes::mcp_tools))
         .route("/mcp/call", post(routes::mcp_call))
+        .route(
+            "/mcp/apps/resources/read",
+            post(routes::mcp_app_resource_read),
+        )
+        .route("/mcp/apps/tools/call", post(routes::mcp_app_tool_call))
+        .route("/mcp/apps/views/{id}", get(routes::mcp_app_view))
         // MCP client: external MCP servers whose tools we consume
         .route(
             "/mcp/servers",

@@ -15,6 +15,7 @@ const nativePreviewOnly = process.argv.includes("--native-preview-only");
 const zoomOnly = process.argv.includes("--zoom-only");
 const microUiOnly = process.argv.includes("--micro-ui-only");
 const workersOnly = process.argv.includes("--workers-only");
+const mcpAppsOnly = process.argv.includes("--mcp-apps-only");
 const screenshots = {
   avatars: join(tmpdir(), "milim-tauri-webview-agent-avatars.png"),
   avatarsLight: join(tmpdir(), "milim-tauri-webview-agent-avatars-light.png"),
@@ -26,6 +27,7 @@ const screenshots = {
   microUi: join(tmpdir(), "milim-tauri-webview-micro-ui.png"),
   workersPlan: join(tmpdir(), "milim-tauri-webview-workers-plan.png"),
   workersNarrow: join(tmpdir(), "milim-tauri-webview-workers-narrow.png"),
+  mcpApps: join(tmpdir(), "milim-tauri-webview-mcp-apps.png"),
   failure: join(tmpdir(), "milim-tauri-webview-failure.png"),
 };
 
@@ -83,7 +85,12 @@ let failure;
 try {
   session = await launchTauri(milimHome);
   await resetFrontendStorage(session.page);
-  if (workersOnly) {
+  if (mcpAppsOnly) {
+    await session.page.getByTestId("chat-shell").waitFor();
+    await dismissOnboardingIfPresent(session.page);
+    await runMcpAppsCheck(session.page);
+    await session.page.screenshot({ path: screenshots.mcpApps, fullPage: false });
+  } else if (workersOnly) {
     const errors = collectErrors(session.page);
     await runWorkersInspectorCheck(session.page, milimHome);
     consoleErrors.push(...errors.filter((message) => !message.includes("/worker-runs/e2e-workers-run/events")));
@@ -215,6 +222,140 @@ async function runPersistenceAndChat(page, pid) {
   await closeAgents(page);
 
   return errors;
+}
+
+async function runMcpAppsCheck(page) {
+  const browserErrors = collectErrors(page);
+  const fixture = join(root, "..", "..", "crates", "milim-mcp-client", "tests", "fixtures", "apps_server.js");
+  const host = await page.evaluate(async ({ fixturePath }) => {
+    const invoke = window.__TAURI_INTERNALS__.invoke;
+    const [base, token] = await Promise.all([invoke("api_base_url"), invoke("api_token")]);
+    const response = await fetch(`${base}/mcp/servers`, {
+      method: "POST",
+      headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        id: "e2e-mcp-apps",
+        name: "E2E MCP Apps",
+        command: "node",
+        args: [fixturePath],
+        enabled: true,
+      }),
+    });
+    if (!response.ok) throw new Error(`MCP fixture setup failed: ${response.status} ${await response.text()}`);
+    const now = Date.now();
+    const descriptor = {
+      server_id: "e2e-mcp-apps",
+      resource_uri: "ui://milim.test/chart",
+      tool: {
+        name: "show_chart",
+        description: "Show a chart",
+        inputSchema: { type: "object" },
+        _meta: { ui: { resourceUri: "ui://milim.test/chart" } },
+      },
+    };
+    const value = JSON.stringify({
+      state: {
+        sessions: [{
+          id: "e2e-mcp-apps-thread",
+          title: "MCP Apps fixture",
+          messages: [
+            { role: "user", content: "Show the interactive chart." },
+            {
+              id: "e2e-mcp-apps-turn",
+              role: "assistant",
+              content: "",
+              streamParts: [{
+                kind: "event",
+                eventType: "tool",
+                label: "Used show_chart",
+                name: "show_chart",
+                callId: "e2e-call",
+                icon: "tool",
+                status: "done",
+                toolArguments: "{}",
+                mcpApp: descriptor,
+                mcpAppResult: {
+                  content: [{ type: "text", text: "Chart data 0" }],
+                  structuredContent: { values: [35, 80, 58] },
+                  _meta: { refreshCount: 0 },
+                },
+              }],
+            },
+          ],
+          settings: { model: "", instructions: "", activeAgentId: null, folder: "", sandbox: false, computerUse: false, memory: false, privacy: "off", toolApproval: "review", delegationPolicy: "off", workerModel: "", planMode: false },
+          createdAt: now,
+          updatedAt: now,
+        }],
+        activeId: "e2e-mcp-apps-thread",
+      },
+      version: 0,
+    });
+    await invoke("user_sessions_set", { value });
+    return { base, token };
+  }, { fixturePath: fixture });
+
+  await page.reload();
+  await page.getByTestId("chat-shell").waitFor();
+  const app = page.getByTestId("mcp-app-view");
+  await app.waitFor({ timeout: 15_000 });
+  const iframe = app.locator("iframe");
+  await iframe.waitFor();
+  const frame = page.frameLocator("iframe.mcp-app-frame");
+  await frame.getByRole("button", { name: "Refresh" }).waitFor({ timeout: 15_000 });
+  await frame.locator("#security[data-parent-dom][data-storage]").waitFor({ state: "attached", timeout: 15_000 }).catch(async (error) => {
+    const diagnostics = {
+      appText: await app.innerText().catch(() => ""),
+      csp: await frame.locator('meta[http-equiv="Content-Security-Policy"]').getAttribute("content").catch(() => null),
+      scripts: await frame.locator("script").count().catch(() => -1),
+      scriptText: await frame.locator("script").first().textContent().catch(() => null),
+      browserErrors,
+    };
+    throw new Error(`${error.message}\nMCP App diagnostics: ${JSON.stringify(diagnostics)}`);
+  });
+
+  const isolation = {
+    parentDom: await frame.locator("#security").getAttribute("data-parent-dom"),
+    storage: await frame.locator("#security").getAttribute("data-storage"),
+    sandbox: await iframe.getAttribute("sandbox"),
+    url: page.frames().find((candidate) => candidate.parentFrame() === page.mainFrame())?.url(),
+  };
+  if (isolation.parentDom !== "blocked") {
+    throw new Error(`MCP App could access Milim's parent DOM: ${JSON.stringify(isolation)}`);
+  }
+  if (isolation.storage !== "blocked") {
+    throw new Error(`MCP App received a persistent storage origin: ${JSON.stringify(isolation)}`);
+  }
+  const viewUrl = await iframe.getAttribute("src");
+  if (!viewUrl || viewUrl.includes(host.token)) throw new Error("MCP App view URL is missing or contains Milim's bearer token.");
+  const frameHeight = await iframe.evaluate((element) => element.getBoundingClientRect().height);
+  if (Math.abs(frameHeight - 410) > 2) throw new Error(`MCP App resize was not applied: ${frameHeight}`);
+
+  const appFrame = page.frames().find((candidate) => candidate.parentFrame() === page.mainFrame());
+  if (!appFrame) throw new Error("MCP App frame was not attached.");
+  const network = await appFrame.evaluate(async (url) => {
+    try {
+      await fetch(url);
+      return "allowed";
+    } catch {
+      return "blocked";
+    }
+  }, `${host.base}/health`);
+  if (network !== "blocked") throw new Error("MCP App bypassed its default-deny network CSP.");
+
+  await frame.getByRole("button", { name: "Refresh" }).click();
+  const approval = app.locator(".mcp-app-approval");
+  await approval.waitFor();
+  if (!(await approval.innerText()).includes("refresh_chart")) {
+    throw new Error("MCP App Review did not show the exact requested tool.");
+  }
+  await approval.getByRole("button", { name: "Approve once" }).click();
+  await frame.locator("body[data-refresh-count='1']").waitFor();
+  const initialTheme = await frame.locator("body").getAttribute("data-theme");
+  await openSettings(page);
+  await page.getByTestId("settings-section-appearance").click();
+  await page.locator(".theme-card").filter({ hasText: initialTheme === "dark" ? "Mono Light" : "Mono Dark" }).click();
+  await closeSettings(page);
+  await frame.locator(`body[data-theme='${initialTheme === "dark" ? "light" : "dark"}']`).waitFor();
 }
 
 async function runNativePreviewOcclusionCheck(page, pid) {
@@ -2118,6 +2259,7 @@ function printEvidencePaths(milimHome) {
   console.log(`microUiScreenshot=${screenshots.microUi}`);
   console.log(`workersPlanScreenshot=${screenshots.workersPlan}`);
   console.log(`workersNarrowScreenshot=${screenshots.workersNarrow}`);
+  console.log(`mcpAppsScreenshot=${screenshots.mcpApps}`);
   console.log(`failureScreenshot=${screenshots.failure}`);
 }
 

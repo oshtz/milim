@@ -1,9 +1,10 @@
 //! Shared server state.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, RwLock};
+use std::time::{Duration, Instant};
 
 use milim_agents::AgentStore;
 use milim_automation::ScheduleStore;
@@ -33,6 +34,63 @@ pub struct ScheduleRunEvent {
 #[derive(Default)]
 pub struct ScheduleRunQueue {
     events: Mutex<VecDeque<ScheduleRunEvent>>,
+}
+
+#[derive(Clone)]
+pub(crate) struct McpAppViewDocument {
+    pub html: String,
+    pub csp: String,
+}
+
+struct CachedMcpAppView {
+    document: McpAppViewDocument,
+    expires_at: Instant,
+}
+
+#[derive(Default)]
+pub(crate) struct McpAppViewStore {
+    views: Mutex<HashMap<String, CachedMcpAppView>>,
+}
+
+impl McpAppViewStore {
+    pub fn insert(&self, document: McpAppViewDocument) -> String {
+        const MAX_PENDING_BYTES: usize = 64 * 1024 * 1024;
+        let now = Instant::now();
+        let mut views = self.views.lock().expect("MCP App view store poisoned");
+        views.retain(|_, view| view.expires_at > now);
+        while !views.is_empty()
+            && views
+                .values()
+                .map(|view| view.document.html.len())
+                .sum::<usize>()
+                + document.html.len()
+                > MAX_PENDING_BYTES
+        {
+            let oldest = views
+                .iter()
+                .min_by_key(|(_, view)| view.expires_at)
+                .map(|(id, _)| id.clone());
+            if let Some(id) = oldest {
+                views.remove(&id);
+            }
+        }
+        let id = uuid::Uuid::new_v4().to_string();
+        views.insert(
+            id.clone(),
+            CachedMcpAppView {
+                document,
+                expires_at: now + Duration::from_secs(10 * 60),
+            },
+        );
+        id
+    }
+
+    pub fn take(&self, id: &str) -> Option<McpAppViewDocument> {
+        let now = Instant::now();
+        let mut views = self.views.lock().expect("MCP App view store poisoned");
+        views.retain(|_, view| view.expires_at > now);
+        views.remove(id).map(|view| view.document)
+    }
 }
 
 impl ScheduleRunQueue {
@@ -89,6 +147,8 @@ pub struct AppState {
     /// Optional MCP client hub: external MCP servers whose tools are merged
     /// into the agent's registry. Managed via `/mcp/servers`.
     pub mcp: Option<Arc<milim_mcp_client::McpHub>>,
+    /// Ephemeral validated HTML served to opaque-origin MCP App iframes.
+    pub(crate) mcp_app_views: Arc<McpAppViewStore>,
     /// Computer-use gate (screen capture + mouse/keyboard). Off by default;
     /// flipped via `POST /computer`. The desktop's computer-use tools check it.
     pub computer_use: Arc<AtomicBool>,
@@ -122,6 +182,7 @@ impl AppState {
             providers: None,
             workspace: Arc::new(RwLock::new(None)),
             mcp: None,
+            mcp_app_views: Arc::new(McpAppViewStore::default()),
             computer_use: Arc::new(AtomicBool::new(false)),
             privacy: Arc::new(crate::privacy::PrivacyGate::default()),
             mobile_companion: None,

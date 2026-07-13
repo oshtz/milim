@@ -16,6 +16,7 @@ function capabilitySummary(server: McpServerInfo): string {
     caps.tools ? "tools" : null,
     caps.resources ? "resources" : null,
     caps.prompts ? "prompts" : null,
+    caps.apps ? "Apps" : null,
   ].filter(Boolean);
   return names.length ? names.join(", ") : "no advertised capabilities";
 }

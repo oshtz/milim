@@ -46,6 +46,7 @@ The gate is process-global. The desktop syncs the active setting through `POST /
 | Media provider | Prompt text and model parameters go to Replicate, fal, OpenRouter media, or the selected media backend after the privacy mode is applied. |
 | Mobile companion | Paired phone text, files, and photos enter the active desktop thread; the desktop still controls the final model send and privacy gate. |
 | MCP tools | External MCP servers run as configured local child processes or remotes; treat each configured server as its own trust boundary. |
+| MCP Apps | App HTML comes from its configured MCP server, is re-fetched rather than persisted, and runs in an opaque-origin iframe. Validated HTML is held briefly in memory behind a random expiring capability URL; it receives no bearer token. Network access is denied by default and limited to valid `_meta.ui.csp` origins; host calls remain authenticated, same-server, visibility-checked, and approval-gated. |
 
 ## Auth and CORS
 

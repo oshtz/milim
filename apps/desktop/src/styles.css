@@ -5692,6 +5692,90 @@ html[data-dark="true"] .preview-control-cursor {
   opacity: 0.55;
 }
 
+.mcp-app-card {
+  width: min(720px, 100%);
+  overflow: hidden;
+  border: 1px solid var(--border-primary);
+  border-radius: var(--card-radius);
+  background: var(--card-bg);
+}
+.mcp-app-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--border-primary);
+  color: var(--secondary-text);
+  font-size: 11px;
+  font-weight: 700;
+}
+.mcp-app-header code {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--tertiary-text);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mcp-app-state {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 54px;
+  padding: 10px;
+  color: var(--tertiary-text);
+  font-size: 12px;
+}
+.mcp-app-error {
+  color: var(--error);
+}
+
+.mcp-app-fallback {
+  width: 100%;
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--text-secondary);
+  font: inherit;
+}
+.mcp-app-approval {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border-bottom: 1px solid var(--border-primary);
+  background: color-mix(in srgb, var(--warning) 8%, var(--card-bg));
+  color: var(--primary-text);
+  font-size: 12px;
+}
+.mcp-app-approval pre {
+  max-height: 140px;
+  margin: 0;
+  padding: 8px;
+  overflow: auto;
+  border-radius: var(--chip-radius);
+  background: var(--bg-tertiary);
+  color: var(--secondary-text);
+  font: 11px/1.45 var(--mono);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.mcp-app-approval > div {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+.mcp-app-frame {
+  display: block;
+  width: 100%;
+  min-height: 120px;
+  border: 0;
+  background: #fff;
+}
+
 .artifact-list {
   display: flex;
   flex-direction: column;

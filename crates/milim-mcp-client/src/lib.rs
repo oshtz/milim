@@ -23,7 +23,7 @@ use tokio::sync::{oneshot, Mutex};
 
 use milim_core::{Error, Result};
 use milim_storage::EncryptedStore;
-use milim_tools::{atomic_write, Tool, ToolEffect};
+use milim_tools::{atomic_write, Tool, ToolEffect, ToolUiDescriptor};
 
 const PROTOCOL_VERSION: &str = "2025-06-18";
 
@@ -87,6 +87,7 @@ pub struct McpCapabilities {
     pub tools: bool,
     pub resources: bool,
     pub prompts: bool,
+    pub apps: bool,
 }
 
 fn capabilities_from_initialize(result: &Value) -> McpCapabilities {
@@ -95,6 +96,9 @@ fn capabilities_from_initialize(result: &Value) -> McpCapabilities {
         tools: caps.get("tools").is_some(),
         resources: caps.get("resources").is_some(),
         prompts: caps.get("prompts").is_some(),
+        apps: caps
+            .pointer("/extensions/io.modelcontextprotocol~1ui")
+            .is_some(),
     }
 }
 
@@ -341,7 +345,13 @@ impl McpClient {
             "initialize",
             json!({
                 "protocolVersion": PROTOCOL_VERSION,
-                "capabilities": {},
+                "capabilities": {
+                    "extensions": {
+                        "io.modelcontextprotocol/ui": {
+                            "mimeTypes": ["text/html;profile=mcp-app"]
+                        }
+                    }
+                },
                 "clientInfo": { "name": "milim", "version": env!("CARGO_PKG_VERSION") }
             }),
         )
@@ -392,6 +402,19 @@ impl McpClient {
             .into_iter()
             .filter_map(|t| {
                 let name = t.get("name").and_then(Value::as_str)?.to_string();
+                let ui = self
+                    .capabilities
+                    .apps
+                    .then(|| t.pointer("/_meta/ui"))
+                    .flatten();
+                let visibility = ui
+                    .and_then(|ui| ui.get("visibility"))
+                    .and_then(Value::as_array);
+                let visible = |target: &str| {
+                    visibility
+                        .map(|items| items.iter().any(|item| item.as_str() == Some(target)))
+                        .unwrap_or(true)
+                };
                 Some(McpToolDef {
                     name,
                     description: t
@@ -413,6 +436,14 @@ impl McpClient {
                         (Some(true), _) => ToolEffect::ReadOnly,
                         _ => ToolEffect::Unknown,
                     },
+                    model_visible: !self.capabilities.apps || visible("model"),
+                    app_visible: self.capabilities.apps && visible("app"),
+                    ui_resource_uri: ui
+                        .and_then(|ui| ui.get("resourceUri"))
+                        .and_then(Value::as_str)
+                        .filter(|uri| uri.starts_with("ui://"))
+                        .map(str::to_string),
+                    raw: t,
                 })
             })
             .collect())
@@ -620,6 +651,10 @@ pub struct McpToolDef {
     pub description: String,
     pub input_schema: Value,
     pub effect: ToolEffect,
+    pub model_visible: bool,
+    pub app_visible: bool,
+    pub ui_resource_uri: Option<String>,
+    pub raw: Value,
 }
 
 /// An [`milim_tools::Tool`] that proxies to a remote MCP tool. Exposed under a
@@ -633,6 +668,7 @@ pub struct McpTool {
     schema: Value,
     effect: ToolEffect,
     aliases: Vec<String>,
+    ui: Option<ToolUiDescriptor>,
 }
 
 #[async_trait]
@@ -649,12 +685,27 @@ impl Tool for McpTool {
     fn effect(&self) -> ToolEffect {
         self.effect
     }
+    fn ui(&self) -> Option<ToolUiDescriptor> {
+        self.ui.clone()
+    }
+    fn call_result(&self, result: &Value) -> Value {
+        lift_mcp_image(result.clone())
+    }
+    fn model_result(&self, result: &Value) -> Value {
+        let mut result = lift_mcp_image(result.clone());
+        if self.ui.is_some() {
+            if let Some(object) = result.as_object_mut() {
+                object.remove("structuredContent");
+                object.remove("_meta");
+            }
+        }
+        result
+    }
     fn aliases(&self) -> Vec<String> {
         self.aliases.clone()
     }
     async fn invoke(&self, args: Value) -> Result<Value> {
-        let result = self.client.call_tool(&self.remote_name, args).await?;
-        Ok(lift_mcp_image(result))
+        self.client.call_tool(&self.remote_name, args).await
     }
 }
 
@@ -986,6 +1037,7 @@ struct HubState {
     configs: Vec<McpServerConfig>,
     clients: HashMap<String, Arc<McpClient>>,
     tools: HashMap<String, Vec<Arc<dyn Tool>>>,
+    tool_defs: HashMap<String, HashMap<String, McpToolDef>>,
     errors: HashMap<String, String>,
 }
 
@@ -1042,6 +1094,7 @@ impl McpHub {
                 configs,
                 clients: HashMap::new(),
                 tools: HashMap::new(),
+                tool_defs: HashMap::new(),
                 errors: HashMap::new(),
             }),
         }
@@ -1062,10 +1115,11 @@ impl McpHub {
     /// Connect one config and store the client+tools (or its error) in state.
     async fn connect_into_state(&self, cfg: &McpServerConfig) {
         match connect_one(cfg, self.secrets.as_ref()).await {
-            Ok((client, tools)) => {
+            Ok((client, tools, tool_defs)) => {
                 let mut st = self.inner.write().expect("mcp hub poisoned");
                 st.clients.insert(cfg.id.clone(), client);
                 st.tools.insert(cfg.id.clone(), tools);
+                st.tool_defs.insert(cfg.id.clone(), tool_defs);
                 st.errors.remove(&cfg.id);
             }
             Err(e) => {
@@ -1073,6 +1127,7 @@ impl McpHub {
                 let mut st = self.inner.write().expect("mcp hub poisoned");
                 st.clients.remove(&cfg.id);
                 st.tools.remove(&cfg.id);
+                st.tool_defs.remove(&cfg.id);
                 st.errors.insert(cfg.id.clone(), e.to_string());
             }
         }
@@ -1102,6 +1157,7 @@ impl McpHub {
             st.configs = configs;
             st.clients.remove(&cfg.id);
             st.tools.remove(&cfg.id);
+            st.tool_defs.remove(&cfg.id);
             st.errors.remove(&cfg.id);
         }
         if cfg.enabled {
@@ -1157,6 +1213,7 @@ impl McpHub {
             st.configs = configs;
             st.clients.remove(id);
             st.tools.remove(id);
+            st.tool_defs.remove(id);
             st.errors.remove(id);
             had
         };
@@ -1192,7 +1249,7 @@ impl McpHub {
             };
         }
         match connect_one(&cfg, self.secrets.as_ref()).await {
-            Ok((client, tools)) => McpTestResult {
+            Ok((client, tools, _)) => McpTestResult {
                 ok: true,
                 connected: true,
                 tool_count: tools.len(),
@@ -1219,6 +1276,75 @@ impl McpHub {
         ids.into_iter()
             .flat_map(|id| state.tools[id].iter().cloned())
             .collect()
+    }
+
+    /// Read a resource from one negotiated MCP Apps server connection.
+    pub async fn read_app_resource(&self, server_id: &str, uri: &str) -> Result<Value> {
+        if !uri.starts_with("ui://") || !self.has_app_resource(server_id, uri) {
+            return Err(Error::InvalidRequest(
+                "resource was not advertised by an MCP App tool".to_string(),
+            ));
+        }
+        let client = self.app_client(server_id)?;
+        client.read_resource(uri).await
+    }
+
+    /// Whether a connected server advertised this `ui://` resource on a tool.
+    pub fn has_app_resource(&self, server_id: &str, uri: &str) -> bool {
+        self.inner
+            .read()
+            .expect("mcp hub poisoned")
+            .tool_defs
+            .get(server_id)
+            .is_some_and(|tools| {
+                tools
+                    .values()
+                    .any(|tool| tool.ui_resource_uri.as_deref() == Some(uri))
+            })
+    }
+
+    /// Metadata for an app-callable tool on one server connection.
+    pub fn app_tool(&self, server_id: &str, name: &str) -> Option<McpToolDef> {
+        self.inner
+            .read()
+            .expect("mcp hub poisoned")
+            .tool_defs
+            .get(server_id)?
+            .get(name)
+            .filter(|tool| tool.app_visible)
+            .cloned()
+    }
+
+    /// Call an app-visible tool on its originating server connection.
+    pub async fn call_app_tool(
+        &self,
+        server_id: &str,
+        name: &str,
+        arguments: Value,
+    ) -> Result<Value> {
+        if self.app_tool(server_id, name).is_none() {
+            return Err(Error::InvalidRequest(format!(
+                "tool is not app-visible on MCP server: {name}"
+            )));
+        }
+        self.app_client(server_id)?.call_tool(name, arguments).await
+    }
+
+    fn app_client(&self, server_id: &str) -> Result<Arc<McpClient>> {
+        let client = self
+            .inner
+            .read()
+            .expect("mcp hub poisoned")
+            .clients
+            .get(server_id)
+            .cloned()
+            .ok_or_else(|| Error::InvalidRequest("MCP server is not connected".to_string()))?;
+        if !client.capabilities().apps {
+            return Err(Error::InvalidRequest(
+                "MCP server did not negotiate Apps support".to_string(),
+            ));
+        }
+        Ok(client)
     }
 
     /// UI view of every configured server.
@@ -1296,16 +1422,28 @@ impl McpHub {
 async fn connect_one(
     cfg: &McpServerConfig,
     secrets: Option<&McpSecretStore>,
-) -> Result<(Arc<McpClient>, Vec<Arc<dyn Tool>>)> {
+) -> Result<(
+    Arc<McpClient>,
+    Vec<Arc<dyn Tool>>,
+    HashMap<String, McpToolDef>,
+)> {
     let env = resolved_env(cfg, secrets)?;
     let client =
         McpClient::connect_with_env(&cfg.command, &cfg.args, cfg.cwd.as_deref(), &env).await?;
     let defs = client.list_tools().await?;
+    let tool_defs = defs
+        .iter()
+        .cloned()
+        .map(|tool| (tool.name.clone(), tool))
+        .collect();
     let prefix = prefix_for(cfg);
     let legacy_prefix = legacy_prefix_for(cfg);
     let mut names = HashSet::new();
     let mut tools: Vec<Arc<dyn Tool>> = Vec::new();
     for d in defs {
+        if !d.model_visible {
+            continue;
+        }
         let tool_name = exposed_tool_name(&prefix, &d.name);
         let legacy_name = legacy_exposed_name(&legacy_prefix, &d.name);
         if !names.insert(tool_name.clone()) {
@@ -1321,11 +1459,16 @@ async fn connect_one(
         tools.push(Arc::new(McpTool {
             client: client.clone(),
             exposed_name: tool_name,
-            remote_name: d.name,
+            remote_name: d.name.clone(),
             description: d.description,
             schema: d.input_schema,
             effect: d.effect,
             aliases,
+            ui: d.ui_resource_uri.map(|resource_uri| ToolUiDescriptor {
+                server_id: cfg.id.clone(),
+                resource_uri,
+                tool: d.raw,
+            }),
         }) as Arc<dyn Tool>);
     }
     let caps = client.capabilities();
@@ -1349,7 +1492,7 @@ async fn connect_one(
             name: exposed_meta_name(&prefix, "get_prompt"),
         }));
     }
-    Ok((client, tools))
+    Ok((client, tools, tool_defs))
 }
 
 #[cfg(test)]
@@ -1378,12 +1521,115 @@ mod tests {
             "capabilities": {
                 "tools": {},
                 "resources": { "listChanged": true },
-                "prompts": {}
+                "prompts": {},
+                "extensions": { "io.modelcontextprotocol/ui": {} }
             }
         }));
         assert!(caps.tools);
         assert!(caps.resources);
         assert!(caps.prompts);
+        assert!(caps.apps);
+    }
+
+    #[tokio::test]
+    async fn apps_fixture_negotiates_metadata_isolation_and_result_separation() {
+        if std::process::Command::new("node")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            return;
+        }
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join("apps_server.js");
+        let cfg = McpServerConfig {
+            id: "apps-a".into(),
+            name: "Apps fixture".into(),
+            command: "node".into(),
+            args: vec![fixture.to_string_lossy().into_owned()],
+            cwd: None,
+            env: Vec::new(),
+            enabled: true,
+        };
+        let (client, tools, defs) = connect_one(&cfg, None).await.unwrap();
+
+        assert!(client.capabilities().apps);
+        let chart = defs.get("show_chart").unwrap();
+        assert!(chart.model_visible);
+        assert!(chart.app_visible);
+        assert_eq!(
+            chart.ui_resource_uri.as_deref(),
+            Some("ui://milim.test/chart")
+        );
+        assert_eq!(
+            chart.raw["_meta"]["ui"]["resourceUri"],
+            "ui://milim.test/chart"
+        );
+        let refresh = defs.get("refresh_chart").unwrap();
+        assert!(!refresh.model_visible);
+        assert!(refresh.app_visible);
+        assert!(!tools
+            .iter()
+            .any(|tool| tool.name().contains("refresh_chart")));
+
+        let mut registry = milim_tools::ToolRegistry::new();
+        for tool in &tools {
+            registry.register(tool.clone());
+        }
+        let chart_name = tools
+            .iter()
+            .find(|tool| tool.ui().is_some())
+            .unwrap()
+            .name()
+            .to_string();
+        let generic = registry.call(&chart_name, json!({})).await.unwrap();
+        assert!(generic.get("structuredContent").is_some());
+        assert!(generic.get("image").is_some());
+        assert_eq!(generic["content"][1]["dataOmitted"], true);
+        let agent = registry
+            .call_for_agent(&chart_name, json!({}))
+            .await
+            .unwrap();
+        assert!(agent.result.get("structuredContent").is_none());
+        assert!(agent.result.get("_meta").is_none());
+        let app_result = agent.app_result.unwrap();
+        assert!(app_result.get("structuredContent").is_some());
+        assert!(app_result["content"][1].get("data").is_some());
+        assert_eq!(agent.ui.unwrap().server_id, "apps-a");
+
+        let dir =
+            std::env::temp_dir().join(format!("milim-mcp-apps-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let hub = McpHub::open(&dir);
+        {
+            let mut state = hub.inner.write().expect("mcp hub poisoned");
+            state.clients.insert(cfg.id.clone(), client);
+            state.tool_defs.insert(cfg.id.clone(), defs);
+        }
+        let resource = hub
+            .read_app_resource("apps-a", "ui://milim.test/chart")
+            .await
+            .unwrap();
+        assert_eq!(
+            resource["contents"][0]["mimeType"],
+            "text/html;profile=mcp-app"
+        );
+        assert!(hub
+            .call_app_tool("apps-a", "refresh_chart", json!({}))
+            .await
+            .unwrap()
+            .get("structuredContent")
+            .is_some());
+        assert!(hub
+            .call_app_tool("other-server", "refresh_chart", json!({}))
+            .await
+            .is_err());
+        assert!(hub
+            .read_app_resource("apps-a", "ui://milim.test/not-advertised")
+            .await
+            .is_err());
     }
 
     #[test]

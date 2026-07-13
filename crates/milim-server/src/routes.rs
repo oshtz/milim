@@ -11,11 +11,14 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use axum::body::Body;
 use axum::extract::{ConnectInfo, Path, Query, State};
-use axum::http::header::{AUTHORIZATION, CONTENT_TYPE, USER_AGENT};
-use axum::http::HeaderMap;
+use axum::http::header::{
+    AUTHORIZATION, CACHE_CONTROL, CONTENT_SECURITY_POLICY, CONTENT_TYPE, USER_AGENT,
+};
+use axum::http::{HeaderMap, HeaderValue};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Response};
 use axum::Json;
+use base64::Engine as _;
 use bytes::Bytes;
 use futures::{future::join_all, StreamExt};
 use serde::{Deserialize, Serialize};
@@ -31,7 +34,7 @@ use crate::preview_runtime::{
 };
 use crate::privacy::{kinds_summary, PrivacyMode};
 use crate::sse::{agent_sse, anthropic_sse, ollama_ndjson, openai_sse, ChunkCtx};
-use crate::state::AppState;
+use crate::state::{AppState, McpAppViewDocument};
 use crate::threads::{missing_threads_error, ChildRunSpec, SupervisorEvent, ThreadSupervisor};
 use crate::translate::{
     anthropic_response_blocks, anthropic_stop_reason, anthropic_to_completion,
@@ -3486,6 +3489,316 @@ pub(crate) async fn mcp_call(
         .await
         .map_err(ApiError)?;
     Ok(Json(json!({ "result": result })).into_response())
+}
+
+const MCP_APP_HTML_MIME: &str = "text/html;profile=mcp-app";
+const MCP_APP_HTML_LIMIT: usize = 5 * 1024 * 1024;
+const MCP_APP_RESULT_LIMIT: usize = 1024 * 1024;
+
+#[derive(Deserialize)]
+pub(crate) struct McpAppResourceReadRequest {
+    server_id: String,
+    uri: String,
+    #[serde(default)]
+    render: bool,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct McpAppToolCallRequest {
+    server_id: String,
+    name: String,
+    #[serde(default)]
+    arguments: Value,
+    #[serde(default)]
+    approval: Option<String>,
+    #[serde(default)]
+    approval_granted: bool,
+}
+
+/// `POST /mcp/apps/resources/read` — fetch one server-advertised MCP App document.
+pub(crate) async fn mcp_app_resource_read(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    peer: Peer,
+    Json(req): Json<McpAppResourceReadRequest>,
+) -> Result<Response, ApiError> {
+    authorize(&st, &headers, peer_addr(peer))?;
+    let hub = st
+        .mcp
+        .as_ref()
+        .ok_or_else(|| ApiError(Error::InvalidRequest("MCP is not configured".to_string())))?;
+    let result = hub
+        .read_app_resource(&req.server_id, &req.uri)
+        .await
+        .map_err(ApiError)?;
+    let document = validate_mcp_app_resource(&result, &req.uri).map_err(ApiError)?;
+    let view_path = req.render.then(|| {
+        let id = st.mcp_app_views.insert(document);
+        format!("/mcp/apps/views/{id}")
+    });
+    let result = (!req.render).then_some(result);
+    Ok(Json(json!({ "result": result, "view_path": view_path })).into_response())
+}
+
+/// Ephemeral capability URL for one validated App document.
+pub(crate) async fn mcp_app_view(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Response, ApiError> {
+    let document = st.mcp_app_views.take(&id).ok_or_else(|| {
+        ApiError(Error::InvalidRequest(
+            "MCP App view expired or does not exist".to_string(),
+        ))
+    })?;
+    let mut response = Html(document.html).into_response();
+    response.headers_mut().insert(
+        CONTENT_SECURITY_POLICY,
+        HeaderValue::from_str(&document.csp)
+            .map_err(|_| ApiError(Error::Other("invalid generated MCP App CSP".to_string())))?,
+    );
+    response
+        .headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
+        .headers_mut()
+        .insert("referrer-policy", HeaderValue::from_static("no-referrer"));
+    response.headers_mut().insert(
+        "x-content-type-options",
+        HeaderValue::from_static("nosniff"),
+    );
+    Ok(response)
+}
+
+/// `POST /mcp/apps/tools/call` — invoke an app-visible tool on its fixed server.
+pub(crate) async fn mcp_app_tool_call(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    peer: Peer,
+    Json(req): Json<McpAppToolCallRequest>,
+) -> Result<Response, ApiError> {
+    authorize(&st, &headers, peer_addr(peer))?;
+    let hub = st
+        .mcp
+        .as_ref()
+        .ok_or_else(|| ApiError(Error::InvalidRequest("MCP is not configured".to_string())))?;
+    let tool = hub.app_tool(&req.server_id, &req.name).ok_or_else(|| {
+        ApiError(Error::InvalidRequest(
+            "tool is not app-visible on this MCP server".to_string(),
+        ))
+    })?;
+    enforce_mcp_app_approval(req.approval.as_deref(), req.approval_granted, tool.effect)
+        .map_err(ApiError)?;
+    let result = hub
+        .call_app_tool(&req.server_id, &req.name, req.arguments)
+        .await
+        .map_err(ApiError)?;
+    let size = serde_json::to_vec(&result)
+        .map_err(|error| {
+            ApiError(Error::Other(format!(
+                "MCP App result encoding failed: {error}"
+            )))
+        })?
+        .len();
+    if size > MCP_APP_RESULT_LIMIT {
+        return Err(ApiError(Error::InvalidRequest(
+            "MCP App tool result exceeds the 1 MiB limit".to_string(),
+        )));
+    }
+    Ok(Json(json!({ "result": result })).into_response())
+}
+
+fn enforce_mcp_app_approval(
+    approval: Option<&str>,
+    approval_granted: bool,
+    effect: ToolEffect,
+) -> Result<(), Error> {
+    match approval {
+        Some("review") if !approval_granted => Err(Error::InvalidRequest(
+            "this MCP App tool call requires approval".to_string(),
+        )),
+        Some("review") => Ok(()),
+        Some("open") => Ok(()),
+        _ if effect == ToolEffect::ReadOnly => Ok(()),
+        _ => Err(Error::InvalidRequest(
+            "guarded mode only allows read-only MCP App tools".to_string(),
+        )),
+    }
+}
+
+fn validate_mcp_app_resource(
+    result: &Value,
+    requested_uri: &str,
+) -> Result<McpAppViewDocument, Error> {
+    if !requested_uri.starts_with("ui://") {
+        return Err(Error::InvalidRequest(
+            "MCP App resources must use ui:// URIs".to_string(),
+        ));
+    }
+    let content = result
+        .get("contents")
+        .and_then(Value::as_array)
+        .and_then(|contents| {
+            contents
+                .iter()
+                .find(|content| content.get("uri").and_then(Value::as_str) == Some(requested_uri))
+        })
+        .ok_or_else(|| {
+            Error::InvalidRequest(
+                "MCP App resource response did not contain the requested URI".to_string(),
+            )
+        })?;
+    if content.get("mimeType").and_then(Value::as_str) != Some(MCP_APP_HTML_MIME) {
+        return Err(Error::InvalidRequest(format!(
+            "MCP App resource must use MIME type {MCP_APP_HTML_MIME}"
+        )));
+    }
+    let html = if let Some(text) = content.get("text").and_then(Value::as_str) {
+        text.to_string()
+    } else if let Some(blob) = content.get("blob").and_then(Value::as_str) {
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(blob)
+            .map_err(|_| {
+                Error::InvalidRequest("MCP App resource blob is not valid base64".to_string())
+            })?;
+        String::from_utf8(bytes).map_err(|_| {
+            Error::InvalidRequest("MCP App resource blob is not UTF-8 HTML".to_string())
+        })?
+    } else {
+        return Err(Error::InvalidRequest(
+            "MCP App resource must contain text or blob HTML".to_string(),
+        ));
+    };
+    if html.len() > MCP_APP_HTML_LIMIT {
+        return Err(Error::InvalidRequest(
+            "MCP App HTML exceeds the 5 MiB limit".to_string(),
+        ));
+    }
+    Ok(McpAppViewDocument {
+        html,
+        csp: mcp_app_content_security_policy(content),
+    })
+}
+
+fn mcp_app_content_security_policy(content: &Value) -> String {
+    let csp = content.pointer("/_meta/ui/csp").unwrap_or(&Value::Null);
+    let resources = csp.get("resourceDomains");
+    [
+        "default-src 'none'".to_string(),
+        format!(
+            "script-src {}",
+            mcp_app_csp_sources(resources, &["'unsafe-inline'"])
+        ),
+        format!(
+            "style-src {}",
+            mcp_app_csp_sources(resources, &["'unsafe-inline'"])
+        ),
+        format!(
+            "img-src {}",
+            mcp_app_csp_sources(resources, &["data:", "blob:"])
+        ),
+        format!("font-src {}", mcp_app_csp_sources(resources, &["data:"])),
+        format!(
+            "media-src {}",
+            mcp_app_csp_sources(resources, &["data:", "blob:"])
+        ),
+        format!(
+            "connect-src {}",
+            mcp_app_csp_sources(csp.get("connectDomains"), &[])
+        ),
+        format!(
+            "frame-src {}",
+            mcp_app_csp_sources(csp.get("frameDomains"), &[])
+        ),
+        format!(
+            "base-uri {}",
+            mcp_app_csp_sources(csp.get("baseUriDomains"), &[])
+        ),
+        "form-action 'none'".to_string(),
+        "object-src 'none'".to_string(),
+    ]
+    .join("; ")
+}
+
+fn mcp_app_csp_sources(value: Option<&Value>, defaults: &[&str]) -> String {
+    let mut sources = defaults
+        .iter()
+        .map(|value| value.to_string())
+        .collect::<Vec<_>>();
+    if let Some(values) = value.and_then(Value::as_array) {
+        sources.extend(
+            values
+                .iter()
+                .filter_map(Value::as_str)
+                .filter(|value| valid_mcp_app_origin(value))
+                .map(str::to_string),
+        );
+    }
+    if sources.is_empty() {
+        "'none'".to_string()
+    } else {
+        sources.join(" ")
+    }
+}
+
+fn valid_mcp_app_origin(value: &str) -> bool {
+    if value
+        .chars()
+        .any(|character| character.is_whitespace() || matches!(character, ';' | '\'' | '"'))
+    {
+        return false;
+    }
+    let Some((scheme, authority)) = value.split_once("://") else {
+        return false;
+    };
+    matches!(scheme, "http" | "https" | "ws" | "wss")
+        && !authority.is_empty()
+        && !authority.contains(['/', '?', '#'])
+}
+
+#[cfg(test)]
+mod mcp_app_tests {
+    use super::*;
+
+    #[test]
+    fn app_resource_requires_matching_uri_mime_and_size() {
+        let valid = json!({"contents":[{
+            "uri":"ui://fixture/chart",
+            "mimeType":MCP_APP_HTML_MIME,
+            "text":"<h1>Chart</h1>",
+            "_meta":{"ui":{"csp":{
+                "connectDomains":["https://api.example.com","https://bad.example;script-src *"],
+                "resourceDomains":["https://cdn.example.com"]
+            }}}
+        }]});
+        let document = validate_mcp_app_resource(&valid, "ui://fixture/chart").unwrap();
+        assert!(document.csp.contains("connect-src https://api.example.com"));
+        assert!(document
+            .csp
+            .contains("script-src 'unsafe-inline' https://cdn.example.com"));
+        assert!(!document.csp.contains("bad.example"));
+        let wrong_mime = json!({"contents":[{
+            "uri":"ui://fixture/chart",
+            "mimeType":"text/html",
+            "text":"<h1>Chart</h1>"
+        }]});
+        assert!(validate_mcp_app_resource(&wrong_mime, "ui://fixture/chart").is_err());
+        let oversized = json!({"contents":[{
+            "uri":"ui://fixture/chart",
+            "mimeType":MCP_APP_HTML_MIME,
+            "text":"x".repeat(MCP_APP_HTML_LIMIT + 1)
+        }]});
+        assert!(validate_mcp_app_resource(&oversized, "ui://fixture/chart").is_err());
+        assert!(validate_mcp_app_resource(&valid, "https://fixture/chart").is_err());
+    }
+
+    #[test]
+    fn app_approval_enforces_review_guarded_and_open() {
+        assert!(enforce_mcp_app_approval(Some("review"), false, ToolEffect::ReadOnly).is_err());
+        assert!(enforce_mcp_app_approval(Some("review"), true, ToolEffect::Mutating).is_ok());
+        assert!(enforce_mcp_app_approval(Some("guarded"), false, ToolEffect::ReadOnly).is_ok());
+        assert!(enforce_mcp_app_approval(Some("guarded"), false, ToolEffect::Mutating).is_err());
+        assert!(enforce_mcp_app_approval(Some("open"), false, ToolEffect::Mutating).is_ok());
+    }
 }
 
 // ----- Workspace (host working folder for filesystem/shell tools) -----

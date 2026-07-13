@@ -10,6 +10,7 @@ import type {
   ChildThreadStatus,
   DelegationPolicy,
   MemoryNotice,
+  McpAppDescriptor,
   PreviewAppFile,
   PreviewAppError,
   PreviewAppPreflight,
@@ -1363,6 +1364,20 @@ function eventText(event: ThreadEvent, key: string): string {
   return typeof value === "string" ? value : "";
 }
 
+function eventMcpApp(event: ThreadEvent): McpAppDescriptor | undefined {
+  const value = eventPayload(event).mcp_app;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const app = value as Record<string, unknown>;
+  if (
+    typeof app.server_id !== "string" ||
+    typeof app.resource_uri !== "string" ||
+    !app.tool ||
+    typeof app.tool !== "object" ||
+    Array.isArray(app.tool)
+  ) return undefined;
+  return app as unknown as McpAppDescriptor;
+}
+
 function childToolEventLabel(name: string, done: boolean): string {
   return done ? `Used ${name}` : `Using ${name}`;
 }
@@ -1396,20 +1411,30 @@ function childStreamFromEvents(events?: ThreadEvent[]): {
     } else if (event.kind === "tool_call") {
       const name = eventText(event, "name") || "tool";
       const callId = eventText(event, "call_id") || undefined;
+      const argumentsText = eventText(event, "arguments") || undefined;
       streamParts = appendEventStreamPart(streamParts, {
         kind: "event",
         eventType: "tool",
         label: childToolEventLabel(name, false),
-        detail: childToolEventDetail(eventText(event, "arguments")),
+        detail: childToolEventDetail(argumentsText),
         name,
         callId,
         icon: "tool",
         status: "running",
+        mcpApp: eventMcpApp(event),
+        toolArguments: argumentsText,
       });
     } else if (event.kind === "tool_result") {
       const payload = eventPayload(event);
       const name = eventText(event, "name") || "tool";
       const callId = eventText(event, "call_id") || undefined;
+      const started = [...streamParts].reverse().find(
+        (part): part is ChatStreamEventPart =>
+          part.kind === "event" &&
+          part.eventType === "tool" &&
+          part.status === "running" &&
+          (callId ? part.callId === callId : part.name === name),
+      );
       const result =
         payload.result &&
         typeof payload.result === "object" &&
@@ -1429,6 +1454,9 @@ function childStreamFromEvents(events?: ThreadEvent[]): {
           callId,
           icon: error ? "error" : "tool",
           status: error ? "error" : "done",
+          mcpApp: eventMcpApp(event) ?? started?.mcpApp,
+          mcpAppResult: payload.mcp_app_result,
+          toolArguments: started?.toolArguments,
         },
         callId,
       );

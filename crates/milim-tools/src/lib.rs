@@ -39,6 +39,18 @@ pub trait Tool: Send + Sync {
     fn effect(&self) -> ToolEffect {
         ToolEffect::Unknown
     }
+    /// Optional interactive UI associated with this tool call.
+    fn ui(&self) -> Option<ToolUiDescriptor> {
+        None
+    }
+    /// Result projected through the existing generic registry call path.
+    fn call_result(&self, result: &Value) -> Value {
+        result.clone()
+    }
+    /// Result projected into the model-visible tool reply.
+    fn model_result(&self, result: &Value) -> Value {
+        result.clone()
+    }
     /// Previous names accepted for persisted custom-agent selections.
     fn aliases(&self) -> Vec<String> {
         Vec::new()
@@ -62,6 +74,22 @@ pub enum ToolEffect {
     Mutating,
     Command,
     Unknown,
+}
+
+/// Interactive UI metadata carried with an agent tool event.
+#[derive(Debug, Clone, Serialize)]
+pub struct ToolUiDescriptor {
+    pub server_id: String,
+    pub resource_uri: String,
+    pub tool: Value,
+}
+
+/// One tool invocation split into model-visible and app-visible results.
+#[derive(Debug, Clone)]
+pub struct ToolAgentResult {
+    pub result: Value,
+    pub app_result: Option<Value>,
+    pub ui: Option<ToolUiDescriptor>,
 }
 
 /// A serializable description of a tool (for `/mcp/tools` and tool listings).
@@ -264,13 +292,34 @@ impl ToolRegistry {
 
     /// Invoke a tool by name.
     pub async fn call(&self, name: &str, args: Value) -> Result<Value> {
+        let tool = self.tool(name)?;
+        let raw = tool.invoke(args).await?;
+        Ok(tool.call_result(&raw))
+    }
+
+    /// Invoke a tool while preserving private UI data outside model context.
+    pub async fn call_for_agent(&self, name: &str, args: Value) -> Result<ToolAgentResult> {
+        let tool = self.tool(name)?;
+        let raw = tool.invoke(args).await?;
+        let ui = tool.ui();
+        Ok(ToolAgentResult {
+            result: tool.model_result(&raw),
+            app_result: ui.is_some().then_some(raw),
+            ui,
+        })
+    }
+
+    /// Interactive UI metadata for a tool before it is invoked.
+    pub fn ui(&self, name: &str) -> Option<ToolUiDescriptor> {
+        self.tool(name).ok()?.ui()
+    }
+
+    fn tool(&self, name: &str) -> Result<Arc<dyn Tool>> {
         let name = self.aliases.get(name).map(String::as_str).unwrap_or(name);
-        let tool = self
-            .tools
+        self.tools
             .get(name)
-            .ok_or_else(|| Error::InvalidRequest(format!("unknown tool: {name}")))?
-            .clone();
-        tool.invoke(args).await
+            .cloned()
+            .ok_or_else(|| Error::InvalidRequest(format!("unknown tool: {name}")))
     }
 
     fn retain_valid_aliases(&mut self) {

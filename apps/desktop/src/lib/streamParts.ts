@@ -42,7 +42,7 @@ export function liveWorkGroupSummary(group: ChatStreamWorkGroup): WorkGroupSumma
 }
 
 function isCompletedToolEvent(part: ChatStreamPart): part is ChatStreamEventPart {
-  return part.kind === "event" && part.eventType === "tool" && (part.status ?? "done") === "done";
+  return part.kind === "event" && part.eventType === "tool" && !part.mcpApp && (part.status ?? "done") === "done";
 }
 
 function isCompletedInternalPart(part: ChatStreamPart): boolean {
@@ -50,7 +50,7 @@ function isCompletedInternalPart(part: ChatStreamPart): boolean {
 }
 
 function isLiveInternalPart(part: ChatStreamPart): boolean {
-  return part.kind === "thinking" || (part.kind === "event" && part.eventType === "tool" && (part.status ?? "done") !== "error");
+  return part.kind === "thinking" || (part.kind === "event" && part.eventType === "tool" && !part.mcpApp && (part.status ?? "done") !== "error");
 }
 
 export function groupCompletedStreamActivity(parts: ChatStreamPart[], streaming: boolean): ChatStreamDisplayPart[] {

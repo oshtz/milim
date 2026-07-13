@@ -233,6 +233,8 @@ export function toolStartedPart(ev: AgentEvent): ChatStreamEventPart {
     callId: ev.call_id,
     status: "running",
     previewPoint: previewToolPoint(ev.name, args),
+    mcpApp: ev.mcp_app,
+    toolArguments: ev.arguments,
   };
 }
 
@@ -249,6 +251,9 @@ export function toolCompletedPart(ev: AgentEvent): ChatStreamEventPart {
     callId: ev.call_id,
     status: error ? "error" : "done",
     previewPoint: previewToolPoint(ev.name, args, ev.result),
+    mcpApp: ev.mcp_app,
+    mcpAppResult: ev.mcp_app_result,
+    toolArguments: ev.arguments,
   };
 }
 

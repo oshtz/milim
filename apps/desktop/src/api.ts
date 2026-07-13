@@ -264,6 +264,12 @@ export type ChatStreamPreviewPoint = {
   unit: "pixel" | "ratio" | "percent";
 };
 
+export interface McpAppDescriptor {
+  server_id: string;
+  resource_uri: string;
+  tool: Record<string, unknown>;
+}
+
 export type ChatStreamPart =
   | { kind: "text"; content: string }
   | { kind: "thinking"; content: string }
@@ -277,6 +283,9 @@ export type ChatStreamPart =
       icon?: ChatStreamEventIcon;
       status?: ChatStreamEventStatus;
       previewPoint?: ChatStreamPreviewPoint;
+      mcpApp?: McpAppDescriptor;
+      mcpAppResult?: unknown;
+      toolArguments?: string;
     };
 
 export type RunStatus = "running" | "done" | "stopped" | "aborted" | "error";
@@ -287,6 +296,8 @@ export interface RunStep {
   name: string;
   arguments?: string;
   result?: unknown;
+  mcpApp?: McpAppDescriptor;
+  mcpAppResult?: unknown;
   error?: string;
   startedAt: number;
   endedAt?: number;
@@ -2468,6 +2479,8 @@ export interface AgentEvent {
   name?: string;
   arguments?: string;
   result?: unknown;
+  mcp_app?: McpAppDescriptor;
+  mcp_app_result?: unknown;
   content?: string;
   message?: string;
   iterations?: number;
@@ -3363,7 +3376,7 @@ export interface McpServerInfo {
   enabled: boolean;
   connected: boolean;
   tool_count: number;
-  capabilities?: { tools: boolean; resources: boolean; prompts: boolean };
+  capabilities?: { tools: boolean; resources: boolean; prompts: boolean; apps: boolean };
   missing_env?: string[];
   error: string | null;
 }
@@ -3380,7 +3393,7 @@ export interface McpTestResult {
   ok: boolean;
   connected: boolean;
   tool_count: number;
-  capabilities?: { tools: boolean; resources: boolean; prompts: boolean };
+  capabilities?: { tools: boolean; resources: boolean; prompts: boolean; apps: boolean };
   missing_env?: string[];
   error?: string | null;
 }
@@ -3498,6 +3511,63 @@ export async function deleteMcpServer(id: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+export async function readMcpAppResource(
+  serverId: string,
+  uri: string,
+): Promise<unknown> {
+  const response = await readMcpAppResourceResponse(serverId, uri, false);
+  return response.result;
+}
+
+export async function readMcpAppView(
+  serverId: string,
+  uri: string,
+): Promise<{ viewUrl: string }> {
+  const response = await readMcpAppResourceResponse(serverId, uri, true);
+  if (!response.view_path) throw new Error("MCP App host did not create a view document");
+  const resolved = await resolveApiInput(`${BASE}${response.view_path}`);
+  return { viewUrl: String(resolved) };
+}
+
+async function readMcpAppResourceResponse(
+  serverId: string,
+  uri: string,
+  render: boolean,
+): Promise<{ result: unknown; view_path?: string | null }> {
+  return await parseJsonResponse<{ result: unknown; view_path?: string | null }>(
+    await authFetch(`${BASE}/mcp/apps/resources/read`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ server_id: serverId, uri, render }),
+    }),
+    "MCP App resource read failed",
+  );
+}
+
+export async function callMcpAppTool(
+  serverId: string,
+  name: string,
+  argumentsValue: Record<string, unknown>,
+  approval: ToolApprovalMode,
+  approvalGranted = false,
+): Promise<unknown> {
+  const response = await parseJsonResponse<{ result: unknown }>(
+    await authFetch(`${BASE}/mcp/apps/tools/call`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        server_id: serverId,
+        name,
+        arguments: argumentsValue,
+        approval,
+        approval_granted: approvalGranted,
+      }),
+    }),
+    "MCP App tool call failed",
+  );
+  return response.result;
 }
 
 // ----- Skills -----

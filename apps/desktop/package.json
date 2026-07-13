@@ -13,7 +13,7 @@
     "test:selectors": "node tests/zustand-selector-lint.test.mjs",
     "test:store": "node tests/run-ts-test.mjs tests/session-store.test.ts tests/session-startup-hydration.test.ts tests/thread-titles.test.ts tests/sidebar-groups.test.ts tests/thread-export.test.ts tests/preview-runtime-keys.test.ts",
     "test:settings": "node tests/run-ts-test.mjs tests/settings-store.test.ts tests/settings-appearance-rendering.test.tsx tests/agent-avatar.test.tsx && node tests/agent-schedule-models.test.mjs",
-    "test:assistant-stream": "node tests/run-ts-test.mjs tests/assistant-stream-grouping.test.ts tests/assistant-stream-summary.test.ts tests/attachment-input.test.ts tests/attachment-wire.test.ts tests/hot-swap.test.ts tests/preview-activity.test.ts tests/turn-events.test.ts tests/turn-queue.test.ts tests/turn-prompt.test.ts tests/turn-runtime.test.ts tests/turn-stream.test.ts",
+    "test:assistant-stream": "node tests/run-ts-test.mjs tests/assistant-stream-grouping.test.ts tests/assistant-stream-summary.test.ts tests/attachment-input.test.ts tests/attachment-wire.test.ts tests/hot-swap.test.ts tests/mcp-apps.test.ts tests/preview-activity.test.ts tests/turn-events.test.ts tests/turn-queue.test.ts tests/turn-prompt.test.ts tests/turn-runtime.test.ts tests/turn-stream.test.ts",
     "test:context-compaction": "node tests/run-ts-test.mjs tests/context-compaction.test.ts tests/turn-context.test.ts",
     "test:reasoning": "node tests/run-ts-test.mjs tests/reasoning-effort.test.ts tests/model-picker.test.ts tests/model-picker-rendering.test.tsx",
     "test:ui-preferences": "node tests/run-ts-test.mjs tests/ui-preferences-store.test.ts tests/shortcuts.test.ts tests/composer-autocomplete.test.ts tests/composer-tokens.test.ts tests/chat-search.test.ts tests/context-menu.test.ts tests/recent-threads.test.ts tests/quick-summary.test.ts tests/workspace-launcher.test.ts",
@@ -29,6 +29,7 @@
     "test:computer-use": "node tests/run-tauri-rust-test.mjs computer_use",
     "test:tauri-dev-onboarding": "node tests/tauri-dev-onboarding-e2e.mjs",
     "test:tauri-webview": "node tests/tauri-webview-e2e.mjs",
+    "test:tauri-mcp-apps": "node tests/tauri-webview-e2e.mjs --mcp-apps-only",
     "perf:tauri-dev": "node tests/tauri-dev-perf.mjs",
     "package:release": "node scripts/package-release.mjs",
     "release:manifest": "node scripts/generate-release-manifest.mjs",
@@ -43,6 +44,7 @@
     "verify:tester-ready": "npm run verify && npm run verify:release && npm run verify:tauri-webview"
   },
   "dependencies": {
+    "@modelcontextprotocol/ext-apps": "1.7.4",
     "@oshtz/shatz-avatars": "file:vendor/oshtz-shatz-avatars-0.1.0.tgz",
     "@tauri-apps/api": "^2.1.1",
     "@tauri-apps/plugin-dialog": "^2.7.1",

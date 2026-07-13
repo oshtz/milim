@@ -1265,6 +1265,7 @@ function MessageRowView({
                 streaming={assistantStreaming}
                 previewArtifactsStreaming={previewArtifactsStreaming}
                 workDurationMs={m.metrics?.durationMs}
+                toolApproval={toolApproval}
               />
             )}
             {renderMessageMedia(m.mediaResults)}

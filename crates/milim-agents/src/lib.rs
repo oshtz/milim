@@ -33,7 +33,7 @@ use milim_inference::{
     CompletionRequest, EventStream, ModelService, SamplingParams, SharedService, StreamEvent,
     ToolCallAccumulator,
 };
-use milim_tools::ToolRegistry;
+use milim_tools::{ToolRegistry, ToolUiDescriptor};
 
 const DEFAULT_AGENT_MAX_ITERATIONS: usize = 100;
 const DEFAULT_INITIAL_STREAM_RETRY_BACKOFF_MS: u64 = 250;
@@ -73,6 +73,10 @@ pub struct ToolStep {
     pub name: String,
     pub arguments: String,
     pub result: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mcp_app: Option<ToolUiDescriptor>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mcp_app_result: Option<Value>,
 }
 
 /// The result of an agent run.
@@ -165,6 +169,8 @@ pub async fn run_agent_with_config(
                 name: call.function.name.clone(),
                 arguments: call.function.arguments.clone(),
                 result: visible.clone(),
+                mcp_app: executed.ui,
+                mcp_app_result: executed.app_result,
             });
             messages.push(ChatMessage {
                 role: "tool".to_string(),
@@ -203,12 +209,18 @@ pub enum AgentEvent {
         call_id: Option<String>,
         name: String,
         arguments: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        mcp_app: Option<ToolUiDescriptor>,
     },
     /// The result of executing a tool.
     ToolResult {
         call_id: Option<String>,
         name: String,
         result: Value,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        mcp_app: Option<ToolUiDescriptor>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        mcp_app_result: Option<Value>,
     },
     /// A memory registration tool created a durable graph memory.
     MemoryRegistered {
@@ -375,6 +387,7 @@ pub fn run_agent_stream_with_config(
                     call_id: call.id.clone(),
                     name: call.function.name.clone(),
                     arguments: call.function.arguments.clone(),
+                    mcp_app: tools.ui(&call.function.name),
                 };
                 let executed = execute_tool_call(
                     tools.as_ref(),
@@ -387,6 +400,8 @@ pub fn run_agent_stream_with_config(
                     call_id: call.id.clone(),
                     name: call.function.name.clone(),
                     result: visible.clone(),
+                    mcp_app: executed.ui,
+                    mcp_app_result: executed.app_result,
                 };
                 if let Some(ev) = executed.memory_event {
                     yield ev;
@@ -587,6 +602,8 @@ fn split_tool_image(mut result: Value) -> (Value, Option<String>) {
 struct ExecutedToolResult {
     visible: Value,
     image_uri: Option<String>,
+    ui: Option<ToolUiDescriptor>,
+    app_result: Option<Value>,
     memory_event: Option<AgentEvent>,
     child_event: Option<AgentEvent>,
     worker_event: Option<AgentEvent>,
@@ -598,20 +615,50 @@ async fn execute_tool_call(
     arguments: &str,
 ) -> ExecutedToolResult {
     let args = serde_json::from_str(arguments).unwrap_or(Value::Null);
-    let result = match tools.call(name, args).await {
+    let fallback_ui = tools.ui(name);
+    let invoked = match tools.call_for_agent(name, args).await {
         Ok(value) => value,
-        Err(error) => json!({ "error": error.to_string() }),
+        Err(error) => milim_tools::ToolAgentResult {
+            result: json!({ "error": error.to_string() }),
+            app_result: fallback_ui.as_ref().map(|_| {
+                json!({
+                    "content": [{ "type": "text", "text": error.to_string() }],
+                    "isError": true
+                })
+            }),
+            ui: fallback_ui,
+        },
     };
-    let (visible, image_uri) = split_tool_image(result);
+    let (visible, image_uri) = split_tool_image(invoked.result);
     let memory_event = memory_registered_event(&visible);
     let child_event = child_thread_event(&visible);
     let worker_event = worker_run_event(&visible);
     ExecutedToolResult {
         visible: limit_visible_tool_result(visible),
         image_uri,
+        ui: invoked.ui,
+        app_result: invoked.app_result.map(limit_app_tool_result),
         memory_event,
         child_event,
         worker_event,
+    }
+}
+
+fn limit_app_tool_result(result: Value) -> Value {
+    const MAX_BYTES: usize = 1024 * 1024;
+    match serde_json::to_vec(&result) {
+        Ok(encoded) if encoded.len() <= MAX_BYTES => result,
+        Ok(encoded) => json!({
+            "content": [{
+                "type": "text",
+                "text": format!("MCP App result exceeded the {MAX_BYTES}-byte limit ({} bytes)", encoded.len())
+            }],
+            "isError": true
+        }),
+        Err(_) => json!({
+            "content": [{ "type": "text", "text": "MCP App result could not be encoded" }],
+            "isError": true
+        }),
     }
 }
 
