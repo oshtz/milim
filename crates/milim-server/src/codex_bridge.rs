@@ -395,28 +395,6 @@ pub(crate) fn run_stream(
     }
 }
 
-pub(crate) fn run_read_only_worker_events(
-    prompt: String,
-    model: Option<String>,
-    cwd: Option<String>,
-    redactions: BTreeMap<String, String>,
-) -> impl Stream<Item = AccountWorkerEvent> {
-    let req = read_only_worker_request(prompt, model, cwd);
-    async_stream::stream! {
-        let (worker_tx, mut worker_rx) = tokio::sync::mpsc::unbounded_channel();
-        let stream = run_stream_with_worker_events(req, redactions, Some(worker_tx));
-        futures::pin_mut!(stream);
-        while stream.next().await.is_some() {
-            while let Ok(event) = worker_rx.try_recv() {
-                yield event;
-            }
-        }
-        while let Ok(event) = worker_rx.try_recv() {
-            yield event;
-        }
-    }
-}
-
 fn run_stream_with_worker_events(
     req: CodexRunRequest,
     redactions: BTreeMap<String, String>,
@@ -938,24 +916,6 @@ fn codex_thread_request(req: &CodexRunRequest, model: &str) -> (&'static str, Va
             params["ephemeral"] = Value::Bool(true);
         }
         ("thread/start", params)
-    }
-}
-
-fn read_only_worker_request(
-    prompt: String,
-    model: Option<String>,
-    cwd: Option<String>,
-) -> CodexRunRequest {
-    CodexRunRequest {
-        prompt,
-        model,
-        cwd,
-        reasoning_effort: None,
-        thread_id: None,
-        persist_thread: false,
-        tool_approval_policy: Some("guarded".to_string()),
-        tool_approval_grant: false,
-        plan_mode: false,
     }
 }
 
@@ -1557,24 +1517,6 @@ mod tests {
                 && url == "data:image/png;base64,abc123"
                 && prompt == "a small diagram"
         ));
-    }
-
-    #[test]
-    fn read_only_workers_are_ephemeral_and_cannot_write() {
-        let req = read_only_worker_request(
-            "inspect the repository".to_string(),
-            Some("gpt-5.4-mini".to_string()),
-            Some("C:\\repo".to_string()),
-        );
-        let (method, params) = codex_thread_request(&req, req.model.as_deref().unwrap());
-        assert_eq!(method, "thread/start");
-        assert_eq!(params["ephemeral"], true);
-        assert_eq!(params["sandbox"], "read-only");
-        assert_eq!(
-            codex_sandbox_policy(&req, req.cwd.as_deref())["type"],
-            "readOnly"
-        );
-        assert_eq!(codex_approval_policy(&req), "onRequest");
     }
 
     #[test]

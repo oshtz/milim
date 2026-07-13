@@ -160,28 +160,6 @@ pub(crate) fn run_stream(
     }
 }
 
-pub(crate) fn run_read_only_worker_events(
-    prompt: String,
-    model: Option<String>,
-    cwd: Option<String>,
-    redactions: BTreeMap<String, String>,
-) -> impl Stream<Item = AccountWorkerEvent> {
-    let req = read_only_worker_request(prompt, model, cwd);
-    async_stream::stream! {
-        let (worker_tx, mut worker_rx) = tokio::sync::mpsc::unbounded_channel();
-        let stream = run_stream_with_worker_events(req, redactions, Some(worker_tx));
-        futures::pin_mut!(stream);
-        while stream.next().await.is_some() {
-            while let Ok(event) = worker_rx.try_recv() {
-                yield event;
-            }
-        }
-        while let Ok(event) = worker_rx.try_recv() {
-            yield event;
-        }
-    }
-}
-
 fn run_stream_with_worker_events(
     req: ClaudeRunRequest,
     redactions: BTreeMap<String, String>,
@@ -854,24 +832,6 @@ fn clean_optional(value: Option<&str>) -> Option<String> {
         .map(str::to_string)
 }
 
-fn read_only_worker_request(
-    prompt: String,
-    model: Option<String>,
-    cwd: Option<String>,
-) -> ClaudeRunRequest {
-    ClaudeRunRequest {
-        prompt,
-        model,
-        cwd,
-        reasoning_effort: None,
-        session_id: None,
-        tool_approval_policy: Some("guarded".to_string()),
-        tool_approval_grant: false,
-        plan_mode: false,
-        allow_session_recovery: false,
-    }
-}
-
 fn claude_native_worker_event(value: &Value) -> Option<AccountNativeWorkerLifecycle> {
     if value.get("type").and_then(Value::as_str) != Some("system") {
         return None;
@@ -1358,25 +1318,6 @@ mod tests {
 
         req.plan_mode = true;
         assert_eq!(claude_permission_mode(&req), "plan");
-    }
-
-    #[test]
-    fn read_only_workers_are_ephemeral_and_deny_mutations() {
-        let req = read_only_worker_request(
-            "inspect the repository".to_string(),
-            Some("sonnet".to_string()),
-            Some("C:\\repo".to_string()),
-        );
-        let args = claude_run_args(&req);
-        assert!(args.iter().any(|arg| arg == "--no-session-persistence"));
-        assert!(!args
-            .iter()
-            .any(|arg| arg == "--session-id" || arg == "--resume"));
-        assert_eq!(claude_permission_mode(&req), "dontAsk");
-        assert_eq!(
-            claude_denied_tools(&req),
-            vec!["Bash", "PowerShell", "Edit", "Write", "NotebookEdit"]
-        );
     }
 
     #[test]
