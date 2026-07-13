@@ -1226,6 +1226,30 @@ equal(
   undefined,
   "closing the context panel should persist collapsed state",
 );
+useSessions.getState().setContextSectionCollapsed(first, "sources", true);
+deepEqual(
+  useSessions.getState().sessions.find((session) => session.id === first)
+    ?.contextCollapsedSectionIds,
+  ["sources"],
+  "context section state should persist per thread",
+);
+equal(
+  useSessions.getState().sessions.find((session) => session.id === second)
+    ?.contextCollapsedSectionIds,
+  undefined,
+  "context section state should not bleed into another thread",
+);
+assert(
+  localStorage.getItem("milim.sessions")?.includes('"contextCollapsedSectionIds":["sources"]'),
+  "context section state should persist in session storage",
+);
+useSessions.getState().setContextSectionCollapsed(first, "sources", false);
+equal(
+  useSessions.getState().sessions.find((session) => session.id === first)
+    ?.contextCollapsedSectionIds,
+  undefined,
+  "expanding every context section should omit empty persisted state",
+);
 useSessions.getState().setInspectorOpen(first, true);
 equal(
   useSessions.getState().sessions.find((session) => session.id === first)

@@ -91,7 +91,9 @@ try {
     models: [],
     providers: [],
     agents: [agent],
+    collapsed: false,
     onPolicyChange: () => {},
+    onCollapsedChange: () => {},
     onWorkerModelChange: () => {},
     onStart: () => {},
     onStop: () => {},
@@ -169,6 +171,7 @@ try {
       policy,
       record: undefined,
     }));
+    assert(emptyMarkup.indexOf('data-testid="workers-settings-toggle"') < emptyMarkup.indexOf('data-testid="workers-chevron-toggle"'), "Worker settings should precede the section chevron");
     const policyLabel = policy[0].toUpperCase() + policy.slice(1);
     assert(emptyMarkup.includes(`${policyLabel} · Inherit parent`), `${policy} should appear in the compact summary`);
     assert(emptyMarkup.includes("No runs yet"), `${policy} should render the compact idle state`);
@@ -177,6 +180,16 @@ try {
     assert(!emptyMarkup.includes('data-testid="worker-model-picker-trigger"'), "Collapsed Worker settings should not occupy space");
     assert(!emptyMarkup.includes("<select"), "Workers should not render a native model select");
   }
+
+  const collapsedMarkup = renderToStaticMarkup(createElement(WorkersInspector, {
+    ...workerInspectorProps,
+    collapsed: true,
+    record: undefined,
+  }));
+  assert(collapsedMarkup.includes('data-testid="workers-section-toggle"'), "Workers should expose a section disclosure");
+  assert(collapsedMarkup.includes('aria-controls="workers-section-content"'), "Workers disclosure should own its content");
+  assert(collapsedMarkup.includes('id="workers-section-content" data-collapsed="true" aria-hidden="true"'), "Collapsed Workers content should be hidden");
+  assert(collapsedMarkup.includes('data-testid="workers-settings-toggle"'), "Worker settings should remain a separate disclosure");
 } finally {
   await server.close();
 }

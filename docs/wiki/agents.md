@@ -46,7 +46,7 @@ Each thread has a delegation policy:
 
 The Worker model control uses the searchable model catalog and defaults to the parent chat model.
 
-Desktop keeps delegation controls, approval, live Worker rows, results, stopping, and diff review in the thread's Context card. Delegation and model settings stay collapsed behind a compact Workers summary row until opened, while proposed and running content remains visible automatically. On wide layouts Context can remain open beside the Preview / Code / Git inspector; active proposed or running Runs reveal Context automatically.
+Desktop keeps delegation controls, approval, live Worker rows, results, stopping, and diff review in the thread's Context card. The Workers section and its delegation/model settings disclosure expand independently, and the section state persists per thread. On wide layouts Context can remain open beside the Preview / Code / Git inspector; active proposed or running Runs reveal Context automatically.
 
 Delegation is intended for independent work that benefits from parallelism, not short or sequential steps. Managed Workers receive the current request, selected goal and instructions, workspace and branch, resolved Agent instructions and skills, supported attachments, and their assigned task. They do not receive the full transcript.
 

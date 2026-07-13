@@ -185,7 +185,7 @@ import {
   shouldRefreshGitStatus,
 } from "../lib/gitRefresh";
 import { reasoningEffortForModel } from "../lib/reasoningEffort";
-import { buildQuickSummary } from "../lib/quickSummary";
+import { buildQuickSummary, type QuickSummarySectionId } from "../lib/quickSummary";
 import {
   nextRecentThreadSwitcherIndex,
   recentThreadSwitcherItems,
@@ -357,6 +357,7 @@ const inTauri =
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 const EMPTY: ChatMessage[] = [];
 const EMPTY_QUEUE: QueuedMessage[] = [];
+const EMPTY_CONTEXT_SECTION_IDS: QuickSummarySectionId[] = [];
 const NON_EMPTY_USAGE_MESSAGES: ChatMessage[] = [{ role: "user", content: "" }];
 const PREVIEW_PANEL_MIN_WIDTH = 360;
 const MESSAGE_VIRTUALIZE_AFTER = 80;
@@ -3192,6 +3193,11 @@ export function ChatView({
     (s) =>
       s.sessions.find((x) => x.id === s.activeId)?.contextPanelOpen === true,
   );
+  const contextCollapsedSectionIds = useSessions(
+    (s) =>
+      s.sessions.find((x) => x.id === s.activeId)
+        ?.contextCollapsedSectionIds ?? EMPTY_CONTEXT_SECTION_IDS,
+  );
   const activePreviewRuntime = useSessions((s) => {
     const session = s.sessions.find((x) => x.id === s.activeId);
     const activeFolder = session?.settings?.folder ?? "";
@@ -3206,6 +3212,9 @@ export function ChatView({
   const upsertVirtualFiles = useSessions((s) => s.upsertVirtualFiles);
   const commitResponseMetrics = useSessions((s) => s.commitResponseMetrics);
   const setSessionContextPanelOpen = useSessions((s) => s.setContextPanelOpen);
+  const setSessionContextSectionCollapsed = useSessions(
+    (s) => s.setContextSectionCollapsed,
+  );
   const setSessionInspectorOpen = useSessions((s) => s.setInspectorOpen);
   const setSessionInspectorTab = useSessions((s) => s.setInspectorTab);
   const setSessionPreviewRuntime = useSessions((s) => s.setPreviewRuntime);
@@ -8494,12 +8503,16 @@ export function ChatView({
               record={activeWorkerRun}
               policy={delegationPolicy}
               workerModel={workerModel}
+              collapsed={contextCollapsedSectionIds.includes("workers")}
               agents={agents}
               models={pickerModels.filter(
                 (item) => !item.capabilities?.imageOutput && !item.capabilities?.videoOutput,
               )}
               providers={providers}
               busy={workerActionBusy}
+              onCollapsedChange={(collapsed) =>
+                setSessionContextSectionCollapsed(activeId, "workers", collapsed)
+              }
               onPolicyChange={(next) =>
                 updateThreadSettings(activeId, { delegationPolicy: next })
               }
@@ -8514,8 +8527,12 @@ export function ChatView({
               onApplyDiff={applyWorkerDiff}
             />
           )}
+          collapsedSections={contextCollapsedSectionIds}
           canOpenGit={canOpenGitPanel}
           onOpenChange={(open) => open ? openContextPanel() : closeContextPanel()}
+          onSectionCollapsedChange={(sectionId, collapsed) =>
+            setSessionContextSectionCollapsed(activeId, sectionId, collapsed)
+          }
           onOpenGit={openGitPanel}
           onOpenGoal={() => openGoalPanel()}
         />

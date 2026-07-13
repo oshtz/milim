@@ -4,14 +4,21 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { createServer } from "vite";
 import type { ChatMessage, WorkspaceGitStatus } from "../src/api.js";
 import { DEFAULT_GOAL_SETTINGS } from "../src/lib/goals.js";
-import { buildQuickSummary, type QuickSummary, type QuickSummaryRowKind } from "../src/lib/quickSummary.js";
+import {
+  buildQuickSummary,
+  type QuickSummary,
+  type QuickSummaryRowKind,
+  type QuickSummarySectionId,
+} from "../src/lib/quickSummary.js";
 
 type QuickSummaryPanelProps = {
   summary: QuickSummary;
   open: boolean;
   workerPanel: ReactNode;
+  collapsedSections: QuickSummarySectionId[];
   canOpenGit: boolean;
   onOpenChange: (open: boolean) => void;
+  onSectionCollapsedChange: (id: QuickSummarySectionId, collapsed: boolean) => void;
   onOpenGit: () => void;
   onOpenGoal: () => void;
 };
@@ -209,8 +216,10 @@ try {
       summary: { sources: [] } as unknown as QuickSummary,
       open: true,
       workerPanel: null,
+      collapsedSections: [],
       canOpenGit: false,
       onOpenChange: () => {},
+      onSectionCollapsedChange: () => {},
       onOpenGit: () => {},
       onOpenGoal: () => {},
     }),
@@ -231,8 +240,10 @@ try {
       },
       open: true,
       workerPanel: createElement("div", { "data-testid": "worker-panel" }, "Workers"),
+      collapsedSections: [],
       canOpenGit: true,
       onOpenChange: () => {},
+      onSectionCollapsedChange: () => {},
       onOpenGit: () => {},
       onOpenGoal: () => {},
     }),
@@ -246,13 +257,32 @@ try {
   assert.match(groupedMarkup, /source-5/);
   assert.doesNotMatch(groupedMarkup, /source-6/);
 
+  const collapsedMarkup = renderToStaticMarkup(
+    createElement(QuickSummaryPanel, {
+      summary: withActivity,
+      open: true,
+      workerPanel: null,
+      collapsedSections: ["activity", "sources"],
+      canOpenGit: false,
+      onOpenChange: () => {},
+      onSectionCollapsedChange: () => {},
+      onOpenGit: () => {},
+      onOpenGoal: () => {},
+    }),
+  );
+  assert.match(collapsedMarkup, /data-testid="quick-summary-section-activity"[^>]*aria-expanded="false"/);
+  assert.match(collapsedMarkup, /id="quick-summary-activity-content"[^>]*data-collapsed="true"[^>]*aria-hidden="true"/);
+  assert.match(collapsedMarkup, /data-testid="quick-summary-section-sources"[^>]*aria-expanded="false"/);
+
   const closedMarkup = renderToStaticMarkup(
     createElement(QuickSummaryPanel, {
       summary: empty,
       open: false,
       workerPanel: null,
+      collapsedSections: [],
       canOpenGit: false,
       onOpenChange: () => {},
+      onSectionCollapsedChange: () => {},
       onOpenGit: () => {},
       onOpenGoal: () => {},
     }),

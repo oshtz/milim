@@ -20,6 +20,30 @@ export type QuickSummaryRowKind =
   | "usage"
   | "limits";
 export type QuickSummarySourceKind = "attachment" | "artifact" | "memory";
+export const QUICK_SUMMARY_SECTION_IDS = [
+  "workers",
+  "environment",
+  "task",
+  "activity",
+  "context",
+  "sources",
+] as const;
+export type QuickSummarySectionId = (typeof QUICK_SUMMARY_SECTION_IDS)[number];
+
+export function normalizeQuickSummarySectionIds(
+  value: unknown,
+): QuickSummarySectionId[] {
+  if (!Array.isArray(value)) return [];
+  const valid = new Set<string>(QUICK_SUMMARY_SECTION_IDS);
+  return Array.from(
+    new Set(
+      value.filter(
+        (id): id is QuickSummarySectionId =>
+          typeof id === "string" && valid.has(id),
+      ),
+    ),
+  );
+}
 
 export interface QuickSummaryRow {
   kind: QuickSummaryRowKind;

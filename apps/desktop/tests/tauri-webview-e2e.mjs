@@ -1057,6 +1057,17 @@ async function runWorkersInspectorCheck(page, milimHome) {
   await assertTextContains(inspector.locator(".workers-status"), "Running");
   const fits = await inspector.evaluate((element) => element.scrollWidth <= element.clientWidth + 1);
   if (!fits) throw new Error("Workers Context panel overflows at narrow width.");
+  const workersSectionToggle = page.getByTestId("workers-section-toggle");
+  const workersSettingsToggle = page.getByTestId("workers-settings-toggle");
+  const workersChevronToggle = page.getByTestId("workers-chevron-toggle");
+  await workersChevronToggle.click();
+  await assertAttribute(workersSectionToggle, "aria-expanded", "false");
+  await inspector.locator(".workers-body").waitFor({ state: "hidden" });
+  await workersSettingsToggle.click();
+  await assertAttribute(workersSectionToggle, "aria-expanded", "true");
+  await assertAttribute(workersSettingsToggle, "aria-expanded", "true");
+  await inspector.locator(".workers-controls").waitFor();
+  await workersSettingsToggle.click();
   const sourceToggle = page.locator(".quick-summary-more");
   await assertTextContains(sourceToggle, "2 more");
   await sourceToggle.click();
@@ -1065,6 +1076,24 @@ async function runWorkersInspectorCheck(page, milimHome) {
   await sourceSeven.waitFor();
   await sourceToggle.click();
   await assertHidden(sourceSeven, "collapsed source");
+  const sourcesSectionToggle = page.getByTestId("quick-summary-section-sources");
+  const sourcesReveal = page.locator("#quick-summary-sources-content");
+  const transitionDuration = await sourcesReveal.evaluate((element) =>
+    getComputedStyle(element).transitionDuration,
+  );
+  if (!transitionDuration.split(",").some((duration) => Number.parseFloat(duration) > 0)) {
+    throw new Error("Context section reveal should animate.");
+  }
+  await sourcesSectionToggle.click();
+  await assertAttribute(sourcesSectionToggle, "aria-expanded", "false");
+  await sourceToggle.waitFor({ state: "hidden" });
+  await waitForPersistedUserStateText(page, "milim.sessions", "sources");
+  await page.reload();
+  await page.getByTestId("chat-shell").waitFor();
+  await assertAttribute(page.getByTestId("quick-summary-section-sources"), "aria-expanded", "false");
+  await assertHidden(page.locator(".quick-summary-more"), "persisted collapsed Sources content");
+  await page.getByTestId("quick-summary-section-sources").click();
+  await page.locator(".quick-summary-more").waitFor();
   await page.screenshot({ path: screenshots.workersNarrow, fullPage: false });
 }
 

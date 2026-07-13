@@ -36,6 +36,10 @@ import {
 } from "../lib/goals.js";
 import { recordPerfMeasure, startPerfMeasure } from "../lib/perf.js";
 import { previewRuntimeKeyForThread } from "../lib/previewRuntimeKeys.js";
+import {
+  normalizeQuickSummarySectionIds,
+  type QuickSummarySectionId,
+} from "../lib/quickSummary.js";
 import { deriveThreadTitle, NEW_CHAT_TITLE } from "../lib/threadTitles.js";
 import {
   readUserStateKey,
@@ -140,6 +144,7 @@ export interface Session {
   messages: ChatMessage[];
   virtualFiles?: Record<string, SessionVirtualFile>;
   contextPanelOpen?: boolean;
+  contextCollapsedSectionIds?: QuickSummarySectionId[];
   inspectorOpen?: boolean;
   inspectorTab?: SessionInspectorTab;
   /** @deprecated Read for one-release side-panel migration only. */
@@ -1096,12 +1101,18 @@ function normalizeSessionArtifacts(session: Session): Session {
   const legacyWorkersOpen =
     session.inspectorOpen === true &&
     (session as { inspectorTab?: unknown }).inspectorTab === "workers";
+  const contextCollapsedSectionIds = normalizeQuickSummarySectionIds(
+    session.contextCollapsedSectionIds,
+  );
   return {
     ...current,
     virtualFiles: normalizeVirtualFiles(session.virtualFiles),
     archivedAt,
     contextPanelOpen:
       session.contextPanelOpen === true || legacyWorkersOpen ? true : undefined,
+    contextCollapsedSectionIds: contextCollapsedSectionIds.length
+      ? contextCollapsedSectionIds
+      : undefined,
     inspectorOpen: legacyWorkersOpen
       ? undefined
       : session.inspectorOpen === true ||
@@ -1603,6 +1614,11 @@ interface SessionState {
     >,
   ) => void;
   setContextPanelOpen: (id: string, open: boolean) => void;
+  setContextSectionCollapsed: (
+    id: string,
+    sectionId: QuickSummarySectionId,
+    collapsed: boolean,
+  ) => void;
   setInspectorOpen: (id: string, open: boolean) => void;
   setInspectorTab: (id: string, tab: SessionInspectorTab) => void;
   setPreviewRuntime: (
@@ -2839,6 +2855,29 @@ export const useSessions = create<SessionState>()(
                   }
                 : s,
             ),
+          })),
+
+        setContextSectionCollapsed: (id, sectionId, collapsed) =>
+          set((st) => ({
+            sessions: st.sessions.map((session) => {
+              if (session.id !== id) return session;
+              const sectionIds = new Set(
+                normalizeQuickSummarySectionIds(
+                  session.contextCollapsedSectionIds,
+                ),
+              );
+              if (collapsed) sectionIds.add(sectionId);
+              else sectionIds.delete(sectionId);
+              const contextCollapsedSectionIds = Array.from(sectionIds);
+              return {
+                ...session,
+                contextCollapsedSectionIds:
+                  contextCollapsedSectionIds.length
+                    ? contextCollapsedSectionIds
+                    : undefined,
+                updatedAt: Date.now(),
+              };
+            }),
           })),
 
         setInspectorOpen: (id, open) =>

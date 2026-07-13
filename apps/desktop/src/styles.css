@@ -52,6 +52,11 @@ body {
   justify-content: space-between;
   padding-right: 8px;
 }
+.workers-context-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
 .workers-context-toggle {
   min-width: 0;
   min-height: 32px;
@@ -82,8 +87,34 @@ body {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.workers-context-toggle svg { flex: none; transition: transform 120ms ease; }
-.workers-context-toggle[aria-expanded="true"] svg { transform: rotate(180deg); }
+.workers-collapse-toggle svg { transform: rotate(-90deg); transition: transform 120ms ease; }
+.workers-collapse-toggle[aria-expanded="true"] svg { transform: rotate(0); }
+.context-section-reveal {
+  display: grid;
+  grid-template-rows: 1fr;
+  opacity: 1;
+  transform: translateY(0);
+  visibility: visible;
+  transition: grid-template-rows 0.12s ease, opacity 0.12s ease, transform 0.12s ease, visibility 0s linear;
+}
+.context-section-reveal[data-collapsed="true"] {
+  grid-template-rows: 0fr;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(4px);
+  visibility: hidden;
+  transition-delay: 0s, 0s, 0s, 0.12s;
+}
+.context-section-inner {
+  min-height: 0;
+  overflow: hidden;
+}
+.workers-section-content {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
 .workers-controls {
   display: grid;
   gap: 7px;
@@ -3639,12 +3670,30 @@ button.git-row:hover svg {
 }
 .quick-summary-section h3 {
   margin: 0;
+}
+.quick-summary-section-toggle {
+  width: 100%;
+  min-height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   padding: 2px 8px 4px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
   color: var(--muted-text);
+  font: inherit;
   font-size: 11px;
   font-weight: 550;
   line-height: 1.2;
+  text-align: left;
+  cursor: pointer;
 }
+.quick-summary-section-toggle:hover { background: var(--panel-row-hover); color: var(--secondary-text); }
+.quick-summary-section-toggle svg { flex: none; transform: rotate(-90deg); transition: transform 120ms ease; }
+.quick-summary-section-toggle[aria-expanded="true"] svg { transform: rotate(0); }
+.quick-summary-section-content { display: flex; flex-direction: column; gap: 2px; }
 .quick-summary-empty,
 .quick-summary-more {
   min-height: 32px;
@@ -3736,6 +3785,10 @@ button.quick-summary-row:disabled {
 }
 .quick-summary-source-row .quick-summary-row-copy strong {
   font-weight: 500;
+}
+.quick-summary-source-row {
+  min-height: 32px;
+  padding: 2px 8px;
 }
 .preview-tab {
   display: inline-flex;
@@ -5397,6 +5450,11 @@ html[data-dark="true"] .preview-control-cursor {
   }
 }
 @media (prefers-reduced-motion: reduce) {
+  .context-section-reveal,
+  .quick-summary-section-toggle svg,
+  .workers-collapse-toggle svg {
+    transition: none;
+  }
   .stream-diff-stat,
   .stream-diff-stat.live,
   .loader,

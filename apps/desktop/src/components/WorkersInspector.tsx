@@ -19,7 +19,7 @@ import type {
 import { modelDisplayName } from "../lib/modelPicker";
 import type { SessionWorkerRunRecord } from "../sessions/store";
 import { AgentAvatar } from "./AgentAvatar";
-import { ArrowRight, Check, ChevronDown, Copy, Square } from "./icons";
+import { ArrowRight, Check, ChevronDown, Copy, Gear, Square } from "./icons";
 import { ModelPicker } from "./ModelPicker";
 
 const STATUS_LABEL: Record<WorkerRunStatus, string> = {
@@ -86,7 +86,9 @@ export function WorkersInspector({
   providers,
   agents,
   busy = false,
+  collapsed,
   onPolicyChange,
+  onCollapsedChange,
   onWorkerModelChange,
   onStart,
   onStop,
@@ -102,7 +104,9 @@ export function WorkersInspector({
   providers?: ProviderInfo[];
   agents: Agent[];
   busy?: boolean;
+  collapsed: boolean;
   onPolicyChange: (policy: DelegationPolicy) => void;
+  onCollapsedChange: (collapsed: boolean) => void;
   onWorkerModelChange: (model: string) => void;
   onStart: (runId: string) => void;
   onStop: (runId: string) => void;
@@ -191,8 +195,17 @@ export function WorkersInspector({
   }
 
   function toggleSettings() {
+    if (collapsed) onCollapsedChange(false);
     if (settingsOpen) setModelPickerOpen(false);
     setSettingsOpen(!settingsOpen);
+  }
+
+  function toggleSection() {
+    if (!collapsed) {
+      setSettingsOpen(false);
+      setModelPickerOpen(false);
+    }
+    onCollapsedChange(!collapsed);
   }
 
   async function copyResult() {
@@ -238,31 +251,63 @@ export function WorkersInspector({
         <button
           className="workers-context-toggle"
           type="button"
-          data-testid="workers-settings-toggle"
-          aria-expanded={settingsOpen}
-          aria-controls="workers-settings"
-          onClick={toggleSettings}
+          data-testid="workers-section-toggle"
+          aria-expanded={!collapsed}
+          aria-controls="workers-section-content"
+          onClick={toggleSection}
         >
           <strong>Workers</strong>
           <span className="workers-context-summary">
             · {policy[0].toUpperCase() + policy.slice(1)} · {workerModelLabel}
           </span>
-          <ChevronDown size={12} aria-hidden="true" />
         </button>
-        {run?.status === "running" && (
+        <div className="workers-context-actions">
           <button
             className="preview-action"
             type="button"
-            disabled={busy}
-            title="Stop all workers"
-            aria-label="Stop all workers"
-            onClick={() => onStop(run.id)}
+            data-testid="workers-settings-toggle"
+            title="Worker settings"
+            aria-label="Worker settings"
+            aria-expanded={settingsOpen}
+            aria-controls="workers-settings"
+            onClick={toggleSettings}
           >
-            <Square size={12} />
+            <Gear size={12} />
           </button>
-        )}
+          <button
+            className="preview-action workers-collapse-toggle"
+            type="button"
+            data-testid="workers-chevron-toggle"
+            title={collapsed ? "Expand Workers" : "Collapse Workers"}
+            aria-label={collapsed ? "Expand Workers" : "Collapse Workers"}
+            aria-expanded={!collapsed}
+            aria-controls="workers-section-content"
+            onClick={toggleSection}
+          >
+            <ChevronDown size={12} aria-hidden="true" />
+          </button>
+          {run?.status === "running" && (
+            <button
+              className="preview-action"
+              type="button"
+              disabled={busy}
+              title="Stop all workers"
+              aria-label="Stop all workers"
+              onClick={() => onStop(run.id)}
+            >
+              <Square size={12} />
+            </button>
+          )}
+        </div>
       </div>
 
+      <div
+        className="context-section-reveal"
+        id="workers-section-content"
+        data-collapsed={collapsed || undefined}
+        aria-hidden={collapsed}
+      >
+      <div className="context-section-inner workers-section-content">
       {settingsOpen && (
         <div className="workers-controls" id="workers-settings">
           <div className="workers-control">
@@ -494,6 +539,8 @@ export function WorkersInspector({
           {run.error && <div className="workers-run-error" role="alert">{run.error}</div>}
         </div>
       )}
+      </div>
+      </div>
     </div>
   );
 }

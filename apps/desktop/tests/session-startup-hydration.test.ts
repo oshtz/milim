@@ -72,6 +72,7 @@ const persistedSessions = JSON.stringify({
         sidePanelMode: "artifact",
         artifactPanelTab: "code",
         contextPanelOpen: true,
+        contextCollapsedSectionIds: ["sources", "activity", "sources", "invalid"],
         createdAt: 1,
         updatedAt: 1,
       },
@@ -81,6 +82,7 @@ const persistedSessions = JSON.stringify({
         artifactPanelOpen: true,
         artifactPanelTab: "code",
         contextPanelOpen: "invalid",
+        contextCollapsedSectionIds: "invalid",
         createdAt: 2,
         updatedAt: 2,
       },
@@ -210,6 +212,13 @@ assert(
   useSessions.getState().sessions[0]?.contextPanelOpen === true &&
     useSessions.getState().sessions[1]?.contextPanelOpen === undefined,
   "context panel hydration should preserve only explicit true values",
+);
+assert(
+  JSON.stringify(
+    useSessions.getState().sessions[0]?.contextCollapsedSectionIds,
+  ) === JSON.stringify(["sources", "activity"]) &&
+    useSessions.getState().sessions[1]?.contextCollapsedSectionIds === undefined,
+  "context section hydration should preserve unique known section IDs",
 );
 assert(
   useSessions.getState().sessions[2]?.contextPanelOpen === true &&

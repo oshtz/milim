@@ -4,10 +4,11 @@ import type {
   QuickSummary,
   QuickSummaryRow,
   QuickSummaryRowKind,
+  QuickSummarySectionId,
   QuickSummarySource,
 } from "../lib/quickSummary";
 import { codexLimitsFromRateLimitPayload, formatProviderLimits } from "../lib/usageMetrics";
-import { FileText, Folder, Globe, Paperclip, Sparkles, Terminal, X } from "./icons";
+import { ChevronDown, FileText, Folder, Globe, Paperclip, Sparkles, Terminal, X } from "./icons";
 
 const SOURCE_LIMIT = 5;
 
@@ -69,20 +70,52 @@ function SourceRow({ source }: { source: QuickSummarySource }) {
   );
 }
 
+function SectionHeader({
+  id,
+  label,
+  collapsed,
+  onCollapsedChange,
+}: {
+  id: QuickSummarySectionId;
+  label: string;
+  collapsed: boolean;
+  onCollapsedChange: (id: QuickSummarySectionId, collapsed: boolean) => void;
+}) {
+  return (
+    <h3>
+      <button
+        className="quick-summary-section-toggle"
+        type="button"
+        data-testid={`quick-summary-section-${id}`}
+        aria-expanded={!collapsed}
+        aria-controls={`quick-summary-${id}-content`}
+        onClick={() => onCollapsedChange(id, !collapsed)}
+      >
+        <span>{label}</span>
+        <ChevronDown size={12} aria-hidden="true" />
+      </button>
+    </h3>
+  );
+}
+
 export function QuickSummaryPanel({
   summary,
   open,
   workerPanel,
+  collapsedSections,
   canOpenGit,
   onOpenChange,
+  onSectionCollapsedChange,
   onOpenGit,
   onOpenGoal,
 }: {
   summary: QuickSummary;
   open: boolean;
   workerPanel: ReactNode;
+  collapsedSections: QuickSummarySectionId[];
   canOpenGit: boolean;
   onOpenChange: (open: boolean) => void;
+  onSectionCollapsedChange: (id: QuickSummarySectionId, collapsed: boolean) => void;
   onOpenGit: () => void;
   onOpenGoal: () => void;
 }) {
@@ -123,12 +156,13 @@ export function QuickSummaryPanel({
     return [...rows.slice(0, modelIndex + 1), quota, ...rows.slice(modelIndex + 1)];
   }, [liveQuota, rows]);
 
-  const groups: Array<{ label: string; kinds: QuickSummaryRowKind[] }> = [
-    { label: "Environment", kinds: ["workspace", "browser"] },
-    { label: "Task", kinds: ["goal", "plan"] },
-    { label: "Activity", kinds: ["activity"] },
-    { label: "Context", kinds: ["model", "usage", "limits", "privacy", "memory"] },
+  const groups: Array<{ id: QuickSummarySectionId; label: string; kinds: QuickSummaryRowKind[] }> = [
+    { id: "environment", label: "Environment", kinds: ["workspace", "browser"] },
+    { id: "task", label: "Task", kinds: ["goal", "plan"] },
+    { id: "activity", label: "Activity", kinds: ["activity"] },
+    { id: "context", label: "Context", kinds: ["model", "usage", "limits", "privacy", "memory"] },
   ];
+  const sourcesCollapsed = collapsedSections.includes("sources");
 
   return (
     <aside
@@ -151,47 +185,71 @@ export function QuickSummaryPanel({
             {groups.map((group) => {
               const sectionRows = displayRows.filter((row) => group.kinds.includes(row.kind));
               if (!sectionRows.length) return null;
+              const collapsed = collapsedSections.includes(group.id);
               return (
-                <section className="quick-summary-section" key={group.label} aria-labelledby={`quick-summary-${group.label.toLowerCase()}`}>
-                  <h3 id={`quick-summary-${group.label.toLowerCase()}`}>{group.label}</h3>
-                  {sectionRows.map((row) => (
-                    <ContextRow
-                      key={row.kind}
-                      row={row}
-                      onClick={
-                        row.kind === "workspace" && canOpenGit
-                          ? onOpenGit
-                          : row.kind === "goal"
-                            ? onOpenGoal
-                            : undefined
-                      }
-                    />
-                  ))}
+                <section className="quick-summary-section" key={group.id} aria-label={group.label}>
+                  <SectionHeader id={group.id} label={group.label} collapsed={collapsed} onCollapsedChange={onSectionCollapsedChange} />
+                  <div
+                    className="context-section-reveal"
+                    id={`quick-summary-${group.id}-content`}
+                    data-collapsed={collapsed || undefined}
+                    aria-hidden={collapsed}
+                  >
+                    <div className="context-section-inner quick-summary-section-content">
+                      {sectionRows.map((row) => (
+                        <ContextRow
+                          key={row.kind}
+                          row={row}
+                          onClick={
+                            row.kind === "workspace" && canOpenGit
+                              ? onOpenGit
+                              : row.kind === "goal"
+                                ? onOpenGoal
+                                : undefined
+                          }
+                        />
+                      ))}
+                    </div>
+                  </div>
                 </section>
               );
             })}
-            <section className="quick-summary-section" aria-labelledby="quick-summary-sources">
-              <h3 id="quick-summary-sources">Sources</h3>
-              {sources.length ? (
-                <>
-                  {sources.slice(0, sourcesExpanded ? sources.length : SOURCE_LIMIT).map((source) => (
-                    <SourceRow key={`${source.kind}:${source.label}`} source={source} />
-                  ))}
-                  {sources.length > SOURCE_LIMIT && (
-                    <button
-                      className="quick-summary-more"
-                      type="button"
-                      aria-expanded={sourcesExpanded}
-                      aria-label={sourcesExpanded ? "Show fewer sources" : `Show ${sources.length - SOURCE_LIMIT} more sources`}
-                      onClick={() => setSourcesExpanded((expanded) => !expanded)}
-                    >
-                      {sourcesExpanded ? "Show less" : `${sources.length - SOURCE_LIMIT} more`}
-                    </button>
+            <section className="quick-summary-section" aria-label="Sources">
+              <SectionHeader
+                id="sources"
+                label="Sources"
+                collapsed={sourcesCollapsed}
+                onCollapsedChange={onSectionCollapsedChange}
+              />
+              <div
+                className="context-section-reveal"
+                id="quick-summary-sources-content"
+                data-collapsed={sourcesCollapsed || undefined}
+                aria-hidden={sourcesCollapsed}
+              >
+                <div className="context-section-inner quick-summary-section-content">
+                  {sources.length ? (
+                    <>
+                      {sources.slice(0, sourcesExpanded ? sources.length : SOURCE_LIMIT).map((source) => (
+                        <SourceRow key={`${source.kind}:${source.label}`} source={source} />
+                      ))}
+                      {sources.length > SOURCE_LIMIT && (
+                        <button
+                          className="quick-summary-more"
+                          type="button"
+                          aria-expanded={sourcesExpanded}
+                          aria-label={sourcesExpanded ? "Show fewer sources" : `Show ${sources.length - SOURCE_LIMIT} more sources`}
+                          onClick={() => setSourcesExpanded((expanded) => !expanded)}
+                        >
+                          {sourcesExpanded ? "Show less" : `${sources.length - SOURCE_LIMIT} more`}
+                        </button>
+                      )}
+                    </>
+                  ) : (
+                    <div className="quick-summary-empty">None</div>
                   )}
-                </>
-              ) : (
-                <div className="quick-summary-empty">None</div>
-              )}
+                </div>
+              </div>
             </section>
           </div>
         </div>
