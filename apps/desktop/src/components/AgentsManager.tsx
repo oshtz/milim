@@ -142,6 +142,23 @@ const AGENT_STARTERS: AgentStarter[] = [
       "If the right answer is to not build something, say that and explain the simpler alternative.",
     ].join("\n"),
   },
+  {
+    key: "documentation-maintainer",
+    name: "Documentation maintainer",
+    avatar: "DM",
+    description: "Keeps READMEs, guides, examples, and behavior docs accurate as the product changes.",
+    toolMode: "custom",
+    toolGroups: ["Files", "Shell"],
+    systemPrompt: [
+      "You are a Milim documentation maintainer for software projects.",
+      "Treat the current code, tests, configuration, and shipped behavior as the source of truth. Read the repository's documentation conventions before editing.",
+      "Keep top-level overviews concise and put detailed behavior in the repository's existing documentation structure. Reuse its terminology, voice, formatting, and link style.",
+      "Update only documentation affected by the change. Do not rewrite unrelated sections or duplicate content across files.",
+      "Verify commands, paths, examples, links, and product claims against the project. Never document speculative behavior as shipped.",
+      "Use file and shell tools when available to find stale references and run the smallest relevant documentation check.",
+      "Output format: changed documentation, verification, and any behavior that remains undocumented because evidence was missing.",
+    ].join("\n"),
+  },
 ];
 
 function toolGroup(tool: ToolInfo): ToolGroupName {
@@ -213,16 +230,27 @@ function AgentListPlaceholder() {
   );
 }
 
-function AgentStarterGrid({ onStarter }: { onStarter: (starter: AgentStarter) => void }) {
+function AgentStarterGrid({
+  onStarter,
+  collapsed = false,
+}: {
+  onStarter: (starter: AgentStarter) => void;
+  collapsed?: boolean;
+}) {
   return (
     <div className="agent-starter-grid" aria-label="Agent starters">
       {AGENT_STARTERS.map((starter) => (
-        <button className="agent-starter-card" key={starter.key} type="button" onClick={() => onStarter(starter)}>
+        <button
+          className="agent-starter-card"
+          key={starter.key}
+          type="button"
+          title={starter.description}
+          aria-label={`${starter.name}: ${starter.description}`}
+          tabIndex={collapsed ? -1 : 0}
+          onClick={() => onStarter(starter)}
+        >
           <AgentAvatar name={starter.name} avatar={starter.avatar} className="agent-starter-badge" />
-          <span className="agent-starter-copy">
-            <strong>{starter.name}</strong>
-            <span>{starter.description}</span>
-          </span>
+          <span className="agent-starter-name">{starter.name}</span>
         </button>
       ))}
     </div>
@@ -363,22 +391,6 @@ export function AgentsManager({ onClose }: { onClose: () => void }) {
     setEnabled(starter.toolMode === "custom" ? starterTools : []);
     setSkillMode("auto");
     setEnabledSkills([]);
-  }
-
-  function applySkill(skill: SkillInfo) {
-    setSel("new");
-    setToolSearch("");
-    setDraftPrompt("");
-    setDraftError("");
-    setConfirmDeleteId(null);
-    resetTest();
-    setName(skill.name);
-    setInstructions(skill.instructions);
-    setAvatar(skill.id || skill.name);
-    setToolMode("all");
-    setEnabled([]);
-    setSkillMode("custom");
-    setEnabledSkills([skill.id]);
   }
 
   function duplicateAgent(agent: Agent) {
@@ -604,69 +616,37 @@ export function AgentsManager({ onClose }: { onClose: () => void }) {
               <div className="agent-editor">
                 <div className="agent-editor-head">
                   <div>
-                    <span className="agent-editor-kicker">{sel === "new" ? "Draft profile" : "Saved profile"}</span>
+                    <span className="agent-editor-kicker">{sel === "new" ? "New profile" : "Saved profile"}</span>
                     <h3>{editorTitle}</h3>
                   </div>
-                  <span className="agent-editor-state">{draftToolSummary(toolMode, enabled.length)}</span>
+                  {(sel !== "new" || hasDraftContent) && (
+                    <span className="agent-editor-state">{draftToolSummary(toolMode, enabled.length)}</span>
+                  )}
                 </div>
 
-                <div className="agent-impact-panel" aria-label="Run impact">
-                  <div className="agent-impact-item">
-                    <span>Prompt</span>
-                    <strong>{instructions.trim() ? `${instructions.trim().length} chars` : "No system prompt"}</strong>
-                    <em>{instructions.trim() ? "Prepended server-side" : "Default chat behavior"}</em>
-                  </div>
-                  <div className="agent-impact-item">
-                    <span>Skills</span>
-                    <strong>{draftSkillSummary(skillMode, enabledSkills.length)}</strong>
-                    <em>{runtimeSkillDetail(skillMode, enabledSkills.length, enabledSkillList.length)}</em>
-                  </div>
-                  <div className="agent-impact-item">
-                    <span>Tools</span>
-                    <strong>{draftToolSummary(toolMode, enabled.length)}</strong>
-                    <em>{runtimeToolDetail(toolMode, enabled.length, tools.length)}</em>
-                  </div>
-                </div>
-
-                {sel === "new" && !hasDraftContent && (
-                  <section className="agent-editor-section agent-starters-section">
-                    <div className="agent-section-head">
-                      <h4>Start from</h4>
-                      <span>Profiles and skills</span>
+                {(sel !== "new" || hasDraftContent) && (
+                  <div className="agent-impact-panel" aria-label="Run impact">
+                    <div className="agent-impact-item">
+                      <span>Prompt</span>
+                      <strong>{instructions.trim() ? `${instructions.trim().length} chars` : "No system prompt"}</strong>
+                      <em>{instructions.trim() ? "Prepended server-side" : "Default chat behavior"}</em>
                     </div>
-                    <div className={"agent-starter-board" + (enabledSkillList.length === 0 ? " single" : "")}>
-                      <div className="agent-starter-column">
-                        <div className="agent-starter-column-head">
-                          <strong>Built-in agents</strong>
-                          <span>{AGENT_STARTERS.length}</span>
-                        </div>
-                        <AgentStarterGrid onStarter={applyStarter} />
-                      </div>
-                      {enabledSkillList.length > 0 && (
-                        <div className="agent-starter-column">
-                          <div className="agent-starter-column-head">
-                            <strong>From installed skills</strong>
-                            <span>{Math.min(enabledSkillList.length, AGENT_STARTERS.length)}</span>
-                          </div>
-                          <div className="agent-skill-starters" aria-label="Create agent from skill">
-                            {enabledSkillList.slice(0, AGENT_STARTERS.length).map((skill) => (
-                              <button className="agent-skill-chip" key={skill.id} type="button" onClick={() => applySkill(skill)}>
-                                <span className="agent-starter-copy">
-                                  <strong>{skill.name}</strong>
-                                  <span>{skill.description || "Create an agent that pins this skill and copies its instructions."}</span>
-                                </span>
-                              </button>
-                            ))}
-                          </div>
-                        </div>
-                      )}
+                    <div className="agent-impact-item">
+                      <span>Skills</span>
+                      <strong>{draftSkillSummary(skillMode, enabledSkills.length)}</strong>
+                      <em>{runtimeSkillDetail(skillMode, enabledSkills.length, enabledSkillList.length)}</em>
                     </div>
-                  </section>
+                    <div className="agent-impact-item">
+                      <span>Tools</span>
+                      <strong>{draftToolSummary(toolMode, enabled.length)}</strong>
+                      <em>{runtimeToolDetail(toolMode, enabled.length, tools.length)}</em>
+                    </div>
+                  </div>
                 )}
 
                 <section className="agent-editor-section agent-draft-section">
                   <div className="agent-section-head">
-                    <h4>Generate</h4>
+                    <h4>Draft with AI</h4>
                     <span>{draftGenerating ? "Drafting" : generationModel || "Choose a chat model first"}</span>
                   </div>
                   <div className="agent-draft-panel">
@@ -702,35 +682,48 @@ export function AgentsManager({ onClose }: { onClose: () => void }) {
                   </div>
                 </section>
 
+                {sel === "new" && (
+                  <section
+                    className={`agent-editor-section agent-starters-section${hasDraftContent ? " collapsed" : ""}`}
+                    aria-hidden={hasDraftContent}
+                  >
+                    <div className="agent-starters-reveal">
+                      <div className="agent-section-head">
+                        <h4>Built-in profiles</h4>
+                      </div>
+                      <AgentStarterGrid onStarter={applyStarter} collapsed={hasDraftContent} />
+                    </div>
+                  </section>
+                )}
+
                 <section className="agent-editor-section">
                   <div className="agent-section-head">
                     <h4>Identity</h4>
-                    <AgentAvatar id={selectedAgent?.id} name={name} avatar={avatar} className="agent-identity-avatar" />
                   </div>
-                  <label className="field agent-field">
-                    <span>Name</span>
-                    <input
-                      className="css-input"
-                      data-testid="agent-name-input"
-                      value={name}
-                      onChange={(e) => setName(e.target.value)}
-                      placeholder="Researcher"
-                    />
-                  </label>
-                  <label className="field agent-field">
-                    <span>Avatar seed</span>
-                    <div className="avatar-input-row agent-avatar-row">
-                      <AgentAvatar id={selectedAgent?.id} name={name} avatar={avatar} className="avatar-preview" />
+                  <div className="agent-identity-row">
+                    <AgentAvatar id={selectedAgent?.id} name={name} avatar={avatar} className="agent-identity-avatar" />
+                    <label className="field agent-field">
+                      <span>Name</span>
+                      <input
+                        className="css-input"
+                        data-testid="agent-name-input"
+                        value={name}
+                        onChange={(e) => setName(e.target.value)}
+                        placeholder="Researcher"
+                      />
+                    </label>
+                    <label className="field agent-field agent-seed-field">
+                      <span>Seed · optional</span>
                       <input
                         className="css-input"
                         data-testid="agent-avatar-input"
                         value={avatar}
                         onChange={(e) => setAvatar(e.target.value)}
                         placeholder="researcher"
+                        title="The same seed keeps the same avatar. Leave blank to follow the name."
                       />
-                    </div>
-                    <span className="sheet-hint">The same seed keeps the same avatar. Leave blank to follow the name.</span>
-                  </label>
+                    </label>
+                  </div>
                 </section>
 
                 <section className="agent-editor-section">
