@@ -8,7 +8,7 @@ export type SettingSearchEntry = {
 };
 
 export const SETTINGS_SEARCH_ENTRIES: SettingSearchEntry[] = [
-  { id: "app-window-layout", label: "Window and layout", section: "app", aliases: ["always on top", "sidebar", "ui size", "zoom", "new chat"] },
+  { id: "app-window-layout", label: "Window and layout", section: "app", aliases: ["always on top", "sidebar", "ui size", "zoom", "account usage", "quota", "codex", "claude", "new chat"] },
   { id: "chat-composer", label: "Composer", section: "chat", aliases: ["send shortcut", "enter", "density"] },
   { id: "chat-threads", label: "Threads", section: "chat", aliases: ["auto title", "ai names", "naming model"] },
   { id: "appearance-theme", label: "Theme", section: "appearance", aliases: ["custom", "edit", "delete", "palette"] },

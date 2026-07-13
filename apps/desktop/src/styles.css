@@ -709,6 +709,23 @@ body.sidebar-pointer-dragging .session-section-title {
   font-size: 12.5px;
   font-weight: 650;
 }
+.topbar-account-usage {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: min(420px, 42vw);
+  overflow: hidden;
+  padding: 3px 8px;
+  border: 1px solid color-mix(in srgb, var(--icon-contrast-color) 18%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--popover-bg) 72%, transparent);
+  color: var(--icon-contrast-color);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  text-shadow: var(--foreground-contrast-shadow);
+  white-space: nowrap;
+}
 /* Native-style window controls (min / max / close) */
 .win-controls { display: flex; align-items: stretch; height: 100%; margin-left: 6px; }
 .win-btn {
@@ -786,6 +803,57 @@ body.sidebar-pointer-dragging .session-section-title {
 .topbar-update-btn:disabled {
   cursor: default;
   opacity: 0.78;
+}
+.topbar-zoom-chip {
+  display: flex;
+  align-items: center;
+  height: 30px;
+  margin-left: 4px;
+  overflow: hidden;
+  border: 1px solid var(--popover-border);
+  border-radius: 16px;
+  background: var(--popover-bg);
+  color: var(--secondary-text);
+  box-shadow: var(--shadow-popover);
+}
+.topbar-zoom-value {
+  min-width: 50px;
+  padding: 0 10px 0 13px;
+  color: var(--primary-text);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 650;
+  text-align: center;
+}
+.topbar-zoom-btn,
+.topbar-zoom-reset {
+  height: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--secondary-text);
+  cursor: pointer;
+}
+.topbar-zoom-btn {
+  width: 28px;
+  padding: 0;
+  font-size: 17px;
+  line-height: 1;
+}
+.topbar-zoom-reset {
+  padding: 0 13px 0 9px;
+  font-size: 11px;
+}
+.topbar-zoom-btn:hover:not(:disabled),
+.topbar-zoom-btn:focus-visible,
+.topbar-zoom-reset:hover:not(:disabled),
+.topbar-zoom-reset:focus-visible {
+  background: var(--chip-hover);
+  color: var(--primary-text);
+}
+.topbar-zoom-btn:disabled,
+.topbar-zoom-reset:disabled {
+  cursor: default;
+  opacity: 0.38;
 }
 .workspace-launcher-wrap {
   position: relative;

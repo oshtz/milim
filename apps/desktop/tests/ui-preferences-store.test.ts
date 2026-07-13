@@ -60,6 +60,7 @@ equal(useUiPreferences.getState().sidebarOpen, true, "sidebar should default ope
 equal(useUiPreferences.getState().sidebarWidth, DEFAULT_SIDEBAR_WIDTH, "sidebar should have a default width");
 equal(useUiPreferences.getState().previewPanelWidth, 420, "preview panel should have a default width");
 equal(useUiPreferences.getState().uiSize, DEFAULT_UI_SIZE, "UI size should default to 100%");
+equal(useUiPreferences.getState().showAccountUsageInTitleBar, true, "title-bar account usage should default on");
 equal(useUiPreferences.getState().windowAlwaysOnTop, false, "window always-on-top should default off");
 equal(useUiPreferences.getState().composerSendShortcut, "enter", "Enter should send by default");
 equal(useUiPreferences.getState().composerDensity, "comfortable", "composer should default to comfortable density");
@@ -117,6 +118,10 @@ equal(useUiPreferences.getState().uiSize, MAX_UI_SIZE, "UI size should be capped
 
 useUiPreferences.getState().setUiSize(1);
 equal(useUiPreferences.getState().uiSize, MIN_UI_SIZE, "UI size should have a floor");
+
+useUiPreferences.getState().setShowAccountUsageInTitleBar(false);
+equal(useUiPreferences.getState().showAccountUsageInTitleBar, false, "title-bar account usage should update");
+equal(persistedUiState().showAccountUsageInTitleBar, false, "title-bar account usage should be persisted");
 
 useUiPreferences.getState().setUiSize(DEFAULT_UI_SIZE);
 const zoomInDelta = uiSizeShortcutDelta({ key: "=", ctrlKey: true }, false);
@@ -214,6 +219,7 @@ useUiPreferences.setState({
   sidebarWidth: DEFAULT_SIDEBAR_WIDTH,
   previewPanelWidth: 420,
   uiSize: DEFAULT_UI_SIZE,
+  showAccountUsageInTitleBar: true,
   windowAlwaysOnTop: false,
   composerSendShortcut: "enter",
   composerDensity: "comfortable",
@@ -241,6 +247,7 @@ equal(useUiPreferences.getState().sidebarOpen, false, "sidebar should rehydrate 
 equal(useUiPreferences.getState().sidebarWidth, 384, "sidebar should rehydrate persisted width");
 equal(useUiPreferences.getState().previewPanelWidth, 512, "preview panel should rehydrate persisted width");
 equal(useUiPreferences.getState().uiSize, 130, "UI size should rehydrate persisted value");
+equal(useUiPreferences.getState().showAccountUsageInTitleBar, true, "missing title-bar account usage preference should keep its enabled default");
 equal(useUiPreferences.getState().windowAlwaysOnTop, true, "always-on-top should rehydrate");
 equal(useUiPreferences.getState().composerSendShortcut, "modEnter", "send shortcut should rehydrate");
 equal(useUiPreferences.getState().composerDensity, "compact", "composer density should rehydrate");

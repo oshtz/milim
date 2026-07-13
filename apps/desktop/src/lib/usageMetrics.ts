@@ -187,13 +187,18 @@ export function summarizeThreadMetricsBreakdown(
 
 export function latestProviderLimits(
   messages: ChatMessage[],
+  provider?: string,
 ): ProviderLimitInfo[] {
+  const normalizedProvider = provider?.trim().toLowerCase();
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const limits =
       messages[index].role === "assistant"
         ? messages[index].metrics?.limits
         : undefined;
-    if (limits?.length) return limits;
+    const matching = normalizedProvider
+      ? limits?.filter((limit) => limit.provider.toLowerCase().includes(normalizedProvider))
+      : limits;
+    if (matching?.length) return matching;
   }
   return [];
 }
@@ -221,6 +226,17 @@ export function formatProviderLimits(
     .map((limit) => formatProviderLimit(limit, now))
     .filter(Boolean);
   return labels.length ? labels.join(" · ") : null;
+}
+
+export function formatCompactProviderLimits(
+  limits: ProviderLimitInfo[],
+): string | null {
+  const values = limits
+    .map((limit) => formatCompactProviderLimit(limit))
+    .filter((value): value is string => Boolean(value));
+  if (!values.length) return null;
+  const provider = compactProviderName(limits[0]?.provider);
+  return [provider, ...values].filter(Boolean).join(" · ");
 }
 
 export function summarizeMilimUsage(
@@ -512,6 +528,35 @@ function formatProviderLimit(
   if (quota) return `${provider} ${kind}${quota}`.replace(/\s+/g, " ").trim();
   if (status) return `${provider} ${kind}${status}`.replace(/\s+/g, " ").trim();
   return null;
+}
+
+function formatCompactProviderLimit(limit: ProviderLimitInfo): string | null {
+  const kind = humanLimitKind(limit).replace(/\s*limit\s*$/i, "").trim();
+  const quota = compactRemainingQuota(limit);
+  const status = humanStatus(limit.status);
+  if (quota) return [kind, quota].filter(Boolean).join(" ");
+  if (status) return [kind, status].filter(Boolean).join(" ");
+  return null;
+}
+
+function compactProviderName(provider?: string): string {
+  if (/claude/i.test(provider ?? "")) return "Claude";
+  if (/codex/i.test(provider ?? "")) return "Codex";
+  return provider?.trim() || "Account";
+}
+
+function compactRemainingQuota(limit: ProviderLimitInfo): string {
+  if (typeof limit.remaining === "number" && typeof limit.limit === "number")
+    return `${formatCompactCount(limit.remaining)}/${formatCompactCount(limit.limit)} left`;
+  if (typeof limit.used === "number" && typeof limit.limit === "number")
+    return `${formatCompactCount(Math.max(0, limit.limit - limit.used))}/${formatCompactCount(limit.limit)} left`;
+  if (typeof limit.used_percent === "number") {
+    const usedPercent = limit.used_percent <= 1 ? limit.used_percent * 100 : limit.used_percent;
+    return `${Math.round(Math.max(0, 100 - usedPercent))}% left`;
+  }
+  if (typeof limit.remaining === "number")
+    return `${formatCompactCount(limit.remaining)} left`;
+  return "";
 }
 
 function formatQuota(limit: ProviderLimitInfo): string {

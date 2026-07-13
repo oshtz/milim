@@ -73,7 +73,7 @@ const SETTINGS_SECTIONS: SettingsSection[] = [
     label: "App",
     detail: "Window behavior and layout",
     icon: Sidebar,
-    search: ["app", "general", "window", "layout", "ui size", "zoom", "scale", "100", "percent", "sidebar", "new chat", "bottom", "always on top", "pin", "panel", "width", "reset"],
+    search: ["app", "general", "window", "layout", "ui size", "zoom", "scale", "100", "percent", "sidebar", "new chat", "bottom", "always on top", "pin", "account usage", "quota", "codex", "claude", "panel", "width", "reset"],
   },
   {
     id: "chat",
@@ -173,6 +173,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
   const sidebarWidth = useUiPreferences((s) => s.sidebarWidth);
   const previewPanelWidth = useUiPreferences((s) => s.previewPanelWidth);
   const uiSize = useUiPreferences((s) => s.uiSize);
+  const showAccountUsageInTitleBar = useUiPreferences((s) => s.showAccountUsageInTitleBar);
   const windowAlwaysOnTop = useUiPreferences((s) => s.windowAlwaysOnTop);
   const composerSendShortcut = useUiPreferences((s) => s.composerSendShortcut);
   const composerDensity = useUiPreferences((s) => s.composerDensity);
@@ -191,6 +192,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
   const appShortcuts = useUiPreferences((s) => s.appShortcuts);
   const setSidebarOpen = useUiPreferences((s) => s.setSidebarOpen);
   const setUiSize = useUiPreferences((s) => s.setUiSize);
+  const setShowAccountUsageInTitleBar = useUiPreferences((s) => s.setShowAccountUsageInTitleBar);
   const setWindowAlwaysOnTop = useUiPreferences((s) => s.setWindowAlwaysOnTop);
   const setComposerSendShortcut = useUiPreferences((s) => s.setComposerSendShortcut);
   const setComposerDensity = useUiPreferences((s) => s.setComposerDensity);
@@ -271,7 +273,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
     developer: { label: developerMode ? "On" : "Off", tone: developerMode ? "ready" : "muted" },
   };
   const visibleSettingsSections = SETTINGS_SECTIONS;
-  const sectionStatusKey = `${windowAlwaysOnTop}\n${uiSize}\n${composerSendShortcut}\n${Object.values(appShortcuts).join("\n")}\n${aiThreadNames}\n${aiThreadNameModel}\n${developerMode}\n${experimentalHashlinePatch}\n${onboardingStatus}\n${onboardingDeveloperShow}\n${systemStatus.label}\n${systemStatus.tone}\n${archivedCount}\n${archiveRetentionDays}\n${current.name}\n${updateStatus}\n${chatLayoutStyle}\n${messageWidth}\n${avatarStyle}\n${codeBlockTheme}\n${backgroundFit}\n${backgroundTreatment}`;
+  const sectionStatusKey = `${windowAlwaysOnTop}\n${uiSize}\n${showAccountUsageInTitleBar}\n${composerSendShortcut}\n${Object.values(appShortcuts).join("\n")}\n${aiThreadNames}\n${aiThreadNameModel}\n${developerMode}\n${experimentalHashlinePatch}\n${onboardingStatus}\n${onboardingDeveloperShow}\n${systemStatus.label}\n${systemStatus.tone}\n${archivedCount}\n${archiveRetentionDays}\n${current.name}\n${updateStatus}\n${chatLayoutStyle}\n${messageWidth}\n${avatarStyle}\n${codeBlockTheme}\n${backgroundFit}\n${backgroundTreatment}`;
   const normalizedSettingsQuery = settingsQuery.trim().toLowerCase();
   const settingsSearchResults = useMemo(
     () => matchingSettingsEntries(settingsQuery),
@@ -639,6 +641,13 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
                     </button>
                   </div>
                   <Slider ariaLabel="UI size" min={MIN_UI_SIZE} max={MAX_UI_SIZE} step={UI_SIZE_STEP} value={uiSize} onChange={setUiSize} />
+                </div>
+                <div className="setting-toggle-row">
+                  <div>
+                    <strong>Show account usage in title bar</strong>
+                    <span>Show compact quota details for the active Codex or Claude runtime.</span>
+                  </div>
+                  <Toggle checked={showAccountUsageInTitleBar} onChange={setShowAccountUsageInTitleBar} testId="general-titlebar-account-usage-toggle" />
                 </div>
                 <div className="setting-toggle-row">
                   <div>

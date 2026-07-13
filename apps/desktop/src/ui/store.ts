@@ -40,6 +40,7 @@ interface UiPreferencesState {
   sidebarWidth: number;
   previewPanelWidth: number;
   uiSize: number;
+  showAccountUsageInTitleBar: boolean;
   windowAlwaysOnTop: boolean;
   composerSendShortcut: ComposerSendShortcut;
   composerDensity: ComposerDensity;
@@ -64,6 +65,7 @@ interface UiPreferencesState {
   setSidebarWidth: (sidebarWidth: number) => void;
   setPreviewPanelWidth: (previewPanelWidth: number) => void;
   setUiSize: (uiSize: number) => void;
+  setShowAccountUsageInTitleBar: (showAccountUsageInTitleBar: boolean) => void;
   setWindowAlwaysOnTop: (windowAlwaysOnTop: boolean) => void;
   setComposerSendShortcut: (composerSendShortcut: ComposerSendShortcut) => void;
   setComposerDensity: (composerDensity: ComposerDensity) => void;
@@ -165,6 +167,7 @@ export const useUiPreferences = create<UiPreferencesState>()(
       sidebarWidth: DEFAULT_SIDEBAR_WIDTH,
       previewPanelWidth: DEFAULT_PREVIEW_PANEL_WIDTH,
       uiSize: DEFAULT_UI_SIZE,
+      showAccountUsageInTitleBar: true,
       windowAlwaysOnTop: false,
       composerSendShortcut: "enter",
       composerDensity: "comfortable",
@@ -189,6 +192,7 @@ export const useUiPreferences = create<UiPreferencesState>()(
       setSidebarWidth: (sidebarWidth) => set({ sidebarWidth: normalizeSidebarWidth(sidebarWidth) }),
       setPreviewPanelWidth: (previewPanelWidth) => set({ previewPanelWidth: normalizePreviewPanelWidth(previewPanelWidth) }),
       setUiSize: (uiSize) => set({ uiSize: normalizeUiSize(uiSize) }),
+      setShowAccountUsageInTitleBar: (showAccountUsageInTitleBar) => set({ showAccountUsageInTitleBar }),
       setWindowAlwaysOnTop: (windowAlwaysOnTop) => {
         persistWindowAlwaysOnTop(windowAlwaysOnTop);
         set({ windowAlwaysOnTop });
@@ -273,6 +277,7 @@ export const useUiPreferences = create<UiPreferencesState>()(
           sidebarWidth: normalizeSidebarWidth(saved?.sidebarWidth ?? current.sidebarWidth),
           previewPanelWidth: normalizePreviewPanelWidth(saved?.previewPanelWidth ?? current.previewPanelWidth),
           uiSize: normalizeUiSize(saved?.uiSize ?? current.uiSize),
+          showAccountUsageInTitleBar: typeof saved?.showAccountUsageInTitleBar === "boolean" ? saved.showAccountUsageInTitleBar : current.showAccountUsageInTitleBar,
           windowAlwaysOnTop: typeof saved?.windowAlwaysOnTop === "boolean" ? saved.windowAlwaysOnTop : current.windowAlwaysOnTop,
           composerSendShortcut: normalizeComposerSendShortcut(saved?.composerSendShortcut),
           composerDensity: normalizeComposerDensity(saved?.composerDensity),
@@ -305,6 +310,7 @@ export const useUiPreferences = create<UiPreferencesState>()(
         sidebarWidth: normalizeSidebarWidth(state.sidebarWidth),
         previewPanelWidth: normalizePreviewPanelWidth(state.previewPanelWidth),
         uiSize: normalizeUiSize(state.uiSize),
+        showAccountUsageInTitleBar: state.showAccountUsageInTitleBar,
         windowAlwaysOnTop: state.windowAlwaysOnTop,
         composerSendShortcut: normalizeComposerSendShortcut(state.composerSendShortcut),
         composerDensity: normalizeComposerDensity(state.composerDensity),
