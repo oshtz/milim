@@ -2,6 +2,8 @@
 
 Static Vite/React site for `milim.ai`, deployed with Cloudflare Pages.
 
+The build imports `docs/wiki/*.md`, emits route-specific docs metadata under an internal static namespace, and generates the Pages Worker that serves those files on `docs.milim.ai`. The landing page and docs share one Pages project; do not edit generated `dist` files.
+
 ## Cloudflare Pages
 
 - Project name: `milim-site`
@@ -30,4 +32,5 @@ Then run the `Site` workflow from GitHub Actions or push to `main`. Attach the c
 ```powershell
 pnpm install --frozen-lockfile
 pnpm build
+pnpm exec wrangler pages dev dist
 ```

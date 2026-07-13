@@ -403,7 +403,9 @@ export function DocsPage() {
     document.querySelector('link[rel="canonical"]')?.setAttribute("href", `https://docs.milim.ai${canonicalPath}`);
     document.querySelector('meta[property="og:url"]')?.setAttribute("content", `https://docs.milim.ai${canonicalPath}`);
     document.querySelector('meta[property="og:title"]')?.setAttribute("content", title);
+    document.querySelector('meta[property="og:description"]')?.setAttribute("content", currentPage.summary);
     document.querySelector('meta[name="twitter:title"]')?.setAttribute("content", title);
+    document.querySelector('meta[name="twitter:description"]')?.setAttribute("content", currentPage.summary);
   }, [currentPage, isOverviewPage]);
 
   useEffect(() => {
