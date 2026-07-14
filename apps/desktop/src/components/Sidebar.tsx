@@ -22,7 +22,7 @@ import { Archive, ArrowUp, Bolt, Calendar, ChevronDown, Cube, Download, Folder, 
 
 const SIDEBAR_KEYBOARD_STEP = 32;
 const SIDEBAR_COLLAPSE_OVERSHOOT = 96;
-const SIDEBAR_SNAP_ANIMATION_MS = 100;
+const SIDEBAR_SNAP_ANIMATION_MS = 180;
 const SIDEBAR_DRAG_THRESHOLD = 5;
 const SIDEBAR_SECTION_PREVIEW_LIMIT = 5;
 const inTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -41,7 +41,15 @@ export function sidebarSectionNextRevealCount(totalSessions: number, visibleLimi
 type SidebarDragItem = { type: "session" | "section"; id: string };
 type SidebarDropPosition = "before" | "after" | "inside";
 type SidebarDragTarget = { type: "session"; id: string; sectionId: string; position: Exclude<SidebarDropPosition, "inside"> } | { type: "section"; id: string; position: SidebarDropPosition };
-type SidebarPointerDrag = { item: SidebarDragItem; pointerId: number; startX: number; startY: number; active: boolean };
+type SidebarPointerDrag = {
+  item: SidebarDragItem;
+  pointerId: number;
+  startX: number;
+  startY: number;
+  active: boolean;
+  source: HTMLElement;
+  captureTarget: HTMLElement;
+};
 type SidebarSessionSettings = {
   folder?: string;
   model?: string;
@@ -638,6 +646,15 @@ export function Sidebar({
   }
 
   function cleanupPointerDragListeners() {
+    const drag = pointerDragRef.current;
+    if (drag) {
+      drag.source.style.removeProperty("pointer-events");
+      drag.source.style.removeProperty("translate");
+      drag.source.style.removeProperty("will-change");
+      if (drag.captureTarget.hasPointerCapture(drag.pointerId)) {
+        drag.captureTarget.releasePointerCapture(drag.pointerId);
+      }
+    }
     window.removeEventListener("pointermove", moveSidebarPointerDrag);
     window.removeEventListener("pointerup", endSidebarPointerDrag);
     window.removeEventListener("pointercancel", cancelSidebarPointerDrag);
@@ -647,12 +664,19 @@ export function Sidebar({
   function startPointerDrag(event: ReactPointerEvent<HTMLElement>, item: SidebarDragItem) {
     if (event.button !== 0 || editing || isSidebarDragInteractiveTarget(event.target)) return;
     if (item.type === "section" && !isSidebarProjectSectionId(item.id)) return;
+    const source = event.currentTarget.closest<HTMLElement>(
+      item.type === "section" ? "[data-sidebar-section-id]" : "[data-sidebar-session-id]",
+    );
+    if (!source) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
     pointerDragRef.current = {
       item,
       pointerId: event.pointerId,
       startX: event.clientX,
       startY: event.clientY,
       active: false,
+      source,
+      captureTarget: event.currentTarget,
     };
     setConfirmArchiveId(null);
     setConfirmArchiveProjectId(null);
@@ -669,10 +693,13 @@ export function Sidebar({
     if (!drag.active && moved < SIDEBAR_DRAG_THRESHOLD) return;
     if (!drag.active) {
       drag.active = true;
+      drag.source.style.pointerEvents = "none";
+      drag.source.style.willChange = "translate";
       document.body.classList.add("sidebar-pointer-dragging");
       setDragging(drag.item);
     }
     event.preventDefault();
+    drag.source.style.translate = `0 ${event.clientY - drag.startY}px`;
     setSidebarDragOver(sidebarDropTargetFromPoint(event.clientX, event.clientY, drag.item));
   }
 

@@ -231,6 +231,13 @@ async function runPersistenceAndChat(page, pid) {
 }
 
 async function runSidebarSectionMotionCheck(page) {
+  const sidebarMotion = await page.locator(".sidebar").evaluate((element) => {
+    const style = getComputedStyle(element);
+    return { duration: style.transitionDuration, property: style.transitionProperty };
+  });
+  if (!sidebarMotion.property.includes("width") || !sidebarMotion.duration.includes("0.18s")) {
+    throw new Error(`Sidebar width should use the shared 180ms transition: ${JSON.stringify(sidebarMotion)}.`);
+  }
   const collapse = page.getByRole("button", { name: "Collapse Chats", exact: true });
   await collapse.waitFor();
   const section = page.locator('[data-sidebar-section-id="chats"]');
@@ -272,6 +279,42 @@ async function runSidebarSectionMotionCheck(page) {
   if (reopened.height <= 0 || reopened.visibility !== "visible") {
     throw new Error(`Expected the Chats section expand motion to restore its content, got ${JSON.stringify(reopened)}.`);
   }
+
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  const reduced = await reveal.evaluate((element) => getComputedStyle(element).transitionDuration);
+  const reducedSidebarProperty = await page.locator(".sidebar").evaluate((element) =>
+    getComputedStyle(element).transitionProperty);
+  const reducedStatus = await page.evaluate(() => {
+    const loader = document.createElement("button");
+    loader.className = "btn-ghost running";
+    const preview = document.createElement("div");
+    preview.className = "preview-control-overlay running move";
+    const cursor = document.createElement("span");
+    cursor.className = "preview-control-cursor";
+    preview.append(cursor);
+    document.body.append(loader, preview);
+    const loaderStyle = getComputedStyle(loader, "::before");
+    const result = {
+      loaderAnimation: loaderStyle.animationName,
+      loaderOpacity: Number.parseFloat(loaderStyle.opacity),
+      previewAnimation: getComputedStyle(cursor).animationName,
+      previewOpacity: Number.parseFloat(getComputedStyle(preview).opacity),
+    };
+    loader.remove();
+    preview.remove();
+    return result;
+  });
+  if (
+    reduced !== "0s" ||
+    reducedSidebarProperty.includes("width") ||
+    reducedStatus.loaderAnimation !== "none" ||
+    reducedStatus.loaderOpacity <= 0 ||
+    reducedStatus.previewAnimation !== "none" ||
+    reducedStatus.previewOpacity <= 0
+  ) {
+    throw new Error(`Reduced motion should remove movement but preserve status: ${JSON.stringify({ reduced, reducedSidebarProperty, reducedStatus })}.`);
+  }
+  await page.emulateMedia({ reducedMotion: "no-preference" });
 }
 
 async function runMcpAppsCheck(page) {
@@ -1510,6 +1553,23 @@ async function closeProviders(page) {
 async function openSettings(page) {
   await page.getByTestId("open-settings").click();
   await page.getByTestId("settings-section-app").waitFor();
+  const sheetMotion = await page.locator(".sheet-overlay .sheet").evaluate((element) => {
+    const style = getComputedStyle(element);
+    const origin = style.transformOrigin.split(" ").map(Number.parseFloat);
+    return {
+      transitionDuration: style.transitionDuration,
+      transitionProperty: style.transitionProperty,
+      centeredOrigin: Math.abs(origin[0] - element.offsetWidth / 2) < 1 && Math.abs(origin[1] - element.offsetHeight / 2) < 1,
+    };
+  });
+  if (
+    !sheetMotion.transitionDuration.includes("0.18s") ||
+    !sheetMotion.transitionProperty.includes("scale") ||
+    !sheetMotion.transitionProperty.includes("translate") ||
+    !sheetMotion.centeredOrigin
+  ) {
+    throw new Error(`Settings sheet should use centered 180ms entry motion: ${JSON.stringify(sheetMotion)}.`);
+  }
   const usageToggle = page.getByTestId("general-titlebar-account-usage-toggle");
   if (await usageToggle.isVisible() && await usageToggle.getAttribute("aria-checked") !== "true") {
     throw new Error("Title-bar account usage should default on.");
@@ -1552,6 +1612,13 @@ async function runAppShortcutCheck(page) {
 
   await page.keyboard.press("Control+K");
   await page.getByTestId("chat-search-input").waitFor();
+  const searchMotion = await page.locator(".chat-search-overlay").evaluate((element) => {
+    const style = getComputedStyle(element);
+    return { animationName: style.animationName, transitionProperty: style.transitionProperty };
+  });
+  if (searchMotion.animationName !== "none" || /opacity|transform|scale|translate/.test(searchMotion.transitionProperty)) {
+    throw new Error(`Keyboard chat search should open instantly: ${JSON.stringify(searchMotion)}.`);
+  }
   await expectFocusedTestId(page, "chat-search-input");
   await page.getByTestId("chat-search-input").fill("volcano ledger");
   await page.getByTestId("chat-search-result").filter({ hasText: "Older Search Fixture" }).waitFor();
@@ -1676,7 +1743,7 @@ async function runMicroUiCheck(page) {
     });
   });
   await page.evaluate(() => window.localStorage.setItem("milim.perf", "1"));
-  await seedChatSearchFixture(page);
+  await seedChatSearchFixture(page, true);
   await dismissOnboardingIfPresent(page);
   await page.keyboard.press("Control+K");
   await page.getByTestId("chat-search-input").fill("volcano ledger");
@@ -1687,6 +1754,38 @@ async function runMicroUiCheck(page) {
   const copy = message.getByTestId("message-copy");
   await copy.click();
   await assertAttribute(copy, "title", "Copied");
+
+  await assertPointerReorderFollowsSource(page, {
+    rowSelector: ".queued-item[data-queued-message-id]",
+    handleSelector: ".queued-drag-handle",
+    idAttribute: "data-queued-message-id",
+    label: "Queued message",
+  });
+  await assertPointerReorderFollowsSource(page, {
+    rowSelector: '.session-item[data-sidebar-session-id="e2e-motion-fixture"], .session-item[data-sidebar-session-id="e2e-search-fixture"]',
+    idAttribute: "data-sidebar-session-id",
+    label: "Sidebar thread",
+  });
+  await page.getByTestId("project-menu-trigger").click();
+  const projectMenu = page.locator(".session-menu.project-menu");
+  await projectMenu.waitFor();
+  const popoverMotion = await projectMenu.evaluate((element) => {
+    const style = getComputedStyle(element);
+    const origin = style.transformOrigin.split(" ").map(Number.parseFloat);
+    return {
+      duration: style.transitionDuration,
+      property: style.transitionProperty,
+      topLeftOrigin: origin[0] < 1 && origin[1] < 1,
+    };
+  });
+  if (
+    !popoverMotion.duration.includes("0.12s") ||
+    !popoverMotion.property.includes("scale") ||
+    !popoverMotion.topLeftOrigin
+  ) {
+    throw new Error(`Occasional project menu should use origin-aware 120ms entry motion: ${JSON.stringify(popoverMotion)}.`);
+  }
+  await page.getByTestId("project-menu-trigger").click();
 
   const composer = page.getByTestId("composer-input");
   await composer.fill("");
@@ -1711,7 +1810,7 @@ async function runMicroUiCheck(page) {
   await page.keyboard.press("ArrowRight");
   await sidebarHandle.dblclick();
   await assertAttribute(sidebarHandle, "aria-valuenow", "248");
-  await delay(150);
+  await delay(220);
 
   await resetUiPersistenceWrites(page);
   const sidebarDragBox = await sidebarHandle.boundingBox();
@@ -1732,7 +1831,7 @@ async function runMicroUiCheck(page) {
   await sidebarHandle.focus();
   await page.keyboard.press("Enter");
   await assertAttribute(sidebarHandle, "aria-valuenow", "248");
-  await delay(150);
+  await delay(220);
 
   const sidebarHandleBox = await sidebarHandle.boundingBox();
   if (!sidebarHandleBox) throw new Error("Sidebar resize handle should have measurable bounds.");
@@ -1805,22 +1904,41 @@ async function runMicroUiCheck(page) {
   await closingPreviewPanel.waitFor();
   const closeMotion = await closingPreviewPanel.evaluate((element) => {
     const style = getComputedStyle(element);
-    return { name: style.animationName, duration: style.animationDuration };
+    element.dataset.motionProbe = "close-reversal";
+    return {
+      property: style.transitionProperty,
+      duration: style.transitionDuration,
+      opacity: style.opacity,
+    };
   });
-  if (closeMotion.name !== "preview-panel-out" || closeMotion.duration !== "0.1s") {
-    throw new Error(`Inspector close motion should match the sidebar, got ${JSON.stringify(closeMotion)}.`);
+  if (!closeMotion.property.includes("flex-basis") || !closeMotion.duration.includes("0.18s")) {
+    throw new Error(`Inspector close should use the shared 180ms transition: ${JSON.stringify(closeMotion)}.`);
   }
-  await page.locator(".preview-panel").waitFor({ state: "detached" });
   await page.mouse.move(previewHandleBox.x + 152, previewHandleBox.y + previewHandleBox.height / 2);
+  const reversingPanel = page.locator('[data-motion-probe="close-reversal"]');
+  await reversingPanel.waitFor();
+  await page.locator(".preview-panel:not(.closing)").waitFor();
   await previewHandle.waitFor();
-  const openMotion = await page.locator(".preview-panel").evaluate((element) => {
+  const openMotion = await reversingPanel.evaluate((element) => {
     const style = getComputedStyle(element);
-    return { className: element.className, name: style.animationName, duration: style.animationDuration };
+    return {
+      className: element.className,
+      property: style.transitionProperty,
+      duration: style.transitionDuration,
+    };
   });
-  if (openMotion.name !== "preview-panel-in" || openMotion.duration !== "0.1s") {
-    throw new Error(`Inspector open motion should match the sidebar, got ${JSON.stringify(openMotion)}.`);
+  if (openMotion.className.includes("closing") || !openMotion.duration.includes("0.18s")) {
+    throw new Error(`Inspector close reversal should retarget the mounted panel: ${JSON.stringify(openMotion)}.`);
   }
   await page.mouse.up();
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  const reducedMotion = await page.locator(".preview-panel").evaluate((element) => ({
+    transitionDuration: getComputedStyle(element).transitionDuration,
+  }));
+  if (reducedMotion.transitionDuration !== "0s") {
+    throw new Error(`Reduced motion should remove inspector movement: ${JSON.stringify(reducedMotion)}.`);
+  }
+  await page.emulateMedia({ reducedMotion: "no-preference" });
   await previewHandle.focus();
   await page.keyboard.press("ArrowLeft");
   if ((await previewHandle.getAttribute("aria-valuenow")) === "360") {
@@ -1847,6 +1965,56 @@ async function assertUiPersistenceWrites(page, expected, label) {
   }
 }
 
+async function assertPointerReorderFollowsSource(page, {
+  rowSelector,
+  handleSelector,
+  idAttribute,
+  label,
+}) {
+  const rows = page.locator(rowSelector);
+  if (await rows.count() < 2) throw new Error(`${label} drag check requires two rows.`);
+  const source = rows.first();
+  const target = rows.nth(1);
+  const sourceId = await source.getAttribute(idAttribute);
+  const before = await rows.evaluateAll((elements, attribute) =>
+    elements.map((element) => element.getAttribute(attribute)), idAttribute);
+  const sourceBox = await (handleSelector ? source.locator(handleSelector) : source).boundingBox();
+  const targetBox = await target.boundingBox();
+  if (!sourceId || !sourceBox || !targetBox) throw new Error(`${label} rows should have measurable bounds.`);
+
+  await page.mouse.move(sourceBox.x + sourceBox.width / 2, sourceBox.y + sourceBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(targetBox.x + targetBox.width / 2, targetBox.y + targetBox.height - 2, { steps: 4 });
+  const direct = await source.evaluate((element) => ({
+    pointerEvents: element.style.pointerEvents,
+    translate: element.style.translate,
+  }));
+  if (!direct.translate || direct.translate === "0px" || direct.pointerEvents !== "none") {
+    throw new Error(`${label} source should follow the pointer directly: ${JSON.stringify(direct)}.`);
+  }
+  const beforePointerUp = await rows.evaluateAll((elements, attribute) =>
+    elements.map((element) => element.getAttribute(attribute)), idAttribute);
+  if (JSON.stringify(beforePointerUp) !== JSON.stringify(before)) {
+    throw new Error(`${label} order should not persist before pointer-up.`);
+  }
+
+  await page.mouse.up();
+  await page.waitForFunction(({ selector, attribute, id }) => {
+    const elements = Array.from(document.querySelectorAll(selector));
+    return elements[1]?.getAttribute(attribute) === id;
+  }, { selector: rowSelector, attribute: idAttribute, id: sourceId });
+  const cleared = await page.evaluate(({ selector, attribute, id }) => {
+    const element = Array.from(document.querySelectorAll(selector))
+      .find((candidate) => candidate.getAttribute(attribute) === id);
+    return element instanceof HTMLElement
+      ? { pointerEvents: element.style.pointerEvents, translate: element.style.translate }
+      : null;
+  }, { selector: rowSelector, attribute: idAttribute, id: sourceId });
+  if (!cleared || cleared.pointerEvents || cleared.translate) {
+    throw new Error(`${label} direct drag state should clear after drop: ${JSON.stringify(cleared)}.`);
+  }
+}
+
 async function closeChatSearch(page) {
   await page.keyboard.press("Escape");
   if (await page.getByTestId("chat-search-input").isVisible().catch(() => false)) {
@@ -1855,8 +2023,8 @@ async function closeChatSearch(page) {
   await page.getByTestId("chat-search-input").waitFor({ state: "hidden" });
 }
 
-async function seedChatSearchFixture(page) {
-  await page.evaluate(async () => {
+async function seedChatSearchFixture(page, withQueuedMessages = false) {
+  await page.evaluate(async ({ withQueuedMessages }) => {
     const key = "milim.sessions";
     const invoke = window.__TAURI_INTERNALS__?.invoke;
     const raw = invoke ? await invoke("user_state_get", { key }) : window.localStorage.getItem(key);
@@ -1871,7 +2039,15 @@ async function seedChatSearchFixture(page) {
       updatedAt: now,
     };
     const existingSessions = Array.isArray(state.sessions) ? state.sessions : [];
-    const sessions = (existingSessions.length ? existingSessions : [current]).filter((session) => session && session.id !== "e2e-search-fixture");
+    const sessions = (existingSessions.length ? existingSessions : [current]).filter((session) =>
+      session && session.id !== "e2e-search-fixture" && session.id !== "e2e-motion-fixture");
+    sessions.push({
+      id: "e2e-motion-fixture",
+      title: "Motion Fixture",
+      messages: [],
+      createdAt: now - 6 * 24 * 60 * 60 * 1000,
+      updatedAt: now - 1,
+    });
     sessions.push({
       id: "e2e-search-fixture",
       title: "Older Search Fixture",
@@ -1882,12 +2058,25 @@ async function seedChatSearchFixture(page) {
       updatedAt: now - 7 * 24 * 60 * 60 * 1000,
     });
     state.sessions = sessions;
+    const queuedMessagesBySession =
+      state.queuedMessagesBySession && typeof state.queuedMessagesBySession === "object"
+        ? { ...state.queuedMessagesBySession }
+        : {};
+    if (withQueuedMessages) {
+      queuedMessagesBySession["e2e-search-fixture"] = [
+        { id: "e2e-queued-first", content: "First queued fixture", createdAt: now - 2 },
+        { id: "e2e-queued-second", content: "Second queued fixture", createdAt: now - 1 },
+      ];
+    } else {
+      delete queuedMessagesBySession["e2e-search-fixture"];
+    }
+    state.queuedMessagesBySession = queuedMessagesBySession;
     if (!sessions.some((session) => session.id === state.activeId)) state.activeId = sessions[0].id;
     parsed.state = state;
     const value = JSON.stringify(parsed);
     if (invoke) await invoke("user_state_set", { key, value });
     else window.localStorage.setItem(key, value);
-  });
+  }, { withQueuedMessages });
   await page.reload();
   await page.getByTestId("chat-shell").waitFor();
 }

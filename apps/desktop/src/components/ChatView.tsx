@@ -630,7 +630,7 @@ const CONTEXT_STACK_THRESHOLD = CONTEXT_PANEL_WIDTH + CHAT_MAIN_MIN_WIDTH;
 const CONCURRENT_PANEL_THRESHOLD = INSPECTOR_STACK_THRESHOLD + CONTEXT_PANEL_WIDTH;
 const PREVIEW_PANEL_KEYBOARD_STEP = 32;
 const PREVIEW_PANEL_COLLAPSE_OVERSHOOT = 96;
-const PREVIEW_PANEL_ANIMATION_MS = 100;
+const PREVIEW_PANEL_ANIMATION_MS = 180;
 const MEDIA_CONTEXT_MESSAGE_LIMIT = 10;
 const MEDIA_CONTEXT_CHAR_LIMIT = 1800;
 const HOT_SWAP_CONTINUE_PROMPT =
@@ -2199,6 +2199,8 @@ type QueuedPointerDrag = {
   startX: number;
   startY: number;
   active: boolean;
+  source: HTMLElement;
+  captureTarget: HTMLButtonElement;
 };
 
 const QUEUED_DRAG_THRESHOLD = 4;
@@ -2246,6 +2248,15 @@ function QueuedMessageTray({
   }
 
   function clearQueuedDrag() {
+    const drag = pointerDragRef.current;
+    if (drag) {
+      drag.source.style.removeProperty("pointer-events");
+      drag.source.style.removeProperty("translate");
+      drag.source.style.removeProperty("will-change");
+      if (drag.captureTarget.hasPointerCapture(drag.pointerId)) {
+        drag.captureTarget.releasePointerCapture(drag.pointerId);
+      }
+    }
     pointerDragRef.current = null;
     setDraggingId(null);
     setQueuedDropTarget(null);
@@ -2276,6 +2287,10 @@ function QueuedMessageTray({
       Boolean(interruptingMessageId)
     )
       return;
+    const source = event.currentTarget.closest<HTMLElement>(
+      "[data-queued-message-id]",
+    );
+    if (!source) return;
     event.currentTarget.setPointerCapture(event.pointerId);
     pointerDragRef.current = {
       id,
@@ -2283,6 +2298,8 @@ function QueuedMessageTray({
       startX: event.clientX,
       startY: event.clientY,
       active: false,
+      source,
+      captureTarget: event.currentTarget,
     };
   }
 
@@ -2296,9 +2313,12 @@ function QueuedMessageTray({
     if (!drag.active && moved < QUEUED_DRAG_THRESHOLD) return;
     if (!drag.active) {
       drag.active = true;
+      drag.source.style.pointerEvents = "none";
+      drag.source.style.willChange = "translate";
       setDraggingId(drag.id);
     }
     event.preventDefault();
+    drag.source.style.translate = `0 ${event.clientY - drag.startY}px`;
     setQueuedDropTarget(dropTargetAt(event.clientX, event.clientY, drag.id));
   }
 
@@ -2323,8 +2343,12 @@ function QueuedMessageTray({
         );
       }
     }
-    if (event.currentTarget.hasPointerCapture(event.pointerId))
-      event.currentTarget.releasePointerCapture(event.pointerId);
+    clearQueuedDrag();
+  }
+
+  function cancelQueuedDrag(event: ReactPointerEvent<HTMLButtonElement>) {
+    const drag = pointerDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
     clearQueuedDrag();
   }
 
@@ -2371,11 +2395,7 @@ function QueuedMessageTray({
                 onPointerDown={(event) => startQueuedDrag(event, item.id)}
                 onPointerMove={moveQueuedDrag}
                 onPointerUp={endQueuedDrag}
-                onPointerCancel={(event) => {
-                  if (event.currentTarget.hasPointerCapture(event.pointerId))
-                    event.currentTarget.releasePointerCapture(event.pointerId);
-                  clearQueuedDrag();
-                }}
+                onPointerCancel={cancelQueuedDrag}
                 onKeyDown={(event) =>
                   moveQueuedWithKeyboard(event, item, index)
                 }

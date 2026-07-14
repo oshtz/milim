@@ -373,15 +373,11 @@
   color: var(--primary-text);
   cursor: pointer;
   text-align: left;
-  transition: background 0.15s, border-color 0.15s, transform 0.15s;
+  transition: background 0.15s, border-color 0.15s;
 }
 
 .agent-starter-card:hover {
   background: var(--panel-row-hover);
-}
-
-.agent-starter-card:active {
-  transform: translateY(1px);
 }
 
 .agent-starter-badge {
@@ -563,13 +559,12 @@
   color: var(--secondary-text);
   cursor: pointer;
   text-align: left;
-  transition: background 0.15s, border-color 0.15s, transform 0.15s;
+  transition: background 0.15s, border-color 0.15s;
 }
 
 .tool-capability-card:hover {
   border-color: var(--border-secondary);
   background: var(--panel-row-hover);
-  transform: translateY(-1px);
 }
 
 .tool-capability-card.selected {

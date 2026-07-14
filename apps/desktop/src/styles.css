@@ -87,7 +87,7 @@ body {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.workers-collapse-toggle svg { transform: rotate(-90deg); transition: transform 120ms ease; }
+.workers-collapse-toggle svg { transform: rotate(-90deg); transition: transform var(--motion-fast) var(--motion-ease-out); }
 .workers-collapse-toggle[aria-expanded="true"] svg { transform: rotate(0); }
 .context-section-reveal {
   display: grid;
@@ -95,7 +95,7 @@ body {
   opacity: 1;
   transform: translateY(0);
   visibility: visible;
-  transition: grid-template-rows 0.12s ease, opacity 0.12s ease, transform 0.12s ease, visibility 0s linear;
+  transition: grid-template-rows var(--motion-fast) var(--motion-ease-out), opacity var(--motion-fast) var(--motion-ease-out), transform var(--motion-fast) var(--motion-ease-out), visibility 0s linear;
 }
 .context-section-reveal[data-collapsed="true"] {
   grid-template-rows: 0fr;
@@ -387,17 +387,10 @@ button { font-family: inherit; }
   background: linear-gradient(110deg, currentColor 0 34%, #fff 46%, currentColor 58% 100%);
   background-repeat: no-repeat;
   background-size: 300% 100%;
-  background-position: 100% 0;
+  background-position: 0 0;
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
-  animation: shiny-text 2.4s linear infinite;
-}
-@keyframes shiny-text {
-  62%, 100% { background-position: 0 0; }
-}
-@media (prefers-reduced-motion: reduce) {
-  .shiny-text { animation: none; }
 }
 body.sidebar-pointer-dragging {
   cursor: grabbing;
@@ -411,8 +404,12 @@ body.sidebar-pointer-dragging .session-section-title {
 :root {
   --titlebar-height: 44px;
   --chat-content-width: 760px;
-  --preview-panel-motion-duration: 100ms;
-  --preview-panel-motion-ease: ease;
+  --motion-fast: 120ms;
+  --motion-standard: 180ms;
+  --motion-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --motion-ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --preview-panel-motion-duration: var(--motion-standard);
+  --preview-panel-motion-ease: var(--motion-ease-out);
   --card-radius: 12px;
   --input-radius: 10px;
   --chip-radius: 8px;
@@ -555,7 +552,7 @@ body.sidebar-pointer-dragging .session-section-title {
   display: grid;
   grid-template-rows: auto 1fr;
   gap: clamp(28px, 8vh, 68px);
-  animation: app-error-enter 320ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  animation: app-error-enter var(--motion-standard) var(--motion-ease-out) both;
 }
 .app-error-brand {
   display: flex;
@@ -599,7 +596,6 @@ body.sidebar-pointer-dragging .session-section-title {
   border-radius: 2px;
   background: var(--error, #f87171);
   box-shadow: 0 0 0 4px color-mix(in srgb, var(--error) 12%, transparent);
-  animation: app-error-pulse 2.4s ease-in-out infinite;
 }
 .app-error-copy h1 {
   max-width: 560px;
@@ -639,15 +635,11 @@ body.sidebar-pointer-dragging .session-section-title {
   font-size: 12.5px;
   font-weight: 650;
   cursor: pointer;
-  transition: filter 180ms ease, transform 180ms ease, box-shadow 180ms ease;
+  transition: filter 180ms ease, box-shadow 180ms ease;
 }
 .app-error-reload:hover {
   filter: brightness(1.08);
-  transform: translateY(-1px);
   box-shadow: 0 8px 22px color-mix(in srgb, var(--accent) 14%, transparent);
-}
-.app-error-reload:active {
-  transform: translateY(0) scale(0.98);
 }
 .app-error-reload:focus-visible,
 .app-error-details summary:focus-visible {
@@ -693,10 +685,6 @@ body.sidebar-pointer-dragging .session-section-title {
   from { opacity: 0; transform: translateY(8px); }
   to { opacity: 1; transform: translateY(0); }
 }
-@keyframes app-error-pulse {
-  0%, 100% { opacity: 0.7; }
-  50% { opacity: 1; }
-}
 @media (max-width: 420px) {
   .app-error-state {
     place-items: start center;
@@ -729,16 +717,6 @@ body.sidebar-pointer-dragging .session-section-title {
     margin-top: 14px;
   }
 }
-@media (prefers-reduced-motion: reduce) {
-  .app-error-layout,
-  .app-error-kicker > span {
-    animation: none;
-  }
-  .app-error-reload {
-    transition: none;
-  }
-}
-
 /* ---- Top bar (also the window title bar - draggable) ---- */
 .topbar {
   position: absolute;
@@ -983,14 +961,14 @@ body.sidebar-pointer-dragging .session-section-title {
   transform: translateX(4px) scale(0.98);
   transform-origin: top right;
   visibility: hidden;
-  transition: opacity 0.16s ease, transform 0.16s ease, visibility 0s linear 0.16s;
+  transition: opacity var(--motion-fast) var(--motion-ease-out), transform var(--motion-fast) var(--motion-ease-out), visibility 0s linear var(--motion-fast);
 }
 .menu.workspace-launcher-menu.open {
   opacity: 1;
   pointer-events: auto;
   transform: translateX(0) scale(1);
   visibility: visible;
-  transition: opacity 0.16s ease, transform 0.16s ease;
+  transition: opacity var(--motion-fast) var(--motion-ease-out), transform var(--motion-fast) var(--motion-ease-out);
 }
 .workspace-launcher-wrap.quick-summary .menu.workspace-launcher-menu {
   right: -34px;
@@ -1095,7 +1073,7 @@ body.sidebar-pointer-dragging .session-section-title {
   background: transparent;
   border-right: 1px solid var(--border-primary);
   box-shadow: inset -1px 0 0 var(--glass-edge);
-  transition: width 0.1s ease, border-color 0.1s ease;
+  transition: width var(--motion-standard) var(--motion-ease-out), border-color 0.1s ease;
 }
 .sidebar::before {
   content: "";
@@ -1293,7 +1271,7 @@ body.sidebar-pointer-dragging .session-section-title {
   flex-direction: column;
   gap: 3px;
   border-radius: 8px;
-  transition: gap 0.12s ease;
+  transition: gap var(--motion-fast) var(--motion-ease-out);
 }
 .session-section.collapsed {
   gap: 0;
@@ -1330,6 +1308,7 @@ body.sidebar-pointer-dragging .session-section-title {
 .session-section.dragging,
 .session-item.dragging {
   opacity: 0.58;
+  z-index: 3;
 }
 .session-section.drag-over.drop-before,
 .session-section.drag-over.drop-after {
@@ -1421,7 +1400,7 @@ body.sidebar-pointer-dragging .session-section-title {
   color: color-mix(in srgb, var(--tertiary-text) 78%, var(--accent));
 }
 .section-type-icon.chat-toggle-icon svg {
-  transition: transform 0.12s ease;
+  transition: transform var(--motion-fast) var(--motion-ease-out);
 }
 .session-section.collapsed .section-type-icon.chat-toggle-icon svg {
   transform: rotate(-90deg);
@@ -1572,7 +1551,7 @@ body.sidebar-pointer-dragging .session-section-title {
   height: 24px;
 }
 .session-side-indicator {
-  transition: opacity 0.12s ease, visibility 0.12s ease;
+  transition: opacity var(--motion-fast) var(--motion-ease-out), visibility var(--motion-fast) var(--motion-ease-out);
 }
 .session-recency {
   padding-right: 3px;
@@ -1592,7 +1571,7 @@ body.sidebar-pointer-dragging .session-section-title {
   gap: 2px;
   opacity: 0;
   pointer-events: none;
-  transition: opacity 0.12s ease;
+  transition: opacity var(--motion-fast) var(--motion-ease-out);
 }
 .session-side-btn {
   display: grid;
@@ -1991,15 +1970,6 @@ body.sidebar-pointer-dragging .session-section-title {
   background: var(--panel-row-hover);
   color: var(--primary-text);
 }
-.git-panel-toggle:active,
-.git-panel-title:active,
-.git-icon-btn:active,
-.git-branch-chip:active,
-.git-action:active,
-.git-agent-action:active,
-button.git-row:active {
-  transform: translateY(1px);
-}
 .git-panel-toggle:focus-visible,
 .git-panel-title:focus-visible,
 .git-icon-btn:focus-visible,
@@ -2118,7 +2088,7 @@ button.git-row:focus-visible {
 }
 .git-panel-chevron {
   color: var(--tertiary-text);
-  transition: transform 0.15s ease;
+  transition: transform var(--motion-fast) var(--motion-ease-out);
 }
 .git-panel-chevron.expanded {
   transform: rotate(180deg);
@@ -2777,9 +2747,6 @@ button.git-row:hover svg {
   background: var(--panel-row-hover);
   color: var(--primary-text);
 }
-.git-command-options button:active {
-  transform: translateY(1px);
-}
 .git-command-options button:disabled {
   cursor: default;
   opacity: 0.42;
@@ -3234,7 +3201,7 @@ button.git-row:hover svg {
 }
 .sidebar-workbench-caret {
   margin-left: auto;
-  transition: transform 0.12s ease;
+  transition: transform var(--motion-fast) var(--motion-ease-out);
 }
 .sidebar-workbench-toggle[aria-expanded="true"] .sidebar-workbench-caret {
   transform: rotate(180deg);
@@ -3245,7 +3212,7 @@ button.git-row:hover svg {
   opacity: 0;
   pointer-events: none;
   transform: translateY(4px);
-  transition: max-height 0.12s ease, opacity 0.12s ease, transform 0.12s ease;
+  transition: max-height var(--motion-fast) var(--motion-ease-out), opacity var(--motion-fast) var(--motion-ease-out), transform var(--motion-fast) var(--motion-ease-out);
 }
 .sidebar-workbench-wrap.expanded .sidebar-workbench-reveal {
   max-height: 152px;
@@ -3317,7 +3284,8 @@ button.git-row:hover svg {
   max-width: none;
   border-top: 1px solid var(--border-primary);
   border-left: 0;
-  animation-name: preview-panel-stack-in;
+  opacity: 1;
+  transition: flex-basis var(--motion-standard) var(--motion-ease-out), opacity var(--motion-fast) var(--motion-ease-out);
 }
 .chat-body.inspector-stacked > .quick-summary-panel.open {
   flex: 0 0 min(38vh, 300px);
@@ -3329,22 +3297,26 @@ button.git-row:hover svg {
   max-height: calc(100% - 16px);
   margin: 8px;
 }
-.chat-body.inspector-stacked .inspector-git-panel {
-  animation-duration: var(--preview-panel-motion-duration);
-  animation-timing-function: var(--preview-panel-motion-ease);
-  animation-fill-mode: both;
-}
 .chat-body.inspector-stacked > .preview-panel.closing,
 .chat-body.inspector-stacked .inspector-git-panel:has(.closing) {
-  animation-name: preview-panel-stack-out;
+  flex-basis: 0;
+  opacity: 0;
 }
 .chat-body.inspector-stacked .inspector-git-panel > .preview-panel {
   border-top: 0;
   border-left: 0;
-  animation: none;
+  transition: none;
 }
+.chat-body.inspector-stacked > .preview-panel.no-enter,
 .chat-body.inspector-stacked .inspector-git-panel:has(.no-enter) {
-  animation: none;
+  transition: none;
+}
+@starting-style {
+  .chat-body.inspector-stacked > .preview-panel:not(.no-enter),
+  .chat-body.inspector-stacked .inspector-git-panel:not(:has(.no-enter)) {
+    flex-basis: 0;
+    opacity: 0;
+  }
 }
 .chat-body.inspector-stacked .preview-toolbar {
   padding: 8px 10px;
@@ -3404,15 +3376,24 @@ button.git-row:hover svg {
   cursor: col-resize;
   touch-action: none;
   outline: none;
-  animation: preview-resize-handle-in var(--preview-panel-motion-duration) var(--preview-panel-motion-ease) both;
-  will-change: flex-basis, width, opacity;
+  opacity: 1;
+  transition: flex-basis var(--motion-standard) var(--motion-ease-out), width var(--motion-standard) var(--motion-ease-out), opacity var(--motion-fast) var(--motion-ease-out);
 }
 .preview-resize-handle.closing {
   pointer-events: none;
-  animation: preview-resize-handle-out var(--preview-panel-motion-duration) var(--preview-panel-motion-ease) both;
+  flex-basis: 0;
+  width: 0;
+  opacity: 0;
 }
 .preview-resize-handle.no-enter {
-  animation: none;
+  transition: none;
+}
+@starting-style {
+  .preview-resize-handle:not(.no-enter) {
+    flex-basis: 0;
+    width: 0;
+    opacity: 0;
+  }
 }
 .preview-resize-handle::before {
   content: "";
@@ -3449,16 +3430,27 @@ button.git-row:hover svg {
   border-left: 1px solid var(--border-primary);
   background: var(--panel-bg);
   overflow: hidden;
-  animation: preview-panel-in var(--preview-panel-motion-duration) var(--preview-panel-motion-ease) both;
-  will-change: flex-basis, min-width;
+  opacity: 1;
+  transition: flex-basis var(--motion-standard) var(--motion-ease-out), min-width var(--motion-standard) var(--motion-ease-out), border-left-color var(--motion-standard) var(--motion-ease-out), opacity var(--motion-fast) var(--motion-ease-out);
   container: preview-panel / inline-size;
 }
 .preview-panel.closing {
   pointer-events: none;
-  animation: preview-panel-out var(--preview-panel-motion-duration) var(--preview-panel-motion-ease) both;
+  flex-basis: 0;
+  min-width: 0;
+  border-left-color: transparent;
+  opacity: 0;
 }
 .preview-panel.no-enter {
-  animation: none;
+  transition: none;
+}
+@starting-style {
+  .preview-panel:not(.no-enter) {
+    flex-basis: 0;
+    min-width: 0;
+    border-left-color: transparent;
+    opacity: 0;
+  }
 }
 .preview-header {
   flex: 0 0 auto;
@@ -3619,7 +3611,7 @@ button.git-row:hover svg {
   opacity: 0;
   overflow: hidden;
   pointer-events: none;
-  transition: flex-basis 0.16s ease, width 0.16s ease, opacity 0.16s ease;
+  transition: flex-basis var(--motion-standard) var(--motion-ease-out), width var(--motion-standard) var(--motion-ease-out), opacity var(--motion-standard) var(--motion-ease-out);
 }
 .quick-summary-panel.open {
   flex-basis: 300px;
@@ -3700,7 +3692,7 @@ button.git-row:hover svg {
   cursor: pointer;
 }
 .quick-summary-section-toggle:hover { background: var(--panel-row-hover); color: var(--secondary-text); }
-.quick-summary-section-toggle svg { flex: none; transform: rotate(-90deg); transition: transform 120ms ease; }
+.quick-summary-section-toggle svg { flex: none; transform: rotate(-90deg); transition: transform var(--motion-fast) var(--motion-ease-out); }
 .quick-summary-section-toggle[aria-expanded="true"] svg { transform: rotate(0); }
 .quick-summary-section-content { display: flex; flex-direction: column; gap: 2px; }
 .quick-summary-empty,
@@ -5040,71 +5032,6 @@ html[data-dark="true"] .preview-control-cursor {
     opacity: 1;
   }
 }
-@keyframes preview-resize-handle-in {
-  from {
-    flex-basis: 0;
-    width: 0;
-    opacity: 0;
-  }
-  to {
-    flex-basis: 8px;
-    width: 8px;
-    opacity: 1;
-  }
-}
-@keyframes preview-resize-handle-out {
-  from {
-    flex-basis: 8px;
-    width: 8px;
-    opacity: 1;
-  }
-  to {
-    flex-basis: 0;
-    width: 0;
-    opacity: 0;
-  }
-}
-@keyframes preview-panel-in {
-  from {
-    flex-basis: 0;
-    min-width: 0;
-    border-left-color: transparent;
-  }
-  to {
-    flex-basis: var(--preview-panel-width, clamp(360px, 32vw, 560px));
-    min-width: 360px;
-    border-left-color: var(--border-primary);
-  }
-}
-@keyframes preview-panel-out {
-  from {
-    flex-basis: var(--preview-panel-width, clamp(360px, 32vw, 560px));
-    min-width: 360px;
-    border-left-color: var(--border-primary);
-  }
-  to {
-    flex-basis: 0;
-    min-width: 0;
-    border-left-color: transparent;
-  }
-}
-@keyframes preview-panel-stack-in {
-  from {
-    flex-basis: 0;
-  }
-  to {
-    flex-basis: var(--preview-panel-stack-size, min(42vh, 360px));
-  }
-}
-@keyframes preview-panel-stack-out {
-  from {
-    flex-basis: var(--preview-panel-stack-size, min(42vh, 360px));
-  }
-  to {
-    flex-basis: 0;
-  }
-}
-
 /* ---- Messages ---- */
 .messages { width: 100%; max-width: var(--chat-content-width); margin: 0 auto; display: flex; flex-direction: column; gap: 12px; padding: 8px 0 4px; user-select: text; cursor: auto; }
 .messages.messages-virtualized { position: relative; display: block; padding: 8px 0 4px; }
@@ -5278,7 +5205,7 @@ html[data-dark="true"] .preview-control-cursor {
 .stream-diff-stat {
   display: inline-block;
   font-weight: 750;
-  animation: stream-stat-pop 0.32s cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation: stream-stat-pop var(--motion-standard) var(--motion-ease-out) both;
 }
 .stream-diff-stat.added {
   color: var(--success);
@@ -5287,13 +5214,10 @@ html[data-dark="true"] .preview-control-cursor {
   color: var(--error);
 }
 .stream-diff-stat.live {
-  animation:
-    stream-stat-pop 0.32s cubic-bezier(0.16, 1, 0.3, 1) both,
-    stream-stat-live 1.35s ease-in-out infinite 0.28s;
+  animation: stream-stat-pop var(--motion-standard) var(--motion-ease-out) both;
 }
 .stream-event-running .stream-event-icon {
   color: var(--accent-light);
-  animation: run-pulse 1.2s ease-in-out infinite;
 }
 .stream-event-error {
   color: var(--error);
@@ -5333,7 +5257,7 @@ html[data-dark="true"] .preview-control-cursor {
   border-bottom: 1.5px solid currentColor;
   opacity: 0.55;
   transform: rotate(-45deg);
-  transition: transform 0.16s ease, opacity 0.16s ease;
+  transition: transform var(--motion-fast) var(--motion-ease-out), opacity var(--motion-fast) var(--motion-ease-out);
 }
 .stream-tool-group[open] > summary::after {
   opacity: 0.8;
@@ -5373,7 +5297,7 @@ html[data-dark="true"] .preview-control-cursor {
   border-bottom: 1.5px solid currentColor;
   opacity: 0.55;
   transform: rotate(-45deg);
-  transition: transform 0.16s ease, opacity 0.16s ease;
+  transition: transform var(--motion-fast) var(--motion-ease-out), opacity var(--motion-fast) var(--motion-ease-out);
 }
 .stream-reasoning[open] > summary::after {
   opacity: 0.8;
@@ -5448,56 +5372,6 @@ html[data-dark="true"] .preview-control-cursor {
     opacity: 1;
     transform: translateY(0) scale(1);
     filter: blur(0);
-  }
-}
-@keyframes stream-stat-live {
-  0%, 100% {
-    filter: brightness(1);
-  }
-  50% {
-    filter: brightness(1.35);
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  .context-section-reveal,
-  .session-section,
-  .quick-summary-section-toggle svg,
-  .workers-collapse-toggle svg {
-    transition: none;
-  }
-  .stream-diff-stat,
-  .stream-diff-stat.live,
-  .loader,
-  .session-loader.working .loader::before,
-  .session-loader.working .loader::after,
-  .preview-resize-handle,
-  .preview-resize-handle.closing,
-  .preview-panel,
-  .preview-panel.closing,
-  .quick-summary-panel,
-  .workspace-launcher-menu {
-    animation: none;
-    filter: none;
-    transform: none;
-    transition: none;
-  }
-  .preview-control-overlay,
-  .preview-control-overlay::before,
-  .preview-control-overlay::after,
-  .preview-control-scan,
-  .preview-control-cursor,
-  .preview-control-cursor-glow,
-  .preview-control-click-ring,
-  .preview-control-scroll-cue,
-  .preview-control-caret {
-    animation: none;
-    filter: none;
-  }
-  .preview-control-overlay:not(.running) {
-    opacity: 0;
-  }
-  .preview-control-overlay.running {
-    opacity: 1;
   }
 }
 .message-attachments {
@@ -6628,7 +6502,7 @@ html[data-dark="true"] .preview-control-cursor {
 .run-step { display: grid; grid-template-columns: 14px minmax(0, 1fr); gap: 1px 6px; padding: 5px 1px; border-radius: 6px; }
 .run-step-dot { grid-row: 1 / span 2; width: 10px; height: 10px; margin-top: 3px; border: 1px solid var(--secondary-text); border-radius: 50%; }
 .run-step-dot.done { border-color: #3fb950; background: #3fb950; }
-.run-step-dot.running { border-color: var(--accent-light); animation: run-pulse 1.2s ease-in-out infinite; }
+.run-step-dot.running { border-color: var(--accent-light); }
 .run-step-dot.error { border-color: #f85149; background: #f85149; }
 .run-step-head { display: flex; min-width: 0; align-items: center; gap: 8px; }
 .run-step-name { font-family: var(--mono); font-size: 12px; color: var(--primary-text); }
@@ -6658,7 +6532,7 @@ html[data-dark="true"] .preview-control-cursor {
 .typing { display: inline-block; color: var(--tertiary-text); animation: blink 1s steps(2) infinite; }
 @keyframes blink { 50% { opacity: 0.2; } }
 .send-btn.stop { background: transparent; color: var(--primary-text); border: 1px solid var(--border-secondary); box-shadow: none; }
-.send-btn.stop:hover { background: var(--chip-hover); transform: none; }
+.send-btn.stop:hover { background: var(--chip-hover); }
 
 /* ---- Dock (control bar + composer) ---- */
 .dock {
@@ -6671,8 +6545,6 @@ html[data-dark="true"] .preview-control-cursor {
   position: relative;
   z-index: 2;
   transform: translateY(0);
-  transition: transform 190ms cubic-bezier(0.16, 1, 0.3, 1);
-  will-change: transform;
 }
 .chat-empty .dock {
   position: absolute;
@@ -6757,9 +6629,6 @@ html[data-dark="true"] .preview-control-cursor {
 .usage-empty-metric-label {
   font-size: 9.5px;
   text-transform: uppercase;
-}
-@media (prefers-reduced-motion: reduce) {
-  .dock { transition: none; }
 }
 @media (max-width: 620px) {
   .usage-empty-panel {
@@ -6907,7 +6776,7 @@ html[data-dark="true"] .preview-control-cursor {
   font: inherit;
   text-align: left;
   cursor: pointer;
-  transition: background 0.15s, color 0.15s, transform 0.15s;
+  transition: background 0.15s, color 0.15s;
 }
 .empty-starter-action + .empty-starter-action::before {
   content: "";
@@ -6921,9 +6790,6 @@ html[data-dark="true"] .preview-control-cursor {
 .empty-starter-action:hover {
   background: color-mix(in srgb, var(--accent) 7%, transparent);
   color: var(--primary-text);
-}
-.empty-starter-action:active {
-  transform: translateY(1px);
 }
 .empty-starter-action:focus-visible {
   outline: 2px solid var(--focus-border);
@@ -7051,7 +6917,7 @@ html[data-dark="true"] .preview-control-cursor {
   font-size: 12px;
 }
 .queued-item:hover { background: var(--panel-row-hover); }
-.queued-item.dragging { opacity: 0.48; }
+.queued-item.dragging { z-index: 2; opacity: 0.48; }
 .queued-item.drag-over::before,
 .queued-item.drag-over::after {
   position: absolute;
@@ -7787,7 +7653,7 @@ html[data-dark="true"] .preview-control-cursor {
   background: var(--accent);
   color: var(--accent-contrast);
   cursor: pointer;
-  transition: transform 0.12s, opacity 0.15s, box-shadow 0.15s;
+  transition: opacity 0.15s, box-shadow 0.15s;
   box-shadow: none;
 }
 .send-btn:hover:not(:disabled) { opacity: 0.92; }
@@ -7800,11 +7666,11 @@ html[data-dark="true"] .preview-control-cursor {
   z-index: 100;
   display: grid;
   place-items: center;
+  opacity: 1;
   background: rgba(0, 0, 0, 0.45);
   backdrop-filter: blur(2px);
-  animation: fade 0.15s ease;
+  transition: opacity var(--motion-standard) var(--motion-ease-out);
 }
-@keyframes fade { from { opacity: 0; } to { opacity: 1; } }
 .sheet {
   width: min(940px, 94vw);
   height: min(760px, 88vh);
@@ -7817,6 +7683,19 @@ html[data-dark="true"] .preview-control-cursor {
   background: color-mix(in srgb, var(--bg-secondary) 94%, var(--bg-primary));
   border: 1px solid var(--border-primary);
   box-shadow: 0 18px 44px rgba(0, 0, 0, 0.48);
+  opacity: 1;
+  scale: 1;
+  translate: 0;
+  transform-origin: center;
+  transition: opacity var(--motion-standard) var(--motion-ease-out), scale var(--motion-standard) var(--motion-ease-out), translate var(--motion-standard) var(--motion-ease-out);
+}
+@starting-style {
+  .sheet-overlay { opacity: 0; }
+  .sheet {
+    opacity: 0;
+    scale: 0.985;
+    translate: 0 6px;
+  }
 }
 .sheet-header { display: flex; align-items: center; justify-content: space-between; gap: 14px; flex: none; }
 .sheet-header h2 { margin: 0; font-size: 18px; font-weight: 650; }
@@ -8916,14 +8795,11 @@ html[data-dark="true"] .preview-control-cursor {
   color: var(--tertiary-text);
   font: inherit;
   cursor: pointer;
-  transition: border-color 0.15s, background 0.15s, color 0.15s, transform 0.12s;
+  transition: border-color 0.15s, background 0.15s, color 0.15s;
 }
 .appearance-background-option:hover {
   background: color-mix(in srgb, var(--chip-hover) 66%, transparent);
   color: var(--secondary-text);
-}
-.appearance-background-option:active {
-  transform: translateY(1px);
 }
 .appearance-background-option.active {
   border-color: color-mix(in srgb, var(--border-secondary) 72%, transparent);
@@ -9257,9 +9133,9 @@ html[data-dark="true"] .preview-control-cursor {
   background: color-mix(in srgb, var(--bg-secondary) 66%, transparent);
   border: 1px solid color-mix(in srgb, var(--border-primary) 88%, transparent);
   cursor: pointer;
-  transition: border-color 0.15s, background 0.15s, transform 0.12s, box-shadow 0.15s;
+  transition: border-color 0.15s, background 0.15s, box-shadow 0.15s;
 }
-.theme-card:hover { background: var(--panel-row-hover); transform: none; }
+.theme-card:hover { background: var(--panel-row-hover); }
 .theme-card.active { border-color: var(--border-secondary); background: var(--panel-row-active); }
 .theme-card.low-contrast { border-color: var(--warning); }
 .theme-edit-button {
@@ -9889,11 +9765,6 @@ html[data-dark="true"] .preview-control-cursor {
 @keyframes onboarding-preflight-show {
   to { opacity: 0.62; }
 }
-@media (prefers-reduced-motion: reduce) {
-  .onboarding-preflight::after {
-    animation: onboarding-preflight-show 1ms linear 0.5s forwards;
-  }
-}
 .onboarding-overlay {
   place-items: center;
   padding: 24px;
@@ -10334,12 +10205,6 @@ html[data-dark="true"] .preview-control-cursor {
   from { opacity: 0; transform: translateY(10px) scale(0.99); }
   to { opacity: 1; transform: translateY(0) scale(1); }
 }
-@media (prefers-reduced-motion: reduce) {
-  .onboarding-overlay .onboarding-panel {
-    animation: none;
-  }
-}
-
 @media (max-width: 760px) {
   .chat-body {
     flex-direction: column;
@@ -10353,15 +10218,11 @@ html[data-dark="true"] .preview-control-cursor {
     min-width: 0;
     border-left: 0;
     border-top: 1px solid var(--border-primary);
-    animation-name: preview-panel-stack-in;
   }
   .quick-summary-panel.open {
     flex: 0 0 min(38vh, 300px);
     width: 100%;
     min-width: 0;
-  }
-  .preview-panel.closing {
-    animation-name: preview-panel-stack-out;
   }
   .preview-toolbar {
     padding: 8px 10px;
@@ -12218,7 +12079,6 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
   padding: 16px;
   background: rgba(0, 0, 0, 0.22);
   backdrop-filter: blur(2px);
-  animation: fade 0.12s ease;
 }
 .chat-search-popover {
   width: min(620px, 100%);
@@ -12269,6 +12129,39 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
   min-height: 0;
   overflow-y: auto;
   padding: 4px;
+}
+
+/* Occasional surfaces retain a short, origin-aware entry. Frequent keyboard
+   surfaces (search, model/composer menus, and context menus) stay instant. */
+:is(
+  .session-menu,
+  .preview-overflow-menu,
+  .sheet .ui-select-menu,
+  .sheet .ui-color-pop
+) {
+  opacity: 1;
+  scale: 1;
+  transition: opacity var(--motion-fast) var(--motion-ease-out), scale var(--motion-fast) var(--motion-ease-out);
+  transform-origin: top right;
+}
+.session-menu.project-menu,
+.sheet .ui-select-menu,
+.sheet .ui-color-pop {
+  transform-origin: top left;
+}
+.sheet .editor-typography .ui-select-menu {
+  transform-origin: bottom left;
+}
+@starting-style {
+  :is(
+    .session-menu,
+    .preview-overflow-menu,
+    .sheet .ui-select-menu,
+    .sheet .ui-color-pop
+  ) {
+    opacity: 0;
+    scale: 0.98;
+  }
 }
 .chat-search-result {
   width: 100%;
@@ -12485,6 +12378,112 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
   .model-tag
 ) {
   border-radius: var(--chip-radius);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  :is(
+    .app-error-reload,
+    .icon-btn,
+    .new-chat,
+    .section-icon-btn,
+    .session-side-btn,
+    .git-icon-btn,
+    .git-action,
+    .git-agent-action,
+    .git-command-options button,
+    .btn-ghost,
+    .btn-accent,
+    .btn-file,
+    .tool-btn,
+    .code-action,
+    .send-btn,
+    .queued-activate,
+    .queued-action,
+    .attachment-remove,
+    .sheet-close
+  ):active:not(:focus-visible):not(:disabled) {
+    scale: 0.98;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-error-layout,
+  .stream-diff-stat,
+  .stream-diff-stat.live,
+  .session-loader.working .loader,
+  .session-loader.working .loader::before,
+  .session-loader.working .loader::after,
+  .preview-control-overlay,
+  .preview-control-overlay::before,
+  .preview-control-overlay::after,
+  .preview-control-scan,
+  .preview-control-overlay.inspect .preview-control-scan,
+  .preview-control-cursor,
+  .preview-control-cursor-glow,
+  .preview-control-overlay:is(.move, .click, .scroll, .type) .preview-control-cursor,
+  .preview-control-overlay:is(.move, .click, .scroll, .type) .preview-control-cursor-glow,
+  .preview-control-click-ring,
+  .preview-control-scroll-cue,
+  .preview-control-caret,
+  .btn-ghost.running::before,
+  .progress-fill.indeterminate,
+  .onboarding-overlay .onboarding-panel {
+    animation: none;
+    filter: none;
+  }
+  .context-section-reveal,
+  .app-error-reload,
+  .session-section,
+  .section-type-icon.chat-toggle-icon svg,
+  .sidebar-workbench-caret,
+  .sidebar-workbench-reveal,
+  .git-panel-chevron,
+  .stream-tool-group > summary::after,
+  .stream-reasoning > summary::after,
+  .quick-summary-section-toggle svg,
+  .workers-collapse-toggle svg,
+  .preview-resize-handle,
+  .preview-resize-handle.closing,
+  .preview-panel,
+  .preview-panel.closing,
+  .inspector-git-panel,
+  .quick-summary-panel {
+    transition: none;
+  }
+  .sidebar {
+    transition: border-color 0.1s ease;
+  }
+  .sheet,
+  .sheet-overlay,
+  .session-menu,
+  .sheet .ui-select-menu,
+  .sheet .ui-color-pop,
+  .preview-overflow-menu {
+    scale: 1;
+    translate: 0;
+    transition: opacity var(--motion-fast) linear;
+  }
+  .workspace-launcher-menu {
+    transform: none;
+    transition: none;
+  }
+  .preview-control-overlay:not(.running) {
+    opacity: 0;
+  }
+  .preview-control-overlay.running {
+    opacity: 1;
+  }
+  .btn-ghost.running::before {
+    border-right-color: currentColor;
+    opacity: 0.6;
+  }
+  .progress-fill.indeterminate {
+    opacity: 0.65;
+    transform: none;
+  }
+  .onboarding-preflight::after {
+    animation: onboarding-preflight-show 1ms linear 0.5s forwards;
+  }
 }
 
 /* scrollbars */
