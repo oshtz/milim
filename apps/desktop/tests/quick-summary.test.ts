@@ -232,7 +232,7 @@ try {
     createElement(QuickSummaryPanel, {
       summary: {
         ...withActivity,
-        rows: [...withActivity.rows, row(active, "goal")],
+        rows: [row(dirty, "workspace"), ...withActivity.rows.filter((item) => item.kind !== "workspace"), row(active, "goal")],
         sources: Array.from({ length: 7 }, (_, index) => ({
           kind: "attachment" as const,
           label: `source-${index + 1}`,
@@ -252,6 +252,7 @@ try {
     assert.match(groupedMarkup, new RegExp(`>${section}<`));
   }
   assert.match(groupedMarkup, /data-testid="worker-panel"/);
+  assert.match(groupedMarkup, /class="git-diff-stat-add">\+23<\/span> <span class="git-diff-stat-delete">-4<\/span>/);
   assert.match(groupedMarkup, /class="quick-summary-more"[^>]*aria-expanded="false"/);
   assert.match(groupedMarkup, />2 more<\/button>/);
   assert.match(groupedMarkup, /source-5/);

@@ -16,6 +16,12 @@ function toneClass(tone?: QuickSummaryRow["tone"]): string {
   return tone ? ` ${tone}` : "";
 }
 
+function rowValue(row: QuickSummaryRow): ReactNode {
+  const diff = row.kind === "workspace" && row.value.match(/^(.*)(\+\S+) (-\S+)$/);
+  if (!diff) return row.value;
+  return <>{diff[1]}<span className="git-diff-stat-add">{diff[2]}</span>{" "}<span className="git-diff-stat-delete">{diff[3]}</span></>;
+}
+
 function rowIcon(row: QuickSummaryRow): ReactNode {
   switch (row.kind) {
     case "workspace":
@@ -43,7 +49,7 @@ function ContextRow({ row, onClick }: { row: QuickSummaryRow; onClick?: () => vo
       <span className="quick-summary-row-icon" aria-hidden="true">{rowIcon(row)}</span>
       <span className="quick-summary-row-copy">
         <strong>{row.label}</strong>
-        <small>{row.value}</small>
+        <small>{rowValue(row)}</small>
         {row.meta && <em>{row.meta}</em>}
       </span>
     </>
