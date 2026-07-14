@@ -625,7 +625,6 @@ function isUsableMobileModel(model: ModelInfo): boolean {
   );
 }
 
-const PREVIEW_PANEL_MAX_WIDTH = 900;
 const CHAT_MAIN_MIN_WIDTH = 420;
 const PREVIEW_RESIZE_HANDLE_WIDTH = 8;
 const CONTEXT_PANEL_WIDTH = 300;
@@ -1730,13 +1729,10 @@ function maxPreviewPanelWidth(chatBodyWidth?: number, reservedWidth = 0): number
   const availableWidth =
     chatBodyWidth ??
     (typeof window === "undefined" ? undefined : window.innerWidth);
-  if (availableWidth === undefined) return PREVIEW_PANEL_MAX_WIDTH;
-  return Math.min(
-    PREVIEW_PANEL_MAX_WIDTH,
-    Math.max(
-      PREVIEW_PANEL_MIN_WIDTH,
-      availableWidth - reservedWidth - CHAT_MAIN_MIN_WIDTH - PREVIEW_RESIZE_HANDLE_WIDTH,
-    ),
+  if (availableWidth === undefined) return DEFAULT_PREVIEW_PANEL_WIDTH;
+  return Math.max(
+    PREVIEW_PANEL_MIN_WIDTH,
+    availableWidth - reservedWidth - CHAT_MAIN_MIN_WIDTH - PREVIEW_RESIZE_HANDLE_WIDTH,
   );
 }
 

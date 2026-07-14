@@ -104,7 +104,7 @@ equal(useUiPreferences.getState().previewPanelWidth, 540, "preview panel width s
 equal(persistedUiState().previewPanelWidth, 540, "preview panel width should be persisted");
 
 useUiPreferences.getState().setPreviewPanelWidth(9999);
-equal(useUiPreferences.getState().previewPanelWidth, 900, "preview panel width should be capped");
+equal(useUiPreferences.getState().previewPanelWidth, 9999, "preview panel width should not have a fixed cap");
 
 useUiPreferences.getState().setUiSize(120);
 equal(useUiPreferences.getState().uiSize, 120, "UI size should update");

@@ -97,7 +97,6 @@ export const MIN_SIDEBAR_WIDTH = 220;
 export const MAX_SIDEBAR_WIDTH = 420;
 export const DEFAULT_PREVIEW_PANEL_WIDTH = 420;
 const MIN_PREVIEW_PANEL_WIDTH = 280;
-const MAX_PREVIEW_PANEL_WIDTH = 900;
 export const DEFAULT_UI_SIZE = 100;
 export const MIN_UI_SIZE = 80;
 export const MAX_UI_SIZE = 140;
@@ -110,7 +109,7 @@ export function normalizeSidebarWidth(width: number): number {
 
 function normalizePreviewPanelWidth(width: number): number {
   if (!Number.isFinite(width)) return DEFAULT_PREVIEW_PANEL_WIDTH;
-  return Math.round(Math.min(Math.max(width, MIN_PREVIEW_PANEL_WIDTH), MAX_PREVIEW_PANEL_WIDTH));
+  return Math.round(Math.max(width, MIN_PREVIEW_PANEL_WIDTH));
 }
 
 export function normalizeUiSize(size: number): number {
