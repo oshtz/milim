@@ -231,6 +231,30 @@ async function runPersistenceAndChat(page, pid) {
 }
 
 async function runSidebarSectionMotionCheck(page) {
+  const project = await page.evaluate(async ({ folder }) => {
+    const key = "milim.sessions";
+    const id = `project:${folder}`;
+    const invoke = window.__TAURI_INTERNALS__.invoke;
+    const raw = await invoke("user_state_get", { key });
+    const parsed = raw ? JSON.parse(raw) : { state: {} };
+    const state = parsed.state && typeof parsed.state === "object" ? parsed.state : {};
+    const now = Date.now();
+    state.sessions = [
+      ...(Array.isArray(state.sessions) ? state.sessions : []).filter((session) => session?.id !== "e2e-project-chat"),
+      { id: "e2e-project-chat", title: "Project chat", messages: [], settings: { folder }, createdAt: now, updatedAt: now },
+    ];
+    state.projects = [
+      ...(Array.isArray(state.projects) ? state.projects : []).filter((item) => item?.id !== id),
+      { id, name: "E2E Project", folder, createdAt: now, updatedAt: now },
+    ];
+    state.sidebar = { ...(state.sidebar ?? {}), projectFolders: [folder] };
+    state.activeId = "e2e-project-chat";
+    parsed.state = state;
+    await invoke("user_state_set", { key, value: JSON.stringify(parsed) });
+    return { name: "E2E Project" };
+  }, { folder: root });
+  await page.reload();
+  await page.getByTestId("chat-shell").waitFor();
   const sidebarMotion = await page.locator(".sidebar").evaluate((element) => {
     const style = getComputedStyle(element);
     return { duration: style.transitionDuration, property: style.transitionProperty };
@@ -238,9 +262,9 @@ async function runSidebarSectionMotionCheck(page) {
   if (!sidebarMotion.property.includes("width") || !sidebarMotion.duration.includes("0.18s")) {
     throw new Error(`Sidebar width should use the shared 180ms transition: ${JSON.stringify(sidebarMotion)}.`);
   }
-  const collapse = page.getByRole("button", { name: "Collapse Chats", exact: true });
+  const collapse = page.getByRole("button", { name: `Collapse ${project.name}`, exact: true });
   await collapse.waitFor();
-  const section = page.locator('[data-sidebar-section-id="chats"]');
+  const section = page.locator("[data-sidebar-section-id]", { hasText: project.name });
   const reveal = section.locator(".context-section-reveal");
   const expanded = await reveal.evaluate((element) => {
     const style = getComputedStyle(element);
@@ -252,32 +276,32 @@ async function runSidebarSectionMotionCheck(page) {
     };
   });
   if (expanded.height <= 0 || expanded.visibility !== "visible") {
-    throw new Error(`Expected the Chats section to start expanded, got ${JSON.stringify(expanded)}.`);
+    throw new Error(`Expected the project section to start expanded, got ${JSON.stringify(expanded)}.`);
   }
   if (!expanded.transitionDuration.includes("0.12s") || !expanded.transitionProperty.includes("grid-template-rows")) {
-    throw new Error(`Chats section did not reuse the app collapse motion: ${JSON.stringify(expanded)}.`);
+    throw new Error(`Project section did not reuse the app collapse motion: ${JSON.stringify(expanded)}.`);
   }
 
   await collapse.click();
   await assertAttribute(reveal, "aria-hidden", "true");
-  if (await reveal.count() !== 1) throw new Error("Collapsed Chats content should remain mounted for its exit motion.");
+  if (await reveal.count() !== 1) throw new Error("Collapsed project content should remain mounted for its exit motion.");
   await delay(160);
   const collapsed = await reveal.evaluate((element) => ({
     height: element.getBoundingClientRect().height,
     visibility: getComputedStyle(element).visibility,
   }));
   if (collapsed.height > 0.5 || collapsed.visibility !== "hidden") {
-    throw new Error(`Expected the Chats section collapse motion to finish hidden, got ${JSON.stringify(collapsed)}.`);
+    throw new Error(`Expected the project section collapse motion to finish hidden, got ${JSON.stringify(collapsed)}.`);
   }
 
-  await page.getByRole("button", { name: "Expand Chats", exact: true }).click();
+  await page.getByRole("button", { name: `Expand ${project.name}`, exact: true }).click();
   await delay(160);
   const reopened = await reveal.evaluate((element) => ({
     height: element.getBoundingClientRect().height,
     visibility: getComputedStyle(element).visibility,
   }));
   if (reopened.height <= 0 || reopened.visibility !== "visible") {
-    throw new Error(`Expected the Chats section expand motion to restore its content, got ${JSON.stringify(reopened)}.`);
+    throw new Error(`Expected the project section expand motion to restore its content, got ${JSON.stringify(reopened)}.`);
   }
 
   await page.emulateMedia({ reducedMotion: "reduce" });

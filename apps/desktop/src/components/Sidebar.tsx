@@ -668,7 +668,6 @@ export function Sidebar({
       item.type === "section" ? "[data-sidebar-section-id]" : "[data-sidebar-session-id]",
     );
     if (!source) return;
-    event.currentTarget.setPointerCapture(event.pointerId);
     pointerDragRef.current = {
       item,
       pointerId: event.pointerId,
@@ -693,6 +692,7 @@ export function Sidebar({
     if (!drag.active && moved < SIDEBAR_DRAG_THRESHOLD) return;
     if (!drag.active) {
       drag.active = true;
+      drag.captureTarget.setPointerCapture(drag.pointerId);
       drag.source.style.pointerEvents = "none";
       drag.source.style.willChange = "translate";
       document.body.classList.add("sidebar-pointer-dragging");
