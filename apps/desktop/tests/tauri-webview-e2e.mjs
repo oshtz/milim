@@ -27,6 +27,7 @@ const screenshots = {
   zoom: join(tmpdir(), "milim-tauri-webview-zoom-chip.png"),
   accountUsage: join(tmpdir(), "milim-tauri-webview-account-usage.png"),
   microUi: join(tmpdir(), "milim-tauri-webview-micro-ui.png"),
+  inspectorOverlay: join(tmpdir(), "milim-tauri-webview-inspector-overlay.png"),
   workersPlan: join(tmpdir(), "milim-tauri-webview-workers-plan.png"),
   workersNarrow: join(tmpdir(), "milim-tauri-webview-workers-narrow.png"),
   mcpAppsLight: join(tmpdir(), "milim-tauri-webview-mcp-apps-light.png"),
@@ -88,7 +89,11 @@ let failure;
 try {
   session = await launchTauri(milimHome);
   await resetFrontendStorage(session.page);
-  if (sidebarMotionOnly) {
+  if (nativePreviewOnly) {
+    const errors = collectErrors(session.page);
+    await runNativePreviewOcclusionCheck(session.page, session.child.pid);
+    consoleErrors.push(...errors);
+  } else if (sidebarMotionOnly) {
     const errors = collectErrors(session.page);
     await runSidebarSectionMotionCheck(session.page);
     consoleErrors.push(...errors);
@@ -186,10 +191,6 @@ async function runPersistenceAndChat(page, pid) {
   await page.getByTestId("chat-shell").waitFor();
   await dismissOnboardingIfPresent(page);
   await runNativePreviewOcclusionCheck(page, pid);
-  if (nativePreviewOnly) {
-    console.log("remainingChecks=skipped:native preview only");
-    return errors;
-  }
   await assertAgentOptions(page);
   await openSettings(page);
   await assertAppShortcutsPersisted(page);
@@ -583,6 +584,34 @@ async function runNativePreviewOcclusionCheck(page, pid) {
   await page.locator(".preview-native-browser-status").waitFor({ state: "hidden", timeout: 10_000 });
   const preview = await waitForNewVisibleWryWebview(pid, baselineHandles);
 
+  const previewHandle = page.getByTestId("preview-resize-handle");
+  await previewHandle.focus();
+  await page.keyboard.press("End");
+  await page.keyboard.press("ArrowLeft");
+  await page.waitForFunction(() => document.querySelector(".sidebar")?.classList.contains("collapsed"));
+  await delay(220);
+  await page.keyboard.press("End");
+  const nativeHostBefore = await page.getByTestId("preview-native-browser").boundingBox();
+  const nativeViewBefore = wryWebviews(pid).find((view) => view.handle === preview.handle);
+  await page.keyboard.press("ArrowLeft");
+  await page.waitForFunction(() => document.querySelector(".chat-body")?.classList.contains("inspector-overlay"));
+  await delay(100);
+  const nativeHostAfter = await page.getByTestId("preview-native-browser").boundingBox();
+  const nativeViewAfter = wryWebviews(pid).find((view) => view.handle === preview.handle);
+  if (
+    !nativeHostBefore ||
+    !nativeHostAfter ||
+    !nativeViewBefore ||
+    !nativeViewAfter ||
+    nativeHostAfter.width - nativeHostBefore.width < 30 ||
+    nativeViewAfter.width <= nativeViewBefore.width
+  ) {
+    throw new Error(`Native preview child webview should follow overlay host bounds: ${JSON.stringify({ nativeHostBefore, nativeHostAfter, nativeViewBefore, nativeViewAfter })}.`);
+  }
+  await page.keyboard.press("Enter");
+  await page.getByTitle("Expand sidebar").click();
+  await delay(220);
+
   await page.getByTestId("composer-input").fill("/goal");
   await page.getByTestId("composer-send").click();
   await page.getByTestId("goal-panel").waitFor();
@@ -637,7 +666,10 @@ public static class MilimWryWebviewProbe {
   [DllImport("user32.dll")] private static extern IntPtr GetParent(IntPtr hwnd);
   [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
   [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr hwnd);
+  [DllImport("user32.dll")] private static extern bool GetWindowRect(IntPtr hwnd, out Rect rect);
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetClassName(IntPtr hwnd, StringBuilder name, int maxCount);
+
+  private struct Rect { public int Left; public int Top; public int Right; public int Bottom; }
 
   public static string[] Find(uint pid) {
     var results = new List<string>();
@@ -646,8 +678,11 @@ public static class MilimWryWebviewProbe {
       GetWindowThreadProcessId(window, out windowPid);
       if (windowPid != pid || ClassName(window) != "Tauri Window") return true;
       EnumChildWindows(window, (child, __) => {
-        if (GetParent(child) == window && ClassName(child) == "WRY_WEBVIEW")
-          results.Add(child.ToInt64() + "|" + (IsWindowVisible(child) ? "1" : "0"));
+        if (GetParent(child) == window && ClassName(child) == "WRY_WEBVIEW") {
+          Rect rect;
+          GetWindowRect(child, out rect);
+          results.Add(child.ToInt64() + "|" + (IsWindowVisible(child) ? "1" : "0") + "|" + rect.Left + "|" + rect.Top + "|" + (rect.Right - rect.Left) + "|" + (rect.Bottom - rect.Top));
+        }
         return true;
       }, IntPtr.Zero);
       return true;
@@ -672,15 +707,15 @@ Add-Type -TypeDefinition $source
   }
   return result.stdout.trim()
     ? result.stdout.trim().split(/\r?\n/).map((line) => {
-      const [handle, visible] = line.split("|");
-      return { handle, visible: visible === "1" };
+      const [handle, visible, x, y, width, height] = line.split("|");
+      return { handle, visible: visible === "1", x: Number(x), y: Number(y), width: Number(width), height: Number(height) };
     })
     : [];
 }
 
 function describeWryWebviews(views) {
   return views.length
-    ? views.map((view) => `${view.handle}:${view.visible ? "visible" : "hidden"}`).join(" | ")
+    ? views.map((view) => `${view.handle}:${view.visible ? "visible" : "hidden"}:${view.width}x${view.height}@${view.x},${view.y}`).join(" | ")
     : "none";
 }
 
@@ -1916,6 +1951,8 @@ async function runMicroUiCheck(page) {
   await page.keyboard.press("Enter");
   await assertAttribute(previewHandle, "aria-valuenow", "420");
 
+  await runProgressiveInspectorResizeCheck(page, previewHandle);
+
   const previewHandleBox = await previewHandle.boundingBox();
   if (!previewHandleBox) throw new Error("Inspector resize handle should have measurable bounds.");
   await page.mouse.move(previewHandleBox.x + 4, previewHandleBox.y + previewHandleBox.height / 2);
@@ -1969,6 +2006,171 @@ async function runMicroUiCheck(page) {
     throw new Error("Reopened inspector should remain resizable.");
   }
   await page.keyboard.press("Enter");
+}
+
+async function runProgressiveInspectorResizeCheck(page, previewHandle) {
+  const sidebar = page.locator(".sidebar");
+  const sidebarHandle = page.getByTestId("sidebar-resize-handle");
+  const chatBody = page.locator(".chat-body");
+  const previewPanel = page.locator(".chat-body > .preview-panel");
+  const startBox = await previewHandle.boundingBox();
+  if (!startBox) throw new Error("Progressive inspector resize requires measurable handle bounds.");
+  const startX = startBox.x + startBox.width / 2;
+  const startY = startBox.y + startBox.height / 2;
+  const startWidth = Number(await previewHandle.getAttribute("aria-valuenow"));
+  const initial = await page.evaluate(() => {
+    const body = document.querySelector(".chat-body");
+    const rail = document.querySelector(".sidebar");
+    return {
+      bodyWidth: body?.getBoundingClientRect().width ?? 0,
+      sidebarWidth: rail?.getBoundingClientRect().width ?? 0,
+    };
+  });
+  const dockedLimit = Math.round(initial.bodyWidth - 420 - 8);
+  const sidebarGain = Math.round(initial.sidebarWidth - 48);
+  const dockedDelta = dockedLimit - startWidth;
+
+  await page.mouse.move(startX, startY);
+  await page.mouse.down();
+  await page.mouse.move(startX - dockedDelta - 31, startY);
+  if ((await sidebar.getAttribute("class"))?.includes("collapsed")) {
+    throw new Error("Inspector should not collapse the sidebar before the 32px overshoot.");
+  }
+  await page.mouse.move(startX - dockedDelta - 33, startY);
+  await page.waitForFunction(() => document.querySelector(".sidebar")?.classList.contains("collapsed"));
+  await page.mouse.move(startX - dockedDelta, startY);
+  await page.waitForFunction(() => !document.querySelector(".sidebar")?.classList.contains("collapsed"));
+  await page.mouse.up();
+  await previewHandle.focus();
+  await page.keyboard.press("Enter");
+  await delay(220);
+
+  await resetUiPersistenceWrites(page);
+  const stickyBox = await previewHandle.boundingBox();
+  if (!stickyBox) throw new Error("Inspector handle should remain measurable after reversal.");
+  const stickyX = stickyBox.x + stickyBox.width / 2;
+  const stickyY = stickyBox.y + stickyBox.height / 2;
+  await page.mouse.move(stickyX, stickyY);
+  await page.mouse.down();
+  await page.mouse.move(stickyX - dockedDelta - 33, stickyY);
+  await page.waitForFunction(() => document.querySelector(".sidebar")?.classList.contains("collapsed"));
+  await delay(220);
+  const overlayDelta = dockedLimit + sidebarGain - startWidth;
+  await page.mouse.move(stickyX - overlayDelta - 31, stickyY);
+  if ((await chatBody.getAttribute("class"))?.includes("inspector-overlay")) {
+    throw new Error("Inspector should not enter overlay before the second 32px overshoot.");
+  }
+  const transcriptBeforeOverlay = await page.locator(".chat-main").boundingBox();
+  await page.mouse.move(stickyX - overlayDelta - 33, stickyY);
+  await page.waitForFunction(() => document.querySelector(".chat-body")?.classList.contains("inspector-overlay"));
+  const overlayGeometry = await page.evaluate(() => {
+    const body = document.querySelector(".chat-body");
+    const transcript = document.querySelector(".chat-main");
+    const panel = body?.querySelector(":scope > .preview-panel, :scope > .inspector-git-panel");
+    const bodyRect = body?.getBoundingClientRect();
+    const transcriptRect = transcript?.getBoundingClientRect();
+    const panelRect = panel?.getBoundingClientRect();
+    return {
+      transcriptWidth: transcriptRect?.width ?? 0,
+      transcriptRight: transcriptRect?.right ?? 0,
+      panelLeft: panelRect?.left ?? 0,
+      panelRightGap: bodyRect && panelRect ? Math.abs(bodyRect.right - panelRect.right) : Infinity,
+    };
+  });
+  if (!transcriptBeforeOverlay || Math.abs(overlayGeometry.transcriptWidth - transcriptBeforeOverlay.width) > 1) {
+    throw new Error(`Overlay should not reflow the transcript: ${JSON.stringify({ transcriptBeforeOverlay, overlayGeometry })}.`);
+  }
+  if (overlayGeometry.panelLeft >= overlayGeometry.transcriptRight || overlayGeometry.panelRightGap > 1) {
+    throw new Error(`Overlay should right-anchor across the transcript: ${JSON.stringify(overlayGeometry)}.`);
+  }
+  if (!(await previewHandle.getAttribute("aria-valuetext"))?.includes("overlay")) {
+    throw new Error("Inspector separator should expose overlay state through aria-valuetext.");
+  }
+  await page.screenshot({ path: screenshots.inspectorOverlay, fullPage: false });
+  await page.mouse.move(stickyX - overlayDelta, stickyY);
+  await page.waitForFunction(() => !document.querySelector(".chat-body")?.classList.contains("inspector-overlay"));
+  await page.mouse.move(stickyX - overlayDelta - 33, stickyY);
+  await page.waitForFunction(() => document.querySelector(".chat-body")?.classList.contains("inspector-overlay"));
+  await assertUiPersistenceWrites(page, 1, "Progressive inspector drag before pointer-up");
+  await page.mouse.up();
+  await assertUiPersistenceWrites(page, 2, "Completed progressive inspector drag");
+  if (!(await sidebar.getAttribute("class"))?.includes("collapsed")) {
+    throw new Error("Auto-collapsed sidebar should remain collapsed after pointer-up.");
+  }
+
+  const overlayBox = await previewHandle.boundingBox();
+  if (!overlayBox) throw new Error("Overlay inspector handle should remain measurable.");
+  const overlayWidth = Number(await previewHandle.getAttribute("aria-valuenow"));
+  const collapsedDockedLimit = Math.round((await chatBody.boundingBox()).width - 420 - 8);
+  await page.mouse.move(overlayBox.x + overlayBox.width / 2, overlayBox.y + overlayBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(
+    overlayBox.x + overlayBox.width / 2 + overlayWidth - collapsedDockedLimit,
+    overlayBox.y + overlayBox.height / 2,
+  );
+  await page.waitForFunction(() => !document.querySelector(".chat-body")?.classList.contains("inspector-overlay"));
+  await page.mouse.up();
+
+  const contextLauncher = page.getByTestId("open-context-panel");
+  await contextLauncher.click();
+  const context = page.getByTestId("quick-summary-panel");
+  await context.waitFor();
+  await delay(220);
+  await previewHandle.focus();
+  await page.keyboard.press("End");
+  const contextHandleBox = await previewHandle.boundingBox();
+  if (!contextHandleBox) throw new Error("Inspector handle should be measurable beside Context.");
+  const dockedGeometry = await page.evaluate(() => ({
+    transcript: document.querySelector(".chat-main")?.getBoundingClientRect().toJSON(),
+    context: document.querySelector('[data-testid="quick-summary-panel"]')?.getBoundingClientRect().toJSON(),
+  }));
+  const contextX = contextHandleBox.x + contextHandleBox.width / 2;
+  const contextY = contextHandleBox.y + contextHandleBox.height / 2;
+  await page.mouse.move(contextX, contextY);
+  await page.mouse.down();
+  await page.mouse.move(contextX - 31, contextY);
+  if ((await chatBody.getAttribute("class"))?.includes("inspector-overlay")) {
+    throw new Error("Collapsed-sidebar overlay should still require a 32px overshoot.");
+  }
+  await page.mouse.move(contextX - 33, contextY);
+  await page.waitForFunction(() => document.querySelector(".chat-body")?.classList.contains("inspector-overlay"));
+  const contextOverlayGeometry = await page.evaluate(() => ({
+    transcript: document.querySelector(".chat-main")?.getBoundingClientRect().toJSON(),
+    context: document.querySelector('[data-testid="quick-summary-panel"]')?.getBoundingClientRect().toJSON(),
+    panel: document.querySelector(".chat-body > .preview-panel")?.getBoundingClientRect().toJSON(),
+  }));
+  if (
+    Math.abs(contextOverlayGeometry.transcript.width - dockedGeometry.transcript.width) > 1 ||
+    Math.abs(contextOverlayGeometry.context.width - dockedGeometry.context.width) > 1 ||
+    contextOverlayGeometry.panel.left >= contextOverlayGeometry.context.right
+  ) {
+    throw new Error(`Overlay should cover Context without reflowing it: ${JSON.stringify({ dockedGeometry, contextOverlayGeometry })}.`);
+  }
+  await page.mouse.move(contextX, contextY);
+  await page.waitForFunction(() => !document.querySelector(".chat-body")?.classList.contains("inspector-overlay"));
+  await page.mouse.up();
+  await page.getByLabel("Close context", { exact: true }).click();
+
+  await page.getByTitle("Expand sidebar").click();
+  await sidebarHandle.waitFor();
+  await delay(220);
+  await previewHandle.focus();
+  await page.keyboard.press("End");
+  await page.keyboard.press("ArrowLeft");
+  await page.waitForFunction(() => document.querySelector(".sidebar")?.classList.contains("collapsed"));
+  await delay(220);
+  await page.keyboard.press("End");
+  await page.keyboard.press("ArrowLeft");
+  await page.waitForFunction(() => document.querySelector(".chat-body")?.classList.contains("inspector-overlay"));
+  await page.keyboard.press("ArrowRight");
+  await page.waitForFunction(() => !document.querySelector(".chat-body")?.classList.contains("inspector-overlay"));
+  await page.keyboard.press("Home");
+  await assertAttribute(previewHandle, "aria-valuenow", "360");
+  await page.keyboard.press("Enter");
+  await assertAttribute(previewHandle, "aria-valuenow", "420");
+  await page.getByTitle("Expand sidebar").click();
+  await sidebarHandle.waitFor();
+  await delay(220);
 }
 
 async function resetUiPersistenceWrites(page) {
@@ -2609,6 +2811,7 @@ function printEvidencePaths(milimHome) {
   console.log(`zoomScreenshot=${screenshots.zoom}`);
   console.log(`accountUsageScreenshot=${screenshots.accountUsage}`);
   console.log(`microUiScreenshot=${screenshots.microUi}`);
+  console.log(`inspectorOverlayScreenshot=${screenshots.inspectorOverlay}`);
   console.log(`workersPlanScreenshot=${screenshots.workersPlan}`);
   console.log(`workersNarrowScreenshot=${screenshots.workersNarrow}`);
   console.log(`mcpAppsLightScreenshot=${screenshots.mcpAppsLight}`);

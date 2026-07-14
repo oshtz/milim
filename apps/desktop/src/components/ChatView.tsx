@@ -633,8 +633,10 @@ const INSPECTOR_STACK_THRESHOLD =
 const CONTEXT_STACK_THRESHOLD = CONTEXT_PANEL_WIDTH + CHAT_MAIN_MIN_WIDTH;
 const CONCURRENT_PANEL_THRESHOLD = INSPECTOR_STACK_THRESHOLD + CONTEXT_PANEL_WIDTH;
 const PREVIEW_PANEL_KEYBOARD_STEP = 32;
+const PREVIEW_PANEL_STAGE_OVERSHOOT = 32;
 const PREVIEW_PANEL_COLLAPSE_OVERSHOOT = 96;
 const PREVIEW_PANEL_ANIMATION_MS = 180;
+const COLLAPSED_SIDEBAR_WIDTH = 48;
 const MEDIA_CONTEXT_MESSAGE_LIMIT = 10;
 const MEDIA_CONTEXT_CHAR_LIMIT = 1800;
 const HOT_SWAP_CONTINUE_PROMPT =
@@ -1725,22 +1727,32 @@ function extensionOf(filename: string): string {
   return dot >= 0 ? filename.slice(dot + 1).toLowerCase() : "";
 }
 
-function maxPreviewPanelWidth(chatBodyWidth?: number, reservedWidth = 0): number {
+function maxPreviewPanelWidth(
+  chatBodyWidth?: number,
+  reservedWidth = 0,
+  overlay = false,
+): number {
   const availableWidth =
     chatBodyWidth ??
     (typeof window === "undefined" ? undefined : window.innerWidth);
   if (availableWidth === undefined) return DEFAULT_PREVIEW_PANEL_WIDTH;
   return Math.max(
     PREVIEW_PANEL_MIN_WIDTH,
-    availableWidth - reservedWidth - CHAT_MAIN_MIN_WIDTH - PREVIEW_RESIZE_HANDLE_WIDTH,
+    availableWidth -
+      (overlay ? PREVIEW_RESIZE_HANDLE_WIDTH : reservedWidth + CHAT_MAIN_MIN_WIDTH + PREVIEW_RESIZE_HANDLE_WIDTH),
   );
 }
 
-function clampPreviewPanelWidth(width: number, chatBodyWidth?: number, reservedWidth = 0): number {
+function clampPreviewPanelWidth(
+  width: number,
+  chatBodyWidth?: number,
+  reservedWidth = 0,
+  overlay = false,
+): number {
   return Math.round(
     Math.min(
       Math.max(width, PREVIEW_PANEL_MIN_WIDTH),
-      maxPreviewPanelWidth(chatBodyWidth, reservedWidth),
+      maxPreviewPanelWidth(chatBodyWidth, reservedWidth, overlay),
     ),
   );
 }
@@ -3244,6 +3256,9 @@ export function ChatView({
   const setMediaSettings = useSettings((s) => s.setMediaSettings);
   const previewPanelWidth = useUiPreferences((s) => s.previewPanelWidth);
   const setPreviewPanelWidth = useUiPreferences((s) => s.setPreviewPanelWidth);
+  const sidebarOpen = useUiPreferences((s) => s.sidebarOpen);
+  const sidebarWidth = useUiPreferences((s) => s.sidebarWidth);
+  const setSidebarOpen = useUiPreferences((s) => s.setSidebarOpen);
   const appShortcuts = useUiPreferences((s) => s.appShortcuts);
   const toggleSidebar = useUiPreferences((s) => s.toggleSidebar);
   const autoTitleChats = useUiPreferences((s) => s.autoTitleChats);
@@ -3501,10 +3516,16 @@ export function ChatView({
   const previewResizeStartRef = useRef<{
     clientX: number;
     width: number;
+    intentWidth: number;
     latestWidth: number;
     pointerId: number;
     target: HTMLDivElement;
     snappedClosed: boolean;
+    sidebarWasOpen: boolean;
+    sidebarAutoCollapsed: boolean;
+    sidebarCollapseBoundary: number;
+    overlayBoundary: number;
+    overlayActive: boolean;
   } | null>(null);
   const previewResizeCleanupRef = useRef<(() => void) | null>(null);
   const previewCloseTimeoutRef = useRef<number | null>(null);
@@ -3537,6 +3558,7 @@ export function ChatView({
   const messageHeightsRef = useRef<number[]>([]);
   const gitStatusUpdatedAtRef = useRef<number | null>(null);
   const [previewResizing, setPreviewResizing] = useState(false);
+  const [previewPanelOverlay, setPreviewPanelOverlay] = useState(false);
   const [recentThreadSwitcher, setRecentThreadSwitcher] =
     useState<RecentThreadSwitcherState | null>(null);
   const [messageScrollSnapshot, setMessageScrollSnapshot] = useState({
@@ -4785,13 +4807,19 @@ export function ChatView({
   const inspectorStacked = sidePanelVisible && chatBodyWidth < INSPECTOR_STACK_THRESHOLD;
   const panelsStacked = contextStacked || inspectorStacked;
   const reservedContextWidth = contextPanelOpen && !contextStacked ? CONTEXT_PANEL_WIDTH : 0;
+  const dockedPreviewPanelWidth = maxPreviewPanelWidth(
+    chatBodyWidth,
+    reservedContextWidth,
+  );
   const resolvedPreviewPanelWidth = clampPreviewPanelWidth(
     previewResizeStartRef.current?.latestWidth ?? previewPanelWidth,
     chatBodyWidth,
     reservedContextWidth,
+    previewPanelOverlay,
   );
   const previewPanelStyle = {
     "--preview-panel-width": `${resolvedPreviewPanelWidth}px`,
+    "--preview-panel-docked-width": `${dockedPreviewPanelWidth}px`,
   } as CSSProperties;
   const inspectorLauncherLabel =
     inspectorTab === "git"
@@ -5043,6 +5071,37 @@ export function ChatView({
   }, [activeId, chatBodyWidth, contextPanelOpen, setSessionContextPanelOpen, sidePanelVisible]);
 
   useEffect(() => {
+    setPreviewPanelOverlay(false);
+    if (previewResizeStartRef.current) {
+      previewResizeStartRef.current.overlayActive = false;
+    }
+  }, [activeId]);
+
+  useEffect(() => {
+    if (sidePanelVisible && !panelsStacked) return;
+    setPreviewPanelOverlay(false);
+    if (previewResizeStartRef.current) {
+      previewResizeStartRef.current.overlayActive = false;
+    }
+  }, [panelsStacked, sidePanelVisible]);
+
+  useEffect(() => {
+    if (
+      previewPanelOverlay &&
+      !previewResizeStartRef.current &&
+      previewPanelWidth <= dockedPreviewPanelWidth
+    ) {
+      setPreviewPanelOverlay(false);
+    }
+  }, [dockedPreviewPanelWidth, previewPanelOverlay, previewPanelWidth]);
+
+  useEffect(() => {
+    const start = previewResizeStartRef.current;
+    if (!start || start.snappedClosed) return;
+    resizePreviewPanelDuringDrag(start.intentWidth);
+  }, [chatBodyWidth, reservedContextWidth]);
+
+  useEffect(() => {
     if (
       activeWorkerRun?.run.status === "proposed" ||
       activeWorkerRun?.run.status === "running"
@@ -5067,36 +5126,53 @@ export function ChatView({
     window.requestAnimationFrame(() => contextLauncherRef.current?.focus());
   }
 
-  function resizePreviewPanel(width: number) {
+  function resizePreviewPanel(width: number, overlay = previewPanelOverlay) {
     setPreviewPanelWidth(
-      clampPreviewPanelWidth(width, chatBodyWidth, reservedContextWidth),
+      clampPreviewPanelWidth(width, chatBodyWidth, reservedContextWidth, overlay),
     );
   }
 
   function resizePreviewPanelDuringDrag(width: number) {
     const start = previewResizeStartRef.current;
     if (!start) return;
+    const bodyWidth = chatBodyRef.current?.getBoundingClientRect().width ?? chatBodyWidth;
     const nextWidth = clampPreviewPanelWidth(
       width,
-      chatBodyWidth,
+      bodyWidth,
       reservedContextWidth,
+      start.overlayActive,
     );
     start.latestWidth = nextWidth;
     chatBodyRef.current?.style.setProperty("--preview-panel-width", `${nextWidth}px`);
     previewResizeHandleRef.current?.setAttribute("aria-valuenow", String(nextWidth));
+    previewResizeHandleRef.current?.setAttribute(
+      "aria-valuetext",
+      `${nextWidth} pixels, ${start.overlayActive ? "overlay" : "docked"}`,
+    );
   }
 
   function startPreviewResize(event: ReactPointerEvent<HTMLDivElement>) {
     if (event.button !== 0) return;
     event.preventDefault();
     const target = event.currentTarget;
+    const bodyWidth = chatBodyRef.current?.getBoundingClientRect().width ?? chatBodyWidth;
+    const dockedLimit = maxPreviewPanelWidth(bodyWidth, reservedContextWidth);
+    const sidebarGain = sidebarOpen
+      ? Math.max(0, sidebarWidth - COLLAPSED_SIDEBAR_WIDTH)
+      : 0;
     previewResizeStartRef.current = {
       clientX: event.clientX,
       width: resolvedPreviewPanelWidth,
+      intentWidth: resolvedPreviewPanelWidth,
       latestWidth: resolvedPreviewPanelWidth,
       pointerId: event.pointerId,
       target,
       snappedClosed: false,
+      sidebarWasOpen: sidebarOpen,
+      sidebarAutoCollapsed: false,
+      sidebarCollapseBoundary: dockedLimit,
+      overlayBoundary: dockedLimit + sidebarGain,
+      overlayActive: previewPanelOverlay,
     };
     setPreviewResizing(true);
     target.setPointerCapture(event.pointerId);
@@ -5117,6 +5193,7 @@ export function ChatView({
     const start = previewResizeStartRef.current;
     if (!start || event.pointerId !== start.pointerId) return;
     const width = start.width + start.clientX - event.clientX;
+    start.intentWidth = width;
     if (width < PREVIEW_PANEL_MIN_WIDTH - PREVIEW_PANEL_COLLAPSE_OVERSHOOT) {
       if (!start.snappedClosed) {
         start.snappedClosed = true;
@@ -5129,12 +5206,41 @@ export function ChatView({
       start.snappedClosed = false;
       start.latestWidth = clampPreviewPanelWidth(
         width,
-        chatBodyWidth,
+        chatBodyRef.current?.getBoundingClientRect().width ?? chatBodyWidth,
         reservedContextWidth,
+        start.overlayActive,
       );
       clearPreviewCloseTimer();
       setPreviewPanelClosing(false);
       setSessionInspectorOpen(activeId, true);
+    }
+
+    if (start.overlayActive && width <= start.overlayBoundary) {
+      start.overlayActive = false;
+      setPreviewPanelOverlay(false);
+    }
+    if (
+      start.sidebarWasOpen &&
+      start.sidebarAutoCollapsed &&
+      width <= start.sidebarCollapseBoundary
+    ) {
+      start.sidebarAutoCollapsed = false;
+      setSidebarOpen(true);
+    } else if (
+      start.sidebarWasOpen &&
+      !start.sidebarAutoCollapsed &&
+      width >= start.sidebarCollapseBoundary + PREVIEW_PANEL_STAGE_OVERSHOOT
+    ) {
+      start.sidebarAutoCollapsed = true;
+      setSidebarOpen(false);
+    }
+    if (
+      !start.overlayActive &&
+      (!start.sidebarWasOpen || start.sidebarAutoCollapsed) &&
+      width >= start.overlayBoundary + PREVIEW_PANEL_STAGE_OVERSHOOT
+    ) {
+      start.overlayActive = true;
+      setPreviewPanelOverlay(true);
     }
     resizePreviewPanelDuringDrag(width);
   }
@@ -5142,12 +5248,20 @@ export function ChatView({
   function endPreviewResize(event: PointerEvent) {
     const start = previewResizeStartRef.current;
     if (!start || event.pointerId !== start.pointerId) return;
+    const bodyWidth = chatBodyRef.current?.getBoundingClientRect().width ?? chatBodyWidth;
     const finalWidth = clampPreviewPanelWidth(
       start.latestWidth,
-      chatBodyWidth,
+      bodyWidth,
       reservedContextWidth,
+      start.overlayActive,
     );
     if (finalWidth !== start.width) setPreviewPanelWidth(finalWidth);
+    if (
+      start.overlayActive &&
+      finalWidth <= maxPreviewPanelWidth(bodyWidth, reservedContextWidth)
+    ) {
+      setPreviewPanelOverlay(false);
+    }
     previewResizeStartRef.current = null;
     previewResizeCleanupRef.current?.();
     setPreviewResizing(false);
@@ -5159,23 +5273,39 @@ export function ChatView({
   function resizePreviewWithKeyboard(event: KeyboardEvent<HTMLDivElement>) {
     if (event.key === "ArrowLeft") {
       event.preventDefault();
-      resizePreviewPanel(
-        resolvedPreviewPanelWidth + PREVIEW_PANEL_KEYBOARD_STEP,
-      );
+      if (previewPanelOverlay) {
+        resizePreviewPanel(resolvedPreviewPanelWidth + PREVIEW_PANEL_KEYBOARD_STEP, true);
+      } else if (resolvedPreviewPanelWidth < dockedPreviewPanelWidth) {
+        resizePreviewPanel(resolvedPreviewPanelWidth + PREVIEW_PANEL_KEYBOARD_STEP, false);
+      } else if (sidebarOpen) {
+        setSidebarOpen(false);
+      } else {
+        setPreviewPanelOverlay(true);
+        resizePreviewPanel(resolvedPreviewPanelWidth + PREVIEW_PANEL_KEYBOARD_STEP, true);
+      }
     } else if (event.key === "ArrowRight") {
       event.preventDefault();
-      resizePreviewPanel(
-        resolvedPreviewPanelWidth - PREVIEW_PANEL_KEYBOARD_STEP,
-      );
+      const nextWidth = resolvedPreviewPanelWidth - PREVIEW_PANEL_KEYBOARD_STEP;
+      if (previewPanelOverlay && nextWidth <= dockedPreviewPanelWidth) {
+        setPreviewPanelOverlay(false);
+        resizePreviewPanel(dockedPreviewPanelWidth, false);
+      } else {
+        resizePreviewPanel(nextWidth, previewPanelOverlay);
+      }
     } else if (event.key === "Home") {
       event.preventDefault();
-      resizePreviewPanel(PREVIEW_PANEL_MIN_WIDTH);
+      setPreviewPanelOverlay(false);
+      resizePreviewPanel(PREVIEW_PANEL_MIN_WIDTH, false);
     } else if (event.key === "End") {
       event.preventDefault();
-      resizePreviewPanel(maxPreviewPanelWidth(chatBodyWidth, reservedContextWidth));
+      resizePreviewPanel(
+        maxPreviewPanelWidth(chatBodyWidth, reservedContextWidth, previewPanelOverlay),
+        previewPanelOverlay,
+      );
     } else if (event.key === "Enter") {
       event.preventDefault();
-      resizePreviewPanel(DEFAULT_PREVIEW_PANEL_WIDTH);
+      setPreviewPanelOverlay(false);
+      resizePreviewPanel(DEFAULT_PREVIEW_PANEL_WIDTH, false);
     }
   }
 
@@ -8332,7 +8462,7 @@ export function ChatView({
     >
       <div
         ref={chatBodyRef}
-        className={`chat-body${panelsStacked ? " inspector-stacked" : ""}`}
+        className={`chat-body${panelsStacked ? " inspector-stacked" : ""}${previewPanelOverlay && !panelsStacked ? " inspector-overlay" : ""}`}
         style={previewPanelStyle}
       >
         <div className="chat-main">
@@ -8609,22 +8739,33 @@ export function ChatView({
         />
         {sidePanelVisible && (
           <>
+            {previewPanelOverlay && !panelsStacked && (
+              <div className="preview-overlay-spacer" aria-hidden="true" />
+            )}
             {!panelsStacked && (
               <div
                 ref={previewResizeHandleRef}
                 className={`preview-resize-handle${previewResizing ? " dragging" : ""}${previewPanelClosing ? " closing" : ""}${sidePanelAlreadyOpen ? " no-enter" : ""}`}
                 data-testid="preview-resize-handle"
                 role="separator"
-                aria-label="Resize side panel; double-click or press Enter to reset"
-                title="Drag to resize; double-click to reset"
+                aria-label="Resize side panel; keep expanding at the limit to collapse the sidebar, then overlay the transcript"
+                title="Drag to resize; keep dragging at the limit for more space; double-click to reset"
                 aria-orientation="vertical"
                 aria-valuemin={PREVIEW_PANEL_MIN_WIDTH}
-                aria-valuemax={maxPreviewPanelWidth(chatBodyWidth, reservedContextWidth)}
+                aria-valuemax={maxPreviewPanelWidth(
+                  chatBodyWidth,
+                  reservedContextWidth,
+                  previewPanelOverlay,
+                )}
                 aria-valuenow={resolvedPreviewPanelWidth}
+                aria-valuetext={`${resolvedPreviewPanelWidth} pixels, ${previewPanelOverlay ? "overlay" : "docked"}`}
                 tabIndex={previewPanelClosing ? -1 : 0}
                 onKeyDown={resizePreviewWithKeyboard}
                 onPointerDown={startPreviewResize}
-                onDoubleClick={() => resizePreviewPanel(DEFAULT_PREVIEW_PANEL_WIDTH)}
+                onDoubleClick={() => {
+                  setPreviewPanelOverlay(false);
+                  resizePreviewPanel(DEFAULT_PREVIEW_PANEL_WIDTH, false);
+                }}
               />
             )}
             {inspectorTab === "git" ? (
