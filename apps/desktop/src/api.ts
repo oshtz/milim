@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { qualifyDuplicateProviderModels } from "./lib/modelPicker";
 import { wireMessages } from "./lib/attachmentWire.js";
 import { assertValidImageAttachment } from "./lib/attachmentInput.js";
+import { assertDesktopRequestBodyFits } from "./lib/requestBody.js";
 export {
   attachmentsToPromptContext,
   wireMessageContent,
@@ -630,6 +631,7 @@ async function authFetch(
   input: RequestInfo | URL,
   init: RequestInit = {},
 ): Promise<Response> {
+  assertDesktopRequestBodyFits(init.body);
   const headers = new Headers(init.headers);
   const [token, resolvedInput] = await Promise.all([
     localApiToken(),

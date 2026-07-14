@@ -1,5 +1,9 @@
 import type { ChatAttachment, ChatMessage } from "../api.js";
-import { assertValidImageAttachment } from "./attachmentInput.js";
+import {
+  assertValidImageAttachment,
+  OMITTED_IMAGE_NOTE,
+  selectOutboundImageAttachments,
+} from "./attachmentInput.js";
 
 // ponytail: local copy keeps pure wire tests from importing browser/Tauri API code.
 const MAX_ATTACHMENT_BYTES = 128 * 1024;
@@ -34,18 +38,23 @@ export function attachmentsToPromptContext(
     const imageText = attachment.dataUrl ? imageNote : "";
     return [
       `--- attachment ${meta} ---`,
-      content
-        ? content
-        : imageText || "[No text content available for this attachment.]",
+      [content, imageText].filter(Boolean).join("\n") ||
+        "[No text content available for this attachment.]",
       "--- end attachment ---",
     ].join("\n");
   });
   return ["[Attached files]", ...blocks, "[/Attached files]"].join("\n");
 }
 
-export function wireMessageContent(message: ChatMessage): string {
+export function wireMessageContent(
+  message: ChatMessage,
+  imageNote?: string,
+): string {
   if (message.approval) return "";
-  const attachmentContext = attachmentsToPromptContext(message.attachments);
+  const attachmentContext = attachmentsToPromptContext(
+    message.attachments,
+    imageNote,
+  );
   if (!attachmentContext) return message.content;
   return message.content
     ? `${message.content}\n\n${attachmentContext}`
@@ -76,11 +85,20 @@ function wireImageMessageText(message: ChatMessage): string {
 }
 
 export function wireMessages(messages: ChatMessage[]): WireChatMessage[] {
+  const selectedImages = selectOutboundImageAttachments(messages);
   return messages
     .filter((m) => !m.approval)
     .map((m) => {
-      const images = imageAttachments(m.attachments);
-      if (!images.length) return { role: m.role, content: wireMessageContent(m) };
+      const allImages = imageAttachments(m.attachments);
+      const images = allImages.filter((image) => selectedImages.has(image));
+      if (!images.length)
+        return {
+          role: m.role,
+          content: wireMessageContent(
+            m,
+            allImages.length ? OMITTED_IMAGE_NOTE : undefined,
+          ),
+        };
       return {
         role: m.role,
         content: [

@@ -1,4 +1,7 @@
 export const MAX_ATTACHMENT_IMAGE_BYTES = 2 * 1024 * 1024;
+export const MAX_OUTBOUND_IMAGE_DATA_URL_BYTES = 20 * 1024 * 1024;
+export const OMITTED_IMAGE_NOTE =
+  "[Earlier image attachments were omitted from this request to stay within Milim's size limit.]";
 
 const SUPPORTED_IMAGE_MIMES = new Set([
   "image/png",
@@ -13,6 +16,11 @@ type ImageAttachment = {
   size: number;
   dataUrl?: string;
   truncated?: boolean;
+};
+
+type ImageMessage<T extends ImageAttachment> = {
+  role: string;
+  attachments?: readonly T[];
 };
 
 export type AccountRuntimeImage = {
@@ -41,6 +49,56 @@ export function assertValidImageAttachment(attachment: ImageAttachment): void {
   if (!attachment.dataUrl?.toLowerCase().startsWith(prefix)) {
     throw new Error(`${label} could not be read as image data.`);
   }
+}
+
+export function selectOutboundImageAttachments<T extends ImageAttachment>(
+  messages: readonly ImageMessage<T>[],
+): Set<T> {
+  const groups = messages
+    .map((message, index) => ({
+      index,
+      images:
+        message.role === "user"
+          ? (message.attachments ?? []).filter((attachment) => {
+              if (!attachment.mime.toLowerCase().startsWith("image/"))
+                return false;
+              assertValidImageAttachment(attachment);
+              return true;
+            })
+          : [],
+    }))
+    .filter((group) => group.images.length > 0);
+  if (!groups.length) return new Set();
+
+  let latestUserIndex = -1;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index].role === "user") {
+      latestUserIndex = index;
+      break;
+    }
+  }
+  const selected = new Set<T>();
+  let used = 0;
+
+  for (let index = groups.length - 1; index >= 0; index -= 1) {
+    const group = groups[index];
+    const bytes = group.images.reduce(
+      (total, image) => total + image.dataUrl!.length,
+      0,
+    );
+    if (group.index === latestUserIndex) {
+      if (bytes > MAX_OUTBOUND_IMAGE_DATA_URL_BYTES) {
+        throw new Error(
+          "This message contains too much image data. Remove some images and retry.",
+        );
+      }
+    } else if (used + bytes > MAX_OUTBOUND_IMAGE_DATA_URL_BYTES) {
+      break;
+    }
+    for (const image of group.images) selected.add(image);
+    used += bytes;
+  }
+  return selected;
 }
 
 export function accountRuntimeImage(

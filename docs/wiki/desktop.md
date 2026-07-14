@@ -6,7 +6,7 @@ title: Desktop app
 summary: Unified threads, projects, composer controls, artifacts, plan mode, goals, search, rendering, settings, and slash commands.
 group: Core
 order: 30
-updated: 2026-07-13
+updated: 2026-07-14
 ---
 
 Milim has one model-agnostic workbench. Project, Agent, MCP, media, memory, sandbox, schedule, and computer-use features are always discoverable, with advanced tools collapsed until needed. The sidebar Tools launcher opens MCP servers, Skills, Schedules, and the media manager from one persistent place. The Tauri process starts the embedded backend, connects persisted MCP servers, and runs schedules in the background. The model picker loads cached models while one startup task refreshes enabled chat providers, then reconciles automatically; Codex and Claude discovery remain independent from provider availability. Background schedule completions and mobile relay events use shared app notices so they remain visible outside their settings panels. Closing the desktop window hides it to the system tray so those background services keep running; use the tray menu to reopen or quit.
@@ -42,7 +42,7 @@ User and assistant message bodies render Markdown in the transcript, and message
 
 The composer keeps prompt storage plain text. Recognized `@Skill Name`, `/Skill Name`, and `/server__tool` tags render as compact pills, while workspace `@file` references and bare HTTP(S) URLs render with link-like highlighting in the editor mirror layer; MCP slash suggestions insert the visible tag only and do not force a tool call or bypass approval/exposure policy.
 
-PNG, JPEG, WebP, and GIF attachments up to 2 MB each are preserved as real image content for provider chat, server-side agent runs, Codex app-server, Claude CLI, and provider-backed schedules. Browser and native attachment paths use the same validation and reject unsupported, oversized, empty, or unreadable images before attaching them. Codex receives temporary `localImage` inputs; Claude receives native base64 image blocks over `stream-json`; neither path uses OCR. Desktop files come from the native picker or workspace-relative `@file` suggestions under the selected folder.
+PNG, JPEG, WebP, and GIF attachments up to 2 MB each are preserved as real image content for provider chat, server-side agent runs, Codex app-server, Claude CLI, and provider-backed schedules. Browser and native attachment paths use the same validation and reject unsupported, oversized, empty, or unreadable images before attaching them. Each outbound turn keeps the latest images and then complete recent image-bearing turns newest-first within a 20 MiB encoded-image budget. Older pixels stay visible in the local transcript but are replaced by an omission note in model context; a final 30 MiB desktop body check reports removal/compaction guidance before the embedded server can return 413. Codex receives temporary `localImage` inputs; Claude receives native base64 image blocks over `stream-json`; neither path uses OCR. Desktop files come from the native picker or workspace-relative `@file` suggestions under the selected folder.
 
 Schedules accept the same stored `dataUrl` pixels and build a multimodal user message when they fire. A legacy scheduled image without stored pixel data records a visible reattachment error. Background schedules list and accept provider/local API models only; Codex and Claude account runtimes remain interactive because their approval and session semantics are not safe for unattended runs.
 

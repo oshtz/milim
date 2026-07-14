@@ -1,6 +1,8 @@
 import { createChatMessageId } from "./messageIds.js";
 import {
   accountRuntimeImage,
+  OMITTED_IMAGE_NOTE,
+  selectOutboundImageAttachments,
   type AccountRuntimeImage,
 } from "./attachmentInput.js";
 import type {
@@ -8,6 +10,7 @@ import type {
   AgentMemoryContext,
   AgentToolContext,
   AccountNativeWorkerLifecycle,
+  ChatAttachment,
   ChatMessage,
   ChatStreamPart,
   ChildThreadInfo,
@@ -310,9 +313,19 @@ export function createTurnAssistantStarter({
 }
 
 export function codexPromptFromMessages(messages: ChatMessage[]): string {
+  return codexPromptWithSelectedImages(
+    messages,
+    selectOutboundImageAttachments(messages),
+  );
+}
+
+function codexPromptWithSelectedImages(
+  messages: ChatMessage[],
+  selectedImages: Set<ChatAttachment>,
+): string {
   return messages
     .map((message) => {
-      const content = wireRuntimeMessageContent(message).trim();
+      const content = wireRuntimeMessageContent(message, selectedImages).trim();
       if (!content) return "";
       const role =
         message.role === "system"
@@ -330,11 +343,13 @@ export function accountRuntimeInputFromMessages(messages: ChatMessage[]): {
   prompt: string;
   images: AccountRuntimeImage[];
 } {
+  const selectedImages = selectOutboundImageAttachments(messages);
   return {
-    prompt: codexPromptFromMessages(messages),
+    prompt: codexPromptWithSelectedImages(messages, selectedImages),
     images: messages.flatMap((message) =>
       message.role === "user"
         ? (message.attachments ?? [])
+            .filter((attachment) => selectedImages.has(attachment))
             .map(accountRuntimeImage)
             .filter((image): image is AccountRuntimeImage => image !== null)
         : [],
@@ -342,9 +357,15 @@ export function accountRuntimeInputFromMessages(messages: ChatMessage[]): {
   };
 }
 
-function wireRuntimeMessageContent(message: ChatMessage): string {
+function wireRuntimeMessageContent(
+  message: ChatMessage,
+  selectedImages: Set<ChatAttachment>,
+): string {
   if (message.approval) return "";
-  const attachmentContext = attachmentsToPromptContext(message.attachments);
+  const attachmentContext = attachmentsToPromptContext(
+    message.attachments,
+    selectedImages,
+  );
   if (!attachmentContext) return message.content;
   return message.content
     ? `${message.content}\n\n${attachmentContext}`
@@ -353,6 +374,7 @@ function wireRuntimeMessageContent(message: ChatMessage): string {
 
 function attachmentsToPromptContext(
   attachments: ChatMessage["attachments"],
+  selectedImages: Set<ChatAttachment>,
 ): string {
   if (!attachments?.length) return "";
   const blocks = attachments.map((attachment) => {
@@ -367,13 +389,14 @@ function attachmentsToPromptContext(
       .join(" ");
     const content = attachment.content?.trimEnd();
     const imageNote = attachment.dataUrl
-      ? "[Image attached as multimodal input.]"
+      ? selectedImages.has(attachment)
+        ? "[Image attached as multimodal input.]"
+        : OMITTED_IMAGE_NOTE
       : "";
     return [
       `--- attachment ${meta} ---`,
-      content
-        ? content
-        : imageNote || "[No text content available for this attachment.]",
+      [content, imageNote].filter(Boolean).join("\n") ||
+        "[No text content available for this attachment.]",
       "--- end attachment ---",
     ].join("\n");
   });
