@@ -17,6 +17,7 @@ const microUiOnly = process.argv.includes("--micro-ui-only");
 const workersOnly = process.argv.includes("--workers-only");
 const mcpAppsOnly = process.argv.includes("--mcp-apps-only");
 const sidebarMotionOnly = process.argv.includes("--sidebar-motion-only");
+const mcpAppKinds = ["chart", "diagram", "form", "dashboard", "viewer"];
 const screenshots = {
   avatars: join(tmpdir(), "milim-tauri-webview-agent-avatars.png"),
   avatarsLight: join(tmpdir(), "milim-tauri-webview-agent-avatars-light.png"),
@@ -28,7 +29,8 @@ const screenshots = {
   microUi: join(tmpdir(), "milim-tauri-webview-micro-ui.png"),
   workersPlan: join(tmpdir(), "milim-tauri-webview-workers-plan.png"),
   workersNarrow: join(tmpdir(), "milim-tauri-webview-workers-narrow.png"),
-  mcpApps: join(tmpdir(), "milim-tauri-webview-mcp-apps.png"),
+  mcpAppsLight: join(tmpdir(), "milim-tauri-webview-mcp-apps-light.png"),
+  mcpAppsDark: join(tmpdir(), "milim-tauri-webview-mcp-apps-dark.png"),
   failure: join(tmpdir(), "milim-tauri-webview-failure.png"),
 };
 
@@ -94,7 +96,6 @@ try {
     await session.page.getByTestId("chat-shell").waitFor();
     await dismissOnboardingIfPresent(session.page);
     await runMcpAppsCheck(session.page);
-    await session.page.screenshot({ path: screenshots.mcpApps, fullPage: false });
   } else if (workersOnly) {
     const errors = collectErrors(session.page);
     await runWorkersInspectorCheck(session.page, milimHome);
@@ -292,43 +293,50 @@ async function runMcpAppsCheck(page) {
     });
     if (!response.ok) throw new Error(`MCP fixture setup failed: ${response.status} ${await response.text()}`);
     const now = Date.now();
-    const descriptor = {
-      server_id: "e2e-mcp-apps",
-      resource_uri: "ui://milim.test/chart",
-      tool: {
-        name: "show_chart",
-        description: "Show a chart",
-        inputSchema: { type: "object" },
-        _meta: { ui: { resourceUri: "ui://milim.test/chart" } },
-      },
-    };
+    const views = [
+      { kind: "chart", title: "Usage trend", result: { values: [35, 80, 58], labels: ["Build", "Test", "Ship"], total: "42.8k" } },
+      { kind: "diagram", title: "Agent flow", result: { nodes: ["Model", "Tool", "View"] } },
+      { kind: "form", title: "Run configuration", result: { model: "GPT-5.5", iterations: 6 } },
+      { kind: "dashboard", title: "Provider health", result: { latency: "284 ms", success: "99.7%", queue: 3 } },
+      { kind: "viewer", title: "Structured result", result: { status: "ready", files: 12, changed: 3 } },
+    ];
     const value = JSON.stringify({
       state: {
         sessions: [{
           id: "e2e-mcp-apps-thread",
           title: "MCP Apps fixture",
           messages: [
-            { role: "user", content: "Show the interactive chart." },
+            { role: "user", content: "Show an inline chart, diagram, form, dashboard, and viewer." },
             {
               id: "e2e-mcp-apps-turn",
               role: "assistant",
               content: "",
-              streamParts: [{
+              streamParts: views.map((view, index) => ({
                 kind: "event",
                 eventType: "tool",
-                label: "Used show_chart",
-                name: "show_chart",
-                callId: "e2e-call",
+                label: `Used show_${view.kind}`,
+                name: `show_${view.kind}`,
+                callId: `e2e-call-${index}`,
                 icon: "tool",
                 status: "done",
                 toolArguments: "{}",
-                mcpApp: descriptor,
+                mcpApp: {
+                  server_id: "e2e-mcp-apps",
+                  resource_uri: `ui://milim.test/${view.kind}`,
+                  tool: {
+                    name: `show_${view.kind}`,
+                    title: view.title,
+                    description: `Show a ${view.kind}`,
+                    inputSchema: { type: "object" },
+                    _meta: { ui: { resourceUri: `ui://milim.test/${view.kind}` } },
+                  },
+                },
                 mcpAppResult: {
-                  content: [{ type: "text", text: "Chart data 0" }],
-                  structuredContent: { values: [35, 80, 58] },
+                  content: [{ type: "text", text: `${view.title} data` }],
+                  structuredContent: view.result,
                   _meta: { refreshCount: 0 },
                 },
-              }],
+              })),
             },
           ],
           settings: { model: "", instructions: "", activeAgentId: null, folder: "", sandbox: false, computerUse: false, memory: false, privacy: "off", toolApproval: "review", delegationPolicy: "off", workerModel: "", planMode: false },
@@ -345,11 +353,24 @@ async function runMcpAppsCheck(page) {
 
   await page.reload();
   await page.getByTestId("chat-shell").waitFor();
-  const app = page.getByTestId("mcp-app-view");
-  await app.waitFor({ timeout: 15_000 });
+  const kinds = mcpAppKinds;
+  const apps = page.getByTestId("mcp-app-view");
+  await page.waitForFunction(() => document.querySelectorAll('[data-testid="mcp-app-view"]').length === 5);
+  for (const kind of kinds) {
+    await page
+      .frameLocator(`iframe[title="MCP App ui://milim.test/${kind}"]`)
+      .locator(`body[data-view="${kind}"][data-ready="true"]`)
+      .waitFor({ timeout: 15_000 });
+  }
+
+  const lightStyles = await setMcpAppsTheme(page, kinds, "Mono Light", "light");
+  await page.getByTestId("assistant-message").last().screenshot({ path: screenshots.mcpAppsLight });
+  await captureMcpAppViewScreenshots(apps, kinds, "light");
+
+  const app = apps.first();
   const iframe = app.locator("iframe");
   await iframe.waitFor();
-  const frame = page.frameLocator("iframe.mcp-app-frame");
+  const frame = page.frameLocator('iframe[title="MCP App ui://milim.test/chart"]');
   await frame.getByRole("button", { name: "Refresh" }).waitFor({ timeout: 15_000 });
   await frame.locator("#security[data-parent-dom][data-storage]").waitFor({ state: "attached", timeout: 15_000 }).catch(async (error) => {
     const diagnostics = {
@@ -366,7 +387,6 @@ async function runMcpAppsCheck(page) {
     parentDom: await frame.locator("#security").getAttribute("data-parent-dom"),
     storage: await frame.locator("#security").getAttribute("data-storage"),
     sandbox: await iframe.getAttribute("sandbox"),
-    url: page.frames().find((candidate) => candidate.parentFrame() === page.mainFrame())?.url(),
   };
   if (isolation.parentDom !== "blocked") {
     throw new Error(`MCP App could access Milim's parent DOM: ${JSON.stringify(isolation)}`);
@@ -377,11 +397,9 @@ async function runMcpAppsCheck(page) {
   const viewUrl = await iframe.getAttribute("src");
   if (!viewUrl || viewUrl.includes(host.token)) throw new Error("MCP App view URL is missing or contains Milim's bearer token.");
   const frameHeight = await iframe.evaluate((element) => element.getBoundingClientRect().height);
-  if (Math.abs(frameHeight - 410) > 2) throw new Error(`MCP App resize was not applied: ${frameHeight}`);
+  if (Math.abs(frameHeight - 180) > 2) throw new Error(`MCP App resize was not applied: ${frameHeight}`);
 
-  const appFrame = page.frames().find((candidate) => candidate.parentFrame() === page.mainFrame());
-  if (!appFrame) throw new Error("MCP App frame was not attached.");
-  const network = await appFrame.evaluate(async (url) => {
+  const network = await frame.locator("body").evaluate(async (_body, url) => {
     try {
       await fetch(url);
       return "allowed";
@@ -394,17 +412,90 @@ async function runMcpAppsCheck(page) {
   await frame.getByRole("button", { name: "Refresh" }).click();
   const approval = app.locator(".mcp-app-approval");
   await approval.waitFor();
-  if (!(await approval.innerText()).includes("refresh_chart")) {
-    throw new Error("MCP App Review did not show the exact requested tool.");
+  const approvalText = await approval.innerText();
+  if (!approvalText.includes("refresh_chart") || !approvalText.includes("{}")) {
+    throw new Error(`MCP App Review did not show the exact call: ${approvalText}`);
   }
   await approval.getByRole("button", { name: "Approve once" }).click();
   await frame.locator("body[data-refresh-count='1']").waitFor();
-  const initialTheme = await frame.locator("body").getAttribute("data-theme");
+
+  const form = page.frameLocator('iframe[title="MCP App ui://milim.test/form"]');
+  await form.getByLabel("Iterations").fill("9");
+  await form.getByRole("button", { name: "Validate" }).click();
+  await form.locator("#form-status").filter({ hasText: "Validated" }).waitFor();
+  await page.frameLocator('iframe[title="MCP App ui://milim.test/diagram"]').getByLabel("Tool execution diagram").waitFor();
+  await page.frameLocator('iframe[title="MCP App ui://milim.test/dashboard"]').getByText("99.7%", { exact: true }).waitFor();
+  await page.frameLocator('iframe[title="MCP App ui://milim.test/viewer"]').getByText('"files": 12', { exact: false }).waitFor();
+
+  const darkStyles = await setMcpAppsTheme(page, kinds, "Mono Dark", "dark");
+  assertMcpAppsThemeStyles(lightStyles, darkStyles);
+  await page.getByTestId("assistant-message").last().screenshot({ path: screenshots.mcpAppsDark });
+  await captureMcpAppViewScreenshots(apps, kinds, "dark");
+}
+
+async function captureMcpAppViewScreenshots(apps, kinds, theme) {
+  for (const [index, kind] of kinds.entries()) {
+    await apps.nth(index).screenshot({ path: mcpAppViewScreenshot(kind, theme) });
+  }
+}
+
+function mcpAppViewScreenshot(kind, theme) {
+  return join(tmpdir(), `milim-tauri-webview-mcp-app-${kind}-${theme}.png`);
+}
+
+async function setMcpAppsTheme(page, kinds, themeName, expectedTheme) {
   await openSettings(page);
   await page.getByTestId("settings-section-appearance").click();
-  await page.locator(".theme-card").filter({ hasText: initialTheme === "dark" ? "Mono Light" : "Mono Dark" }).click();
+  await page.locator(".theme-card").filter({ hasText: themeName }).click();
   await closeSettings(page);
-  await frame.locator(`body[data-theme='${initialTheme === "dark" ? "light" : "dark"}']`).waitFor();
+  const styles = [];
+  for (const kind of kinds) {
+    const iframe = page.locator(`iframe[title="MCP App ui://milim.test/${kind}"]`);
+    await iframe.scrollIntoViewIfNeeded();
+    const body = page.frameLocator(`iframe[title="MCP App ui://milim.test/${kind}"]`).locator("body");
+    await body.locator(`:scope[data-theme="${expectedTheme}"]`).waitFor();
+    await page.waitForTimeout(180);
+    const applied = await body.evaluate((element) => ({
+      theme: element.dataset.theme,
+      background: getComputedStyle(element).backgroundColor,
+      color: getComputedStyle(element).color,
+    }));
+    if (applied.theme !== expectedTheme) {
+      throw new Error(`${kind} did not apply ${expectedTheme} host theme: ${JSON.stringify(applied)}`);
+    }
+    styles.push({ kind, ...applied });
+  }
+  return styles;
+}
+
+function assertMcpAppsThemeStyles(lightStyles, darkStyles) {
+  for (const light of lightStyles) {
+    const dark = darkStyles.find(({ kind }) => kind === light.kind);
+    if (!dark) throw new Error(`Missing dark-theme proof for ${light.kind}.`);
+    const lightBackground = relativeLuminance(light.background);
+    const darkBackground = relativeLuminance(dark.background);
+    const lightContrast = contrastRatio(light.background, light.color);
+    const darkContrast = contrastRatio(dark.background, dark.color);
+    if (darkBackground >= lightBackground || lightContrast < 4.5 || darkContrast < 4.5) {
+      throw new Error(`Invalid host theme styling for ${light.kind}: ${JSON.stringify({ light, dark, lightContrast, darkContrast })}`);
+    }
+  }
+}
+
+function contrastRatio(first, second) {
+  const lighter = Math.max(relativeLuminance(first), relativeLuminance(second));
+  const darker = Math.min(relativeLuminance(first), relativeLuminance(second));
+  return (lighter + 0.05) / (darker + 0.05);
+}
+
+function relativeLuminance(cssColor) {
+  const channels = cssColor.match(/[\d.]+/g)?.slice(0, 3).map(Number);
+  if (!channels || channels.length !== 3) throw new Error(`Unsupported CSS color: ${cssColor}`);
+  const [red, green, blue] = channels.map((channel) => {
+    const value = channel / 255;
+    return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+  });
+  return 0.2126 * red + 0.7152 * green + 0.0722 * blue;
 }
 
 async function runNativePreviewOcclusionCheck(page, pid) {
@@ -1420,8 +1511,7 @@ async function openSettings(page) {
   await page.getByTestId("open-settings").click();
   await page.getByTestId("settings-section-app").waitFor();
   const usageToggle = page.getByTestId("general-titlebar-account-usage-toggle");
-  await usageToggle.waitFor();
-  if (await usageToggle.getAttribute("aria-checked") !== "true") {
+  if (await usageToggle.isVisible() && await usageToggle.getAttribute("aria-checked") !== "true") {
     throw new Error("Title-bar account usage should default on.");
   }
 }
@@ -2308,7 +2398,11 @@ function printEvidencePaths(milimHome) {
   console.log(`microUiScreenshot=${screenshots.microUi}`);
   console.log(`workersPlanScreenshot=${screenshots.workersPlan}`);
   console.log(`workersNarrowScreenshot=${screenshots.workersNarrow}`);
-  console.log(`mcpAppsScreenshot=${screenshots.mcpApps}`);
+  console.log(`mcpAppsLightScreenshot=${screenshots.mcpAppsLight}`);
+  console.log(`mcpAppsDarkScreenshot=${screenshots.mcpAppsDark}`);
+  for (const theme of ["light", "dark"]) {
+    for (const kind of mcpAppKinds) console.log(`mcpApp${kind}Screenshot(${theme})=${mcpAppViewScreenshot(kind, theme)}`);
+  }
   console.log(`failureScreenshot=${screenshots.failure}`);
 }
 

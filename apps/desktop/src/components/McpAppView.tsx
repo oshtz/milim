@@ -72,6 +72,12 @@ export function McpAppView({
   const pendingRef = useRef<PendingApproval | null>(null);
   pendingRef.current = pending;
   const fallbackText = mcpAppFallbackText(result);
+  const toolTitle =
+    typeof descriptor.tool.title === "string" && descriptor.tool.title.trim()
+      ? descriptor.tool.title
+      : typeof descriptor.tool.name === "string" && descriptor.tool.name.trim()
+        ? descriptor.tool.name.replace(/[_-]+/g, " ")
+        : "Interactive view";
 
   const callTool = useCallback(
     async (params: AppToolParams, approvalGranted = false) =>
@@ -245,10 +251,12 @@ export function McpAppView({
   };
 
   return (
-    <section className="mcp-app-card" data-testid="mcp-app-view">
+    <section className="mcp-app-card" data-testid="mcp-app-view" aria-label={`${toolTitle} MCP App`}>
       <div className="mcp-app-header">
-        <span>MCP App</span>
-        <code>{descriptor.resource_uri}</code>
+        <div className="mcp-app-title" title={toolTitle}>
+          <span>MCP App</span>
+        </div>
+        <span className="mcp-app-live" title={descriptor.resource_uri}>Live</span>
       </div>
       {viewStatus === "loading" || viewStatus === "connecting" ? (
         <div className="mcp-app-state" role="status">
