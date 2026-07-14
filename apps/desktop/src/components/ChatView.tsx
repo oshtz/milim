@@ -185,7 +185,11 @@ import {
   shouldRefreshGitStatus,
 } from "../lib/gitRefresh";
 import { reasoningEffortForModel } from "../lib/reasoningEffort";
-import { buildQuickSummary, type QuickSummarySectionId } from "../lib/quickSummary";
+import {
+  buildQuickSummary,
+  type QuickSummarySectionId,
+  type QuickSummarySource,
+} from "../lib/quickSummary";
 import {
   nextRecentThreadSwitcherIndex,
   recentThreadSwitcherItems,
@@ -335,6 +339,7 @@ import { GitWorkspacePanel } from "./GitPanel";
 import { PreviewPanel } from "./PreviewPanel";
 import { QuickSummaryPanel } from "./QuickSummaryPanel";
 import { RunTimeline } from "./RunTimeline";
+import { SheetDialog } from "./SheetDialog";
 import { WorkspaceLauncherButton } from "./WorkspaceLauncher";
 import { BatonMenu, BatonTargetSheet, HotSwapPreflightSheet } from "./HotSwapDialogs";
 
@@ -3068,6 +3073,8 @@ export function ChatView({
   const [providersOpen, setProvidersOpen] = useState(false);
   const [mcpOpen, setMcpOpen] = useState(false);
   const [memoryOpen, setMemoryOpen] = useState(false);
+  const [memoryTarget, setMemoryTarget] = useState<MemoryNotice | null>(null);
+  const [attachmentPreview, setAttachmentPreview] = useState<ChatAttachment | null>(null);
   const [skills, setSkills] = useState<SkillInfo[]>([]);
   const [composerTools, setComposerTools] = useState<ToolInfo[]>([]);
   const [editing, setEditing] = useState<number | null>(null);
@@ -4498,6 +4505,56 @@ export function ChatView({
       activeId,
       isPreviewableArtifact(target) ? "preview" : "code",
     );
+  }
+
+  function openQuickSummarySource(source: QuickSummarySource) {
+    if (source.kind === "artifact") {
+      const revision = artifactRevisionChoice(
+        source.messageIndex,
+        source.artifactIndex,
+      )?.revision;
+      openPreviewArtifact(
+        revision?.artifact ?? source.artifact,
+        revision?.artifacts ?? source.artifacts,
+        false,
+        revision,
+      );
+      return;
+    }
+    if (source.kind === "memory") {
+      setMemoryTarget(source.memory);
+      setMemoryOpen(true);
+      return;
+    }
+    const attachment = source.attachment;
+    if (attachment.sourcePath) {
+      void openArtifactLocation(attachment.sourcePath).catch((error) =>
+        setChatNotice({
+          tone: "error",
+          message: `Could not open attachment: ${error instanceof Error ? error.message : String(error)}`,
+        }),
+      );
+      return;
+    }
+    if (attachment.dataUrl) {
+      setAttachmentPreview(attachment);
+      return;
+    }
+    if (attachment.content != null) {
+      const artifact: ChatArtifact = {
+        id: `attachment-${attachment.id}`,
+        kind: attachment.mime === "application/json" ? "json" : "text",
+        title: attachment.name,
+        mime: attachment.mime,
+        content: attachment.content,
+        size: textBytes(attachment.content),
+        filename: attachment.name,
+        language: extensionOf(attachment.name) || undefined,
+      };
+      openPreviewArtifact(artifact, [artifact]);
+      return;
+    }
+    setChatNotice({ tone: "error", message: "Attachment content is unavailable." });
   }
 
   function openArtifactBrowser() {
@@ -8413,7 +8470,10 @@ export function ChatView({
                 onToolApproval={(next) => updateThreadSettings(activeId, { toolApproval: next })}
                 onManageProviders={() => setProvidersOpen(true)}
                 onManageMcp={() => setMcpOpen(true)}
-                onManageMemory={() => setMemoryOpen(true)}
+                onManageMemory={() => {
+                  setMemoryTarget(null);
+                  setMemoryOpen(true);
+                }}
                 goal={goal}
                 onOpenGoal={() => openGoalPanel()}
                 activeRun={activeRun}
@@ -8549,6 +8609,7 @@ export function ChatView({
           }
           onOpenGit={openGitPanel}
           onOpenGoal={() => openGoalPanel()}
+          onOpenSource={openQuickSummarySource}
         />
         {sidePanelVisible && (
           <>
@@ -8748,8 +8809,32 @@ export function ChatView({
           />
         )}
 
+        {attachmentPreview?.dataUrl && (
+          <SheetDialog
+            title={attachmentPreview.name}
+            className="generated-media-dialog"
+            overlayClassName="generated-media-overlay"
+            testId="quick-summary-attachment-preview"
+            onClose={() => setAttachmentPreview(null)}
+          >
+            <div className="generated-media-toolbar">
+              <span>{attachmentPreview.name}</span>
+              <button className="icon-btn" type="button" aria-label="Close attachment preview" onClick={() => setAttachmentPreview(null)}>
+                <X size={18} />
+              </button>
+            </div>
+            <div className="generated-media-stage">
+              <img src={attachmentPreview.dataUrl} alt={attachmentPreview.name} />
+            </div>
+          </SheetDialog>
+        )}
+
         {memoryOpen && (
-          <MemoryManager onClose={() => setMemoryOpen(false)} />
+          <MemoryManager
+            initialNodeId={memoryTarget?.node_id}
+            initialScopeKind={memoryTarget?.scope_kind}
+            onClose={() => setMemoryOpen(false)}
+          />
         )}
 
         {goalPanelOpen && (

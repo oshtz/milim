@@ -64,15 +64,21 @@ function ContextRow({ row, onClick }: { row: QuickSummaryRow; onClick?: () => vo
   );
 }
 
-function SourceRow({ source }: { source: QuickSummarySource }) {
+function SourceRow({ source, onClick }: { source: QuickSummarySource; onClick: () => void }) {
   return (
-    <div className="quick-summary-row quick-summary-source-row" title={source.label}>
+    <button
+      className="quick-summary-row quick-summary-source-row"
+      type="button"
+      title={`Open ${source.label}`}
+      aria-label={`Open ${source.kind} ${source.label}`}
+      onClick={onClick}
+    >
       <span className="quick-summary-row-icon" aria-hidden="true">{sourceIcon(source)}</span>
       <span className="quick-summary-row-copy">
         <strong>{source.label}</strong>
         <small>{source.kind}</small>
       </span>
-    </div>
+    </button>
   );
 }
 
@@ -114,6 +120,7 @@ export function QuickSummaryPanel({
   onSectionCollapsedChange,
   onOpenGit,
   onOpenGoal,
+  onOpenSource,
 }: {
   summary: QuickSummary;
   open: boolean;
@@ -124,6 +131,7 @@ export function QuickSummaryPanel({
   onSectionCollapsedChange: (id: QuickSummarySectionId, collapsed: boolean) => void;
   onOpenGit: () => void;
   onOpenGoal: () => void;
+  onOpenSource: (source: QuickSummarySource) => void;
 }) {
   const rows = Array.isArray(summary?.rows) ? summary.rows : [];
   const sources = Array.isArray(summary?.sources) ? summary.sources : [];
@@ -237,7 +245,11 @@ export function QuickSummaryPanel({
                   {sources.length ? (
                     <>
                       {sources.slice(0, sourcesExpanded ? sources.length : SOURCE_LIMIT).map((source) => (
-                        <SourceRow key={`${source.kind}:${source.label}`} source={source} />
+                        <SourceRow
+                          key={`${source.kind}:${source.label}`}
+                          source={source}
+                          onClick={() => onOpenSource(source)}
+                        />
                       ))}
                       {sources.length > SOURCE_LIMIT && (
                         <button

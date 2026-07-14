@@ -1,7 +1,9 @@
 import type {
+  ChatArtifact,
   ChatAttachment,
   ChatMessage,
   ChatStreamPart,
+  MemoryNotice,
   WorkspaceGitStatus,
 } from "../api";
 import type { GoalSettings } from "./goals";
@@ -54,10 +56,17 @@ export interface QuickSummaryRow {
   tone?: QuickSummaryTone;
 }
 
-export interface QuickSummarySource {
-  kind: QuickSummarySourceKind;
-  label: string;
-}
+export type QuickSummarySource =
+  | { kind: "attachment"; label: string; attachment: ChatAttachment }
+  | {
+      kind: "artifact";
+      label: string;
+      artifact: ChatArtifact;
+      artifacts: ChatArtifact[];
+      messageIndex: number;
+      artifactIndex: number;
+    }
+  | { kind: "memory"; label: string; memory: MemoryNotice };
 
 export interface QuickSummary {
   rows: QuickSummaryRow[];
@@ -197,15 +206,14 @@ function latestPlan(messages: ChatMessage[]): ChatMessage["plan"] | null {
 function appendSource(
   sources: QuickSummarySource[],
   seen: Set<string>,
-  kind: QuickSummarySourceKind,
-  label: string,
+  source: QuickSummarySource,
 ): void {
-  const value = clip(label);
+  const value = clip(source.label);
   if (!value) return;
-  const key = `${kind}:${value.toLowerCase()}`;
+  const key = `${source.kind}:${value.toLowerCase()}`;
   if (seen.has(key)) return;
   seen.add(key);
-  sources.push({ kind, label: value });
+  sources.push({ ...source, label: value });
 }
 
 function attachmentLabel(attachment: ChatAttachment): string {
@@ -219,22 +227,39 @@ function summarySources(
   const sources: QuickSummarySource[] = [];
   const seen = new Set<string>();
   for (const attachment of pendingAttachments) {
-    appendSource(sources, seen, "attachment", `Pending: ${attachmentLabel(attachment)}`);
+    appendSource(sources, seen, {
+      kind: "attachment",
+      label: `Pending: ${attachmentLabel(attachment)}`,
+      attachment,
+    });
   }
-  for (const message of messages.slice(-12)) {
+  for (let messageIndex = Math.max(0, messages.length - 12); messageIndex < messages.length; messageIndex += 1) {
+    const message = messages[messageIndex];
     for (const attachment of message.attachments ?? []) {
-      appendSource(sources, seen, "attachment", attachmentLabel(attachment));
+      appendSource(sources, seen, {
+        kind: "attachment",
+        label: attachmentLabel(attachment),
+        attachment,
+      });
     }
-    for (const artifact of message.artifacts ?? []) {
-      appendSource(
-        sources,
-        seen,
-        "artifact",
-        artifact.saved?.path || artifact.filename || artifact.title || artifact.id,
-      );
+    const artifacts = message.artifacts ?? [];
+    for (let artifactIndex = 0; artifactIndex < artifacts.length; artifactIndex += 1) {
+      const artifact = artifacts[artifactIndex];
+      appendSource(sources, seen, {
+        kind: "artifact",
+        label: artifact.saved?.path || artifact.filename || artifact.title || artifact.id,
+        artifact,
+        artifacts,
+        messageIndex,
+        artifactIndex,
+      });
     }
     for (const memory of message.memories ?? []) {
-      appendSource(sources, seen, "memory", memory.summary || memory.scope_label);
+      appendSource(sources, seen, {
+        kind: "memory",
+        label: memory.summary || memory.scope_label,
+        memory,
+      });
     }
   }
   return sources;

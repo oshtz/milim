@@ -9,6 +9,7 @@ import {
   type QuickSummary,
   type QuickSummaryRowKind,
   type QuickSummarySectionId,
+  type QuickSummarySource,
 } from "../src/lib/quickSummary.js";
 
 type QuickSummaryPanelProps = {
@@ -21,6 +22,7 @@ type QuickSummaryPanelProps = {
   onSectionCollapsedChange: (id: QuickSummarySectionId, collapsed: boolean) => void;
   onOpenGit: () => void;
   onOpenGoal: () => void;
+  onOpenSource: (source: QuickSummarySource) => void;
 };
 
 function gitStatus(patch: Partial<WorkspaceGitStatus> = {}): WorkspaceGitStatus {
@@ -164,6 +166,11 @@ assert.deepEqual(
   active.sources.map((source) => source.kind),
   ["attachment", "attachment", "artifact", "memory"],
 );
+const artifactSource = active.sources.find((source) => source.kind === "artifact");
+const memorySource = active.sources.find((source) => source.kind === "memory");
+assert.equal(artifactSource?.artifact.id, "art1");
+assert.equal(artifactSource?.messageIndex, 1);
+assert.equal(memorySource?.memory.node_id, "n1");
 
 const withActivity = buildQuickSummary({
   folder: "C:\\work\\milim",
@@ -222,6 +229,7 @@ try {
       onSectionCollapsedChange: () => {},
       onOpenGit: () => {},
       onOpenGoal: () => {},
+      onOpenSource: () => {},
     }),
   );
   assert.match(missingRowsMarkup, /data-testid="quick-summary-panel"/);
@@ -236,6 +244,12 @@ try {
         sources: Array.from({ length: 7 }, (_, index) => ({
           kind: "attachment" as const,
           label: `source-${index + 1}`,
+          attachment: {
+            id: `source-${index + 1}`,
+            name: `source-${index + 1}`,
+            mime: "text/plain",
+            size: 0,
+          },
         })),
       },
       open: true,
@@ -246,6 +260,7 @@ try {
       onSectionCollapsedChange: () => {},
       onOpenGit: () => {},
       onOpenGoal: () => {},
+      onOpenSource: () => {},
     }),
   );
   for (const section of ["Environment", "Task", "Activity", "Context", "Sources"]) {
@@ -254,6 +269,7 @@ try {
   assert.match(groupedMarkup, /data-testid="worker-panel"/);
   assert.match(groupedMarkup, /class="git-diff-stat-add">\+23<\/span> <span class="git-diff-stat-delete">-4<\/span>/);
   assert.match(groupedMarkup, /class="quick-summary-more"[^>]*aria-expanded="false"/);
+  assert.match(groupedMarkup, /class="quick-summary-row quick-summary-source-row"[^>]*type="button"/);
   assert.match(groupedMarkup, />2 more<\/button>/);
   assert.match(groupedMarkup, /source-5/);
   assert.doesNotMatch(groupedMarkup, /source-6/);
@@ -269,6 +285,7 @@ try {
       onSectionCollapsedChange: () => {},
       onOpenGit: () => {},
       onOpenGoal: () => {},
+      onOpenSource: () => {},
     }),
   );
   assert.match(collapsedMarkup, /data-testid="quick-summary-section-activity"[^>]*aria-expanded="false"/);
@@ -286,6 +303,7 @@ try {
       onSectionCollapsedChange: () => {},
       onOpenGit: () => {},
       onOpenGoal: () => {},
+      onOpenSource: () => {},
     }),
   );
   assert.match(closedMarkup, /aria-hidden="true"/);

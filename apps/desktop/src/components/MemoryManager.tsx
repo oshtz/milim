@@ -7,6 +7,7 @@ import {
   searchGraphMemory,
   updateMemoryNode,
   type MemoryNode,
+  type MemoryScopeKind,
   type MemoryScopeRef,
 } from "../api";
 import { DEFAULT_THREAD_SETTINGS, useSessions } from "../sessions/store";
@@ -23,6 +24,10 @@ interface MemoryDraft {
 }
 
 const PERSONAL_SCOPE = { kind: "global", label: "Personal", locator: "personal" } as const;
+
+function tabForScope(kind?: MemoryScopeKind): MemoryTab {
+  return kind === "project" ? "project" : kind === "thread" ? "legacy" : "personal";
+}
 
 function projectLabel(folder: string): string {
   return folder.split(/[\\/]/).filter(Boolean).pop() || folder || "Project";
@@ -63,17 +68,25 @@ function draftFrom(node: MemoryNode): MemoryDraft {
   return { title: node.title, content: node.body };
 }
 
-export function MemoryManager({ onClose }: { onClose: () => void }) {
+export function MemoryManager({
+  initialNodeId,
+  initialScopeKind,
+  onClose,
+}: {
+  initialNodeId?: string;
+  initialScopeKind?: MemoryScopeKind;
+  onClose: () => void;
+}) {
   const activeId = useSessions((state) => state.activeId);
   const session = useSessions((state) => state.sessions.find((item) => item.id === state.activeId));
   const settings = session?.settings ?? DEFAULT_THREAD_SETTINGS;
   const folder = settings.folder;
   const model = settings.model.trim();
 
-  const [tab, setTab] = useState<MemoryTab>("personal");
+  const [tab, setTab] = useState<MemoryTab>(() => tabForScope(initialScopeKind));
   const [nodes, setNodes] = useState<MemoryNode[]>([]);
   const [legacyCount, setLegacyCount] = useState(0);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(initialNodeId ?? null);
   const [mode, setMode] = useState<DetailMode>("view");
   const [query, setQuery] = useState("");
   const [includeArchived, setIncludeArchived] = useState(false);
