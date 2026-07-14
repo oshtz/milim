@@ -40,8 +40,8 @@ export function shouldReplaceThreadTitle(currentTitle: string, messages: ChatMes
   return title === NEW_CHAT_TITLE || title === deriveThreadTitle(messages);
 }
 
-export function isThreadNamingModel(model: string | { id: string; capabilities?: { imageOutput?: boolean; videoOutput?: boolean } }): boolean {
+export function isThreadNamingModel(model: string | { id: string; capabilities?: { imageOutput?: boolean; videoOutput?: boolean; musicOutput?: boolean } }): boolean {
   const id = (typeof model === "string" ? model : model.id).trim().toLowerCase();
   if (!id || id === "mock-echo" || id.startsWith("codex:") || id.startsWith("claude:")) return false;
-  return typeof model === "string" || (!model.capabilities?.imageOutput && !model.capabilities?.videoOutput);
+  return typeof model === "string" || (!model.capabilities?.imageOutput && !model.capabilities?.videoOutput && !model.capabilities?.musicOutput);
 }

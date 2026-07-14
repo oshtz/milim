@@ -224,6 +224,7 @@ import {
   defaultMediaModel,
   inputWithSchemaControls,
   mediaKindForModelId,
+  mediaPollingMaxAttempts,
   mediaPreferenceKey,
   mediaResultContent,
   parseControlValue,
@@ -314,7 +315,6 @@ import {
   FileText,
   GitBranch,
   Globe,
-  Image,
   MoreHorizontal,
   Pencil,
   Refresh,
@@ -325,6 +325,7 @@ import {
 } from "./icons";
 import { groupSessionsByProjects } from "./Sidebar";
 import { InlineMediaControls } from "./InlineMediaControls";
+import { GeneratedMedia } from "./GeneratedMedia";
 import { WorkersInspector } from "./WorkersInspector";
 import { AssistantMessage } from "./AssistantMessage";
 import { ArtifactList } from "./ArtifactList";
@@ -614,7 +615,8 @@ function isUsableMobileModel(model: ModelInfo): boolean {
   return (
     Boolean(model.id.trim()) &&
     !model.capabilities?.imageOutput &&
-    !model.capabilities?.videoOutput
+    !model.capabilities?.videoOutput &&
+    !model.capabilities?.musicOutput
   );
 }
 
@@ -725,53 +727,28 @@ function renderMessageMedia(results?: MediaGenerationResult[]) {
   return (
     <div className="message-media-results" data-testid="message-media-results">
       {results.map((result) => {
-        const url = bestMediaResultUrl(result);
         const media = result.media[0];
         const key = `${result.provider_id}-${result.id || result.model}-${result.status}`;
         const label = `Generated ${media?.kind ?? "media"} from ${result.model}`;
-        const preview =
-          media?.kind === "video" && media.url ? (
-            <video src={media.url} controls aria-label={label} />
-          ) : media?.url ? (
-            <img src={media.url} alt={label} />
-          ) : (
-            <Image size={24} />
-          );
-        return url ? (
-          <a
-            className="message-media-preview"
-            data-testid="message-media-result"
-            href={url}
-            target="_blank"
-            rel="noreferrer"
-            key={key}
-            title="Open generated media"
-            onClick={(event) => openResponseUrl(event, url)}
-          >
-            {preview}
-          </a>
-        ) : (
+        return (
           <div
-            className="message-media-preview placeholder"
+            className={`message-media-preview ${media?.url ? "" : "placeholder"}`}
             data-testid="message-media-result"
             key={key}
           >
-            {preview}
+            <GeneratedMedia
+              item={media}
+              alt={label}
+              onOpenExternal={(url) => {
+                void openExternalUrl(url).catch((error) =>
+                  console.warn("failed to open URL", error),
+                );
+              }}
+            />
           </div>
         );
       })}
     </div>
-  );
-}
-
-function openResponseUrl(
-  event: MouseEvent<HTMLAnchorElement>,
-  url: string,
-): void {
-  if (!/^https?:\/\//i.test(url)) return;
-  event.preventDefault();
-  void openExternalUrl(url).catch((error) =>
-    console.warn("failed to open URL", error),
   );
 }
 
@@ -2816,7 +2793,7 @@ function mediaCandidatesForProvider(
   for (const id of provider.models ?? []) {
     addMediaCandidate(candidates, id, "image");
   }
-  for (const kind of ["image", "video"] as MediaKind[]) {
+  for (const kind of ["image", "video", "music"] as MediaKind[]) {
     for (const id of catalog[provider.id]?.[kind] ?? []) {
       addMediaCandidate(candidates, id, kind, true);
     }
@@ -2838,6 +2815,7 @@ function mediaModelsForPicker(
         capabilities: {
           imageOutput: kinds.has("image"),
           videoOutput: kinds.has("video"),
+          musicOutput: kinds.has("music"),
         },
       }),
     ),
@@ -3872,7 +3850,7 @@ export function ChatView({
     async function loadMediaCatalogs() {
       const rows = await Promise.all(
         enabledMediaProviders.flatMap((provider) =>
-          (["image", "video"] as MediaKind[]).map(async (kind) => {
+          (["image", "video", "music"] as MediaKind[]).map(async (kind) => {
             try {
               const models = await listMediaModels(provider.id, kind);
               return {
@@ -3934,11 +3912,25 @@ export function ChatView({
         [activeMediaTarget.provider.id]: activeMediaTarget.model,
       },
     });
+  }, [activeMediaTarget?.provider.id, activeMediaTarget?.model]);
 
+  useEffect(() => {
+    if (!activeMediaTarget) return;
+    const kind = activeMediaTarget.supportedKinds.includes(mediaKind)
+      ? mediaKind
+      : activeMediaTarget.kind;
+    const key = mediaPreferenceKey(
+      activeMediaTarget.provider.id,
+      activeMediaTarget.model,
+    );
     let cancelled = false;
     setMediaSchemaLoading(true);
     setMediaError(null);
-    getMediaModelSchema(activeMediaTarget.provider.id, activeMediaTarget.model)
+    getMediaModelSchema(
+      activeMediaTarget.provider.id,
+      activeMediaTarget.model,
+      kind,
+    )
       .then((schema) => {
         if (cancelled) return;
         setMediaSchema(schema);
@@ -3958,7 +3950,7 @@ export function ChatView({
     return () => {
       cancelled = true;
     };
-  }, [activeMediaTarget?.provider.id, activeMediaTarget?.model]);
+  }, [activeMediaTarget?.provider.id, activeMediaTarget?.model, mediaKind]);
 
   useEffect(() => {
     if (stickToBottomRef.current) scrollToChatBottom();
@@ -4888,7 +4880,7 @@ export function ChatView({
     }
     const target = pickerModels.find((item) => item.id === selection.model);
     if (!target) return;
-    if (target.capabilities?.imageOutput || target.capabilities?.videoOutput) {
+    if (target.capabilities?.imageOutput || target.capabilities?.videoOutput || target.capabilities?.musicOutput) {
       if (action === "switch") commitHotSwap(target, action, messageIndex, undefined, selection);
       return;
     }
@@ -6610,7 +6602,7 @@ export function ChatView({
     if (!shouldPollMediaStatus(initial)) return;
     let current = initial;
     try {
-      for (let attempt = 0; attempt < 20; attempt += 1) {
+      for (let attempt = 0; attempt < mediaPollingMaxAttempts(initial); attempt += 1) {
         await new Promise((resolve) => window.setTimeout(resolve, 3000));
         const next = await getMediaStatus({
           provider_id: current.provider_id,
@@ -6618,6 +6610,7 @@ export function ChatView({
           model: current.model,
           response_url: current.urls.response,
           status_url: current.urls.status,
+          kind: current.kind as MediaKind,
         });
         current = next;
         replaceMediaResult(sessionId, requestId, next);
@@ -8507,7 +8500,7 @@ export function ChatView({
               collapsed={contextCollapsedSectionIds.includes("workers")}
               agents={agents}
               models={pickerModels.filter(
-                (item) => !item.capabilities?.imageOutput && !item.capabilities?.videoOutput,
+                (item) => !item.capabilities?.imageOutput && !item.capabilities?.videoOutput && !item.capabilities?.musicOutput,
               )}
               providers={providers}
               busy={workerActionBusy}
@@ -8674,7 +8667,8 @@ export function ChatView({
             (item) =>
               item.id !== model &&
               !item.capabilities?.imageOutput &&
-              !item.capabilities?.videoOutput,
+              !item.capabilities?.videoOutput &&
+              !item.capabilities?.musicOutput,
           )}
           model={model}
           providers={providers}

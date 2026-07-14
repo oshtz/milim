@@ -1256,6 +1256,7 @@ export interface ModelCapabilities {
   imageInput?: boolean;
   imageOutput?: boolean;
   videoOutput?: boolean;
+  musicOutput?: boolean;
   toolUse?: boolean;
 }
 
@@ -1393,11 +1394,15 @@ function normalizeModelCapabilities(
   const videoOutput = normalizeModelCapability(
     raw.videoOutput ?? raw.video_output,
   );
+  const musicOutput = normalizeModelCapability(
+    raw.musicOutput ?? raw.music_output,
+  );
   const toolUse = normalizeModelCapability(raw.toolUse ?? raw.tool_use);
   if (
     typeof imageInput !== "boolean" &&
     typeof imageOutput !== "boolean" &&
     typeof videoOutput !== "boolean" &&
+    typeof musicOutput !== "boolean" &&
     typeof toolUse !== "boolean"
   )
     return undefined;
@@ -1405,6 +1410,7 @@ function normalizeModelCapabilities(
     ...(typeof imageInput === "boolean" ? { imageInput } : {}),
     ...(typeof imageOutput === "boolean" ? { imageOutput } : {}),
     ...(typeof videoOutput === "boolean" ? { videoOutput } : {}),
+    ...(typeof musicOutput === "boolean" ? { musicOutput } : {}),
     ...(typeof toolUse === "boolean" ? { toolUse } : {}),
   };
 }
@@ -2661,7 +2667,7 @@ export async function deleteProvider(id: string): Promise<boolean> {
 
 // ----- Media generation -----
 
-export type MediaKind = "image" | "video";
+export type MediaKind = "image" | "video" | "music";
 
 export interface MediaGenerationRequest {
   provider_id: string;
@@ -2721,12 +2727,14 @@ export interface MediaStatusRequest {
   model?: string;
   response_url?: string;
   status_url?: string;
+  kind?: MediaKind;
 }
 
 export interface MediaResultItem {
   url: string;
   kind: MediaKind | string;
   mime?: string | null;
+  requires_auth?: boolean;
 }
 
 export interface MediaGenerationResult {
@@ -2817,11 +2825,13 @@ export async function listMediaModels(
 export async function getMediaModelSchema(
   providerId: string,
   model: string,
+  kind: MediaKind = "image",
   options: { refresh?: boolean } = {},
 ): Promise<MediaModelSchema> {
   const url = new URL(`${BASE}/media/model-schema`);
   url.searchParams.set("provider_id", providerId);
   url.searchParams.set("model", model);
+  url.searchParams.set("kind", kind);
   if (options.refresh) url.searchParams.set("refresh", "true");
   const r = await authFetch(url);
   if (!r.ok) {
@@ -2843,6 +2853,7 @@ export async function getMediaStatus(
     url.searchParams.set("response_url", request.response_url);
   if (request.status_url)
     url.searchParams.set("status_url", request.status_url);
+  if (request.kind) url.searchParams.set("kind", request.kind);
   const r = await authFetch(url);
   if (!r.ok) {
     throw new Error(
@@ -2850,6 +2861,20 @@ export async function getMediaStatus(
     );
   }
   return (await r.json()) as MediaGenerationResult;
+}
+
+export async function loadAuthenticatedMedia(
+  url: string,
+  signal?: AbortSignal,
+): Promise<Blob> {
+  const input = url.startsWith("/") ? `${BASE}${url}` : url;
+  const r = await authFetch(input, signal ? { signal } : undefined);
+  if (!r.ok) {
+    throw new Error(
+      await responseErrorMessage(r, `media content HTTP ${r.status}`),
+    );
+  }
+  return r.blob();
 }
 
 /**

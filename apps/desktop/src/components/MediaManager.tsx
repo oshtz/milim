@@ -7,6 +7,7 @@ import {
   listMediaModels,
   listProviders,
   mediaProviders,
+  openExternalUrl,
   supportsMediaMetadataProvider,
   type MediaGenerationResult,
   type MediaKind,
@@ -17,19 +18,20 @@ import {
 } from "../api";
 import {
   DEFAULT_MEDIA_ADVANCED_INPUT,
-  bestMediaResultUrl,
   controlValue,
   defaultMediaAdvanced,
   defaultMediaModel,
   inputWithSchemaControls,
   mediaPreferenceKey,
+  mediaPollingMaxAttempts,
   parseControlValue,
   schemaDefaults,
   shouldPollMediaStatus,
   isTerminalMediaStatus,
 } from "../lib/media";
 import { useSettings } from "../settings/store";
-import { ArrowRight, Image, X } from "./icons";
+import { Image, X } from "./icons";
+import { GeneratedMedia } from "./GeneratedMedia";
 import { SheetDialog } from "./SheetDialog";
 import { Select } from "./ui";
 
@@ -68,7 +70,7 @@ export function MediaManager({
   const [error, setError] = useState<string | null>(null);
   const [results, setResults] = useState<MediaGenerationResult[]>([]);
   const pollingKeys = useRef<Set<string>>(new Set());
-  const metadataImageProvider = Boolean(selectedProvider && supportsMediaMetadataProvider(selectedProvider) && kind === "image");
+  const metadataProvider = Boolean(selectedProvider && supportsMediaMetadataProvider(selectedProvider));
   const favoriteModelIds = selectedProvider ? mediaSettings.favoriteModelIdsByProvider[selectedProvider.id] ?? [] : [];
   const visibleModelOptions = useMemo(() => {
     const query = modelSearch.trim().toLowerCase();
@@ -114,7 +116,7 @@ export function MediaManager({
   }, [selectedProvider]);
 
   useEffect(() => {
-    if (!selectedProvider || !metadataImageProvider) {
+    if (!selectedProvider || !metadataProvider) {
       setModelOptions([]);
       setModelSchema(null);
       setModelsLoading(false);
@@ -124,7 +126,7 @@ export function MediaManager({
     let cancelled = false;
     setModelsLoading(true);
     setError(null);
-    listMediaModels(selectedProvider.id, "image", { query: modelSearch })
+    listMediaModels(selectedProvider.id, kind, { query: modelSearch })
       .then((models) => {
         if (cancelled) return;
         setModelOptions(models);
@@ -147,17 +149,17 @@ export function MediaManager({
     return () => {
       cancelled = true;
     };
-  }, [selectedProvider?.id, metadataImageProvider, modelSearch]);
+  }, [selectedProvider?.id, metadataProvider, kind, modelSearch]);
 
   useEffect(() => {
-    if (!selectedProvider || !metadataImageProvider || !model.trim()) {
+    if (!selectedProvider || !metadataProvider || !model.trim()) {
       setModelSchema(null);
       return;
     }
     let cancelled = false;
     const key = mediaPreferenceKey(selectedProvider.id, model.trim());
     setSchemaLoading(true);
-    getMediaModelSchema(selectedProvider.id, model.trim())
+    getMediaModelSchema(selectedProvider.id, model.trim(), kind)
       .then((schema) => {
         if (cancelled) return;
         setModelSchema(schema);
@@ -173,7 +175,7 @@ export function MediaManager({
     return () => {
       cancelled = true;
     };
-  }, [selectedProvider?.id, metadataImageProvider, model]);
+  }, [selectedProvider?.id, metadataProvider, kind, model]);
 
   function applyModel(nextModel: string, provider = selectedProvider) {
     setModel(nextModel);
@@ -233,15 +235,15 @@ export function MediaManager({
   }
 
   async function refreshMediaMetadata() {
-    if (!selectedProvider || !metadataImageProvider) return;
+    if (!selectedProvider || !metadataProvider) return;
     setModelsLoading(true);
     setSchemaLoading(true);
     setError(null);
     try {
       const [models, schema] = await Promise.all([
-        listMediaModels(selectedProvider.id, "image", { query: modelSearch, refresh: true }),
+        listMediaModels(selectedProvider.id, kind, { query: modelSearch, refresh: true }),
         model.trim()
-          ? getMediaModelSchema(selectedProvider.id, model.trim(), { refresh: true })
+          ? getMediaModelSchema(selectedProvider.id, model.trim(), kind, { refresh: true })
           : Promise.resolve(null),
       ]);
       setModelOptions(models);
@@ -299,7 +301,7 @@ export function MediaManager({
     pollingKeys.current.add(key);
     let current = initial;
     try {
-      for (let attempt = 0; attempt < 20; attempt += 1) {
+      for (let attempt = 0; attempt < mediaPollingMaxAttempts(initial); attempt += 1) {
         await new Promise((resolve) => window.setTimeout(resolve, 3000));
         const next = await getMediaStatus({
           provider_id: current.provider_id,
@@ -307,6 +309,7 @@ export function MediaManager({
           model: current.model,
           response_url: current.urls.response,
           status_url: current.urls.status,
+          kind: current.kind as MediaKind,
         });
         current = next;
         setResults((items) => items.map((item) => (
@@ -343,7 +346,7 @@ export function MediaManager({
         kind,
         model: model.trim(),
         prompt: prompt.trim(),
-        input: inputWithSchemaControls(advanced, metadataImageProvider ? modelSchema : null, parameterValues),
+        input: inputWithSchemaControls(advanced, metadataProvider ? modelSchema : null, parameterValues),
       });
       setResults((current) => [result, ...current].slice(0, 8));
       void pollMediaStatus(result);
@@ -354,11 +357,6 @@ export function MediaManager({
     }
   }
 
-  function openResult(result: MediaGenerationResult) {
-    const url = bestMediaResultUrl(result);
-    if (url) window.open(url, "_blank", "noopener,noreferrer");
-  }
-
   return (
     <SheetDialog title="Generate media" className="sheet media-sheet" testId="media-generator" onClose={onClose}>
         <div className="sheet-header">
@@ -367,7 +365,7 @@ export function MediaManager({
             <X size={15} />
           </button>
         </div>
-        <p className="sheet-sub">Use encrypted Replicate, fal, or OpenRouter credentials for image and video runs.</p>
+        <p className="sheet-sub">Use encrypted Replicate, fal, or OpenRouter credentials for image, video, and music runs.</p>
 
         <div className="media-grid">
           <section className="media-form">
@@ -386,12 +384,16 @@ export function MediaManager({
             </label>
 
             <div className="media-kind-tabs" data-testid="media-kind-tabs">
-              {(["image", "video"] as MediaKind[]).map((item) => (
+              {(["image", "video", "music"] as MediaKind[]).map((item) => (
                 <button
                   key={item}
                   type="button"
                   className={kind === item ? "active" : ""}
-                  onClick={() => setKind(item)}
+                  onClick={() => {
+                    setKind(item);
+                    setModel("");
+                    setModelSchema(null);
+                  }}
                 >
                   {item}
                 </button>
@@ -400,13 +402,13 @@ export function MediaManager({
 
             <label className="field">
               <span>Model id</span>
-              {metadataImageProvider && (
+              {metadataProvider && (
                 <div className="media-model-tools">
                   <input
                     className="css-input"
                     data-testid="media-model-search"
                     value={modelSearch}
-                    placeholder="Search image models..."
+                    placeholder={`Search ${kind} models...`}
                     onChange={(e) => updateModelSearch(e.target.value)}
                   />
                   <button
@@ -427,7 +429,7 @@ export function MediaManager({
                   >
                     {selectedModelFavorite ? "Unfavorite" : "Favorite"}
                   </button>
-                  <label className="tool-check" title="Only show favorited image models">
+                  <label className="tool-check" title={`Only show favorited ${kind} models`}>
                     <input
                       data-testid="media-model-favorites-only"
                       type="checkbox"
@@ -438,11 +440,11 @@ export function MediaManager({
                   </label>
                 </div>
               )}
-              {metadataImageProvider ? (
+              {metadataProvider ? (
                 <Select
                   value={model}
                   testId="media-model-select"
-                  placeholder={modelsLoading ? "Loading image models..." : "Choose an image model..."}
+                  placeholder={modelsLoading ? `Loading ${kind} models...` : `Choose a ${kind} model...`}
                   options={visibleModelOptions.map((item) => ({
                     label: `${favoriteModelIds.includes(item.id) ? "* " : ""}${item.name ? `${item.name} (${item.id})` : item.id}`,
                     value: item.id,
@@ -466,12 +468,12 @@ export function MediaManager({
                 className="css-input media-prompt"
                 data-testid="media-prompt-input"
                 value={prompt}
-                placeholder="Product photo on a clean workbench, natural side light..."
+                placeholder={kind === "music" ? "Warm instrumental synthwave with a steady pulse..." : "Product photo on a clean workbench, natural side light..."}
                 onChange={(e) => setPrompt(e.target.value)}
               />
             </label>
 
-            {metadataImageProvider && (
+            {metadataProvider && (
               <div className="media-parameter-controls" data-testid="media-parameter-controls">
                 {schemaLoading ? (
                   <span className="sheet-hint">Loading model parameters...</span>
@@ -570,17 +572,14 @@ export function MediaManager({
               </div>
             ) : (
               results.map((result) => {
-                const url = bestMediaResultUrl(result);
                 return (
-                  <article className="media-result" data-testid="media-result" key={`${result.provider_id}-${result.id}-${result.status}`}>
+                  <article className={`media-result ${result.kind === "music" ? "music" : ""}`} data-testid="media-result" key={`${result.provider_id}-${result.id}-${result.status}`}>
                     <div className="media-result-preview" data-testid="media-result-preview">
-                      {result.media[0]?.kind === "video" && result.media[0]?.url ? (
-                        <video src={result.media[0].url} controls />
-                      ) : result.media[0]?.url ? (
-                        <img src={result.media[0].url} alt={`Generated media from ${result.model}`} />
-                      ) : (
-                        <Image size={26} />
-                      )}
+                      <GeneratedMedia
+                        item={result.media[0]}
+                        alt={`Generated ${result.kind} from ${result.model}`}
+                        onOpenExternal={(url) => void openExternalUrl(url)}
+                      />
                     </div>
                     <div className="media-result-body">
                       <strong>{result.model}</strong>
@@ -588,11 +587,6 @@ export function MediaManager({
                         {result.provider} - {result.status}
                         {result.privacy.redacted ? " - redacted" : ""}
                       </span>
-                      {url && (
-                        <button data-testid="media-result-open" className="btn-ghost" type="button" onClick={() => openResult(result)}>
-                          Open <ArrowRight size={13} />
-                        </button>
-                      )}
                     </div>
                   </article>
                 );

@@ -22,5 +22,6 @@ equal(isThreadNamingModel("openrouter/gemma"), true, "provider chat model should
 equal(isThreadNamingModel("codex:gpt-5.5"), false, "Codex runtime should not be used for AI naming");
 equal(isThreadNamingModel("claude:sonnet"), false, "Claude runtime should not be used for AI naming");
 equal(isThreadNamingModel({ id: "openrouter/flux", capabilities: { imageOutput: true } }), false, "image output model should not be used for AI naming");
+equal(isThreadNamingModel({ id: "openrouter/lyria", capabilities: { musicOutput: true } }), false, "music output model should not be used for AI naming");
 
 export {};

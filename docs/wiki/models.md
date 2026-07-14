@@ -30,8 +30,8 @@ Hot Swap assesses the selected target before committing the change. Full-parity 
 | OpenAI-compatible | OpenAI, OpenRouter, Groq, Ollama, LM Studio, vLLM, custom `/v1` servers | Chat, Responses, legacy completions, model list, embeddings, structured output, and reasoning plus vision/tool-use metadata where provided. |
 | Anthropic | Claude Messages API through a stored provider key | Chat, streaming, model routing, token usage, and native base64 or URL image blocks. |
 | Gemini | Google Generative Language API | Chat, model discovery, model routing, inline image bytes, and genuine Gemini Files API URIs. Arbitrary web image URLs are rejected instead of downloaded server-side. |
-| Replicate | Remote image/video provider | Media model catalog, schemas, generation status polling. |
-| fal | Remote image/video provider | Queued generation, status polling, normalized media results. |
+| Replicate | Remote image/video/music provider | Media model catalog, schemas, generation status polling, and normalized URL-returning music results. |
+| fal | Remote image/video/music provider | Queued generation, status polling, and normalized media results. |
 | Local API runtimes | Ollama and LM Studio on this machine | Chat, prompt generation, Ollama `keep_alive` lifecycle calls, Responses or completions where the runtime exposes them, model list, embeddings, structured output, native vision/tool-use labels where available, and reasoning effort for supported local reasoning models. |
 | Codex and Claude runtime | Installed CLIs, not provider API keys | Resumable agent-style turns with real image input, visible tool events, and Milim approval modes. |
 
@@ -45,7 +45,7 @@ Requests to OpenRouter include its app-attribution headers with `https://milim.a
 | Milim tools | A provider/local model is selected while workspace, sandbox, computer-use, preview tools, schedule intent, active agent, or memory-write intent is active. | The model runs through Milim's tool-agent loop with visible tool events and approval policy. |
 | Codex runtime | A Codex account model is selected. | Milim sends the turn through the Codex account-runtime bridge. |
 | Claude runtime | An installed Claude CLI model is selected. | Milim sends the turn through the Claude CLI bridge. |
-| Media | An image/video model is selected. | Milim uses the media generation flow. |
+| Media | An image, video, or prompt-to-music model is selected. | Milim uses the media generation flow and keeps the model out of chat, naming, schedule, and Worker lists. |
 
 ## Choose a backend
 
@@ -54,7 +54,11 @@ Requests to OpenRouter include its app-attribution headers with `https://milim.a
 | Best local privacy | Ollama or LM Studio | Prompts stay on your machine unless that runtime is configured otherwise. |
 | General reasoning | OpenAI, Anthropic, Gemini, or OpenRouter | Use hosted providers when quality, context length, or latency matters more than staying fully local. |
 | Local reasoning control | Ollama thinking models or LM Studio models with reasoning metadata | Ollama uses `/v1/chat/completions`; LM Studio uses `/api/v1/chat` for advertised native reasoning options without custom tools and `/v1/responses` when Milim function tools are attached. `gpt-oss` still uses `/v1/responses` for `low`, `medium`, and `high` effort. |
-| Media workflow | Replicate, fal, or OpenRouter media models | Use image/video generation from the same milim surface. |
+| Media workflow | Replicate, fal, or OpenRouter media models | Use image, video, or prompt-to-music generation from the same Milim surface. |
+
+OpenRouter video uses its asynchronous `/videos` submission and polling workflow; completed bytes are fetched through Milim's authenticated content proxy so provider credentials never enter the webview. OpenRouter music buffers streamed audio chunks into a completed MP3 result. fal and Replicate keep their provider job URLs and polling behavior. Discovery includes text-to-music generators only, excluding TTS, transcription, generic voice, and conversational audio models.
+
+Verification is recorded per provider and modality. OpenRouter image is live-verified. OpenRouter video/music and fal/Replicate music are covered by mocked adapter tests but are not described as live-verified until separate credentialed, potentially billable smoke tests pass.
 | Development coding loop | Any capable provider model, Codex runtime, or Claude runtime | Use provider models for Milim's tool loop, or account runtimes when you want their native resumable bridge. |
 
 ## Account runtimes

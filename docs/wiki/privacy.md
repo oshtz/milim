@@ -6,7 +6,7 @@ title: Privacy and security
 summary: Remote-provider privacy modes, redaction, blocking, deterministic scanning, bearer auth, and CORS boundaries.
 group: Local data
 order: 70
-updated: 2026-07-13
+updated: 2026-07-14
 ---
 
 Privacy settings are easiest to reason about as a routing question: what stays local, what goes to a provider, and which gate runs before a remote send.
@@ -29,7 +29,7 @@ Because image content cannot be scanned or redacted by the text privacy gate, re
 |---|---|
 | Remote chat providers | Enforced before the provider router sends a completion request. |
 | Remote embeddings | Enforced before embedding inputs leave the machine. |
-| Remote media providers | Enforced before Replicate, fal, or OpenRouter media prompts are sent. |
+| Remote media providers | Enforced before Replicate, fal, or OpenRouter image, video, or prompt-to-music prompts are sent. |
 | Codex runtime | Text is scanned/redacted/blocked before `/codex/run`; image pixels require Privacy Off before any bytes are decoded or written to temporary files. |
 | Installed Claude CLI | Text is scanned/redacted/blocked before `/claude/run`; image pixels require Privacy Off before the native multimodal message is built. |
 | Local Ollama or LM Studio | Not scanned by Milim because the configured local runtime receives the prompt on the machine. |
@@ -43,7 +43,7 @@ The gate is process-global. The desktop syncs the active setting through `POST /
 | Local Ollama or LM Studio | Prompt, files, and embeddings stay on the machine unless that runtime is configured otherwise. |
 | Hosted model provider | Messages, selected context, embedding inputs, and tool-visible text go to the provider after the privacy mode is applied. |
 | Account runtime | Prompt text and, only in Privacy Off, attached image pixels go to the signed-in Codex or Claude runtime. |
-| Media provider | Prompt text and model parameters go to Replicate, fal, OpenRouter media, or the selected media backend after the privacy mode is applied. |
+| Media provider | Prompt text and model parameters go to Replicate, fal, OpenRouter media, or the selected media backend after the privacy mode is applied. OpenRouter video bytes return through an authenticated Milim proxy; the provider key remains server-side. Generated media URLs or data URLs are stored with the chat result when persistence is enabled. |
 | Mobile companion | Paired phone text, files, and photos enter the active desktop thread; the desktop still controls the final model send and privacy gate. |
 | MCP tools | External MCP servers run as configured local child processes or remotes; treat each configured server as its own trust boundary. |
 | MCP Apps | App HTML comes from its configured MCP server, is re-fetched rather than persisted, and runs in an opaque-origin iframe. Validated HTML is held briefly in memory behind a random expiring capability URL; it receives no bearer token. Network access is denied by default and limited to valid `_meta.ui.csp` origins; host calls remain authenticated, same-server, visibility-checked, and approval-gated. |

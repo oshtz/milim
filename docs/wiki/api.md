@@ -6,7 +6,7 @@ title: HTTP API surface
 summary: OpenAI-compatible, Anthropic-compatible, Ollama-compatible, providers, media, workspace, MCP, Agents, Worker Runs, memory, privacy, skills, schedules, mobile, and account runtime routes.
 group: Reference
 order: 90
-updated: 2026-07-13
+updated: 2026-07-14
 ---
 
 The standalone server accepts static bearer keys or `msk-v1` access keys when configured in `~/.milim/config/server.json`. The desktop app uses its own per-launch bearer token and resolves the actual loopback port through Tauri.
@@ -36,7 +36,7 @@ Root aliases are also mounted for OpenAI chat, completions, models, and embeddin
 | Area | Routes |
 |---|---|
 | Provider registry | `GET/POST /providers`, `GET /providers/discover`, `DELETE /providers/{id}` |
-| Media | `GET /media/models`, `GET /media/model-schema`, `GET /media/status`, `POST /media/generate` |
+| Media | `GET /media/models`, `GET /media/model-schema`, `GET /media/status`, authenticated `GET /media/content`, `POST /media/generate` |
 | Workspace | `GET/POST /workspace`, `GET /workspace/git`, `POST /workspace/git/action` (`diff`, sync, commit, checkpoint, restore checkpoint, create/apply/remove Hot Swap retry worktree) |
 | Managed preview apps | `GET /preview-apps/{runtime_id}`, `POST /preview-apps/{runtime_id}/stage`, `POST /preview-apps/{runtime_id}/start`, `POST /preview-apps/{runtime_id}/stop`, `POST /preview-apps/{runtime_id}/restart`, `GET /preview-apps/{runtime_id}/logs` |
 | MCP | `GET /mcp/tools`, `POST /mcp/call`, host-only `POST /mcp/apps/resources/read`, host-only `POST /mcp/apps/tools/call`, ephemeral `GET /mcp/apps/views/{id}`, `GET/POST /mcp/servers`, `POST /mcp/servers/test`, `POST /mcp/servers/{id}/test`, `DELETE /mcp/servers/{id}` |

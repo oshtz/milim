@@ -93,6 +93,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/media/models", get(routes::media_models))
         .route("/media/model-schema", get(routes::media_model_schema))
         .route("/media/status", get(routes::media_status))
+        .route("/media/content", get(routes::media_content))
         .route("/media/generate", post(routes::media_generate))
         // Host working folder (drives the filesystem/shell tools)
         .route(

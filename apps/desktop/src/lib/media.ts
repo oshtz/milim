@@ -121,15 +121,24 @@ export function isTerminalMediaStatus(status: string): boolean {
 
 export function shouldPollMediaStatus(result: MediaGenerationResult): boolean {
   return (
-    (result.provider_kind === "replicate" || result.provider_kind === "fal") &&
+    (result.provider_kind === "replicate" ||
+      result.provider_kind === "fal" ||
+      (result.provider_kind === "openai_compatible" && result.kind === "video")) &&
     Boolean(result.id) &&
     !isTerminalMediaStatus(result.status)
   );
 }
 
+export function mediaPollingMaxAttempts(result: MediaGenerationResult): number {
+  return result.provider_kind === "openai_compatible" && result.kind === "video"
+    ? 120
+    : 20;
+}
+
 export function mediaKindForModelId(model: string): MediaKind | null {
   const id = model.trim().toLowerCase();
   if (!id) return null;
+  if (/\b(music|text-to-music|musicgen|lyria|song|melody)\b/.test(id)) return "music";
   if (/\b(video|text-to-video|image-to-video|wan|veo|kling|runway|luma|pika|hailuo)\b/.test(id)) return "video";
   if (/\b(image|text-to-image|flux|sdxl|stable-diffusion|dall-e|midjourney|ideogram|recraft)\b/.test(id)) return "image";
   if (/gemini.*flash.*image/.test(id)) return "image";

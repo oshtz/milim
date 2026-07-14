@@ -10,7 +10,7 @@ import {
 } from "../lib/modelPicker";
 import { hasReasoningEffortChoices, normalizeReasoningEffortForModel, REASONING_EFFORT_LABEL, reasoningEffortDisplay, reasoningEffortOptions } from "../lib/reasoningEffort";
 import { useSettings } from "../settings/store";
-import { Bolt, Check, Eye, Image, PlusSquare, Search, Sparkles } from "./icons";
+import { Bolt, Check, Eye, Image, PlusSquare, Search, Sparkles, Volume2 } from "./icons";
 
 function Star({ filled }: { filled: boolean }) {
   return (
@@ -44,6 +44,7 @@ const CAP_ICON: Record<ModelDevCapability, { node: JSX.Element; title: string }>
   fast: { node: <Bolt size={11} />, title: "Fast" },
   image: { node: <Image size={11} />, title: "Image output" },
   video: { node: <Sparkles size={11} />, title: "Video output" },
+  music: { node: <Volume2 size={11} />, title: "Music output" },
 } as const;
 
 type EffortMenuState = { modelId: string; left: number; top: number };

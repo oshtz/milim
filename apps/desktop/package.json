@@ -22,7 +22,7 @@
     "test:update": "node tests/run-ts-test.mjs tests/update-service.test.ts",
     "test:api-models": "node tests/api-models.test.mjs && node tests/api-model-discovery.test.mjs && node tests/api-model-startup.test.mjs && node tests/inspector-controller.test.mjs",
     "test:git-refresh": "node tests/run-ts-test.mjs tests/git-refresh.test.ts tests/empty-starter-suggestions.test.ts tests/git-diff-renderer.test.ts tests/git-commit-message-models.test.ts tests/turn-workspace.test.ts",
-    "test:media": "cargo test --manifest-path ../../Cargo.toml -p milim-server media_generate_",
+    "test:media": "node tests/run-ts-test.mjs tests/generated-media-rendering.test.tsx && cargo test --manifest-path ../../Cargo.toml -p milim-server media_",
     "test:mobile-companion": "cargo test --manifest-path ../../Cargo.toml -p milim-server mobile_companion",
     "test:artifacts": "node tests/run-ts-test.mjs tests/artifacts.test.ts tests/preview-panel-rendering.test.tsx && node tests/run-tauri-rust-test.mjs artifact_",
     "test:tauri-config": "node tests/tauri-config.test.mjs",

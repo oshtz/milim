@@ -29,6 +29,24 @@ equal(
   false,
   "missing Codex modality metadata stays unknown instead of claiming vision",
 );
+equal(
+  modelDevCapabilities({
+    id: "google/lyria-3-pro-preview",
+    owned_by: "OpenRouter media",
+    capabilities: { musicOutput: true },
+  }).includes("music"),
+  true,
+  "prompt-to-music models should expose the music capability",
+);
+equal(
+  modelDevProfile({
+    id: "google/lyria-3-pro-preview",
+    owned_by: "OpenRouter media",
+    capabilities: { musicOutput: true },
+  }, "google/lyria-3-pro-preview").lane,
+  "media",
+  "music models should route through the media lane",
+);
 
 const duplicated = qualifyDuplicateProviderModels([
   { id: "same-model", owned_by: "OpenAI", provider_id: "prov-a" },

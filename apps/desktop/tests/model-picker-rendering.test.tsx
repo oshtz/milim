@@ -40,6 +40,11 @@ const models: ModelInfo[] = [
     provider_id: "replicate-render",
     capabilities: { imageOutput: true },
   },
+  {
+    id: "google/lyria-3-pro-preview",
+    owned_by: "OpenRouter media",
+    capabilities: { musicOutput: true },
+  },
 ];
 
 const providers: ProviderInfo[] = [
@@ -101,6 +106,7 @@ try {
   assert(markup.includes('title="Tool use"'), "Tool capability badge should render");
   assert(markup.includes("Replicate"), "Picker should render media providers");
   assert(markup.includes("Media"), "Picker should render media lane labels");
+  assert(markup.includes('title="Music output"'), "Picker should render music capability badges");
   assert(markup.includes(">Favorites only<"), "Picker should render the favorites filter toggle");
   assert(!markup.includes(">Models<") && !markup.includes(">Presets<"), "Picker should not render redundant model or preset views");
 

@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use axum::body::Body;
 use axum::extract::{ConnectInfo, Path, Query, State};
 use axum::http::header::{
-    AUTHORIZATION, CACHE_CONTROL, CONTENT_SECURITY_POLICY, CONTENT_TYPE, USER_AGENT,
+    AUTHORIZATION, CACHE_CONTROL, CONTENT_LENGTH, CONTENT_SECURITY_POLICY, CONTENT_TYPE, USER_AGENT,
 };
 use axum::http::{HeaderMap, HeaderValue};
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -5871,6 +5871,8 @@ pub(crate) struct MediaModelsQuery {
 pub(crate) struct MediaModelSchemaQuery {
     provider_id: String,
     model: String,
+    #[serde(default = "default_media_kind")]
+    kind: String,
     #[serde(default)]
     refresh: bool,
 }
@@ -5885,6 +5887,16 @@ pub(crate) struct MediaStatusQuery {
     response_url: Option<String>,
     #[serde(default)]
     status_url: Option<String>,
+    #[serde(default = "default_media_kind")]
+    kind: String,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct MediaContentQuery {
+    provider_id: String,
+    id: String,
+    #[serde(default)]
+    index: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -5892,6 +5904,12 @@ pub(crate) struct MediaItem {
     url: String,
     kind: String,
     mime: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    requires_auth: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 #[derive(Debug, Serialize)]
@@ -6003,13 +6021,29 @@ fn media_models_cache_key(
         + query
 }
 
-fn media_schema_cache_key(provider: &crate::providers::Provider, model: &str) -> String {
+fn media_schema_cache_key(
+    provider: &crate::providers::Provider,
+    model: &str,
+    kind: &str,
+) -> String {
     format!(
-        "schema:{}:{}:{}",
+        "schema:{}:{}:{}:{}",
         provider.id,
         provider.base_url.trim_end_matches('/'),
+        kind,
         model
     )
+}
+
+fn validate_media_kind(kind: &str) -> Result<&str, ApiError> {
+    match kind.trim() {
+        "image" => Ok("image"),
+        "video" => Ok("video"),
+        "music" => Ok("music"),
+        other => Err(ApiError(Error::InvalidRequest(format!(
+            "unsupported media kind '{other}'; expected image, video, or music"
+        )))),
+    }
 }
 
 /// `GET /media/models` - list provider models that can produce the requested
@@ -6025,12 +6059,7 @@ pub(crate) async fn media_models(
         .await
         .map_err(ApiError)?;
     let key = media_provider_key(&provider)?;
-    let kind = query.kind.trim();
-    if kind != "image" {
-        return Err(ApiError(Error::InvalidRequest(
-            "only image model metadata is supported".to_string(),
-        )));
-    }
+    let kind = validate_media_kind(&query.kind)?;
     let model_query = query
         .q
         .as_deref()
@@ -6087,8 +6116,9 @@ pub(crate) async fn media_model_schema(
     let provider = select_media_provider(&st, Some(&query.provider_id), None)
         .await
         .map_err(ApiError)?;
+    let kind = validate_media_kind(&query.kind)?;
     let key = media_provider_key(&provider)?;
-    let cache_key = media_schema_cache_key(&provider, model);
+    let cache_key = media_schema_cache_key(&provider, model, kind);
     if !query.refresh {
         if let Some(cached) = read_media_cache(&cache_key) {
             return Ok(Json(media_cache_response(cached, true)).into_response());
@@ -6106,9 +6136,21 @@ pub(crate) async fn media_model_schema(
             (supported, controls, upstream)
         }
         crate::providers::ProviderKind::OpenAiCompatible if is_openrouter_provider(&provider) => {
-            let upstream = call_openrouter_model_endpoints(&provider.base_url, &key, model).await?;
-            let supported = openrouter_schema_supported_parameters(&upstream);
-            let controls = media_schema_controls(&supported);
+            let upstream = if kind == "video" {
+                call_openrouter_video_models(&provider.base_url, &key).await?
+            } else {
+                call_openrouter_model_endpoints(&provider.base_url, &key, model).await?
+            };
+            let supported = if kind == "video" {
+                openrouter_video_supported_parameters(&upstream, model)
+            } else {
+                openrouter_schema_supported_parameters(&upstream)
+            };
+            let controls = match kind {
+                "video" => openrouter_video_schema_controls(&upstream, model, &supported),
+                "music" => openrouter_music_schema_controls(&supported),
+                _ => media_schema_controls(&supported),
+            };
             (supported, controls, upstream)
         }
         _ => {
@@ -6122,6 +6164,7 @@ pub(crate) async fn media_model_schema(
         "model": model,
         "provider_id": provider.id,
         "provider": provider.name,
+        "kind": kind,
         "supported_parameters": supported,
         "controls": controls,
         "raw": upstream,
@@ -6144,6 +6187,7 @@ pub(crate) async fn media_status(
             "media generation id is required".to_string(),
         )));
     }
+    let kind = validate_media_kind(&query.kind)?;
     let provider = select_media_provider(&st, Some(&query.provider_id), None)
         .await
         .map_err(ApiError)?;
@@ -6163,13 +6207,22 @@ pub(crate) async fn media_status(
             )
             .await?
         }
+        crate::providers::ProviderKind::OpenAiCompatible
+            if is_openrouter_provider(&provider) && kind == "video" =>
+        {
+            call_openrouter_video_status(&provider.base_url, &key, id).await?
+        }
         _ => {
             return Err(ApiError(Error::InvalidRequest(
                 "selected provider does not expose media run status".to_string(),
             )))
         }
     };
-    let media = media_items_from_result(&upstream);
+    let media = if is_openrouter_provider(&provider) && kind == "video" {
+        openrouter_video_media_items(&provider.id, id, &upstream)
+    } else {
+        media_items_from_result(&upstream, kind)
+    };
     let urls = media_urls_from_result(&provider.kind, &upstream);
     let status = upstream
         .get("status")
@@ -6179,7 +6232,7 @@ pub(crate) async fn media_status(
     Ok(Json(json!({
         "id": id,
         "object": "media.status",
-        "kind": "image",
+        "kind": kind,
         "provider_id": provider.id,
         "provider": provider.name,
         "provider_kind": provider.kind,
@@ -6191,6 +6244,77 @@ pub(crate) async fn media_status(
         "raw": upstream,
     }))
     .into_response())
+}
+
+/// `GET /media/content` - proxy authenticated OpenRouter video bytes without
+/// exposing the provider credential to the desktop webview.
+pub(crate) async fn media_content(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    peer: Peer,
+    Query(query): Query<MediaContentQuery>,
+) -> Result<Response, ApiError> {
+    authorize(&st, &headers, peer_addr(peer))?;
+    if query.index > 16 {
+        return Err(ApiError(Error::InvalidRequest(
+            "media content index is out of range".to_string(),
+        )));
+    }
+    let id = query.id.trim();
+    if id.is_empty()
+        || !id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+    {
+        return Err(ApiError(Error::InvalidRequest(
+            "media content id is invalid".to_string(),
+        )));
+    }
+    let provider = select_media_provider(&st, Some(&query.provider_id), None)
+        .await
+        .map_err(ApiError)?;
+    if !is_openrouter_provider(&provider) {
+        return Err(ApiError(Error::InvalidRequest(
+            "authenticated media content is only available for OpenRouter video".to_string(),
+        )));
+    }
+    let key = media_provider_key(&provider)?;
+    let url = format!(
+        "{}/videos/{id}/content",
+        provider.base_url.trim_end_matches('/')
+    );
+    let response = openrouter_request(reqwest::Client::new().get(url), &key)
+        .query(&[("index", query.index)])
+        .send()
+        .await
+        .map_err(|error| {
+            ApiError(Error::Upstream(format!(
+                "OpenRouter video content request failed: {error}"
+            )))
+        })?;
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        return Err(ApiError(Error::Upstream(format!(
+            "OpenRouter video content returned HTTP {status}: {body}"
+        ))));
+    }
+    let content_type = response
+        .headers()
+        .get(CONTENT_TYPE)
+        .cloned()
+        .unwrap_or_else(|| HeaderValue::from_static("video/mp4"));
+    let content_length = response.headers().get(CONTENT_LENGTH).cloned();
+    let mut proxied = Response::new(Body::from_stream(response.bytes_stream()));
+    proxied.headers_mut().insert(CONTENT_TYPE, content_type);
+    proxied.headers_mut().insert(
+        CACHE_CONTROL,
+        HeaderValue::from_static("private, max-age=3600"),
+    );
+    if let Some(content_length) = content_length {
+        proxied.headers_mut().insert(CONTENT_LENGTH, content_length);
+    }
+    Ok(proxied)
 }
 
 /// `POST /media/generate` - submit a prompt to an enabled remote media
@@ -6215,6 +6339,7 @@ pub(crate) async fn media_generate(
             "media prompt is required".to_string(),
         )));
     }
+    let kind = validate_media_kind(&req.kind)?.to_string();
 
     let provider = select_media_provider(&st, req.provider_id.as_deref(), req.provider_kind)
         .await
@@ -6244,7 +6369,15 @@ pub(crate) async fn media_generate(
             call_fal_media(&provider.base_url, &key, model, input).await?
         }
         crate::providers::ProviderKind::OpenAiCompatible if is_openrouter_provider(&provider) => {
-            call_openrouter_image_media(&provider.base_url, &key, model, input).await?
+            match kind.as_str() {
+                "video" => {
+                    call_openrouter_video_media(&provider.base_url, &key, model, input).await?
+                }
+                "music" => {
+                    call_openrouter_music_media(&provider.base_url, &key, model, input).await?
+                }
+                _ => call_openrouter_image_media(&provider.base_url, &key, model, input).await?,
+            }
         }
         _ => {
             return Err(ApiError(Error::InvalidRequest(
@@ -6252,7 +6385,7 @@ pub(crate) async fn media_generate(
             )))
         }
     };
-    let media = media_items_from_result(&upstream);
+    let media = media_items_from_result(&upstream, &kind);
     let urls = media_urls_from_result(&provider.kind, &upstream);
     let id = upstream
         .get("id")
@@ -6263,7 +6396,7 @@ pub(crate) async fn media_generate(
     let status = upstream
         .get("status")
         .and_then(Value::as_str)
-        .unwrap_or(if is_openrouter_provider(&provider) {
+        .unwrap_or(if is_openrouter_provider(&provider) && kind != "video" {
             "completed"
         } else {
             "submitted"
@@ -6276,7 +6409,7 @@ pub(crate) async fn media_generate(
         "provider_id": provider.id,
         "provider": provider.name,
         "provider_kind": provider.kind,
-        "kind": req.kind,
+        "kind": kind,
         "model": model,
         "status": status,
         "output": upstream.get("output").cloned().unwrap_or(Value::Null),
@@ -6514,6 +6647,146 @@ async fn call_openrouter_image_media(
     .await
 }
 
+async fn call_openrouter_video_media(
+    base_url: &str,
+    api_key: &str,
+    model: &str,
+    mut input: serde_json::Map<String, Value>,
+) -> Result<Value, ApiError> {
+    let prompt = input
+        .remove("prompt")
+        .and_then(|value| value.as_str().map(str::to_string))
+        .unwrap_or_default();
+    input.remove("modalities");
+    input.remove("stream");
+    input.insert("model".to_string(), Value::String(model.to_string()));
+    input.insert("prompt".to_string(), Value::String(prompt));
+    let url = format!("{}/videos", base_url.trim_end_matches('/'));
+    post_media_json(
+        openrouter_request(reqwest::Client::new().post(url), api_key).json(&Value::Object(input)),
+    )
+    .await
+}
+
+async fn call_openrouter_video_status(
+    base_url: &str,
+    api_key: &str,
+    id: &str,
+) -> Result<Value, ApiError> {
+    let url = format!(
+        "{}/videos/{}",
+        base_url.trim_end_matches('/'),
+        id.trim_start_matches('/')
+    );
+    get_media_json(openrouter_request(reqwest::Client::new().get(url), api_key)).await
+}
+
+async fn call_openrouter_music_media(
+    base_url: &str,
+    api_key: &str,
+    model: &str,
+    mut input: serde_json::Map<String, Value>,
+) -> Result<Value, ApiError> {
+    let prompt = input
+        .remove("prompt")
+        .and_then(|value| value.as_str().map(str::to_string))
+        .unwrap_or_default();
+    input.remove("modalities");
+    input.insert("model".to_string(), Value::String(model.to_string()));
+    input.insert(
+        "messages".to_string(),
+        json!([{ "role": "user", "content": prompt }]),
+    );
+    input.insert("modalities".to_string(), json!(["text", "audio"]));
+    input.insert("stream".to_string(), Value::Bool(true));
+    let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
+    let response = openrouter_request(reqwest::Client::new().post(url), api_key)
+        .json(&Value::Object(input))
+        .send()
+        .await
+        .map_err(|error| {
+            ApiError(Error::Upstream(format!(
+                "OpenRouter music request failed: {error}"
+            )))
+        })?;
+    let status = response.status();
+    let body = response.text().await.map_err(|error| {
+        ApiError(Error::Upstream(format!(
+            "OpenRouter music response failed: {error}"
+        )))
+    })?;
+    if !status.is_success() {
+        return Err(ApiError(Error::Upstream(format!(
+            "OpenRouter music returned HTTP {status}: {body}"
+        ))));
+    }
+    openrouter_music_from_sse(&body)
+}
+
+fn openrouter_music_from_sse(body: &str) -> Result<Value, ApiError> {
+    let mut id = String::new();
+    let mut audio = String::new();
+    let mut text = String::new();
+    let mut transcript = String::new();
+    for line in body.lines() {
+        let Some(data) = line.trim_end().strip_prefix("data:") else {
+            continue;
+        };
+        let data = data.trim();
+        if data.is_empty() || data == "[DONE]" {
+            continue;
+        }
+        let chunk: Value = serde_json::from_str(data).map_err(|error| {
+            ApiError(Error::Upstream(format!(
+                "OpenRouter music stream returned invalid JSON: {error}"
+            )))
+        })?;
+        if id.is_empty() {
+            id = chunk
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+        }
+        let Some(delta) = chunk
+            .get("choices")
+            .and_then(Value::as_array)
+            .and_then(|choices| choices.first())
+            .and_then(|choice| choice.get("delta"))
+        else {
+            continue;
+        };
+        if let Some(content) = delta.get("content").and_then(Value::as_str) {
+            text.push_str(content);
+        }
+        if let Some(audio_delta) = delta.get("audio") {
+            if let Some(data) = audio_delta.get("data").and_then(Value::as_str) {
+                audio.push_str(data);
+            }
+            if let Some(value) = audio_delta.get("transcript").and_then(Value::as_str) {
+                transcript.push_str(value);
+            }
+        }
+    }
+    if audio.is_empty() {
+        return Err(ApiError(Error::Upstream(
+            "OpenRouter music stream completed without audio data".to_string(),
+        )));
+    }
+    Ok(json!({
+        "id": id,
+        "status": "completed",
+        "output": {
+            "text": text,
+            "transcript": transcript,
+        },
+        "audio": {
+            "url": format!("data:audio/mpeg;base64,{audio}"),
+            "content_type": "audio/mpeg"
+        }
+    }))
+}
+
 fn openrouter_request(builder: reqwest::RequestBuilder, api_key: &str) -> reqwest::RequestBuilder {
     builder
         .bearer_auth(api_key)
@@ -6526,12 +6799,21 @@ async fn call_openrouter_media_models(
     api_key: &str,
     kind: &str,
 ) -> Result<Value, ApiError> {
+    if kind == "video" {
+        return call_openrouter_video_models(base_url, api_key).await;
+    }
     let url = format!("{}/models", base_url.trim_end_matches('/'));
+    let output_kind = if kind == "music" { "audio" } else { kind };
     get_media_json(
         openrouter_request(reqwest::Client::new().get(url), api_key)
-            .query(&[("output_modalities", kind)]),
+            .query(&[("output_modalities", output_kind)]),
     )
     .await
+}
+
+async fn call_openrouter_video_models(base_url: &str, api_key: &str) -> Result<Value, ApiError> {
+    let url = format!("{}/videos/models", base_url.trim_end_matches('/'));
+    get_media_json(openrouter_request(reqwest::Client::new().get(url), api_key)).await
 }
 
 async fn call_openrouter_model_endpoints(
@@ -6598,6 +6880,7 @@ async fn call_fal_media_models(
 ) -> Result<Value, ApiError> {
     let category = match kind {
         "image" => "text-to-image",
+        "music" => "text-to-audio",
         _ => kind,
     };
     let url = format!("{}/models", fal_platform_base_url(base_url));
@@ -6606,7 +6889,7 @@ async fn call_fal_media_models(
         ("category", category),
         ("status", "active"),
     ];
-    if query != kind && !query.trim().is_empty() {
+    if (query != kind || kind == "music") && !query.trim().is_empty() {
         params.push(("q", query));
     }
     get_media_json(
@@ -6696,15 +6979,32 @@ async fn get_media_json(builder: reqwest::RequestBuilder) -> Result<Value, ApiEr
 fn media_models_from_openrouter(value: &Value, kind: &str) -> Vec<MediaModelInfo> {
     value
         .get("data")
+        .or_else(|| value.get("models"))
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
         .filter_map(|model| {
-            let output_modalities = openrouter_output_modalities(model);
-            if !output_modalities.iter().any(|item| item == kind) {
+            let upstream_modalities = openrouter_output_modalities(model);
+            let descriptor = media_model_descriptor(model);
+            let matches = match kind {
+                // The dedicated /videos/models catalog is already scoped to
+                // generation models and does not consistently repeat a video
+                // output modality on every entry.
+                "video" => true,
+                "music" => {
+                    upstream_modalities.iter().any(|item| item == "audio")
+                        && openrouter_input_modalities(model)
+                            .iter()
+                            .all(|item| item != "audio")
+                        && descriptor_is_music(&descriptor)
+                }
+                _ => upstream_modalities.iter().any(|item| item == kind),
+            };
+            if !matches {
                 return None;
             }
             let id = model.get("id").and_then(Value::as_str)?.to_string();
+            let output_modalities = vec![kind.to_string()];
             Some(MediaModelInfo {
                 name: model
                     .get("name")
@@ -6717,12 +7017,16 @@ fn media_models_from_openrouter(value: &Value, kind: &str) -> Vec<MediaModelInfo
                     .unwrap_or_default()
                     .to_string(),
                 output_modalities,
-                supported_parameters: string_array(model.get("supported_parameters")),
+                supported_parameters: openrouter_video_model_parameters(model),
                 default_parameters: model
                     .get("default_parameters")
                     .cloned()
                     .unwrap_or(Value::Null),
-                pricing: model.get("pricing").cloned().unwrap_or(Value::Null),
+                pricing: model
+                    .get("pricing")
+                    .or_else(|| model.get("pricing_skus"))
+                    .cloned()
+                    .unwrap_or(Value::Null),
                 id,
             })
         })
@@ -6738,10 +7042,25 @@ fn media_models_from_replicate(value: &Value, kind: &str) -> Vec<MediaModelInfo>
         .filter_map(|item| {
             let model = item.get("model").unwrap_or(item);
             let openapi = replicate_model_openapi_schema(model);
-            let output_modalities = openapi
-                .map(openapi_output_modalities)
-                .filter(|modalities| modalities.iter().any(|item| item == kind))?;
             let id = replicate_model_id(model)?;
+            let descriptor = format!(
+                "{} {} {}",
+                id,
+                model
+                    .get("description")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default(),
+                item.get("metadata").cloned().unwrap_or(Value::Null)
+            )
+            .to_ascii_lowercase();
+            let output_schema =
+                openapi.and_then(|schema| openapi_schema_by_name(schema, "Output"))?;
+            if !schema_outputs_media_url(output_schema, openapi?, 0)
+                || !descriptor_matches_media_kind(&descriptor, kind)
+            {
+                return None;
+            }
+            let output_modalities = vec![kind.to_string()];
             let controls = openapi
                 .and_then(|openapi| {
                     openapi_input_schema(openapi)
@@ -6780,7 +7099,7 @@ fn media_models_from_fal(value: &Value, kind: &str) -> Vec<MediaModelInfo> {
         .flatten()
         .filter_map(|model| {
             let metadata = model.get("metadata").unwrap_or(&Value::Null);
-            let output_modalities = fal_output_modalities(metadata);
+            let output_modalities = fal_output_modalities(model, metadata);
             if !output_modalities.iter().any(|item| item == kind) {
                 return None;
             }
@@ -6818,7 +7137,7 @@ fn media_models_from_fal(value: &Value, kind: &str) -> Vec<MediaModelInfo> {
 
 fn filter_media_models(models: Vec<MediaModelInfo>, query: &str) -> Vec<MediaModelInfo> {
     let needle = query.trim().to_ascii_lowercase();
-    if needle.is_empty() || needle == "image" {
+    if needle.is_empty() || matches!(needle.as_str(), "image" | "video" | "music") {
         return models;
     }
     models
@@ -6881,7 +7200,7 @@ fn replicate_model_openapi_schema(model: &Value) -> Option<&Value> {
         .and_then(|version| version.get("openapi_schema"))
 }
 
-fn fal_output_modalities(metadata: &Value) -> Vec<String> {
+fn fal_output_modalities(model: &Value, metadata: &Value) -> Vec<String> {
     let category = metadata
         .get("category")
         .and_then(Value::as_str)
@@ -6889,16 +7208,18 @@ fn fal_output_modalities(metadata: &Value) -> Vec<String> {
         .to_ascii_lowercase();
     if category == "text-to-image" || category.ends_with("to-image") || category == "image" {
         vec!["image".to_string()]
+    } else if category == "text-to-video" || category.ends_with("to-video") || category == "video" {
+        vec!["video".to_string()]
+    } else if category == "text-to-audio" {
+        let descriptor = format!("{} {}", model, metadata).to_ascii_lowercase();
+        if descriptor_is_music(&descriptor) {
+            vec!["music".to_string()]
+        } else {
+            Vec::new()
+        }
     } else {
         Vec::new()
     }
-}
-
-fn openapi_output_modalities(openapi: &Value) -> Vec<String> {
-    openapi_schema_by_name(openapi, "Output")
-        .filter(|schema| schema_outputs_image(schema, openapi, 0))
-        .map(|_| vec!["image".to_string()])
-        .unwrap_or_default()
 }
 
 fn openapi_input_schema(openapi: &Value) -> Option<&Value> {
@@ -7269,50 +7590,6 @@ fn schema_array_item_kind(schema: &Value, root: &Value, depth: usize) -> Option<
     }
 }
 
-fn schema_outputs_image(schema: &Value, root: &Value, depth: usize) -> bool {
-    if depth > 8 {
-        return false;
-    }
-    if schema
-        .get("title")
-        .and_then(Value::as_str)
-        .map(|title| title.to_ascii_lowercase().contains("image"))
-        .unwrap_or(false)
-    {
-        return true;
-    }
-    if schema.get("format").and_then(Value::as_str) == Some("uri") {
-        return true;
-    }
-    if let Some(properties) = schema.get("properties").and_then(Value::as_object) {
-        for (key, value) in properties {
-            if key.to_ascii_lowercase().contains("image")
-                || schema_outputs_image(value, root, depth + 1)
-            {
-                return true;
-            }
-        }
-    }
-    if let Some(items) = schema.get("items") {
-        if schema_outputs_image(items, root, depth + 1) {
-            return true;
-        }
-    }
-    for key in ["anyOf", "oneOf", "allOf"] {
-        if let Some(items) = schema.get(key).and_then(Value::as_array) {
-            if items
-                .iter()
-                .any(|item| schema_outputs_image(item, root, depth + 1))
-            {
-                return true;
-            }
-        }
-    }
-    resolve_schema_ref(root, schema)
-        .map(|resolved| schema_outputs_image(resolved, root, depth + 1))
-        .unwrap_or(false)
-}
-
 fn supported_parameters_from_controls(controls: &[MediaSchemaControl]) -> Vec<String> {
     controls.iter().map(|control| control.key.clone()).collect()
 }
@@ -7356,6 +7633,142 @@ fn openrouter_output_modalities(model: &Value) -> Vec<String> {
     )
 }
 
+fn openrouter_input_modalities(model: &Value) -> Vec<String> {
+    string_array(
+        model
+            .get("architecture")
+            .and_then(|architecture| architecture.get("input_modalities")),
+    )
+}
+
+fn media_model_descriptor(model: &Value) -> String {
+    format!(
+        "{} {} {} {}",
+        model.get("id").and_then(Value::as_str).unwrap_or_default(),
+        model
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or_default(),
+        model
+            .get("description")
+            .and_then(Value::as_str)
+            .unwrap_or_default(),
+        model.get("tags").cloned().unwrap_or(Value::Null)
+    )
+    .to_ascii_lowercase()
+}
+
+fn descriptor_is_music(descriptor: &str) -> bool {
+    let excluded = [
+        "text-to-speech",
+        "speech-to-text",
+        "transcription",
+        "voice cloning",
+        "voice changer",
+        "dubbing",
+        "tts",
+    ];
+    let music = [
+        "music",
+        "song",
+        "instrumental",
+        "lyrics",
+        "musicgen",
+        "lyria",
+        "melody",
+    ];
+    music.iter().any(|term| descriptor.contains(term))
+        && !excluded.iter().any(|term| descriptor.contains(term))
+}
+
+fn descriptor_matches_media_kind(descriptor: &str, kind: &str) -> bool {
+    match kind {
+        "music" => descriptor_is_music(descriptor),
+        "video" => [
+            "video",
+            "text-to-video",
+            "veo",
+            "kling",
+            "runway",
+            "wan",
+            "hailuo",
+        ]
+        .iter()
+        .any(|term| descriptor.contains(term)),
+        "image" => [
+            "image",
+            "text-to-image",
+            "flux",
+            "sdxl",
+            "stable diffusion",
+            "recraft",
+        ]
+        .iter()
+        .any(|term| descriptor.contains(term)),
+        _ => false,
+    }
+}
+
+fn openrouter_video_model_parameters(model: &Value) -> Vec<String> {
+    let mut out = string_array(model.get("supported_parameters"));
+    for (field, parameter) in [
+        ("supported_durations", "duration"),
+        ("durations", "duration"),
+        ("supported_resolutions", "resolution"),
+        ("resolutions", "resolution"),
+        ("supported_aspect_ratios", "aspect_ratio"),
+        ("aspect_ratios", "aspect_ratio"),
+        ("supported_sizes", "size"),
+    ] {
+        if model.get(field).is_some() && !out.iter().any(|item| item == parameter) {
+            out.push(parameter.to_string());
+        }
+    }
+    for parameter in ["generate_audio", "seed"] {
+        if model.get(parameter).is_some() && !out.iter().any(|item| item == parameter) {
+            out.push(parameter.to_string());
+        }
+    }
+    out
+}
+
+fn schema_outputs_media_url(schema: &Value, root: &Value, depth: usize) -> bool {
+    if depth > 8 {
+        return false;
+    }
+    if schema.get("format").and_then(Value::as_str) == Some("uri") {
+        return true;
+    }
+    if let Some(properties) = schema.get("properties").and_then(Value::as_object) {
+        if properties
+            .values()
+            .any(|value| schema_outputs_media_url(value, root, depth + 1))
+        {
+            return true;
+        }
+    }
+    if let Some(items) = schema.get("items") {
+        if schema_outputs_media_url(items, root, depth + 1) {
+            return true;
+        }
+    }
+    for key in ["anyOf", "oneOf", "allOf"] {
+        if schema
+            .get(key)
+            .and_then(Value::as_array)
+            .is_some_and(|items| {
+                items
+                    .iter()
+                    .any(|item| schema_outputs_media_url(item, root, depth + 1))
+            })
+        {
+            return true;
+        }
+    }
+    resolve_schema_ref(root, schema)
+        .is_some_and(|resolved| schema_outputs_media_url(resolved, root, depth + 1))
+}
+
 fn openrouter_schema_supported_parameters(value: &Value) -> Vec<String> {
     let mut out = Vec::new();
     if let Some(endpoints) = value.get("endpoints").and_then(Value::as_array) {
@@ -7365,6 +7778,146 @@ fn openrouter_schema_supported_parameters(value: &Value) -> Vec<String> {
     }
     push_unique_strings(&mut out, value.get("supported_parameters"));
     out
+}
+
+fn openrouter_video_model<'a>(value: &'a Value, model: &str) -> Option<&'a Value> {
+    value
+        .get("data")
+        .or_else(|| value.get("models"))
+        .and_then(Value::as_array)
+        .and_then(|models| {
+            models
+                .iter()
+                .find(|item| item.get("id").and_then(Value::as_str) == Some(model))
+        })
+}
+
+fn openrouter_video_supported_parameters(value: &Value, model: &str) -> Vec<String> {
+    openrouter_video_model(value, model)
+        .map(openrouter_video_model_parameters)
+        .unwrap_or_default()
+}
+
+fn openrouter_video_values(model: &Value, fields: &[&str]) -> Vec<Value> {
+    for field in fields {
+        if let Some(values) = model.get(field).and_then(Value::as_array) {
+            return values
+                .iter()
+                .filter(|value| value.is_string() || value.is_number())
+                .cloned()
+                .collect();
+        }
+    }
+    Vec::new()
+}
+
+fn openrouter_video_schema_controls(
+    value: &Value,
+    model_id: &str,
+    supported: &[String],
+) -> Vec<MediaSchemaControl> {
+    let Some(model) = openrouter_video_model(value, model_id) else {
+        return Vec::new();
+    };
+    let mut controls = Vec::new();
+    for (key, label, fields) in [
+        (
+            "duration",
+            "Duration",
+            &["supported_durations", "durations"][..],
+        ),
+        (
+            "resolution",
+            "Resolution",
+            &["supported_resolutions", "resolutions"][..],
+        ),
+        (
+            "aspect_ratio",
+            "Aspect ratio",
+            &["supported_aspect_ratios", "aspect_ratios"][..],
+        ),
+    ] {
+        let values = openrouter_video_values(model, fields);
+        if !values.is_empty() {
+            controls.push(select_control_values(
+                key,
+                label,
+                vec![key.to_string()],
+                values
+                    .iter()
+                    .map(|value| MediaControlOption {
+                        label: media_option_label(value),
+                        value: value.clone(),
+                    })
+                    .collect(),
+                values.first().cloned(),
+                None,
+            ));
+        }
+    }
+    let has = |key: &str| supported.iter().any(|item| item == key);
+    if has("generate_audio") || model.get("generate_audio").is_some() {
+        controls.push(checkbox_control(
+            "generate_audio",
+            "Generate audio",
+            ["generate_audio"],
+            Some(json!(model
+                .get("generate_audio")
+                .and_then(Value::as_bool)
+                .unwrap_or(false))),
+        ));
+    }
+    if has("seed") {
+        controls.push(number_control(
+            "seed",
+            "Seed",
+            ["seed"],
+            None,
+            Some(0.0),
+            None,
+            Some(1.0),
+        ));
+    }
+    controls
+}
+
+fn openrouter_music_schema_controls(supported: &[String]) -> Vec<MediaSchemaControl> {
+    let has = |key: &str| supported.iter().any(|item| item == key);
+    let mut controls = Vec::new();
+    if has("seed") {
+        controls.push(number_control(
+            "seed",
+            "Seed",
+            ["seed"],
+            None,
+            Some(0.0),
+            None,
+            Some(1.0),
+        ));
+    }
+    if has("temperature") {
+        controls.push(number_control(
+            "temperature",
+            "Temperature",
+            ["temperature"],
+            Some(json!(0.7)),
+            Some(0.0),
+            Some(2.0),
+            Some(0.1),
+        ));
+    }
+    if has("top_p") {
+        controls.push(number_control(
+            "top_p",
+            "Top P",
+            ["top_p"],
+            Some(json!(0.9)),
+            Some(0.0),
+            Some(1.0),
+            Some(0.05),
+        ));
+    }
+    controls
 }
 
 fn push_unique_strings(out: &mut Vec<String>, value: Option<&Value>) {
@@ -7494,6 +8047,28 @@ fn select_control_values(
     }
 }
 
+fn checkbox_control<const N: usize>(
+    key: &str,
+    label: &str,
+    path: [&str; N],
+    default_value: Option<Value>,
+) -> MediaSchemaControl {
+    MediaSchemaControl {
+        key: key.to_string(),
+        label: label.to_string(),
+        kind: "checkbox".to_string(),
+        path: path.into_iter().map(str::to_string).collect(),
+        description: None,
+        options: None,
+        default_value,
+        min: None,
+        max: None,
+        step: None,
+        item_kind: None,
+        placeholder: None,
+    }
+}
+
 fn number_control<const N: usize>(
     key: &str,
     label: &str,
@@ -7568,7 +8143,7 @@ fn media_urls_from_result(kind: &crate::providers::ProviderKind, value: &Value) 
     Value::Object(urls)
 }
 
-fn media_items_from_result(value: &Value) -> Vec<MediaItem> {
+fn media_items_from_result(value: &Value, kind_hint: &str) -> Vec<MediaItem> {
     let mut urls = Vec::new();
     if let Some(output) = value.get("output") {
         collect_media_urls(output, &mut urls);
@@ -7579,6 +8154,12 @@ fn media_items_from_result(value: &Value) -> Vec<MediaItem> {
     if let Some(video) = value.get("video") {
         collect_media_urls(video, &mut urls);
     }
+    if let Some(audio) = value.get("audio") {
+        collect_media_urls(audio, &mut urls);
+    }
+    if let Some(unsigned_urls) = value.get("unsigned_urls") {
+        collect_media_urls(unsigned_urls, &mut urls);
+    }
     if let Some(choices) = value.get("choices") {
         collect_media_urls(choices, &mut urls);
     }
@@ -7586,11 +8167,46 @@ fn media_items_from_result(value: &Value) -> Vec<MediaItem> {
     urls.dedup();
     urls.into_iter()
         .map(|url| MediaItem {
-            kind: media_kind_from_url(&url).to_string(),
+            kind: media_kind_from_url(&url, kind_hint).to_string(),
             mime: media_mime_from_url(&url).map(str::to_string),
             url,
+            requires_auth: false,
         })
         .collect()
+}
+
+fn openrouter_video_media_items(provider_id: &str, id: &str, value: &Value) -> Vec<MediaItem> {
+    let has_output = value
+        .get("unsigned_urls")
+        .and_then(Value::as_array)
+        .is_some_and(|items| !items.is_empty())
+        || value.get("output").is_some_and(|output| !output.is_null());
+    if !has_output {
+        return Vec::new();
+    }
+    vec![MediaItem {
+        url: format!(
+            "/media/content?provider_id={}&id={}&index=0",
+            percent_encode_query(provider_id),
+            percent_encode_query(id)
+        ),
+        kind: "video".to_string(),
+        mime: Some("video/mp4".to_string()),
+        requires_auth: true,
+    }]
+}
+
+fn percent_encode_query(value: &str) -> String {
+    value
+        .bytes()
+        .map(|byte| match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                (byte as char).to_string()
+            }
+            other => format!("%{other:02X}"),
+        })
+        .collect::<Vec<_>>()
+        .join("")
 }
 
 fn collect_media_urls(value: &Value, out: &mut Vec<String>) {
@@ -7600,6 +8216,7 @@ fn collect_media_urls(value: &Value, out: &mut Vec<String>) {
                 || text.starts_with("https://")
                 || text.starts_with("data:image/")
                 || text.starts_with("data:video/")
+                || text.starts_with("data:audio/")
             {
                 out.push(text.to_string());
             }
@@ -7621,10 +8238,26 @@ fn collect_media_urls(value: &Value, out: &mut Vec<String>) {
     }
 }
 
-fn media_kind_from_url(url: &str) -> &'static str {
+fn media_kind_from_url(url: &str, kind_hint: &str) -> &'static str {
     let lower = url.to_ascii_lowercase();
-    if lower.contains(".mp4") || lower.contains(".webm") || lower.contains(".mov") {
+    if lower.starts_with("data:audio/")
+        || [".mp3", ".wav", ".flac", ".ogg", ".m4a", ".aac", ".opus"]
+            .iter()
+            .any(|extension| lower.contains(extension))
+    {
+        "music"
+    } else if lower.starts_with("data:video/")
+        || lower.contains(".mp4")
+        || lower.contains(".webm")
+        || lower.contains(".mov")
+    {
         "video"
+    } else if matches!(kind_hint, "image" | "video" | "music") {
+        match kind_hint {
+            "video" => "video",
+            "music" => "music",
+            _ => "image",
+        }
     } else {
         "image"
     }
@@ -7649,6 +8282,32 @@ fn media_mime_from_url(url: &str) -> Option<&'static str> {
         Some("video/webm")
     } else if lower.starts_with("data:video/quicktime") || lower.contains(".mov") {
         Some("video/quicktime")
+    } else if lower.starts_with("data:audio/mpeg")
+        || lower.starts_with("data:audio/mp3")
+        || lower.contains(".mp3")
+    {
+        Some("audio/mpeg")
+    } else if lower.starts_with("data:audio/wav")
+        || lower.starts_with("data:audio/x-wav")
+        || lower.contains(".wav")
+    {
+        Some("audio/wav")
+    } else if lower.starts_with("data:audio/flac")
+        || lower.starts_with("data:audio/x-flac")
+        || lower.contains(".flac")
+    {
+        Some("audio/flac")
+    } else if lower.starts_with("data:audio/ogg") || lower.contains(".ogg") {
+        Some("audio/ogg")
+    } else if lower.starts_with("data:audio/mp4")
+        || lower.starts_with("data:audio/x-m4a")
+        || lower.contains(".m4a")
+    {
+        Some("audio/mp4")
+    } else if lower.starts_with("data:audio/aac") || lower.contains(".aac") {
+        Some("audio/aac")
+    } else if lower.starts_with("data:audio/opus") || lower.contains(".opus") {
+        Some("audio/opus")
     } else {
         None
     }

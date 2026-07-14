@@ -58,6 +58,11 @@ const SchedulesManager = lazy(() =>
     default: mod.SchedulesManager,
   })),
 );
+const MediaManager = lazy(() =>
+  import("./components/MediaManager").then((mod) => ({
+    default: mod.MediaManager,
+  })),
+);
 const OnboardingFlow = lazy(() =>
   import("./components/OnboardingFlow").then((mod) => ({
     default: mod.OnboardingFlow,
@@ -307,6 +312,7 @@ function AppContent() {
   const [skillsOpen, setSkillsOpen] = useState(false);
   const [skillsRevision, setSkillsRevision] = useState(0);
   const [schedulesOpen, setSchedulesOpen] = useState(false);
+  const [mediaOpen, setMediaOpen] = useState(false);
   const [mcpManagerRequest, setMcpManagerRequest] = useState(0);
   const [composerDraft, setComposerDraft] = useState<{
     id: number;
@@ -397,6 +403,7 @@ function AppContent() {
           onOpenSettings={() => setSettingsOpen(true)}
           onManageSkills={() => setSkillsOpen(true)}
           onManageSchedules={() => setSchedulesOpen(true)}
+          onManageMedia={() => setMediaOpen(true)}
           onManageMcp={() => setMcpManagerRequest((value) => value + 1)}
           onGitAction={(text) => setComposerDraft({ id: Date.now(), text })}
           onOpenGitPanel={() => setGitPanelRequest((value) => value + 1)}
@@ -432,6 +439,15 @@ function AppContent() {
         )}
         {schedulesOpen && (
           <SchedulesManager onClose={() => setSchedulesOpen(false)} />
+        )}
+        {mediaOpen && (
+          <MediaManager
+            onClose={() => setMediaOpen(false)}
+            onManageProviders={() => {
+              setMediaOpen(false);
+              setSettingsOpen(true);
+            }}
+          />
         )}
       </Suspense>
       <AppNoticeHost />

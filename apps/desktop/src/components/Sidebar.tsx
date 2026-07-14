@@ -18,7 +18,7 @@ import { chatExportFilename, sessionExportPayload } from "../lib/threadExport";
 import { DEFAULT_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH, MIN_SIDEBAR_WIDTH, normalizeSidebarWidth, useUiPreferences } from "../ui/store";
 import { GitPanel } from "./GitPanel";
 import { useContextMenu } from "./ContextMenu";
-import { Archive, ArrowUp, Bolt, Calendar, ChevronDown, Cube, Download, Folder, FolderOpen, Gear, GitBranch, Lightbulb, MoreHorizontal, Pin, Plus, Search, Sidebar as PanelIcon } from "./icons";
+import { Archive, ArrowUp, Bolt, Calendar, ChevronDown, Cube, Download, Folder, FolderOpen, Gear, GitBranch, Image, Lightbulb, MoreHorizontal, Pin, Plus, Search, Sidebar as PanelIcon } from "./icons";
 
 const SIDEBAR_KEYBOARD_STEP = 32;
 const SIDEBAR_COLLAPSE_OVERSHOOT = 96;
@@ -253,6 +253,7 @@ export function Sidebar({
   onOpenSettings,
   onManageSkills,
   onManageSchedules,
+  onManageMedia,
   onManageMcp,
   onGitAction,
   onOpenGitPanel,
@@ -262,6 +263,7 @@ export function Sidebar({
   onOpenSettings: () => void;
   onManageSkills: () => void;
   onManageSchedules: () => void;
+  onManageMedia: () => void;
   onManageMcp: () => void;
   onGitAction: (text: string) => void;
   onOpenGitPanel: () => void;
@@ -347,6 +349,7 @@ export function Sidebar({
       { key: "mcp", label: "MCP Servers", icon: <Cube size={iconSize} />, action: onManageMcp, visible: true },
       { key: "skills", label: "Skills", icon: <Lightbulb size={iconSize} />, action: onManageSkills, visible: true },
       { key: "schedules", label: "Schedules", icon: <Calendar size={iconSize} />, action: onManageSchedules, visible: true },
+      { key: "media", label: "Media", icon: <Image size={iconSize} />, action: onManageMedia, visible: true },
     ];
     return actions.filter((item) => item.visible).map((item) => (
       <button

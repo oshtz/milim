@@ -6,10 +6,10 @@ title: Media and mobile
 summary: Media generation and the mobile companion.
 group: Local data
 order: 80
-updated: 2026-07-12
+updated: 2026-07-14
 ---
 
-These optional extensions share the same desktop session. Media routes submit provider jobs, and the mobile companion mirrors desktop threads while sending phone prompts through the desktop session. Voice input, dictation, transcription, speech playback, and audio HTTP routes are not part of Milim.
+These optional extensions share the same desktop session. Media routes generate images, videos, and prompt-to-music results, and the mobile companion mirrors desktop threads while sending phone prompts through the desktop session. Voice input, dictation, transcription, TTS, audio remix/upload, and voice-chat routes are not part of Milim.
 
 ## Setup paths
 
@@ -32,6 +32,8 @@ curl "http://127.0.0.1:7377/media/generate" \
 ```
 
 Media prompts are remote-provider traffic. They pass through the privacy gate in Redact and Block modes before leaving the machine.
+
+The desktop media manager and inline model lane expose Image, Video, and Music tabs. Generated images and videos open in a dark, window-filling in-app preview from both the media manager and chat transcript; generated music uses native inline audio controls. OpenRouter video downloads pass through authenticated `GET /media/content`. OpenRouter image is live-verified, while credentialed OpenRouter video/music and fal/Replicate music smoke verification remains separate from mocked adapter coverage.
 
 ## Mobile companion
 

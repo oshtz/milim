@@ -17,7 +17,8 @@ export type ModelDevCapability =
   | "reasoning"
   | "fast"
   | "image"
-  | "video";
+  | "video"
+  | "music";
 
 export type ModelDevSetupTone = "ready" | "warning" | "error" | "off";
 
@@ -97,6 +98,7 @@ export function modelDevCapabilities(model: ModelInfo): ModelDevCapability[] {
   if (model.capabilities?.toolUse) out.push("tools");
   if (model.capabilities?.imageOutput) out.push("image");
   if (model.capabilities?.videoOutput) out.push("video");
+  if (model.capabilities?.musicOutput) out.push("music");
   if (
     model.capabilities?.imageInput === undefined &&
     (/(vision|llava|pixtral|llama-4|(?:^|[-/])qwen\d[^/]*vl|(?:^|[-/])qwen3\.6|-vl)/.test(s) ||
@@ -118,7 +120,9 @@ export function modelDevProfile(
   const id = model?.id || selectedId;
   const capabilities = model ? modelDevCapabilities(model) : [];
   const media = Boolean(
-    model?.capabilities?.imageOutput || model?.capabilities?.videoOutput,
+    model?.capabilities?.imageOutput ||
+      model?.capabilities?.videoOutput ||
+      model?.capabilities?.musicOutput,
   );
   const codex = id.startsWith(CODEX_MODEL_PREFIX);
   const claude = id.startsWith(CLAUDE_MODEL_PREFIX);
@@ -165,7 +169,7 @@ export function modelDevProfile(
       ...setup,
       capabilities,
       detailTags,
-      routeDetail: "Next send uses the media generation flow for image or video output.",
+      routeDetail: "Next send uses the media generation flow for image, video, or music output.",
     };
   }
   if (context.toolIntent && !context.planMode) {

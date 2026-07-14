@@ -1338,6 +1338,48 @@ async fn spawn_one_request_json_upstream(
     (format!("http://{addr}"), handle)
 }
 
+async fn spawn_media_sequence_upstream(
+    responses: Vec<(u16, &'static str, Vec<u8>)>,
+) -> (
+    String,
+    tokio::task::JoinHandle<Vec<CapturedUpstreamRequest>>,
+) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move {
+        let mut requests = Vec::new();
+        for (status, content_type, body) in responses {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut bytes = Vec::new();
+            let mut buf = [0u8; 2048];
+            loop {
+                let n = socket.read(&mut buf).await.unwrap();
+                if n == 0 {
+                    break;
+                }
+                bytes.extend_from_slice(&buf[..n]);
+                if upstream_request_complete(&bytes) {
+                    break;
+                }
+            }
+            requests.push(parse_upstream_request(&bytes));
+            let reason = match status {
+                200 => "OK",
+                202 => "Accepted",
+                _ => "Response",
+            };
+            let headers = format!(
+                "HTTP/1.1 {status} {reason}\r\ncontent-type: {content_type}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                body.len()
+            );
+            socket.write_all(headers.as_bytes()).await.unwrap();
+            socket.write_all(&body).await.unwrap();
+        }
+        requests
+    });
+    (format!("http://{addr}/api/v1"), handle)
+}
+
 fn upstream_request_complete(bytes: &[u8]) -> bool {
     let text = String::from_utf8_lossy(bytes);
     let Some((head, body)) = text.split_once("\r\n\r\n") else {
@@ -1975,6 +2017,273 @@ async fn media_generate_openrouter_normalizes_to_image_only_output_modality() {
 }
 
 #[tokio::test]
+async fn media_generate_openrouter_video_uses_async_status_and_content_proxy() {
+    let video_models = br#"{"data":[{"id":"google/veo-3","name":"Veo 3","description":"Video generation with optional audio","supported_parameters":["duration","resolution","aspect_ratio","generate_audio","seed"],"supported_durations":[4,8],"supported_resolutions":["720p","1080p"],"supported_aspect_ratios":["16:9","9:16"]}]}"#.to_vec();
+    let (upstream_base, upstream_requests) = spawn_media_sequence_upstream(vec![
+        (200, "application/json", br#"{"data":[]}"#.to_vec()),
+        (200, "application/json", video_models.clone()),
+        (200, "application/json", video_models),
+        (202, "application/json", br#"{"id":"vid_123","status":"queued","polling_url":"/videos/vid_123"}"#.to_vec()),
+        (200, "application/json", br#"{"id":"vid_123","status":"completed","unsigned_urls":["https://cdn.openrouter.ai/video.mp4"]}"#.to_vec()),
+        (200, "video/mp4", b"video-bytes".to_vec()),
+    ])
+    .await;
+    let tmp = std::env::temp_dir().join(format!(
+        "milim-media-openrouter-video-test-{}",
+        uuid::Uuid::new_v4()
+    ));
+    let registry = Arc::new(
+        milim_server::providers::ProviderRegistry::open(&tmp, Arc::new(TestBackend::new()))
+            .unwrap(),
+    );
+    let state = AppState::new(Arc::new(TestBackend::new()), ServerConfiguration::default())
+        .with_providers(registry);
+    let base = spawn(state).await;
+    let client = reqwest::Client::new();
+    let saved: Value = client
+        .post(format!("{base}/providers"))
+        .json(&json!({
+            "name": "OpenRouter",
+            "kind": "openai_compatible",
+            "base_url": upstream_base,
+            "api_key": "openrouter-secret",
+            "enabled": true
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let provider_id = saved["id"].as_str().unwrap();
+
+    let models: Value = client
+        .get(format!(
+            "{base}/media/models?provider_id={provider_id}&kind=video"
+        ))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(models["models"][0]["id"], "google/veo-3");
+    assert_eq!(models["models"][0]["output_modalities"][0], "video");
+
+    let schema: Value = client
+        .get(format!(
+            "{base}/media/model-schema?provider_id={provider_id}&model=google%2Fveo-3&kind=video"
+        ))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(schema["controls"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|control| control["key"] == "duration" && control["options"][0]["value"] == 4));
+    assert!(schema["controls"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|control| control["key"] == "generate_audio" && control["kind"] == "checkbox"));
+
+    let submitted: Value = client
+        .post(format!("{base}/media/generate"))
+        .json(&json!({
+            "provider_id": provider_id,
+            "kind": "video",
+            "model": "google/veo-3",
+            "prompt": "waves at sunset",
+            "input": {"duration": 8, "resolution": "1080p", "generate_audio": true}
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(submitted["id"], "vid_123");
+    assert_eq!(submitted["status"], "queued");
+    assert_eq!(submitted["kind"], "video");
+
+    let completed: Value = client
+        .get(format!(
+            "{base}/media/status?provider_id={provider_id}&id=vid_123&model=google%2Fveo-3&kind=video"
+        ))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(completed["status"], "completed");
+    assert_eq!(completed["media"][0]["kind"], "video");
+    assert_eq!(completed["media"][0]["requires_auth"], true);
+    assert!(completed["media"][0]["url"]
+        .as_str()
+        .unwrap()
+        .starts_with("/media/content?"));
+
+    let content = client
+        .get(format!(
+            "{base}/media/content?provider_id={provider_id}&id=vid_123&index=0"
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(content.headers()["content-type"], "video/mp4");
+    assert_eq!(content.bytes().await.unwrap().as_ref(), b"video-bytes");
+
+    let requests = upstream_requests.await.unwrap();
+    assert_eq!(requests[1].path, "/api/v1/videos/models");
+    assert_eq!(requests[2].path, "/api/v1/videos/models");
+    assert_eq!(requests[3].method, "POST");
+    assert_eq!(requests[3].path, "/api/v1/videos");
+    assert_eq!(requests[3].body["prompt"], "waves at sunset");
+    assert_eq!(requests[3].body["generate_audio"], true);
+    assert_eq!(requests[4].path, "/api/v1/videos/vid_123");
+    assert_eq!(requests[5].path, "/api/v1/videos/vid_123/content?index=0");
+    for request in &requests {
+        assert_openrouter_attribution(&request.headers);
+    }
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
+#[tokio::test]
+async fn media_generate_openrouter_music_discovers_only_music_and_assembles_sse_audio() {
+    let music_models = br#"{"data":[{"id":"google/lyria-3-pro-preview","name":"Lyria 3 Pro","description":"Prompt-to-music generation","architecture":{"input_modalities":["text"],"output_modalities":["text","audio"]},"supported_parameters":["seed","temperature"]},{"id":"openai/gpt-audio","name":"GPT Audio","description":"Voice and speech conversations","architecture":{"input_modalities":["text","audio"],"output_modalities":["text","audio"]}}]}"#.to_vec();
+    let sse = concat!(
+        "data: {\"id\":\"music_123\",\"choices\":[{\"delta\":{\"content\":\"Verse \",\"audio\":{\"data\":\"QUJD\",\"transcript\":\"la \"}}}]}\n\n",
+        "data: {\"id\":\"music_123\",\"choices\":[{\"delta\":{\"content\":\"Chorus\",\"audio\":{\"data\":\"RA==\",\"transcript\":\"la\"}}}]}\n\n",
+        "data: [DONE]\n\n"
+    )
+    .as_bytes()
+    .to_vec();
+    let (upstream_base, upstream_requests) = spawn_media_sequence_upstream(vec![
+        (200, "application/json", br#"{"data":[]}"#.to_vec()),
+        (200, "application/json", music_models),
+        (
+            200,
+            "application/json",
+            br#"{"endpoints":[{"supported_parameters":["seed","temperature"]}]}"#.to_vec(),
+        ),
+        (200, "text/event-stream", sse),
+    ])
+    .await;
+    let tmp = std::env::temp_dir().join(format!(
+        "milim-media-openrouter-music-test-{}",
+        uuid::Uuid::new_v4()
+    ));
+    let registry = Arc::new(
+        milim_server::providers::ProviderRegistry::open(&tmp, Arc::new(TestBackend::new()))
+            .unwrap(),
+    );
+    let state = AppState::new(Arc::new(TestBackend::new()), ServerConfiguration::default())
+        .with_providers(registry);
+    let base = spawn(state).await;
+    let client = reqwest::Client::new();
+    let saved: Value = client
+        .post(format!("{base}/providers"))
+        .json(&json!({
+            "name": "OpenRouter",
+            "kind": "openai_compatible",
+            "base_url": upstream_base,
+            "api_key": "openrouter-secret",
+            "enabled": true
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let provider_id = saved["id"].as_str().unwrap();
+
+    let models: Value = client
+        .get(format!(
+            "{base}/media/models?provider_id={provider_id}&kind=music"
+        ))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(models["models"].as_array().unwrap().len(), 1);
+    assert_eq!(models["models"][0]["id"], "google/lyria-3-pro-preview");
+    assert_eq!(models["models"][0]["output_modalities"][0], "music");
+
+    let schema: Value = client
+        .get(format!(
+            "{base}/media/model-schema?provider_id={provider_id}&model=google%2Flyria-3-pro-preview&kind=music"
+        ))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(schema["controls"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|control| control["key"] == "temperature"));
+
+    let generated: Value = client
+        .post(format!("{base}/media/generate"))
+        .json(&json!({
+            "provider_id": provider_id,
+            "kind": "music",
+            "model": "google/lyria-3-pro-preview",
+            "prompt": "warm synthwave instrumental",
+            "input": {"temperature": 0.5}
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(generated["id"], "music_123");
+    assert_eq!(generated["kind"], "music");
+    assert_eq!(generated["media"][0]["kind"], "music");
+    assert_eq!(generated["media"][0]["mime"], "audio/mpeg");
+    assert_eq!(
+        generated["media"][0]["url"],
+        "data:audio/mpeg;base64,QUJDRA=="
+    );
+    assert_eq!(generated["output"]["text"], "Verse Chorus");
+    assert_eq!(generated["output"]["transcript"], "la la");
+
+    let invalid = client
+        .post(format!("{base}/media/generate"))
+        .json(&json!({
+            "provider_id": provider_id,
+            "kind": "speech",
+            "model": "google/lyria-3-pro-preview",
+            "prompt": "hello"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(invalid.status(), reqwest::StatusCode::BAD_REQUEST);
+
+    let requests = upstream_requests.await.unwrap();
+    assert_eq!(requests[1].path, "/api/v1/models?output_modalities=audio");
+    assert_eq!(requests[3].path, "/api/v1/chat/completions");
+    assert_eq!(requests[3].body["modalities"], json!(["text", "audio"]));
+    assert_eq!(requests[3].body["stream"], true);
+    for request in &requests {
+        assert_openrouter_attribution(&request.headers);
+    }
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
+#[tokio::test]
 async fn media_openrouter_metadata_lists_image_models_and_schema_controls() {
     let (upstream_base, upstream_requests) = spawn_openrouter_metadata_upstream().await;
     let tmp = std::env::temp_dir().join(format!(
@@ -2268,6 +2577,112 @@ async fn media_fal_metadata_lists_image_models_and_schema_controls() {
     );
 
     let _ = std::fs::remove_dir_all(tmp);
+}
+
+#[tokio::test]
+async fn media_music_catalogs_include_generators_and_exclude_voice_models() {
+    let replicate_body = br#"{"models":[{"model":{"owner":"meta","name":"musicgen","description":"Generate original music from a prompt","latest_version":{"openapi_schema":{"components":{"schemas":{"Input":{"type":"object","properties":{"prompt":{"type":"string"}}},"AudioOutput":{"type":"string","format":"uri"}}}}}},"metadata":{"tags":["music","text-to-music"]}},{"model":{"owner":"voice-labs","name":"tts","description":"Text-to-speech voice generation","latest_version":{"openapi_schema":{"components":{"schemas":{"AudioOutput":{"type":"string","format":"uri"}}}}}},"metadata":{"tags":["audio","voice"]}}]}"#.to_vec();
+    let (replicate_base, replicate_requests) =
+        spawn_media_sequence_upstream(vec![(200, "application/json", replicate_body)]).await;
+    let replicate_tmp = std::env::temp_dir().join(format!(
+        "milim-media-replicate-music-test-{}",
+        uuid::Uuid::new_v4()
+    ));
+    let replicate_registry = Arc::new(
+        milim_server::providers::ProviderRegistry::open(
+            &replicate_tmp,
+            Arc::new(TestBackend::new()),
+        )
+        .unwrap(),
+    );
+    let replicate_state =
+        AppState::new(Arc::new(TestBackend::new()), ServerConfiguration::default())
+            .with_providers(replicate_registry);
+    let replicate_server = spawn(replicate_state).await;
+    let client = reqwest::Client::new();
+    let saved: Value = client
+        .post(format!("{replicate_server}/providers"))
+        .json(&json!({
+            "name": "Replicate",
+            "kind": "replicate",
+            "base_url": replicate_base,
+            "api_key": "replicate-secret",
+            "enabled": true
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let provider_id = saved["id"].as_str().unwrap();
+    let models: Value = client
+        .get(format!(
+            "{replicate_server}/media/models?provider_id={provider_id}&kind=music"
+        ))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(models["models"].as_array().unwrap().len(), 1);
+    assert_eq!(models["models"][0]["id"], "meta/musicgen");
+    assert_eq!(models["models"][0]["output_modalities"][0], "music");
+    let requests = replicate_requests.await.unwrap();
+    assert_eq!(requests[0].path, "/api/v1/search?query=music&limit=50");
+
+    let fal_body = br#"{"models":[{"endpoint_id":"fal-ai/elevenlabs/music","metadata":{"display_name":"Eleven Music","category":"text-to-audio","description":"Generate original music and songs","tags":["music"]}},{"endpoint_id":"fal-ai/tts","metadata":{"display_name":"TTS","category":"text-to-audio","description":"Text-to-speech voice synthesis","tags":["voice","tts"]}},{"endpoint_id":"fal-ai/transcribe","metadata":{"display_name":"Transcribe","category":"text-to-audio","description":"Speech transcription","tags":["speech"]}}]}"#.to_vec();
+    let (fal_base, fal_requests) =
+        spawn_media_sequence_upstream(vec![(200, "application/json", fal_body)]).await;
+    let fal_tmp = std::env::temp_dir().join(format!(
+        "milim-media-fal-music-test-{}",
+        uuid::Uuid::new_v4()
+    ));
+    let fal_registry = Arc::new(
+        milim_server::providers::ProviderRegistry::open(&fal_tmp, Arc::new(TestBackend::new()))
+            .unwrap(),
+    );
+    let fal_state = AppState::new(Arc::new(TestBackend::new()), ServerConfiguration::default())
+        .with_providers(fal_registry);
+    let fal_server = spawn(fal_state).await;
+    let saved: Value = client
+        .post(format!("{fal_server}/providers"))
+        .json(&json!({
+            "name": "fal",
+            "kind": "fal",
+            "base_url": fal_base,
+            "api_key": "fal-secret",
+            "enabled": true
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let provider_id = saved["id"].as_str().unwrap();
+    let models: Value = client
+        .get(format!(
+            "{fal_server}/media/models?provider_id={provider_id}&kind=music"
+        ))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(models["models"].as_array().unwrap().len(), 1);
+    assert_eq!(models["models"][0]["id"], "fal-ai/elevenlabs/music");
+    assert_eq!(models["models"][0]["output_modalities"][0], "music");
+    let requests = fal_requests.await.unwrap();
+    assert_eq!(
+        requests[0].path,
+        "/api/v1/models?limit=50&category=text-to-audio&status=active&q=music"
+    );
+
+    let _ = std::fs::remove_dir_all(replicate_tmp);
+    let _ = std::fs::remove_dir_all(fal_tmp);
 }
 
 #[tokio::test]

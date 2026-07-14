@@ -7,7 +7,7 @@ export function InlineMediaControls({
   providerName,
   model,
   kind,
-  supportedKinds = ["image", "video"],
+  supportedKinds = ["image", "video", "music"],
   schema,
   schemaLoading,
   parameterValues,
