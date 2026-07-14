@@ -91,14 +91,14 @@ body {
 .workers-collapse-toggle[aria-expanded="true"] svg { transform: rotate(0); }
 .context-section-reveal {
   display: grid;
-  grid-template-rows: 1fr;
+  grid-template-rows: minmax(0, 1fr);
   opacity: 1;
   transform: translateY(0);
   visibility: visible;
   transition: grid-template-rows var(--motion-fast) var(--motion-ease-out), opacity var(--motion-fast) var(--motion-ease-out), transform var(--motion-fast) var(--motion-ease-out), visibility 0s linear;
 }
 .context-section-reveal[data-collapsed="true"] {
-  grid-template-rows: 0fr;
+  grid-template-rows: minmax(0, 0fr);
   opacity: 0;
   pointer-events: none;
   transform: translateY(4px);
