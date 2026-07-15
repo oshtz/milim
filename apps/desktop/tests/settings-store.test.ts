@@ -56,6 +56,7 @@ assert(!("voice" in useSettings.getState()), "obsolete voice settings should not
 equal(DEFAULT_MEDIA_SETTINGS.providerId, "", "media provider should be unset by default");
 equal(useSettings.getState().media.providerId, "", "persisted media provider should start unset");
 deepEqual(useSettings.getState().reasoningEffortByModel, {}, "reasoning effort should default to no global model overrides");
+deepEqual(useSettings.getState().collapsedModelGroups, [], "model provider groups should default to expanded");
 assert(!("modelPresets" in useSettings.getState()), "obsolete model presets should not be exposed");
 assert(!("presetsOnly" in useSettings.getState()), "obsolete presets-only state should not be exposed");
 
@@ -64,6 +65,13 @@ equal(useSettings.getState().favoritesOnly, true, "favorites-only mode should en
 useSettings.getState().setFavoritesOnly(false);
 useSettings.getState().toggleFavorite("gpt-5");
 deepEqual(useSettings.getState().favorites, ["gpt-5"], "favorites should persist as the only model shortcut");
+
+useSettings.getState().setModelGroupCollapsed("OpenAI", true);
+useSettings.getState().setModelGroupCollapsed("OpenAI", true);
+deepEqual(useSettings.getState().collapsedModelGroups, ["OpenAI"], "collapsed model groups should stay unique");
+assert(localStorage.getItem("milim.settings")?.includes('"collapsedModelGroups":["OpenAI"]'), "collapsed model groups should persist in settings");
+useSettings.getState().setModelGroupCollapsed("OpenAI", false);
+deepEqual(useSettings.getState().collapsedModelGroups, [], "expanded model groups should leave persisted collapse state");
 
 useSettings.getState().setMediaSettings({
   providerId: "prov-openrouter",
@@ -120,5 +128,12 @@ deepEqual(
 assert(localStorage.getItem("milim.settings")?.includes("openrouter/deepseek-r1"), "global model reasoning effort should persist in settings");
 useSettings.getState().setModelReasoningEffort("openrouter/deepseek-r1", "auto");
 deepEqual(useSettings.getState().reasoningEffortByModel, {}, "auto should remove the global model reasoning override");
+
+localStorage.setItem("milim.settings", JSON.stringify({
+  state: { collapsedModelGroups: [" OpenAI ", "OpenAI", "", 42, "Codex"] },
+  version: 0,
+}));
+await useSettings.persist.rehydrate();
+deepEqual(useSettings.getState().collapsedModelGroups, ["OpenAI", "Codex"], "persisted model groups should normalize malformed values");
 
 export {};

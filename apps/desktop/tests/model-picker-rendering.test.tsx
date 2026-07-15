@@ -109,6 +109,8 @@ try {
   assert(markup.includes('title="Music output"'), "Picker should render music capability badges");
   assert(markup.includes(">Favorites only<"), "Picker should render the favorites filter toggle");
   assert(!markup.includes(">Models<") && !markup.includes(">Presets<"), "Picker should not render redundant model or preset views");
+  assert(markup.includes('aria-label="Collapse OpenAI models"'), "Provider headers should render accessible collapse controls");
+  assert(markup.includes('aria-expanded="true"'), "Provider headers should expose their expanded state");
 
   const { BatonMenu, HotSwapPreflightSheet } = (await server.ssrLoadModule(
     "/src/components/HotSwapDialogs.tsx",

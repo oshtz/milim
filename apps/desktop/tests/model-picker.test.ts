@@ -4,11 +4,16 @@ import {
   modelDevProfile,
   modelDevCapabilities,
   mergeModelListsForPicker,
+  isModelPickerGroupCollapsed,
   modelPickerGroups,
   providerOwnsModel,
   qualifyDuplicateProviderModels,
   rawModelId,
 } from "../src/lib/modelPicker.js";
+
+equal(isModelPickerGroupCollapsed("OpenAI", ["OpenAI"], false), true, "saved provider groups should collapse");
+equal(isModelPickerGroupCollapsed("OpenAI", ["OpenAI"], true), false, "filtering should reveal saved collapsed groups");
+equal(isModelPickerGroupCollapsed("Favorites", ["Favorites"], false), false, "Favorites should always remain expanded");
 
 equal(
   modelDevCapabilities({

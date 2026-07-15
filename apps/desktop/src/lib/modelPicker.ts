@@ -389,3 +389,11 @@ export function modelPickerGroups(
   );
   return favs.length ? [["Favorites", favs], ...groups] : groups;
 }
+
+export function isModelPickerGroupCollapsed(
+  label: string,
+  collapsedGroups: string[],
+  filtering: boolean,
+): boolean {
+  return label !== "Favorites" && !filtering && collapsedGroups.includes(label);
+}

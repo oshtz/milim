@@ -29,12 +29,24 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 interface SettingsState {
   favorites: string[];
   favoritesOnly: boolean;
+  collapsedModelGroups: string[];
   reasoningEffortByModel: Record<string, ReasoningEffort>;
   media: MediaSettings;
   toggleFavorite: (id: string) => void;
   setFavoritesOnly: (v: boolean) => void;
+  setModelGroupCollapsed: (group: string, collapsed: boolean) => void;
   setModelReasoningEffort: (model: string, effort: ReasoningEffort) => void;
   setMediaSettings: (settings: Partial<MediaSettings>) => void;
+}
+
+function normalizeStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return Array.from(new Set(
+    value
+      .filter((item): item is string => typeof item === "string")
+      .map((item) => item.trim())
+      .filter(Boolean),
+  ));
 }
 
 function normalizeStringRecord(value: unknown): Record<string, string> {
@@ -97,6 +109,7 @@ export const useSettings = create<SettingsState>()(
     (set) => ({
       favorites: [],
       favoritesOnly: false,
+      collapsedModelGroups: [],
       reasoningEffortByModel: {},
       media: DEFAULT_MEDIA_SETTINGS,
       toggleFavorite: (id) =>
@@ -106,6 +119,15 @@ export const useSettings = create<SettingsState>()(
             : [...s.favorites, id],
         })),
       setFavoritesOnly: (favoritesOnly) => set({ favoritesOnly }),
+      setModelGroupCollapsed: (group, collapsed) =>
+        set((s) => {
+          const groups = new Set(s.collapsedModelGroups);
+          const key = group.trim();
+          if (!key) return {};
+          if (collapsed) groups.add(key);
+          else groups.delete(key);
+          return { collapsedModelGroups: Array.from(groups) };
+        }),
       setModelReasoningEffort: (model, effort) =>
         set((s) => ({
           reasoningEffortByModel: reasoningEffortByModelWithSelection(s.reasoningEffortByModel, model, effort),
@@ -125,6 +147,7 @@ export const useSettings = create<SettingsState>()(
           ...current,
           ...saved,
           favoritesOnly: Boolean(saved?.favoritesOnly),
+          collapsedModelGroups: normalizeStringArray(saved?.collapsedModelGroups),
           reasoningEffortByModel: normalizeReasoningEffortByModel(saved?.reasoningEffortByModel),
           media: normalizeMediaSettings(saved?.media),
         };
@@ -132,6 +155,7 @@ export const useSettings = create<SettingsState>()(
       partialize: (s) => ({
         favorites: s.favorites,
         favoritesOnly: s.favoritesOnly,
+        collapsedModelGroups: s.collapsedModelGroups,
         reasoningEffortByModel: s.reasoningEffortByModel,
         media: s.media,
       }),

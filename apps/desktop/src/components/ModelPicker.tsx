@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import type { ModelInfo, ProviderInfo } from "../api";
 import {
+  isModelPickerGroupCollapsed,
   modelDevProfile,
   modelDisplayName,
   modelPickerGroups,
@@ -10,7 +11,7 @@ import {
 } from "../lib/modelPicker";
 import { hasReasoningEffortChoices, normalizeReasoningEffortForModel, REASONING_EFFORT_LABEL, reasoningEffortDisplay, reasoningEffortOptions } from "../lib/reasoningEffort";
 import { useSettings } from "../settings/store";
-import { Bolt, Check, Eye, Image, PlusSquare, Search, Sparkles, Volume2 } from "./icons";
+import { Bolt, Check, ChevronDown, Eye, Image, PlusSquare, Search, Sparkles, Volume2 } from "./icons";
 
 function Star({ filled }: { filled: boolean }) {
   return (
@@ -91,8 +92,10 @@ export function ModelPicker({
 }) {
   const favorites = useSettings((s) => s.favorites);
   const favoritesOnly = useSettings((s) => s.favoritesOnly);
+  const collapsedModelGroups = useSettings((s) => s.collapsedModelGroups);
   const toggleFavorite = useSettings((s) => s.toggleFavorite);
   const setFavoritesOnly = useSettings((s) => s.setFavoritesOnly);
+  const setModelGroupCollapsed = useSettings((s) => s.setModelGroupCollapsed);
   const reasoningEffortByModel = useSettings((s) => s.reasoningEffortByModel);
   const setModelReasoningEffort = useSettings((s) => s.setModelReasoningEffort);
   const [q, setQ] = useState("");
@@ -101,6 +104,7 @@ export function ModelPicker({
   const groups = useMemo<Array<[string, ModelInfo[]]>>(() => {
     return modelPickerGroups(models, favorites, favoritesOnly, q);
   }, [models, q, favorites, favoritesOnly]);
+  const filtering = Boolean(q.trim()) || favoritesOnly;
   return (
     <div className="mp">
       <div className="mp-search">
@@ -120,22 +124,39 @@ export function ModelPicker({
                 {favoritesOnly ? "No favorites yet." : "No models - add a provider."}
               </div>
             )}
-            {groups.map(([label, ms]) => (
-              <div key={label} className="mp-group">
-                <div className="mp-group-head">{label}</div>
-                {ms.map((m) => {
-              const hasEffortChoices = hasReasoningEffortChoices(m);
-              const effort = normalizeReasoningEffortForModel(reasoningEffortByModel[m.id] ?? "auto", m);
-              const reasoningChoices = reasoningEffortOptions(m);
-              const effortOpen = effortMenu?.modelId === m.id;
-              const profile = modelDevProfile(m, m.id, {
-                providers,
-                toolIntent,
-                planMode,
-              });
-              const modelCaps = profile.capabilities.filter((cap) => cap !== "reasoning" || !hasEffortChoices);
+            {groups.map(([label, ms]) => {
+              const collapsible = label !== "Favorites";
+              const collapsed = isModelPickerGroupCollapsed(label, collapsedModelGroups, filtering);
               return (
-                <div key={modelPickerKey(m)} className={"mp-item" + (m.id === model ? " active" : "") + (effortOpen ? " effort-open" : "")}>
+                <div key={label} className="mp-group">
+                  {collapsible ? (
+                    <button
+                      type="button"
+                      className="mp-group-head mp-group-toggle"
+                      aria-expanded={!collapsed}
+                      aria-label={`${collapsed ? "Expand" : "Collapse"} ${label} models`}
+                      disabled={filtering}
+                      onClick={() => setModelGroupCollapsed(label, !collapsed)}
+                    >
+                      <span>{label}</span>
+                      <ChevronDown size={12} />
+                    </button>
+                  ) : (
+                    <div className="mp-group-head">{label}</div>
+                  )}
+                  {!collapsed && ms.map((m) => {
+                    const hasEffortChoices = hasReasoningEffortChoices(m);
+                    const effort = normalizeReasoningEffortForModel(reasoningEffortByModel[m.id] ?? "auto", m);
+                    const reasoningChoices = reasoningEffortOptions(m);
+                    const effortOpen = effortMenu?.modelId === m.id;
+                    const profile = modelDevProfile(m, m.id, {
+                      providers,
+                      toolIntent,
+                      planMode,
+                    });
+                    const modelCaps = profile.capabilities.filter((cap) => cap !== "reasoning" || !hasEffortChoices);
+                    return (
+                      <div key={modelPickerKey(m)} className={"mp-item" + (m.id === model ? " active" : "") + (effortOpen ? " effort-open" : "")}>
                   <button
                     type="button"
                     className={"mp-star" + (favorites.includes(m.id) ? " on" : "")}
@@ -213,11 +234,12 @@ export function ModelPicker({
                       )}
                     </div>
                   )}
+                      </div>
+                    );
+                  })}
                 </div>
               );
-                })}
-              </div>
-            ))}
+            })}
         </>
       </div>
       <div className="mp-foot">

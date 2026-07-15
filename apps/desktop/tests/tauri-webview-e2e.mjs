@@ -771,6 +771,33 @@ async function runModelPickerSurfaceCheck(page) {
     if (compactControls.capabilityRows === 0 && compactControls.effortButtons === 0) {
       throw new Error("Model picker should expose compact capability or reasoning controls when models exist.");
     }
+
+    const collapsibleGroup = picker.locator(".mp-group:has(.mp-group-toggle)").first();
+    if (await collapsibleGroup.count()) {
+      const toggle = collapsibleGroup.locator(".mp-group-toggle");
+      const groupLabel = (await toggle.locator("span").textContent())?.trim();
+      const modelName = (await collapsibleGroup.locator(".mp-name").first().textContent())?.trim();
+      if (groupLabel && modelName) {
+        await toggle.click();
+        if (await toggle.getAttribute("aria-expanded") !== "false" || await collapsibleGroup.locator(".mp-item").count() !== 0) {
+          throw new Error(`Expected ${groupLabel} to collapse its model rows.`);
+        }
+
+        await trigger.click();
+        await picker.waitFor({ state: "hidden" }).catch(() => {});
+        await trigger.click();
+        await picker.waitFor();
+        const reopenedToggle = picker.getByRole("button", { name: `Expand ${groupLabel} models` });
+        await reopenedToggle.waitFor();
+
+        const search = picker.locator(".mp-search input");
+        await search.fill(modelName);
+        await picker.locator(".mp-item").filter({ hasText: modelName }).waitFor();
+        await search.fill("");
+        await picker.locator(".mp-item").filter({ hasText: modelName }).waitFor({ state: "hidden" });
+        await picker.getByRole("button", { name: `Expand ${groupLabel} models` }).click();
+      }
+    }
   } else {
     await picker.locator(".mp-empty").waitFor();
   }

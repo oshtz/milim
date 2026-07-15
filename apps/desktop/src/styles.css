@@ -11880,6 +11880,12 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 .mp-empty { padding: 14px; text-align: center; color: var(--tertiary-text); font-size: 12.5px; }
 .mp-group { margin-bottom: 4px; }
 .mp-group-head { padding: 6px 8px 3px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--tertiary-text); }
+.mp-group-toggle { width: 100%; display: flex; align-items: center; justify-content: space-between; border: 0; border-radius: 5px; background: transparent; font-family: inherit; text-align: left; cursor: pointer; }
+.mp-group-toggle:hover,
+.mp-group-toggle:focus-visible { background: var(--chip-hover); color: var(--primary-text); }
+.mp-group-toggle svg { transition: transform var(--motion-fast) var(--motion-ease-out); }
+.mp-group-toggle[aria-expanded="false"] svg { transform: rotate(-90deg); }
+.mp-group-toggle:disabled { cursor: default; }
 .mp-item { position: relative; display: flex; align-items: center; border-radius: 7px; }
 .mp-item:hover { background: var(--panel-row-hover); }
 .mp-item.active { background: var(--panel-row-active); }
