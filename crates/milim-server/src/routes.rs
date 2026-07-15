@@ -9060,6 +9060,70 @@ struct DelegateWorkersArgs {
     tasks: Vec<DelegateWorkerTaskArgs>,
 }
 
+fn worker_model_is_available(available: &[Model], model: &str) -> bool {
+    match crate::providers::provider_model_route(model) {
+        Some((provider_id, model_id)) => available.iter().any(|candidate| {
+            candidate.id == model_id && candidate.provider_id.as_deref() == Some(&provider_id)
+        }),
+        None => available.iter().any(|candidate| candidate.id == model),
+    }
+}
+
+fn resolve_worker_model(
+    available: &[Model],
+    requested: &str,
+    preferred_model: &str,
+) -> milim_core::Result<String> {
+    let requested = requested.trim();
+    if worker_model_is_available(available, requested) {
+        return Ok(requested.to_string());
+    }
+    if requested.contains('/') || requested.starts_with("provider:") {
+        return Err(Error::InvalidRequest(format!(
+            "worker model '{requested}' is not available"
+        )));
+    }
+
+    let (preferred_provider, preferred_id) =
+        match crate::providers::provider_model_route(preferred_model) {
+            Some((provider_id, model_id)) => (Some(provider_id), model_id),
+            None => (None, preferred_model.trim().to_string()),
+        };
+    if let Some((namespace, _)) = preferred_id.split_once('/') {
+        let model_id = format!("{namespace}/{requested}");
+        if let Some(provider_id) = preferred_provider.as_deref() {
+            let routed = crate::providers::provider_model_id(provider_id, &model_id);
+            if worker_model_is_available(available, &routed) {
+                return Ok(routed);
+            }
+        } else if worker_model_is_available(available, &model_id) {
+            return Ok(model_id);
+        }
+    }
+
+    let mut matches = available
+        .iter()
+        .filter(|candidate| {
+            candidate
+                .id
+                .rsplit_once('/')
+                .is_some_and(|(_, name)| name == requested)
+        })
+        .map(|candidate| candidate.id.clone())
+        .collect::<Vec<_>>();
+    matches.sort();
+    matches.dedup();
+    match matches.as_slice() {
+        [model] => Ok(model.clone()),
+        [] => Err(Error::InvalidRequest(format!(
+            "worker model '{requested}' is not available"
+        ))),
+        _ => Err(Error::InvalidRequest(format!(
+            "worker model '{requested}' is ambiguous; use a full provider/model id"
+        ))),
+    }
+}
+
 async fn resolve_worker_plan(
     state: &AppState,
     parent_model: &str,
@@ -9076,21 +9140,17 @@ async fn resolve_worker_plan(
     let mut system_prompts = Vec::with_capacity(tasks.len());
     for task in tasks {
         let prompt = trim_required_tool_arg(task.prompt, "tasks[].prompt")?;
-        let model = task
+        let preferred_model = worker_model
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(parent_model.trim());
+        let requested_model = task
             .model
             .as_deref()
             .map(str::trim)
             .filter(|v| !v.is_empty())
-            .or(worker_model)
-            .filter(|v| !v.trim().is_empty())
-            .unwrap_or(parent_model)
-            .trim()
-            .to_string();
-        if !available.iter().any(|candidate| candidate.id == model) {
-            return Err(Error::InvalidRequest(format!(
-                "worker model '{model}' is not available"
-            )));
-        }
+            .unwrap_or(preferred_model);
+        let model = resolve_worker_model(&available, requested_model, preferred_model)?;
         let agent_id = trim_optional_agent_id(task.agent_id);
         let system_prompt = if let Some(agent_id) = agent_id.as_deref() {
             let store = state
@@ -9117,6 +9177,74 @@ async fn resolve_worker_plan(
         system_prompts.push(system_prompt);
     }
     Ok((plan, system_prompts))
+}
+
+#[cfg(test)]
+mod worker_model_tests {
+    use super::*;
+
+    fn provider_model(provider_id: &str, model_id: &str) -> Model {
+        let mut model = Model::local(model_id, 0);
+        model.provider_id = Some(provider_id.to_string());
+        model
+    }
+
+    #[test]
+    fn resolves_worker_model_aliases_without_guessing_invalid_ids() {
+        let available = vec![
+            provider_model("openrouter", "openai/gpt-5.4"),
+            Model::local("anthropic/claude-sonnet", 0),
+        ];
+
+        assert_eq!(
+            resolve_worker_model(&available, "openai/gpt-5.4", "unused").unwrap(),
+            "openai/gpt-5.4"
+        );
+        assert_eq!(
+            resolve_worker_model(&available, "provider:openrouter:openai/gpt-5.4", "unused")
+                .unwrap(),
+            "provider:openrouter:openai/gpt-5.4"
+        );
+        assert_eq!(
+            resolve_worker_model(&available, "gpt-5.4", "openai/parent").unwrap(),
+            "openai/gpt-5.4"
+        );
+        assert_eq!(
+            resolve_worker_model(&available, "gpt-5.4", "provider:openrouter:openai/gpt-5.4")
+                .unwrap(),
+            "provider:openrouter:openai/gpt-5.4"
+        );
+        assert_eq!(
+            resolve_worker_model(&available, "claude-sonnet", "local-parent").unwrap(),
+            "anthropic/claude-sonnet"
+        );
+
+        let namespace_preferred = vec![
+            Model::local("openai/shared", 0),
+            Model::local("other/shared", 0),
+        ];
+        assert_eq!(
+            resolve_worker_model(&namespace_preferred, "shared", "openai/parent").unwrap(),
+            "openai/shared"
+        );
+
+        assert!(
+            resolve_worker_model(&namespace_preferred, "shared", "local-parent")
+                .unwrap_err()
+                .to_string()
+                .contains("ambiguous")
+        );
+        assert!(resolve_worker_model(&available, "missing", "local-parent")
+            .unwrap_err()
+            .to_string()
+            .contains("not available"));
+        assert!(
+            resolve_worker_model(&available, "openai/missing", "local-parent")
+                .unwrap_err()
+                .to_string()
+                .contains("not available")
+        );
+    }
 }
 
 fn worker_specs(

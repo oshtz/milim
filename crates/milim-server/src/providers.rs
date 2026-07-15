@@ -677,7 +677,11 @@ pub struct ProviderRouter {
 
 const PROVIDER_MODEL_PREFIX: &str = "provider:";
 
-fn provider_model_route(model: &str) -> Option<(String, String)> {
+pub(crate) fn provider_model_id(provider_id: &str, model_id: &str) -> String {
+    format!("{PROVIDER_MODEL_PREFIX}{provider_id}:{model_id}")
+}
+
+pub(crate) fn provider_model_route(model: &str) -> Option<(String, String)> {
     let rest = model.trim().strip_prefix(PROVIDER_MODEL_PREFIX)?;
     let (provider_id, model_id) = rest.split_once(':')?;
     if provider_id.is_empty() || model_id.is_empty() {
