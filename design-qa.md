@@ -1,45 +1,39 @@
-# Worker overview and inspector design QA
+**Design QA**
 
-- Source visual truth: `C:\Users\USER\AppData\Local\Temp\codex-clipboard-0fcfaf95-fc91-4ee4-8ad9-2baa2c3589d8.png`
-- Implementation screenshot: `C:\Users\USER\AppData\Local\Temp\milim-worker-inspector-qa.png`
-- Focused panel screenshot: `C:\Users\USER\AppData\Local\Temp\milim-worker-panels-qa.png`
-- Viewport: 1600 × 900 desktop; responsive check at 1000 × 700
-- State: dark theme, Context and Workers inspector open, 2 active Workers and 12 completed Workers
+- Source visual truth: `C:\Users\USER\AppData\Local\Temp\codex-clipboard-d9a54dec-8e90-42e0-bc6a-6a2508b94e98.png`, `C:\Users\USER\AppData\Local\Temp\codex-clipboard-f3bc2b29-c3ef-4aaf-9915-b8f6dbda4281.png`, `C:\Users\USER\AppData\Local\Temp\codex-clipboard-a8fadff7-db14-4158-a2e6-04ed5e422057.png`, and `C:\Users\USER\AppData\Local\Temp\codex-clipboard-0551bec5-c63e-4735-95a0-3e737d85e416.png`
+- Implementation screenshot: unavailable; Windows capture returned a different application window for the selected Milim handle
+- Viewport: desktop, Git inspector with the diff-scope menu open
+- State: dark theme, custom scope selector, left file navigator, narrow diff toolbar
 
-## Full-view comparison evidence
+**Full-view comparison evidence**
 
-Milim now matches the reference's two-level structure: a compact avatar/count summary in the contextual card and a dedicated inspector grouped into Active and Done. Both surfaces coexist on wide layouts, while the existing narrow-layout rule closes Context and stacks the inspector without horizontal overflow.
+The sources showed the native Windows select menu breaking the app-styled surface, the hide-files control detached from its context, the search field overlapping the diff summary at a narrow width, and the review body floating inside a second card with Agent review stranded below it. The native selects were replaced with Milim's existing checked context-menu pattern, the hide control was moved next to the scope selector when collapsed, the toolbar now wraps before controls can overlap, Agent review moved into the repository action row, and the review body now fills the inspector edge to edge. A post-fix Milim capture could not be obtained.
 
-## Focused comparison evidence
+**Focused region comparison evidence**
 
-- Fonts and typography: existing Milim UI fonts and 9–12px hierarchy remain consistent with the app while matching the reference's compact density and truncation behavior.
-- Spacing and layout rhythm: Worker rows retain the reference's avatar/title/summary/age scan path. Context stays compact; the inspector reserves most narrow-panel height for history and keeps selected details scrollable below.
-- Colors and visual tokens: existing Milim panel, border, muted-text, active-row, success, and error tokens are used throughout. No reference-only colors were copied into the theme.
-- Image quality and asset fidelity: existing deterministic Shatz Agent/Worker avatars are used at native component quality. No generated assets, placeholders, custom SVGs, or CSS illustrations were introduced.
-- Copy and content: planned/active/done counts, Active/Done headings, result previews, age labels, settings, approval, stop, copy, and diff actions are explicit and coherent.
-- Icons: existing Milim icon components are used for Workers, settings, stop, close, copy, and navigation.
-- Accessibility: the Workers tab and panel are linked with `aria-controls`/`aria-labelledby`; history uses labelled Active/Done regions; buttons retain names and focus indication; reduced-motion panel behavior is inherited.
+The scope-control and narrow-toolbar regions are readable in the supplied focused screenshots. Post-fix focused evidence is blocked by the capture mismatch.
 
-## Interaction evidence
+**Findings**
 
-- Compact Worker summary opened the Workers inspector while Context remained visible at the wide breakpoint.
-- Worker settings opened and exposed Off/Ask/Auto plus the model picker.
-- `Show 2 more` expanded the completed history from 10 to 12.
-- Active selection, result detail, stop controls, and responsive stacked layout rendered correctly.
-- Browser console errors checked: none.
+- [P1] Native diff selectors did not match Milim's visual language. Fixed in code by reusing the existing app context menu for scope, commit, and branch choices.
+- [P1] Search could overlap the scope summary. Fixed with container-based wrapping at 760px and 520px.
+- [P2] The file navigator toggle was detached from the surface it controls. Fixed by placing Hide files in the Changes header and showing the restore control only while hidden.
+- [P1] The diff workspace read as a floating card rather than the inspector body. Fixed by removing the outer inset, radius, and side borders while retaining the file/diff divider.
+- [P2] Agent review was visually disconnected below the main workflow. Fixed by moving it into the repository action row.
+- [P2] Post-fix visual fidelity is unverified because the selected Milim window could not be captured reliably.
 
-## Comparison history
+**Comparison history**
 
-1. Initial P2: at the default narrow inspector width, the history/detail split allocated only 42% height to history, exposing too few completed rows for quick scanning.
-2. Fix: increased the narrow history allocation to 68%, retaining a separately scrollable detail region.
-3. Post-fix evidence: seven completed rows plus both active rows are visible at once in the focused 1600 × 900 capture; the 1000 × 700 stacked layout remains usable.
+- Initial finding: native operating-system dropdown was visually inconsistent.
+- Fixes: replaced both native selects with app-styled menu triggers, relocated the file toggle contextually, added collision-safe toolbar wrapping, moved Agent review into the header, and flattened the review body into the inspector.
+- Post-fix evidence: blocked by the window-capture mismatch.
 
-## Findings
+**Implementation checklist**
 
-No actionable P0, P1, or P2 findings remain. Milim intentionally keeps its richer selected-Worker detail beneath the history instead of copying Codex's list-only inspector.
+- Confirm the scope menu uses the app context-menu surface.
+- Confirm Commit and Branch open the same styled surface.
+- Confirm the Changes header owns the Hide files control.
+- Confirm the search field wraps without overlapping the scope summary.
+- Confirm checked, disabled, hover, and keyboard-focus states are visible.
 
-## Follow-up polish
-
-None required for this scope.
-
-final result: passed
+final result: blocked

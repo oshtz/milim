@@ -6,7 +6,7 @@ import { isFileArtifact, isPreviewableArtifact, normalizeArtifactBrowserUrl } fr
 import type { PreviewControlActivity } from "../lib/previewActivity";
 import { listenForPreviewWebviewNavigation, movePreviewWebviewHistory, navigatePreviewWebview, reloadPreviewWebview, type PreviewWebviewLoadState } from "../lib/previewWebview";
 import { useContextMenu } from "./ContextMenu";
-import { ArrowLeft, ArrowRight, Bolt, Code, Copy, Download, ExternalLink, Eye, FileText, Globe, MoreHorizontal, Plus, Refresh, Square, Terminal, X } from "./icons";
+import { ArrowLeft, ArrowRight, Bolt, Code, Copy, Download, ExternalLink, Eye, FileText, Globe, MoreHorizontal, Plus, Refresh, Sidebar, Square, Terminal, X } from "./icons";
 import { Logo } from "./Logo";
 
 const Markdown = lazy(() => import("./Markdown").then((mod) => ({ default: mod.Markdown })));
@@ -810,7 +810,7 @@ export function PreviewPanel({
           )}
         </div>
         <button className="preview-action preview-close" title="Close inspector" aria-label="Close inspector" onClick={closePanel}>
-          <X size={14} />
+          <Sidebar size={16} />
         </button>
       </div>
 

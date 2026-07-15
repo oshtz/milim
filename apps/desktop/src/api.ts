@@ -2958,6 +2958,14 @@ export type WorkspaceGitAction =
   | "apply_retry_worktree"
   | "remove_retry_worktree";
 
+export type WorkspaceGitDiffScope =
+  | "all"
+  | "unstaged"
+  | "staged"
+  | "last_turn"
+  | "commit"
+  | "branch";
+
 export interface WorkspaceGitActionResult {
   ok: boolean;
   action: WorkspaceGitAction;
@@ -2991,6 +2999,8 @@ export async function runWorkspaceGitAction(
     checkpoint?: string;
     stage_all?: boolean;
     staged_only?: boolean;
+    diff_scope?: WorkspaceGitDiffScope;
+    diff_base?: string;
     branch?: string;
     worktree?: string;
   } = {},

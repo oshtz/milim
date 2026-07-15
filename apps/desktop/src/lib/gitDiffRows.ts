@@ -24,12 +24,83 @@ export type DiffStats = {
   deletions: number;
 };
 
+export type GitFileTreeNode = {
+  name: string;
+  path: string;
+  children: GitFileTreeNode[];
+  fileIndex?: number;
+};
+
 function cleanGitPath(path: string): string {
   const trimmed = path.trim();
   if (trimmed.length >= 2 && trimmed.startsWith("\"") && trimmed.endsWith("\"")) {
     return trimmed.slice(1, -1).replace(/\\"/g, "\"").replace(/\\\\/g, "\\");
   }
   return trimmed;
+}
+
+function destinationPath(path: string): string {
+  const cleaned = cleanGitPath(path);
+  return cleaned.includes(" -> ")
+    ? cleaned.slice(cleaned.lastIndexOf(" -> ") + 4)
+    : cleaned.replace(/\{[^{}]* => ([^{}]*)\}/g, "$1");
+}
+
+export function gitFileTree(paths: string[]): GitFileTreeNode[] {
+  type MutableNode = {
+    name: string;
+    path: string;
+    children: Map<string, MutableNode>;
+    fileIndex?: number;
+  };
+
+  const root = new Map<string, MutableNode>();
+  paths.forEach((rawPath, fileIndex) => {
+    const parts = destinationPath(rawPath).split(/[\\/]/).filter(Boolean);
+    let siblings = root;
+    let path = "";
+    parts.forEach((name, index) => {
+      path = path ? `${path}/${name}` : name;
+      let node = siblings.get(name);
+      if (!node) {
+        node = { name, path, children: new Map() };
+        siblings.set(name, node);
+      }
+      if (index === parts.length - 1) node.fileIndex = fileIndex;
+      siblings = node.children;
+    });
+  });
+
+  function finalize(nodes: Map<string, MutableNode>): GitFileTreeNode[] {
+    return [...nodes.values()]
+      .map((node): GitFileTreeNode => {
+        let result: GitFileTreeNode = {
+          name: node.name,
+          path: node.path,
+          children: finalize(node.children),
+          fileIndex: node.fileIndex,
+        };
+        while (
+          result.fileIndex === undefined &&
+          result.children.length === 1 &&
+          result.children[0].fileIndex === undefined
+        ) {
+          const child = result.children[0];
+          result = {
+            name: `${result.name}/${child.name}`,
+            path: child.path,
+            children: child.children,
+          };
+        }
+        return result;
+      })
+      .sort((a, b) => {
+        const folderOrder = Number(a.fileIndex !== undefined) - Number(b.fileIndex !== undefined);
+        return folderOrder || a.name.localeCompare(b.name);
+      });
+  }
+
+  return finalize(root);
 }
 
 function parseHunkStart(line: string): { oldNo: number; newNo: number } | null {
@@ -52,7 +123,7 @@ export function diffRows(text: string): DiffRow[] {
   let newNo: number | null = null;
   let inPatch = false;
 
-  return text.split(/\r?\n/).map((line): DiffRow => {
+  const rows = text.split(/\r?\n/).map((line): DiffRow => {
     if (line.startsWith("diff --git ")) {
       inPatch = true;
       oldNo = null;
@@ -107,6 +178,8 @@ export function diffRows(text: string): DiffRow[] {
     if (newNo != null) newNo += 1;
     return row;
   });
+  const firstPatchRow = rows.findIndex((row) => row.kind === "file");
+  return firstPatchRow >= 0 ? rows.slice(firstPatchRow) : rows;
 }
 
 export function diffSections(rows: DiffRow[]): DiffSection[] {
@@ -140,6 +213,23 @@ export function diffStats(rows: DiffRow[]): DiffStats {
     }),
     { files: 0, additions: 0, deletions: 0 },
   );
+}
+
+export function findDiffSectionIndex(
+  sections: DiffSection[],
+  path: string,
+  fallbackIndex = -1,
+): number {
+  const cleaned = cleanGitPath(path);
+  const destination = destinationPath(path);
+  const matched = sections.findIndex(
+    (section) => section.path === cleaned || section.path === destination,
+  );
+  return matched >= 0
+    ? matched
+    : fallbackIndex >= 0 && fallbackIndex < sections.length
+      ? fallbackIndex
+      : -1;
 }
 
 export function shouldCollapseDiffSection(section: DiffSection): boolean {

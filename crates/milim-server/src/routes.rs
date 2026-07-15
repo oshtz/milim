@@ -1,6 +1,6 @@
 //! HTTP handlers for the OpenAI- and Ollama-compatible endpoints.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::path::{Path as FsPath, PathBuf};
@@ -3868,6 +3868,10 @@ pub(crate) struct WorkspaceGitActionRequest {
     #[serde(default)]
     staged_only: bool,
     #[serde(default)]
+    diff_scope: Option<String>,
+    #[serde(default)]
+    diff_base: Option<String>,
+    #[serde(default)]
     branch: Option<String>,
     #[serde(default)]
     worktree: Option<String>,
@@ -4202,7 +4206,7 @@ fn workspace_git_status_blocking(folder: Option<PathBuf>) -> WorkspaceGitStatus 
     };
 
     let counts = parse_git_porcelain_counts(&porcelain);
-    let (changed_file_count, changed_files) = parse_git_porcelain_files(&porcelain, 20);
+    let (changed_file_count, changed_files) = parse_git_porcelain_files(&porcelain);
     let (insertions, deletions) = git_text(&root, &["diff", "--shortstat", "HEAD"])
         .map(|text| parse_git_shortstat(&text))
         .unwrap_or((0, 0));
@@ -4433,7 +4437,7 @@ fn is_git_conflict_status(x: char, y: char) -> bool {
     )
 }
 
-fn parse_git_porcelain_files(text: &str, limit: usize) -> (u32, Vec<WorkspaceGitFileChange>) {
+fn parse_git_porcelain_files(text: &str) -> (u32, Vec<WorkspaceGitFileChange>) {
     let mut count = 0;
     let mut files = Vec::new();
     for line in text.lines() {
@@ -4444,9 +4448,7 @@ fn parse_git_porcelain_files(text: &str, limit: usize) -> (u32, Vec<WorkspaceGit
         let path = line[3..].trim().to_string();
         if !status.is_empty() && !path.is_empty() {
             count += 1;
-            if files.len() < limit {
-                files.push(WorkspaceGitFileChange { status, path });
-            }
+            files.push(WorkspaceGitFileChange { status, path });
         }
     }
     (count, files)
@@ -4484,6 +4486,8 @@ fn workspace_git_action_blocking(
         checkpoint,
         stage_all,
         staged_only,
+        diff_scope,
+        diff_base,
         branch,
         worktree,
     } = request;
@@ -4499,7 +4503,16 @@ fn workspace_git_action_blocking(
     };
 
     if action == "diff" {
-        return workspace_git_diff_action(&root, &action, status.head.is_some(), staged_only);
+        let scope = diff_scope
+            .as_deref()
+            .unwrap_or(if staged_only { "staged" } else { "all" });
+        return workspace_git_diff_action(
+            &root,
+            &action,
+            status.head.is_some(),
+            scope,
+            diff_base.as_deref(),
+        );
     }
     if action == "checkpoint" {
         return workspace_git_checkpoint_action(&root, &status, message);
@@ -5480,37 +5493,173 @@ fn workspace_git_diff_action(
     root: &FsPath,
     action: &str,
     has_head: bool,
-    staged_only: bool,
+    scope: &str,
+    base: Option<&str>,
 ) -> WorkspaceGitActionResponse {
-    const OUTPUT_LIMIT: usize = 24_000;
-
-    let args: &[&str] = if staged_only {
-        &[
-            "diff",
-            "--cached",
-            "--no-ext-diff",
-            "--stat",
-            "--patch",
-            "--",
-        ]
-    } else if has_head {
-        &["diff", "--no-ext-diff", "--stat", "--patch", "HEAD", "--"]
-    } else {
-        &["diff", "--no-ext-diff", "--stat", "--patch"]
+    let mut temp_index = None;
+    let mut index_env = Vec::new();
+    let args: Vec<String> = match scope {
+        "all" if has_head => ["diff", "--no-ext-diff", "--patch", "HEAD", "--"]
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+        "all" | "unstaged" => ["diff", "--no-ext-diff", "--patch", "--"]
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+        "staged" => ["diff", "--cached", "--no-ext-diff", "--patch", "--"]
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+        "last_turn" => {
+            let Some(checkpoint) = git_text(
+                root,
+                &[
+                    "for-each-ref",
+                    "--sort=-creatordate",
+                    "--sort=-refname",
+                    "--count=1",
+                    "--format=%(refname)",
+                    "refs/milim/checkpoints/",
+                ],
+            ) else {
+                return workspace_git_action_message(
+                    action,
+                    "git diff <last-turn-checkpoint> --",
+                    false,
+                    "No turn checkpoint is available.",
+                );
+            };
+            let Some(index_path) = git_text(root, &["rev-parse", "--git-path", "index"]) else {
+                return workspace_git_action_message(
+                    action,
+                    "git rev-parse --git-path index",
+                    false,
+                    "Failed to locate the Git index.",
+                );
+            };
+            let index_path = PathBuf::from(index_path);
+            let index_path = if index_path.is_absolute() {
+                index_path
+            } else {
+                root.join(index_path)
+            };
+            let path = index_path.with_file_name(format!("milim-{}.index", gen_id("diff")));
+            index_env.push(("GIT_INDEX_FILE", path.to_string_lossy().to_string()));
+            let read_tree =
+                git_output_with_env(root, &["read-tree", checkpoint.as_str()], &index_env);
+            if !matches!(read_tree, Ok(ref output) if output.status.success()) {
+                let _ = std::fs::remove_file(&path);
+                return workspace_git_action_message(
+                    action,
+                    "git read-tree <last-turn-checkpoint>",
+                    false,
+                    "Failed to read the last turn checkpoint.",
+                );
+            }
+            temp_index = Some(path);
+            vec![
+                "diff".into(),
+                "--no-ext-diff".into(),
+                "--patch".into(),
+                checkpoint,
+                "--".into(),
+            ]
+        }
+        "commit" => {
+            let candidate = base.unwrap_or_default().trim();
+            if candidate.len() < 7 || !candidate.chars().all(|ch| ch.is_ascii_hexdigit()) {
+                return workspace_git_action_message(
+                    action,
+                    "git show <commit>",
+                    false,
+                    "Select a valid commit.",
+                );
+            }
+            let verify = format!("{candidate}^{{commit}}");
+            let Some(commit) = git_text(root, &["rev-parse", "--verify", verify.as_str()]) else {
+                return workspace_git_action_message(
+                    action,
+                    "git show <commit>",
+                    false,
+                    "Commit not found.",
+                );
+            };
+            vec![
+                "show".into(),
+                "--no-ext-diff".into(),
+                "--format=".into(),
+                "--patch".into(),
+                commit,
+                "--".into(),
+            ]
+        }
+        "branch" => {
+            let branch = base.unwrap_or_default().trim();
+            if branch.is_empty() || branch.starts_with('-') {
+                return workspace_git_action_message(
+                    action,
+                    "git diff <branch>...HEAD --",
+                    false,
+                    "Select a valid branch.",
+                );
+            }
+            let reference = format!("refs/heads/{branch}");
+            let verify = format!("{reference}^{{commit}}");
+            if git_text(root, &["rev-parse", "--verify", verify.as_str()]).is_none() {
+                return workspace_git_action_message(
+                    action,
+                    "git diff <branch>...HEAD --",
+                    false,
+                    "Branch not found.",
+                );
+            }
+            vec![
+                "diff".into(),
+                "--no-ext-diff".into(),
+                "--patch".into(),
+                format!("{reference}...HEAD"),
+                "--".into(),
+            ]
+        }
+        _ => {
+            return workspace_git_action_message(
+                action,
+                "git diff",
+                false,
+                "Unsupported diff scope.",
+            )
+        }
     };
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
     let command = format!("git {}", args.join(" "));
-    let output = match git_output(root, args) {
+    let output = match if index_env.is_empty() {
+        git_output(root, &arg_refs)
+    } else {
+        git_output_with_env(root, &arg_refs, &index_env)
+    } {
         Ok(output) => output,
-        Err(e) => return workspace_git_action_message(action, &command, false, &e),
+        Err(e) => {
+            if let Some(path) = temp_index.as_ref() {
+                let _ = std::fs::remove_file(path);
+            }
+            return workspace_git_action_message(action, &command, false, &e);
+        }
     };
+    if let Some(path) = temp_index.as_ref() {
+        let _ = std::fs::remove_file(path);
+    }
 
     let mut stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    if output.status.success() && !staged_only {
-        stdout.push_str(&untracked_git_diff(root));
+    if output.status.success() && matches!(scope, "all" | "unstaged" | "last_turn") {
+        let excluded = if scope == "last_turn" {
+            base_paths_from_diff_args(root, &args)
+        } else {
+            HashSet::new()
+        };
+        stdout.push_str(&untracked_git_diff(root, &excluded));
     }
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-    let (stdout, stdout_truncated) = truncate_git_action_output(stdout, OUTPUT_LIMIT);
-    let (stderr, stderr_truncated) = truncate_git_action_output(stderr, OUTPUT_LIMIT);
     let ok = output.status.success();
     let message = if ok {
         if stdout.trim().is_empty() {
@@ -5530,7 +5679,7 @@ fn workspace_git_diff_action(
         stderr,
         exit_code: output.status.code(),
         message,
-        truncated: stdout_truncated || stderr_truncated,
+        truncated: false,
         checkpoint: None,
         root: None,
         head: None,
@@ -5540,7 +5689,22 @@ fn workspace_git_diff_action(
     }
 }
 
-fn untracked_git_diff(root: &FsPath) -> String {
+fn base_paths_from_diff_args(root: &FsPath, args: &[String]) -> HashSet<String> {
+    let Some(base) = args.get(3) else {
+        return HashSet::new();
+    };
+    let Ok(output) = git_output(root, &["ls-tree", "-r", "--name-only", "-z", base]) else {
+        return HashSet::new();
+    };
+    output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|path| !path.is_empty())
+        .map(|path| String::from_utf8_lossy(path).replace('\\', "/"))
+        .collect()
+}
+
+fn untracked_git_diff(root: &FsPath, excluded: &HashSet<String>) -> String {
     let Ok(output) = git_output(root, &["ls-files", "--others", "--exclude-standard", "-z"]) else {
         return String::new();
     };
@@ -5555,6 +5719,9 @@ fn untracked_git_diff(root: &FsPath) -> String {
         .filter(|item| !item.is_empty())
     {
         let path = String::from_utf8_lossy(raw).replace('\\', "/");
+        if excluded.contains(&path) {
+            continue;
+        }
         let Some(file_patch) = untracked_file_patch(root, &path) else {
             continue;
         };

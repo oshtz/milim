@@ -20,7 +20,7 @@ import type {
 import { modelDisplayName } from "../lib/modelPicker";
 import type { SessionWorkerRunRecord } from "../sessions/store";
 import { AgentAvatar } from "./AgentAvatar";
-import { ArrowRight, Check, ChevronDown, Copy, Gear, Square, X } from "./icons";
+import { ArrowRight, Check, ChevronDown, Copy, Gear, Sidebar, Square } from "./icons";
 import { ModelPicker } from "./ModelPicker";
 
 const STATUS_LABEL: Record<WorkerRunStatus, string> = {
@@ -439,7 +439,7 @@ export function WorkersInspector({
             </button>
           )}
           <button className="preview-action" type="button" title="Close inspector" aria-label="Close inspector" onClick={onClose}>
-            <X size={14} />
+            <Sidebar size={16} />
           </button>
         </div>
       </div>

@@ -52,6 +52,8 @@ Hot Swap makes the Milim thread canonical rather than any provider session. Sele
 
 For a stale native session, **Fresh** starts from Milim's complete context while **Resume** keeps the native session and injects turns added since it last completed successfully. The latest assistant response offers **Continue with**, **Review with**, and **Retry with**. Continue and Review prepare editable drafts; Review is read-only for that turn only. Coding retries run from the pre-turn checkpoint in an isolated Git worktree and expose their diff in the Git inspector before it can be applied to the original workspace.
 
+The Git inspector is a review-first workspace with a compact repository header for branch, status, fetch, commit, sync, and agent review actions. Its edge-to-edge body places a folder-structured changed-file navigator on the left and the local unified diff on the right. The scope selector immediately switches between all changes, unstaged changes, staged changes, the latest turn checkpoint, a recent commit, or another local branch without contacting GitHub. Selecting a file loads the current scope when needed, expands its section, and scrolls it into view; the toolbar can expand or collapse every rendered section, show or hide the navigator, the divider resizes it, and narrow panels stack it above the diff.
+
 **Undo changes** restores the latest code-changing turn's checkpoint, removes that assistant response, retains the user request, and clears stale account-runtime state.
 
 | Control | Behavior |

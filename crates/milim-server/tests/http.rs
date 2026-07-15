@@ -4024,7 +4024,9 @@ async fn workspace_git_status_reports_selected_repo() {
         "git init failed: {}",
         String::from_utf8_lossy(&init.stderr)
     );
-    fs::write(root.join("note.txt"), "hello\n").unwrap();
+    for index in 0..25 {
+        fs::write(root.join(format!("note-{index:02}.txt")), "hello\n").unwrap();
+    }
 
     let base = spawn(test_state()).await;
     let client = reqwest::Client::new();
@@ -4050,11 +4052,12 @@ async fn workspace_git_status_reports_selected_repo() {
 
     assert_eq!(v["state"], "ready");
     assert_eq!(v["is_repo"], true);
-    assert_eq!(v["untracked"], 1);
+    assert_eq!(v["untracked"], 25);
     assert_eq!(v["has_changes"], true);
-    assert_eq!(v["changed_file_count"], 1);
+    assert_eq!(v["changed_file_count"], 25);
+    assert_eq!(v["changed_files"].as_array().unwrap().len(), 25);
     assert_eq!(v["changed_files"][0]["status"], "??");
-    assert_eq!(v["changed_files"][0]["path"], "note.txt");
+    assert_eq!(v["changed_files"][0]["path"], "note-00.txt");
     assert_eq!(v["recent_commits"].as_array().unwrap().len(), 0);
 
     let _ = fs::remove_dir_all(root);
@@ -4299,8 +4302,49 @@ async fn workspace_git_action_diff_reports_patch() {
         .unwrap()
         .status
         .success());
+    assert!(Command::new("git")
+        .arg("-C")
+        .arg(&root)
+        .args(["branch", "comparison-base"])
+        .output()
+        .unwrap()
+        .status
+        .success());
+    fs::write(root.join("note.txt"), "committed\n").unwrap();
+    assert!(Command::new("git")
+        .arg("-C")
+        .arg(&root)
+        .args(["add", "note.txt"])
+        .output()
+        .unwrap()
+        .status
+        .success());
+    assert!(Command::new("git")
+        .arg("-C")
+        .arg(&root)
+        .args(["commit", "-m", "second"])
+        .output()
+        .unwrap()
+        .status
+        .success());
+    let second_commit = String::from_utf8_lossy(
+        &Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .trim()
+    .to_string();
     fs::write(root.join("note.txt"), "hello there\n").unwrap();
     fs::write(root.join("Code block 1"), "new code\n").unwrap();
+    fs::write(
+        root.join("large.txt"),
+        format!("{}diff-tail-marker\n", "expanded line\n".repeat(2_000)),
+    )
+    .unwrap();
 
     let base = spawn(test_state()).await;
     let client = reqwest::Client::new();
@@ -4327,6 +4371,39 @@ async fn workspace_git_action_diff_reports_patch() {
     assert!(v["stdout"].as_str().unwrap().contains("hello there"));
     assert!(v["stdout"].as_str().unwrap().contains("Code block 1"));
     assert!(v["stdout"].as_str().unwrap().contains("new code"));
+    assert!(v["stdout"].as_str().unwrap().len() > 24_000);
+    assert!(v["stdout"].as_str().unwrap().contains("diff-tail-marker"));
+    assert_eq!(v["truncated"], false);
+
+    let commit: Value = client
+        .post(format!("{base}/workspace/git/action"))
+        .json(&json!({
+            "action": "diff",
+            "diff_scope": "commit",
+            "diff_base": second_commit,
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(commit["stdout"].as_str().unwrap().contains("committed"));
+
+    let branch: Value = client
+        .post(format!("{base}/workspace/git/action"))
+        .json(&json!({
+            "action": "diff",
+            "diff_scope": "branch",
+            "diff_base": "comparison-base",
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(branch["stdout"].as_str().unwrap().contains("committed"));
 
     assert!(Command::new("git")
         .arg("-C")
@@ -4338,7 +4415,7 @@ async fn workspace_git_action_diff_reports_patch() {
         .success());
     let staged: Value = client
         .post(format!("{base}/workspace/git/action"))
-        .json(&json!({ "action": "diff", "staged_only": true }))
+        .json(&json!({ "action": "diff", "diff_scope": "staged" }))
         .send()
         .await
         .unwrap()
@@ -4347,6 +4424,25 @@ async fn workspace_git_action_diff_reports_patch() {
         .unwrap();
     assert!(staged["stdout"].as_str().unwrap().contains("note.txt"));
     assert!(!staged["stdout"].as_str().unwrap().contains("Code block 1"));
+    assert!(!staged["stdout"]
+        .as_str()
+        .unwrap()
+        .contains("diff-tail-marker"));
+
+    let unstaged: Value = client
+        .post(format!("{base}/workspace/git/action"))
+        .json(&json!({ "action": "diff", "diff_scope": "unstaged" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(!unstaged["stdout"].as_str().unwrap().contains("note.txt"));
+    assert!(unstaged["stdout"]
+        .as_str()
+        .unwrap()
+        .contains("Code block 1"));
 
     let _ = fs::remove_dir_all(root);
 }
@@ -4430,6 +4526,25 @@ async fn workspace_git_action_checkpoint_restores_worktree() {
     fs::write(root.join("note.txt"), "after turn\n").unwrap();
     fs::write(root.join("user-note.txt"), "changed by turn\n").unwrap();
     fs::write(root.join("agent-new.txt"), "new by turn\n").unwrap();
+
+    let last_turn: Value = client
+        .post(format!("{base}/workspace/git/action"))
+        .json(&json!({ "action": "diff", "diff_scope": "last_turn" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(last_turn["ok"], true, "{last_turn}");
+    assert!(last_turn["stdout"]
+        .as_str()
+        .unwrap()
+        .contains("changed by turn"));
+    assert!(last_turn["stdout"]
+        .as_str()
+        .unwrap()
+        .contains("agent-new.txt"));
 
     let restored: Value = client
         .post(format!("{base}/workspace/git/action"))

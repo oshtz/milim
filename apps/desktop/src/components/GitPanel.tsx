@@ -4,7 +4,9 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
@@ -24,6 +26,7 @@ import {
   type CodexRunEvent,
   type WorkspaceGitAction,
   type WorkspaceGitActionResult,
+  type WorkspaceGitDiffScope,
   type WorkspaceGitStatus,
   type WorkspaceGitBranch,
   type WorkspaceGitFileChange,
@@ -33,9 +36,12 @@ import {
   diffRows,
   diffSections,
   diffStats,
+  findDiffSectionIndex,
+  gitFileTree,
   shouldCollapseDiffSection,
   type DiffRow,
   type DiffSection,
+  type GitFileTreeNode,
 } from "../lib/gitDiffRows";
 import { shouldRefreshGitStatus } from "../lib/gitRefresh";
 import { useUiPreferences } from "../ui/store";
@@ -54,11 +60,23 @@ import {
   Lightbulb,
   Refresh,
   Search,
+  Sidebar,
   X,
 } from "./icons";
 
-const FILE_PREVIEW_LIMIT = 3;
 const COMMIT_MESSAGE_DIFF_LIMIT = 18_000;
+const DIFF_NAVIGATOR_MIN_WIDTH = 160;
+const DIFF_NAVIGATOR_DEFAULT_WIDTH = 210;
+const DIFF_MAIN_MIN_WIDTH = 320;
+const DIFF_NAVIGATOR_KEYBOARD_STEP = 24;
+const DIFF_SCOPE_OPTIONS: { value: WorkspaceGitDiffScope; label: string }[] = [
+  { value: "all", label: "All changes" },
+  { value: "unstaged", label: "Unstaged" },
+  { value: "staged", label: "Staged" },
+  { value: "last_turn", label: "Last turn" },
+  { value: "commit", label: "Commit" },
+  { value: "branch", label: "Branch" },
+];
 const COMMIT_MESSAGE_SYSTEM_PROMPT =
   "Write one professional Git commit subject. Return exactly one line, no markdown, no quotes. Use imperative mood when natural. Keep it under 72 characters.";
 
@@ -595,6 +613,28 @@ export function GitPanel({
   >(() => new Set());
   const [diffSearch, setDiffSearch] = useState("");
   const [diffSearchIndex, setDiffSearchIndex] = useState(0);
+  const [diffScope, setDiffScope] = useState<WorkspaceGitDiffScope>("all");
+  const [diffBase, setDiffBase] = useState("");
+  const [pendingDiffFile, setPendingDiffFile] = useState<{
+    path: string;
+    index: number;
+  } | null>(null);
+  const [activeDiffSectionId, setActiveDiffSectionId] = useState<string | null>(
+    null,
+  );
+  const [diffNavigatorWidth, setDiffNavigatorWidth] = useState(
+    DIFF_NAVIGATOR_DEFAULT_WIDTH,
+  );
+  const [diffNavigatorVisible, setDiffNavigatorVisible] = useState(true);
+  const [diffNavigatorResizing, setDiffNavigatorResizing] = useState(false);
+  const [collapsedFileTreePaths, setCollapsedFileTreePaths] = useState<
+    Set<string>
+  >(() => new Set());
+  const diffNavigatorResizeStartRef = useRef<{
+    clientX: number;
+    width: number;
+  } | null>(null);
+  const diffLayoutRef = useRef<HTMLDivElement | null>(null);
   const diffViewRef = useRef<HTMLDivElement | null>(null);
   const selectedFolder = folder.trim();
 
@@ -612,6 +652,11 @@ export function GitPanel({
     setCollapsedDiffSections(new Set());
     setDiffSearch("");
     setDiffSearchIndex(0);
+    setDiffScope("all");
+    setDiffBase("");
+    setPendingDiffFile(null);
+    setActiveDiffSectionId(null);
+    setCollapsedFileTreePaths(new Set());
   }, [selectedFolder]);
 
   useEffect(() => {
@@ -703,6 +748,10 @@ export function GitPanel({
     return () => window.clearTimeout(handle);
   }, [collapsedDiffSections, diffSearch, diffSearchIndex]);
 
+  useEffect(() => {
+    if (pendingDiffFile && diffResult) focusDiffFile(pendingDiffFile);
+  }, [diffResult, pendingDiffFile]);
+
   const currentStatus = statusFolder === selectedFolder ? status : null;
   const repoName = useMemo(() => {
     const root = currentStatus?.root || selectedFolder;
@@ -784,12 +833,7 @@ export function GitPanel({
   }
 
   const readyStatus = currentStatus;
-  const changedFiles = changedFilesCount(readyStatus);
   const changeSummary = changeLabel(readyStatus);
-  const filePreview = forceExpanded
-    ? readyStatus.changed_files
-    : readyStatus.changed_files.slice(0, FILE_PREVIEW_LIMIT);
-  const moreFiles = Math.max(0, changedFiles - filePreview.length);
   const updated = updatedLabel(updatedAt, now);
   const remoteUrl = remoteWebUrl(readyStatus.remote);
   const sync = syncCommand(readyStatus);
@@ -808,6 +852,54 @@ export function GitPanel({
   const renderedDiffStats = renderedDiffRows.length
     ? diffStats(renderedDiffRows)
     : { files: 0, additions: 0, deletions: 0 };
+  const allDiffSectionsCollapsed =
+    renderedDiffSections.length > 0 &&
+    renderedDiffSections.every((section) =>
+      collapsedDiffSections.has(section.id),
+    );
+  const navigableFiles = renderedDiffSections.length
+    ? renderedDiffSections.map((section, index) => {
+        const change = readyStatus.changed_files.find(
+          (candidate) => findDiffSectionIndex([section], candidate.path) === 0,
+        );
+        const status = change
+          ? gitStatusLabel(change.status)
+          : section.deletions && !section.additions
+            ? "del"
+            : section.additions && !section.deletions
+              ? "add"
+              : "mod";
+        return {
+          index,
+          key: section.id,
+          path: section.path,
+          sectionId: section.id,
+          status,
+          title: `${status} ${section.path}`,
+        };
+      })
+    : readyStatus.changed_files.map((change, index) => ({
+        index,
+        key: `${change.status}:${change.path}`,
+        path: cleanGitPath(change.path),
+        sectionId: null,
+        status: gitStatusLabel(change.status),
+        title: changedFileTitle(change),
+      }));
+  const navigableFileTree = gitFileTree(
+    navigableFiles.map((file) => file.path),
+  );
+  const scopeStats = diffResult
+    ? renderedDiffStats
+    : {
+        files: readyStatus.changed_file_count,
+        additions: readyStatus.insertions,
+        deletions: readyStatus.deletions,
+      };
+  const recentCommits = readyStatus.recent_commits ?? [];
+  const comparisonBranches = (readyStatus.branches ?? []).filter(
+    (branch) => !branch.current,
+  );
   const normalizedDiffSearch = diffSearch.trim().toLowerCase();
   const visibleDiffRows: {
     row: DiffRow;
@@ -987,6 +1079,71 @@ export function GitPanel({
     }, 0);
   }
 
+  function focusDiffFile(target: { path: string; index: number }) {
+    const sectionIndex = findDiffSectionIndex(
+      renderedDiffSections,
+      target.path,
+      target.index,
+    );
+    if (sectionIndex < 0) {
+      setNotice(
+        diffResult?.truncated
+          ? "That file is outside the truncated diff."
+          : "No diff section found for that file.",
+      );
+      setPendingDiffFile(null);
+      return;
+    }
+    const section = renderedDiffSections[sectionIndex];
+    setCollapsedDiffSections((current) => {
+      if (!current.has(section.id)) return current;
+      const next = new Set(current);
+      next.delete(section.id);
+      return next;
+    });
+    setActiveDiffSectionId(section.id);
+    setPendingDiffFile(null);
+    setNotice(null);
+    scrollToDiffSection(sectionIndex);
+  }
+
+  function openDiffFile(target: { path: string; index: number }) {
+    if (diffResult) {
+      focusDiffFile(target);
+      return;
+    }
+    setPendingDiffFile(target);
+    void runGitCommand("diff", {
+      diff_scope: diffScope,
+      diff_base: diffBase || undefined,
+    });
+  }
+
+  function selectDiffScope(scope: WorkspaceGitDiffScope) {
+    const base =
+      scope === "commit"
+        ? recentCommits[0]?.hash ?? ""
+        : scope === "branch"
+          ? comparisonBranches[0]?.name ?? ""
+          : "";
+    setDiffScope(scope);
+    setDiffBase(base);
+    setPendingDiffFile(null);
+    void runGitCommand("diff", {
+      diff_scope: scope,
+      diff_base: base || undefined,
+    });
+  }
+
+  function selectDiffBase(base: string) {
+    setDiffBase(base);
+    setPendingDiffFile(null);
+    void runGitCommand("diff", {
+      diff_scope: diffScope,
+      diff_base: base,
+    });
+  }
+
   function toggleDiffSection(sectionId: string) {
     setCollapsedDiffSections((current) => {
       const next = new Set(current);
@@ -997,6 +1154,71 @@ export function GitPanel({
     setDiffSearchIndex(0);
   }
 
+  function toggleAllDiffSections() {
+    setCollapsedDiffSections(
+      allDiffSectionsCollapsed
+        ? new Set()
+        : new Set(renderedDiffSections.map((section) => section.id)),
+    );
+    setDiffSearchIndex(0);
+  }
+
+  function resizeDiffNavigator(width: number) {
+    const max = Math.max(
+      DIFF_NAVIGATOR_MIN_WIDTH,
+      (diffLayoutRef.current?.clientWidth ??
+        DIFF_NAVIGATOR_DEFAULT_WIDTH + DIFF_MAIN_MIN_WIDTH) -
+        DIFF_MAIN_MIN_WIDTH,
+    );
+    setDiffNavigatorWidth(
+      Math.round(Math.min(Math.max(width, DIFF_NAVIGATOR_MIN_WIDTH), max)),
+    );
+  }
+
+  function startDiffNavigatorResize(event: ReactPointerEvent<HTMLDivElement>) {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    diffNavigatorResizeStartRef.current = {
+      clientX: event.clientX,
+      width: diffNavigatorWidth,
+    };
+    setDiffNavigatorResizing(true);
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
+
+  function moveDiffNavigatorResize(event: ReactPointerEvent<HTMLDivElement>) {
+    const start = diffNavigatorResizeStartRef.current;
+    if (!start) return;
+    resizeDiffNavigator(start.width + event.clientX - start.clientX);
+  }
+
+  function endDiffNavigatorResize(event: ReactPointerEvent<HTMLDivElement>) {
+    if (!diffNavigatorResizeStartRef.current) return;
+    diffNavigatorResizeStartRef.current = null;
+    setDiffNavigatorResizing(false);
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  }
+
+  function resizeDiffNavigatorWithKeyboard(
+    event: ReactKeyboardEvent<HTMLDivElement>,
+  ) {
+    if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      resizeDiffNavigator(diffNavigatorWidth - DIFF_NAVIGATOR_KEYBOARD_STEP);
+    } else if (event.key === "ArrowRight") {
+      event.preventDefault();
+      resizeDiffNavigator(diffNavigatorWidth + DIFF_NAVIGATOR_KEYBOARD_STEP);
+    } else if (event.key === "Home") {
+      event.preventDefault();
+      resizeDiffNavigator(DIFF_NAVIGATOR_MIN_WIDTH);
+    } else if (event.key === "End") {
+      event.preventDefault();
+      resizeDiffNavigator(Number.MAX_SAFE_INTEGER);
+    }
+  }
+
   function stepDiffSearch(delta: number) {
     if (!diffSearchMatches.length) return;
     setDiffSearchIndex(
@@ -1005,20 +1227,110 @@ export function GitPanel({
     );
   }
 
+  function openDiffScopeMenu(event: ReactMouseEvent<HTMLButtonElement>) {
+    openContextMenu(
+      event,
+      DIFF_SCOPE_OPTIONS.map((option) => ({
+        id: option.value,
+        label: option.label,
+        checked: option.value === diffScope,
+        disabled:
+          commandBusy === "diff" ||
+          (option.value === "commit" && !recentCommits.length) ||
+          (option.value === "branch" && !comparisonBranches.length),
+        action: () => selectDiffScope(option.value),
+      })),
+      "Diff scope",
+    );
+  }
+
+  function openDiffBaseMenu(event: ReactMouseEvent<HTMLButtonElement>) {
+    const items =
+      diffScope === "commit"
+        ? recentCommits.map((commit) => ({
+            id: commit.hash,
+            label: commit.subject,
+            detail: commit.hash.slice(0, 7),
+            checked: commit.hash === diffBase,
+            action: () => selectDiffBase(commit.hash),
+          }))
+        : comparisonBranches.map((branch) => ({
+            id: branch.name,
+            label: branch.name,
+            detail: branchMetaLabel(branch),
+            checked: branch.name === diffBase,
+            action: () => selectDiffBase(branch.name),
+          }));
+    openContextMenu(event, items, diffScope === "commit" ? "Commit" : "Branch");
+  }
+
   function renderDiffToolbar() {
+    const scopeLabel =
+      DIFF_SCOPE_OPTIONS.find((option) => option.value === diffScope)?.label ??
+      "All changes";
+    const baseLabel =
+      diffScope === "commit"
+        ? recentCommits.find((commit) => commit.hash === diffBase)?.subject
+        : diffBase;
     return (
       <div className="git-diff-toolbar">
-        <div className="git-diff-stats" aria-label="Diff summary">
-          <span>{renderedDiffStats.files} files</span>
-          <span className="add">+{renderedDiffStats.additions}</span>
-          <span className="delete">-{renderedDiffStats.deletions}</span>
-          <span>Worktree</span>
+        <div className="git-diff-scope-controls">
+          {!diffNavigatorVisible && navigableFiles.length > 0 && (
+            <button
+              type="button"
+              className="git-icon-btn"
+              title="Show changed files"
+              aria-label="Show changed files"
+              aria-controls="git-changed-files"
+              aria-expanded={false}
+              onClick={() => setDiffNavigatorVisible(true)}
+            >
+              <Sidebar size={13} />
+            </button>
+          )}
+          <button
+            type="button"
+            className="git-diff-scope-trigger"
+            aria-label="Diff scope"
+            aria-haspopup="menu"
+            disabled={commandBusy === "diff"}
+            onClick={openDiffScopeMenu}
+          >
+            <span>{scopeLabel}</span>
+            <ChevronDown size={11} />
+          </button>
+          {(diffScope === "commit" || diffScope === "branch") && baseLabel && (
+            <button
+              type="button"
+              className="git-diff-scope-trigger git-diff-base-trigger"
+              aria-label={diffScope === "commit" ? "Commit to review" : "Branch to compare"}
+              aria-haspopup="menu"
+              disabled={commandBusy === "diff"}
+              title={baseLabel}
+              onClick={openDiffBaseMenu}
+            >
+              <span>{baseLabel}</span>
+              <ChevronDown size={11} />
+            </button>
+          )}
+          <div className="git-diff-stats" aria-label="Diff summary">
+            {commandBusy === "diff" ? (
+              <span>Loading...</span>
+            ) : (
+              <>
+                <span>{scopeStats.files} files</span>
+                <span className="add">+{scopeStats.additions}</span>
+                <span className="delete">-{scopeStats.deletions}</span>
+              </>
+            )}
+          </div>
         </div>
         <label className="git-diff-search">
           <Search size={12} />
           <input
             value={diffSearch}
             placeholder="Search diff"
+            disabled={!diffResult}
             onChange={(event) => {
               setDiffSearch(event.currentTarget.value);
               setDiffSearchIndex(0);
@@ -1044,33 +1356,16 @@ export function GitPanel({
             Next
           </button>
         </label>
-      </div>
-    );
-  }
-
-  function renderDiffFileTabs() {
-    if (!renderedDiffSections.length) return null;
-    return (
-      <div className="git-diff-file-rail">
-        <div className="git-diff-file-tabs" aria-label="Changed files">
-          {renderedDiffSections.map((section) => {
-            const sectionIndex = renderedDiffSections.indexOf(section);
-            const collapsed = collapsedDiffSections.has(section.id);
-            return (
-              <button
-                className={collapsed ? "collapsed" : ""}
-                type="button"
-                key={section.id}
-                title={section.path}
-                onClick={() => scrollToDiffSection(sectionIndex)}
-              >
-                <span>{compactPath(section.path)}</span>
-                <small>
-                  +{section.additions}/-{section.deletions}
-                </small>
-              </button>
-            );
-          })}
+        <div className="git-diff-head-actions">
+          {renderedDiffSections.length > 0 && (
+            <button
+              type="button"
+              className="git-diff-bulk-toggle"
+              onClick={toggleAllDiffSections}
+            >
+              {allDiffSectionsCollapsed ? "Expand all" : "Collapse all"}
+            </button>
+          )}
         </div>
       </div>
     );
@@ -1142,35 +1437,180 @@ export function GitPanel({
     );
   }
 
-  function renderDiffContent(inline = false) {
-    if (!visibleDiffRows.length)
-      return <div className="git-diff-empty">No diff output.</div>;
-    if (inline) {
+  function toggleFileTreeFolder(path: string) {
+    setCollapsedFileTreePaths((current) => {
+      const next = new Set(current);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+  }
+
+  function renderFileTree(nodes: GitFileTreeNode[], depth = 0): ReactNode {
+    return nodes.map((node) => {
+      if (node.fileIndex === undefined) {
+        const collapsed = collapsedFileTreePaths.has(node.path);
+        return (
+          <div className="git-file-tree-branch" role="none" key={node.path}>
+            <button
+              className="git-file-tree-folder"
+              type="button"
+              role="treeitem"
+              aria-expanded={!collapsed}
+              style={{ "--git-file-tree-depth": depth } as CSSProperties}
+              onClick={() => toggleFileTreeFolder(node.path)}
+            >
+              <ChevronDown size={11} />
+              <Folder size={12} />
+              <span>{node.name}</span>
+            </button>
+            {!collapsed && (
+              <div role="group">{renderFileTree(node.children, depth + 1)}</div>
+            )}
+          </div>
+        );
+      }
+
+      const file = navigableFiles[node.fileIndex];
+      if (!file) return null;
       return (
-        <>
-          {renderDiffToolbar()}
-          {renderDiffView()}
-        </>
+        <button
+          className="git-file-row"
+          type="button"
+          role="treeitem"
+          key={file.key}
+          title={`View diff for ${file.title}`}
+          aria-current={
+            file.sectionId === activeDiffSectionId ? "location" : undefined
+          }
+          style={{ "--git-file-tree-depth": depth } as CSSProperties}
+          disabled={Boolean(commandBusy)}
+          onClick={() => openDiffFile({ path: file.path, index: file.index })}
+        >
+          <span className="git-file-status">{file.status}</span>
+          <span className="git-file-path">{node.name}</span>
+        </button>
       );
-    }
+    });
+  }
+
+  function renderFileNavigator(inDiff = false) {
+    if (!navigableFiles.length) return null;
     return (
-      <>
-        {renderDiffToolbar()}
-        {renderDiffFileTabs()}
-        {renderDiffView()}
-      </>
+      <div
+        className={`git-file-list${inDiff ? " git-diff-navigator" : ""}`}
+        aria-label="Changed files"
+        id={inDiff ? "git-changed-files" : undefined}
+      >
+        {inDiff && (
+          <div className="git-diff-navigator-head">
+            <div>
+              <button
+                type="button"
+                className="git-icon-btn"
+                title="Hide changed files"
+                aria-label="Hide changed files"
+                aria-controls="git-changed-files"
+                onClick={() => setDiffNavigatorVisible(false)}
+              >
+                <Sidebar size={13} />
+              </button>
+              <strong>Changes</strong>
+            </div>
+            <span>{navigableFiles.length}</span>
+          </div>
+        )}
+        {inDiff
+          ? <div className="git-file-tree" role="tree">{renderFileTree(navigableFileTree)}</div>
+          : navigableFiles.map((file) => (
+              <button
+                className="git-file-row"
+                type="button"
+                key={file.key}
+                title={`View diff for ${file.title}`}
+                disabled={Boolean(commandBusy)}
+                onClick={() =>
+                  openDiffFile({ path: file.path, index: file.index })
+                }
+              >
+                <span className="git-file-status">{file.status}</span>
+                <span className="git-file-path">{compactPath(file.path)}</span>
+              </button>
+            ))}
+      </div>
+    );
+  }
+
+  function renderDiffContent() {
+    return (
+      <div
+        ref={diffLayoutRef}
+        className={`git-diff-layout${diffNavigatorVisible ? "" : " files-hidden"}`}
+        style={
+          {
+            "--git-diff-navigator-width": `${diffNavigatorWidth}px`,
+          } as CSSProperties
+        }
+      >
+        {diffNavigatorVisible && renderFileNavigator(true)}
+        {diffNavigatorVisible && navigableFiles.length > 0 && (
+          <div
+            className={`git-diff-resize-handle${diffNavigatorResizing ? " dragging" : ""}`}
+            data-testid="git-diff-resize-handle"
+            role="separator"
+            aria-label="Resize changed files"
+            aria-orientation="vertical"
+            aria-valuemin={DIFF_NAVIGATOR_MIN_WIDTH}
+            aria-valuemax={Math.max(
+              DIFF_NAVIGATOR_MIN_WIDTH,
+              (diffLayoutRef.current?.clientWidth ??
+                DIFF_NAVIGATOR_DEFAULT_WIDTH + DIFF_MAIN_MIN_WIDTH) -
+                DIFF_MAIN_MIN_WIDTH,
+            )}
+            aria-valuenow={diffNavigatorWidth}
+            tabIndex={0}
+            onKeyDown={resizeDiffNavigatorWithKeyboard}
+            onPointerDown={startDiffNavigatorResize}
+            onPointerMove={moveDiffNavigatorResize}
+            onPointerUp={endDiffNavigatorResize}
+            onPointerCancel={endDiffNavigatorResize}
+          />
+        )}
+        <div className="git-diff-main">
+          {renderDiffToolbar()}
+          {diffResult && visibleDiffRows.length ? (
+            renderDiffView()
+          ) : diffResult ? (
+            <div className="git-diff-empty">{diffResult.message}</div>
+          ) : (
+            <div className="git-diff-empty">
+              Select a changed file or diff scope to start reviewing.
+            </div>
+          )}
+        </div>
+      </div>
     );
   }
 
   async function runGitCommand(
     action: WorkspaceGitAction,
-    options: { message?: string; stage_all?: boolean; branch?: string } = {},
+    options: {
+      message?: string;
+      stage_all?: boolean;
+      branch?: string;
+      diff_scope?: WorkspaceGitDiffScope;
+      diff_base?: string;
+    } = {},
   ) {
     if (commandBusy) return;
 
     setCommandBusy(action);
     setCommandMenu(null);
     setNotice(null);
+    if (action === "diff") {
+      setDiffResult(null);
+      setActiveDiffSectionId(null);
+    }
     try {
       const result = await runWorkspaceGitAction(action, options);
       if (action === "diff") {
@@ -1193,8 +1633,10 @@ export function GitPanel({
         forceRefreshGitStatus();
       }
     } catch (error) {
-      if (action === "diff") setDiffResult(null);
-      else setCommandResult(null);
+      if (action === "diff") {
+        setDiffResult(null);
+        setPendingDiffFile(null);
+      } else setCommandResult(null);
       setNotice(error instanceof Error ? error.message : "Git command failed");
     } finally {
       setCommandBusy(null);
@@ -1370,28 +1812,6 @@ export function GitPanel({
           )}
         </div>
 
-        {filePreview.length > 0 && (
-          <div className="git-file-list" aria-label="Changed files">
-            {filePreview.map((change) => (
-              <div
-                className="git-file-row"
-                key={`${change.status}:${change.path}`}
-                title={changedFileTitle(change)}
-              >
-                <span className="git-file-status">
-                  {gitStatusLabel(change.status)}
-                </span>
-                <span className="git-file-path">
-                  {compactPath(cleanGitPath(change.path))}
-                </span>
-              </div>
-            ))}
-            {moreFiles > 0 && (
-              <div className="git-file-more">+{moreFiles} more</div>
-            )}
-          </div>
-        )}
-
         <div className="git-panel-details">
           <button
             className="git-row"
@@ -1433,7 +1853,7 @@ export function GitPanel({
           className="git-panel-actions git-command-actions"
           aria-label="Git commands"
         >
-          {(!forceExpanded || readyStatus.has_changes) && (
+          {!forceExpanded && (
             <button
               className="git-action"
               type="button"
@@ -1491,6 +1911,20 @@ export function GitPanel({
             </button>
           )}
 
+          {forceExpanded && (
+            <button
+              className="git-action"
+              type="button"
+              title="Ask the agent to review these changes"
+              onClick={() =>
+                onDraftAction(agentReviewPrompt(selectedFolder, readyStatus))
+              }
+            >
+              <Lightbulb size={13} />
+              <span>Agent review</span>
+            </button>
+          )}
+
           {sync && (
             <button
               className={`git-action git-action-sync ${commandMenu === sync.action ? "active" : ""}`}
@@ -1532,24 +1966,27 @@ export function GitPanel({
           </div>
         )}
 
-        {forceExpanded && !readyStatus.has_changes && (
-          <div className="git-panel-clean-state" role="status">
-            <GitCommit size={18} />
-            <strong>No changes to review</strong>
-            <span>Working tree is clean on {branchLabel(readyStatus)}.</span>
-          </div>
+        {forceExpanded && (
+          <section
+            className={`git-workspace-review ${diffResult && !diffResult.ok ? "error" : ""}`}
+            aria-label="Git review"
+          >
+            {renderDiffContent()}
+          </section>
         )}
 
-        <button
-          className="git-agent-action"
-          type="button"
-          onClick={() =>
-            onDraftAction(agentReviewPrompt(selectedFolder, readyStatus))
-          }
-        >
-          <Lightbulb size={13} />
-          <span>Ask agent to review</span>
-        </button>
+        {!forceExpanded && (
+          <button
+            className="git-agent-action"
+            type="button"
+            onClick={() =>
+              onDraftAction(agentReviewPrompt(selectedFolder, readyStatus))
+            }
+          >
+            <Lightbulb size={13} />
+            <span>Ask agent to review</span>
+          </button>
+        )}
 
         {notice && (
           <div className="git-panel-note" role="status">
@@ -1557,32 +1994,6 @@ export function GitPanel({
           </div>
         )}
 
-        {forceExpanded && diffResult && (
-          <section
-            className={`git-workspace-review ${diffResult.ok ? "" : "error"}`}
-            aria-label="Git diff"
-          >
-            <div className="git-modal-head">
-              <span>
-                <Code size={13} />
-                <strong>{diffResult.message}</strong>
-              </span>
-              <button
-                type="button"
-                className="git-icon-btn"
-                title="Close diff"
-                aria-label="Close diff"
-                onClick={() => setDiffResult(null)}
-              >
-                <X size={13} />
-              </button>
-            </div>
-            {diffResult.command && (
-              <code className="git-command-preview">{diffResult.command}</code>
-            )}
-            {renderDiffContent(true)}
-          </section>
-        )}
       </section>
       {typeof document !== "undefined" &&
         branchMenuOpen &&
@@ -1926,31 +2337,6 @@ export function GitPanel({
                     </label>
                   </div>
 
-                  {renderedDiffSections.length > 0 && (
-                    <div
-                      className="git-diff-file-tabs"
-                      aria-label="Changed files"
-                    >
-                      {renderedDiffSections.map((section, sectionIndex) => {
-                        const collapsed = collapsedDiffSections.has(section.id);
-                        return (
-                          <button
-                            className={collapsed ? "collapsed" : ""}
-                            type="button"
-                            key={section.id}
-                            title={section.path}
-                            onClick={() => scrollToDiffSection(sectionIndex)}
-                          >
-                            <span>{compactPath(section.path)}</span>
-                            <small>
-                              +{section.additions}/-{section.deletions}
-                            </small>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  )}
-
                   <div
                     className="git-diff-view"
                     role="table"
@@ -2074,7 +2460,7 @@ export function GitWorkspacePanel({
             aria-label="Close Git panel"
             onClick={onClose}
           >
-            <X size={14} />
+            <Sidebar size={16} />
           </button>
         </div>
       </div>
