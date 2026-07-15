@@ -46,6 +46,10 @@ assert.match(chatView, /previewSourcesByThreadRef\.current\.get\(activeId\)/);
 assert.match(chatView, /title=\{inspectorLauncherLabel\}/);
 assert.match(chatView, /`Open Code: \$\{/);
 assert.match(chatView, /"Open Preview: App"/);
+assert.match(chatView, /"Open Workers"/);
+assert.match(chatView, /id="inspector-tab-workers"/);
+assert.match(chatView, /openWorkers\(linkedWorkerRun\.run\.id\)/);
+assert.match(chatView, /inspectorTab === "workers"[\s\S]*?\? true/);
 assert.ok(chatView.includes('[data-testid="open-artifact-browser"]'));
 
 assert.match(api, /previewAppUrl\(threadId, "\/preflight"\)/);
@@ -53,5 +57,6 @@ assert.match(api, /source_fingerprint/);
 assert.match(api, /after_seq=/);
 assert.match(store, /inspectorOpen\?: boolean/);
 assert.match(store, /inspectorTab\?: SessionInspectorTab/);
+assert.match(store, /"preview" \| "code" \| "git" \| "workers"/);
 assert.doesNotMatch(store, /artifactPanelOpen: open/);
 assert.doesNotMatch(store, /sidePanelMode: mode/);

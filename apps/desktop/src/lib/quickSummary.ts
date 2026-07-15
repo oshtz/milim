@@ -23,7 +23,6 @@ export type QuickSummaryRowKind =
   | "limits";
 export type QuickSummarySourceKind = "attachment" | "artifact" | "memory";
 export const QUICK_SUMMARY_SECTION_IDS = [
-  "workers",
   "environment",
   "task",
   "activity",

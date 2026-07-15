@@ -27,8 +27,9 @@ try {
   const { AgentAvatar } = (await server.ssrLoadModule("/src/components/AgentAvatar.tsx")) as {
     AgentAvatar: ComponentType<{ id?: string; name?: string; avatar?: string; className?: string }>;
   };
-  const { WorkersInspector } = (await server.ssrLoadModule("/src/components/WorkersInspector.tsx")) as {
+  const { WorkersInspector, WorkersSummary } = (await server.ssrLoadModule("/src/components/WorkersInspector.tsx")) as {
     WorkersInspector: ComponentType<any>;
+    WorkersSummary: ComponentType<any>;
   };
   const { Select } = (await server.ssrLoadModule("/src/components/ui.tsx")) as {
     Select: ComponentType<any>;
@@ -85,15 +86,15 @@ try {
   }));
   assert(selectMarkup.includes('data-avatar-seed="security-seed"'), "Agent selectors should render the shared avatar");
 
-  const workerInspectorProps = {
+  const inspectorProps = {
     policy: "ask",
     workerModel: "",
     models: [],
     providers: [],
     agents: [agent],
-    collapsed: false,
+    settingsOpen: false,
+    onSettingsOpenChange: () => {},
     onPolicyChange: () => {},
-    onCollapsedChange: () => {},
     onWorkerModelChange: () => {},
     onStart: () => {},
     onStop: () => {},
@@ -101,95 +102,99 @@ try {
     onStopWorker: async () => {},
     onLoadDiff: async () => ({ worker_id: "task-1", status: {}, diff: "" }),
     onApplyDiff: async () => ({ message: "" }),
+    onClose: () => {},
   };
-  const workerMarkup = renderToStaticMarkup(createElement(WorkersInspector, {
-    ...workerInspectorProps,
-    record: {
-      run: {
-        id: "run-1",
-        parent_thread_id: "thread-1",
-        policy: "ask",
-        runtime: "managed",
-        status: "proposed",
-        tasks: [{ id: "task-1", title: "Security task", prompt: "Review.", agent_id: agent.id, model: "test", access: "read_only" }],
-        created_at: "2026-07-13T00:00:00Z",
-        updated_at: "2026-07-13T00:00:00Z",
-      },
-      workers: [],
-    },
-  }));
-  assert(workerMarkup.includes('data-avatar-seed="security-seed"'), "Assigned Worker tasks should render their Agent avatar");
-
-  const unassignedTasks = [
+  const tasks = [
     { id: "task-a", title: "Inspect API", prompt: "Inspect the API.", model: "test", access: "read_only" },
     { id: "task-b", title: "Inspect UI", prompt: "Inspect the UI.", model: "test", access: "read_only" },
   ];
-  const unassignedRun = {
-    id: "run-2",
+  const proposedRun = {
+    id: "run-proposed",
     parent_thread_id: "thread-1",
     policy: "ask",
     runtime: "managed",
     status: "proposed",
-    tasks: unassignedTasks,
+    tasks,
     created_at: "2026-07-13T00:00:00Z",
     updated_at: "2026-07-13T00:00:00Z",
   };
   const proposedMarkup = renderToStaticMarkup(createElement(WorkersInspector, {
-    ...workerInspectorProps,
+    ...inspectorProps,
     agents: [],
-    record: { run: unassignedRun, workers: [] },
+    records: [{ run: proposedRun, workers: [] }],
   }));
-  assert(proposedMarkup.includes('data-avatar-seed="worker:run-2:task-a"'), "Unassigned proposed tasks should receive deterministic avatars");
-  assert(proposedMarkup.includes('data-avatar-seed="worker:run-2:task-b"'), "Different proposed tasks should receive different avatars");
+  assert(proposedMarkup.includes('data-avatar-seed="worker:run-proposed:task-a"'), "Unassigned proposed tasks should receive deterministic avatars");
+  assert(proposedMarkup.includes('data-avatar-seed="worker:run-proposed:task-b"'), "Different proposed tasks should receive different avatars");
 
-  const runningMarkup = renderToStaticMarkup(createElement(WorkersInspector, {
-    ...workerInspectorProps,
-    agents: [],
-    record: {
-      run: { ...unassignedRun, status: "running" },
-      workers: unassignedTasks.map((task, index) => ({
-        id: `worker-${index + 1}`,
-        parent_id: "thread-1",
-        root_id: "thread-1",
-        title: task.title,
-        status: "running",
-        model: task.model,
-        prompt: task.prompt,
-        created_at: "2026-07-13T00:00:00Z",
-        updated_at: "2026-07-13T00:00:00Z",
-        runtime: "managed",
-        access: "read_only",
-      })),
-    },
+  const assignedMarkup = renderToStaticMarkup(createElement(WorkersInspector, {
+    ...inspectorProps,
+    records: [{
+      run: { ...proposedRun, id: "run-assigned", tasks: [{ ...tasks[0], agent_id: agent.id }] },
+      workers: [],
+    }],
   }));
-  assert(runningMarkup.includes('data-avatar-seed="worker:run-2:task-a"'), "Live Workers should keep their proposed task avatar");
-  assert(runningMarkup.includes('data-avatar-seed="worker:run-2:task-b"'), "Every live Worker should render a Shatz avatar");
+  assert(assignedMarkup.includes('data-avatar-seed="security-seed"'), "Assigned Worker tasks should render their Agent avatar");
 
   for (const policy of ["off", "ask", "auto"] as const) {
-    const emptyMarkup = renderToStaticMarkup(createElement(WorkersInspector, {
-      ...workerInspectorProps,
+    const emptyMarkup = renderToStaticMarkup(createElement(WorkersSummary, {
+      records: [],
       policy,
-      record: undefined,
+      workerModel: "",
+      models: [],
+      agents: [],
+      onOpen: () => {},
+      onOpenSettings: () => {},
     }));
-    assert(emptyMarkup.indexOf('data-testid="workers-settings-toggle"') < emptyMarkup.indexOf('data-testid="workers-chevron-toggle"'), "Worker settings should precede the section chevron");
     const policyLabel = policy[0].toUpperCase() + policy.slice(1);
     assert(emptyMarkup.includes(`${policyLabel} · Inherit parent`), `${policy} should appear in the compact summary`);
     assert(emptyMarkup.includes("No runs yet"), `${policy} should render the compact idle state`);
-    assert(emptyMarkup.includes('data-testid="workers-settings-toggle"'), "Workers should render the settings disclosure");
-    assert(emptyMarkup.includes('aria-expanded="false"'), "Worker settings should be collapsed by default");
-    assert(!emptyMarkup.includes('data-testid="worker-model-picker-trigger"'), "Collapsed Worker settings should not occupy space");
-    assert(!emptyMarkup.includes("<select"), "Workers should not render a native model select");
+    assert(emptyMarkup.includes('data-testid="workers-settings-toggle"'), "Worker summary should open settings");
   }
 
-  const collapsedMarkup = renderToStaticMarkup(createElement(WorkersInspector, {
-    ...workerInspectorProps,
-    collapsed: true,
-    record: undefined,
+  const runningRecord = {
+    run: { ...proposedRun, status: "running" },
+    workers: [{
+      id: "worker-live",
+      parent_id: "thread-1",
+      root_id: "thread-1",
+      title: "Inspect UI",
+      status: "running",
+      model: "test",
+      prompt: "Inspect the UI.",
+      created_at: "2026-07-13T00:00:00Z",
+      updated_at: "2026-07-13T00:01:00Z",
+      runtime: "managed",
+      access: "read_only",
+    }],
+  };
+  const doneRecord = {
+    run: { ...proposedRun, id: "run-done", status: "done" },
+    workers: [{
+      id: "worker-done",
+      parent_id: "thread-1",
+      root_id: "thread-1",
+      title: "Inspect API",
+      status: "done",
+      model: "test",
+      prompt: "Inspect the API.",
+      summary: "API inspection complete.",
+      created_at: "2026-07-13T00:00:00Z",
+      updated_at: "2026-07-13T00:01:00Z",
+      runtime: "managed",
+      access: "read_only",
+    }],
+  };
+  const historyMarkup = renderToStaticMarkup(createElement(WorkersInspector, {
+    ...inspectorProps,
+    agents: [],
+    records: [runningRecord, doneRecord],
+    focusRunId: "run-done",
   }));
-  assert(collapsedMarkup.includes('data-testid="workers-section-toggle"'), "Workers should expose a section disclosure");
-  assert(collapsedMarkup.includes('aria-controls="workers-section-content"'), "Workers disclosure should own its content");
-  assert(collapsedMarkup.includes('id="workers-section-content" data-collapsed="true" aria-hidden="true"'), "Collapsed Workers content should be hidden");
-  assert(collapsedMarkup.includes('data-testid="workers-settings-toggle"'), "Worker settings should remain a separate disclosure");
+  assert(historyMarkup.includes("Active <span>1</span>"), "Workers inspector should group active Workers");
+  assert(historyMarkup.includes("Done <span>1</span>"), "Workers inspector should group completed Workers");
+  assert(historyMarkup.includes("API inspection complete."), "Workers inspector should render historical result previews");
+  assert(historyMarkup.includes('aria-labelledby="inspector-tab-workers"'), "Workers inspector should link to its tab");
+  assert(historyMarkup.includes('data-avatar-seed="worker:run-proposed:task-b"'), "Live Workers should keep their proposed task avatar");
 } finally {
   await server.close();
 }

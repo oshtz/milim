@@ -1278,11 +1278,11 @@ equal(
   undefined,
   "closing the inspector should persist collapsed state",
 );
-useSessions.getState().setInspectorTab(first, "git");
+useSessions.getState().setInspectorTab(first, "workers");
 equal(
   useSessions.getState().sessions.find((session) => session.id === first)
     ?.inspectorTab,
-  "git",
+  "workers",
   "inspector tab should persist per thread",
 );
 equal(
@@ -1292,7 +1292,7 @@ equal(
   "selecting an inspector tab should open it",
 );
 assert(
-  localStorage.getItem("milim.sessions")?.includes('"inspectorTab":"git"'),
+  localStorage.getItem("milim.sessions")?.includes('"inspectorTab":"workers"'),
   "inspector tab should persist in session storage",
 );
 useSessions.getState().setInspectorOpen(first, false);
@@ -1305,7 +1305,7 @@ equal(
 equal(
   useSessions.getState().sessions.find((session) => session.id === first)
     ?.inspectorTab,
-  "git",
+  "workers",
   "collapsing the inspector should preserve selected tab",
 );
 useSessions.getState().setInspectorOpen(first, true);
@@ -1318,7 +1318,7 @@ equal(
 equal(
   useSessions.getState().sessions.find((session) => session.id === first)
     ?.inspectorTab,
-  "git",
+  "workers",
   "reopening the inspector should keep the selected tab",
 );
 useSessions.getState().setInspectorTab(first, "preview");
@@ -1338,15 +1338,15 @@ useSessions.getState().upsertWorkerRun({
 });
 equal(
   useSessions.getState().sessions.find((session) => session.id === first)
-    ?.contextPanelOpen,
+    ?.inspectorOpen,
   true,
-  "proposed Worker Runs should reveal Context",
+  "proposed Worker Runs should reveal the inspector",
 );
 equal(
   useSessions.getState().sessions.find((session) => session.id === first)
     ?.inspectorTab,
-  "preview",
-  "revealing Workers in Context should preserve the inspector surface",
+  "workers",
+  "proposed Worker Runs should select the Workers inspector",
 );
 useSessions.getState().setContextPanelOpen(first, false);
 useSessions.getState().setSessionUnread(first, true);

@@ -221,10 +221,10 @@ assert(
   "context section hydration should preserve unique known section IDs",
 );
 assert(
-  useSessions.getState().sessions[2]?.contextPanelOpen === true &&
-    useSessions.getState().sessions[2]?.inspectorOpen === undefined &&
-    useSessions.getState().sessions[2]?.inspectorTab === "preview",
-  "legacy Workers inspector state should migrate into Context",
+  useSessions.getState().sessions[2]?.contextPanelOpen === undefined &&
+    useSessions.getState().sessions[2]?.inspectorOpen === true &&
+    useSessions.getState().sessions[2]?.inspectorTab === "workers",
+  "Workers inspector state should remain attached to the unified inspector",
 );
 assert(
   stored.state.projects[0]?.folder === "C:\\keep",

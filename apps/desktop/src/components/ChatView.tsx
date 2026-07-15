@@ -330,7 +330,7 @@ import {
 import { groupSessionsByProjects } from "./Sidebar";
 import { InlineMediaControls } from "./InlineMediaControls";
 import { GeneratedMedia } from "./GeneratedMedia";
-import { WorkersInspector } from "./WorkersInspector";
+import { WorkersInspector, WorkersSummary } from "./WorkersInspector";
 import { AssistantMessage } from "./AssistantMessage";
 import { ArtifactList } from "./ArtifactList";
 import { ChatSearchPopover } from "./ChatSearchPopover";
@@ -884,7 +884,7 @@ type MessageRowActions = {
     sessionId: string,
     tab: "code" | "preview",
   ) => void;
-  openWorkers: () => void;
+  openWorkers: (runId?: string) => void;
   preparePreviewRuntimeForArtifacts: (
     artifacts?: readonly ChatArtifact[],
   ) => Promise<void>;
@@ -1223,7 +1223,7 @@ function MessageRowView({
                 className={`worker-run-event ${linkedWorkerRun.run.status}`}
                 type="button"
                 data-testid="worker-run-event"
-                onClick={() => actions?.openWorkers()}
+                onClick={() => actions?.openWorkers(linkedWorkerRun.run.id)}
               >
                 <UserRound size={13} />
                 <span>
@@ -3113,6 +3113,8 @@ export function ChatView({
     "start" | "stop" | "restart" | null
   >(null);
   const [workerActionBusy, setWorkerActionBusy] = useState(false);
+  const [workerFocusRunId, setWorkerFocusRunId] = useState("");
+  const [workerSettingsOpen, setWorkerSettingsOpen] = useState(false);
   const [previewPanelClosing, setPreviewPanelClosing] = useState(false);
   const [, setPreviewSource] =
     useState<InspectorPreviewSource>("url");
@@ -4299,6 +4301,7 @@ export function ChatView({
     if (
       !inspectorOpen ||
       inspectorTab === "git" ||
+      inspectorTab === "workers" ||
       activeInspectorPreviewSource !== "artifact" ||
       (activeArtifactSelection?.revision != null &&
         activeArtifactSelection.revision.revisionNumber <
@@ -4755,6 +4758,8 @@ export function ChatView({
   function openSelectedSidePanel() {
     if (inspectorTab === "git" && (canOpenGitPanel || gitPanelChecking)) {
       openGitPanel();
+    } else if (inspectorTab === "workers") {
+      openWorkersInspector();
     } else if (inspectorTab === "code") {
       openArtifactSidePanel("code");
     } else {
@@ -4799,7 +4804,9 @@ export function ChatView({
           : browserPreviewSelection(activeInspectorBrowserSession);
   const sidePanelVisible = Boolean(
     inspectorOpen &&
-    (inspectorTab === "git"
+    (inspectorTab === "workers"
+      ? true
+      : inspectorTab === "git"
         ? canShowGitPanel
         : visiblePreviewSelection),
   );
@@ -4822,7 +4829,9 @@ export function ChatView({
     "--preview-panel-docked-width": `${dockedPreviewPanelWidth}px`,
   } as CSSProperties;
   const inspectorLauncherLabel =
-    inspectorTab === "git"
+    inspectorTab === "workers"
+      ? "Open Workers"
+      : inspectorTab === "git"
       ? "Open Git"
       : inspectorTab === "code"
         ? `Open Code: ${activeArtifactSelection?.artifact.filename ?? activeArtifactSelection?.artifact.title ?? "artifact"}`
@@ -4833,7 +4842,7 @@ export function ChatView({
             : "Open Preview: URL";
   const previewToolsIntent = Boolean(
     sidePanelVisible &&
-      inspectorTab !== "git" &&
+      (inspectorTab === "preview" || inspectorTab === "code") &&
       activePreviewSurface?.status === "ready" &&
       activePreviewSurface.capabilities.includes("dom_snapshot"),
   );
@@ -5105,12 +5114,24 @@ export function ChatView({
     if (
       activeWorkerRun?.run.status === "proposed" ||
       activeWorkerRun?.run.status === "running"
-    ) openContextPanel();
+    ) openWorkersInspector(activeWorkerRun.run.id);
   }, [activeWorkerRun?.run.id, activeWorkerRun?.run.status]);
 
   useEffect(() => {
-    if (!sidePanelVisible || inspectorTab === "git") setActivePreviewSurface(null);
+    if (
+      !sidePanelVisible ||
+      (inspectorTab !== "preview" && inspectorTab !== "code")
+    ) setActivePreviewSurface(null);
   }, [inspectorTab, sidePanelVisible]);
+
+  function openWorkersInspector(runId?: string, settings = false) {
+    rememberInspectorInvoker();
+    clearPreviewCloseTimer();
+    setPreviewPanelClosing(false);
+    setWorkerFocusRunId(runId ?? "");
+    if (settings) setWorkerSettingsOpen(true);
+    setSessionInspectorTab(activeId, "workers");
+  }
 
   function openContextPanel() {
     if (chatBodyWidth < CONCURRENT_PANEL_THRESHOLD && inspectorOpen) {
@@ -7155,7 +7176,7 @@ export function ChatView({
         computerUse: turnComputerUse,
         previewSurface:
           sidePanelVisible &&
-          inspectorTab !== "git"
+          (inspectorTab === "preview" || inspectorTab === "code")
             ? activePreviewSurface
             : null,
         activeAgentId: turnActiveAgentId,
@@ -8425,13 +8446,26 @@ export function ChatView({
           <span>Git</span>
         </button>
       )}
+      <button
+        id="inspector-tab-workers"
+        type="button"
+        className={inspectorTab === "workers" ? "active" : ""}
+        role="tab"
+        aria-selected={inspectorTab === "workers"}
+        aria-controls="inspector-panel-workers"
+        tabIndex={inspectorTab === "workers" ? 0 : -1}
+        onClick={() => openWorkersInspector()}
+      >
+        <UserRound size={14} />
+        <span>Workers</span>
+      </button>
     </div>
   );
 
   messageRowActionsRef.current = {
     openContextMenu,
     setInspectorTab: setSessionInspectorTab,
-    openWorkers: openContextPanel,
+    openWorkers: openWorkersInspector,
     preparePreviewRuntimeForArtifacts,
     openPreviewArtifact,
     artifactRevisionChoice,
@@ -8699,32 +8733,16 @@ export function ChatView({
           summary={quickSummary}
           open={contextPanelOpen}
           workerPanel={(
-            <WorkersInspector
-              record={activeWorkerRun}
+            <WorkersSummary
+              records={activeWorkerRuns}
               policy={delegationPolicy}
               workerModel={workerModel}
-              collapsed={contextCollapsedSectionIds.includes("workers")}
               agents={agents}
               models={pickerModels.filter(
                 (item) => !item.capabilities?.imageOutput && !item.capabilities?.videoOutput && !item.capabilities?.musicOutput,
               )}
-              providers={providers}
-              busy={workerActionBusy}
-              onCollapsedChange={(collapsed) =>
-                setSessionContextSectionCollapsed(activeId, "workers", collapsed)
-              }
-              onPolicyChange={(next) =>
-                updateThreadSettings(activeId, { delegationPolicy: next })
-              }
-              onWorkerModelChange={(next) =>
-                updateThreadSettings(activeId, { workerModel: next })
-              }
-              onStart={(runId) => void approveWorkerRun(runId)}
-              onStop={(runId) => void stopActiveWorkerRun(runId)}
-              onContinueSolo={(runId) => void continueWorkerRunSolo(runId)}
-              onStopWorker={stopOneWorker}
-              onLoadDiff={getWorkerDiff}
-              onApplyDiff={applyWorkerDiff}
+              onOpen={() => openWorkersInspector()}
+              onOpenSettings={() => openWorkersInspector(undefined, true)}
             />
           )}
           collapsedSections={contextCollapsedSectionIds}
@@ -8768,7 +8786,38 @@ export function ChatView({
                 }}
               />
             )}
-            {inspectorTab === "git" ? (
+            {inspectorTab === "workers" ? (
+              <WorkersInspector
+                records={activeWorkerRuns}
+                focusRunId={workerFocusRunId}
+                policy={delegationPolicy}
+                workerModel={workerModel}
+                agents={agents}
+                models={pickerModels.filter(
+                  (item) => !item.capabilities?.imageOutput && !item.capabilities?.videoOutput && !item.capabilities?.musicOutput,
+                )}
+                providers={providers}
+                busy={workerActionBusy}
+                settingsOpen={workerSettingsOpen}
+                closing={previewPanelClosing}
+                noEnterMotion={sidePanelAlreadyOpen}
+                modeSwitcher={inspectorTabSwitcher}
+                onSettingsOpenChange={setWorkerSettingsOpen}
+                onPolicyChange={(next) =>
+                  updateThreadSettings(activeId, { delegationPolicy: next })
+                }
+                onWorkerModelChange={(next) =>
+                  updateThreadSettings(activeId, { workerModel: next })
+                }
+                onStart={(runId) => void approveWorkerRun(runId)}
+                onStop={(runId) => void stopActiveWorkerRun(runId)}
+                onContinueSolo={(runId) => void continueWorkerRunSolo(runId)}
+                onStopWorker={stopOneWorker}
+                onLoadDiff={getWorkerDiff}
+                onApplyDiff={applyWorkerDiff}
+                onClose={closePreview}
+              />
+            ) : inspectorTab === "git" ? (
               <div
                 id="inspector-panel-git"
                 className="inspector-git-panel"
