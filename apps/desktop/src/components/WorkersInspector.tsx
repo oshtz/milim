@@ -1,4 +1,6 @@
 import {
+  lazy,
+  Suspense,
   useEffect,
   useRef,
   useState,
@@ -22,6 +24,10 @@ import type { SessionWorkerRunRecord } from "../sessions/store";
 import { AgentAvatar } from "./AgentAvatar";
 import { ArrowRight, Check, ChevronDown, Copy, Gear, Sidebar, Square } from "./icons";
 import { ModelPicker } from "./ModelPicker";
+
+const Markdown = lazy(() =>
+  import("./Markdown").then((mod) => ({ default: mod.Markdown })),
+);
 
 const STATUS_LABEL: Record<WorkerRunStatus, string> = {
   proposed: "Needs approval",
@@ -68,6 +74,14 @@ function taskForWorker(tasks: WorkerPlanTask[], worker: Worker) {
 
 function workerResult(worker: Worker) {
   return worker.summary?.trim() || worker.error?.trim() || "No result yet.";
+}
+
+function WorkerMarkdown({ content }: { content: string }) {
+  return (
+    <Suspense fallback={<div className="worker-markdown-fallback">{content}</div>}>
+      <Markdown content={content} collapseArtifacts={false} />
+    </Suspense>
+  );
 }
 
 function resultPreview(worker: Worker) {
@@ -662,12 +676,14 @@ export function WorkersInspector({
                   {selectedWorker.messages.map((message, index) => (
                     <div key={message.id ?? index} className={`worker-message ${message.role}`}>
                       <span>{message.role}</span>
-                      <pre>{message.content}</pre>
+                      <WorkerMarkdown content={message.content} />
                     </div>
                   ))}
                 </div>
               ) : (
-                <pre className="worker-result">{workerResult(selectedWorker)}</pre>
+                <div className="worker-result-markdown">
+                  <WorkerMarkdown content={workerResult(selectedWorker)} />
+                </div>
               )}
               {selectedWorker.worktree_path && (
                 <div className="worker-worktree">

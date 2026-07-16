@@ -5612,6 +5612,42 @@ async fn agent_run_can_spawn_waiting_child_thread() {
 }
 
 #[tokio::test]
+async fn agent_run_ask_waits_for_worker_approval() {
+    use milim_server::threads::ThreadSupervisor;
+    use milim_storage::Database;
+
+    let supervisor = ThreadSupervisor::new(
+        milim_agents::ThreadStore::new(Database::open_in_memory().unwrap()).unwrap(),
+    );
+    let state = AppState::new(
+        Arc::new(ChildThreadToolBackend),
+        ServerConfiguration::default(),
+    )
+    .with_tools(milim_tools::ToolRegistry::with_builtins())
+    .with_threads(supervisor);
+    let base = spawn(state).await;
+
+    let text = reqwest::Client::new()
+        .post(format!("{base}/agents/run"))
+        .json(&json!({
+            "model":"child-thread-tool",
+            "messages":[{"role":"user","content":"delegate this"}],
+            "thread_id":"parent-1",
+            "delegation_policy":"ask",
+            "stream":true
+        }))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+
+    assert!(text.contains("\"type\":\"worker_run_proposed\""), "{text}");
+    assert!(!text.contains("parent saw child"), "{text}");
+}
+
+#[tokio::test]
 async fn agent_run_rejects_unavailable_child_thread_model() {
     use milim_server::threads::ThreadSupervisor;
     use milim_storage::Database;

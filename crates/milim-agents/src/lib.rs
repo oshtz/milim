@@ -410,7 +410,12 @@ pub fn run_agent_stream_with_config(
                     yield ev;
                 }
                 if let Some(ev) = executed.worker_event {
+                    let waiting_for_approval = matches!(&ev, AgentEvent::WorkerRunProposed { .. });
                     yield ev;
+                    if waiting_for_approval {
+                        yield AgentEvent::Done { iterations: iteration, stopped_at_limit: false, usage: total_usage };
+                        return;
+                    }
                 }
                 messages.push(ChatMessage {
                     role: "tool".to_string(),

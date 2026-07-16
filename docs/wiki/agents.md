@@ -6,7 +6,7 @@ title: Agents, tools, skills, and schedules
 summary: Reusable Agent profiles, Worker Runs, tool modes, skills, schedules, and approval policies.
 group: Core
 order: 50
-updated: 2026-07-13
+updated: 2026-07-16
 ---
 
 Agents are for repeatable behavior, tool access, and longer work. Keep one-off questions in plain chat; save an agent when the same instructions or tool policy should survive across threads.
@@ -49,7 +49,7 @@ Each thread has a delegation policy:
 
 The Worker model control uses the searchable model catalog and defaults to the parent chat model.
 
-Desktop shows compact Worker avatars plus planned/active/done counts in the thread's Context card. That summary opens the Workers inspector, which groups the canonical parent chat's history into Active and Done, focuses transcript-linked Runs, and keeps delegation/model settings, Ask approval, live results, stopping, and diff review together. On wide layouts Context can remain open beside the inspector; proposed or running Runs reveal Workers automatically.
+Desktop shows compact Worker avatars plus planned/active/done counts in the thread's Context card. That summary opens the Workers inspector, which groups the canonical parent chat's history into Active and Done, focuses transcript-linked Runs, renders Worker transcripts and result fallbacks as Markdown, and keeps delegation/model settings, Ask approval, live results, stopping, and diff review together. In Ask mode the parent turn stops at the frozen proposal and resumes only after the user chooses **Run workers** or **Continue solo**. On wide layouts Context can remain open beside the inspector; proposed or running Runs reveal Workers automatically.
 
 Delegation is intended for independent work that benefits from parallelism, not short or sequential steps. Managed Workers receive the current request, selected goal and instructions, workspace and branch, resolved Agent instructions and skills, supported attachments, and their assigned task. They do not receive the full transcript.
 
