@@ -6,7 +6,7 @@ title: HTTP API surface
 summary: OpenAI-compatible, Anthropic-compatible, Ollama-compatible, providers, media, workspace, MCP, Agents, Worker Runs, memory, privacy, skills, schedules, mobile, and account runtime routes.
 group: Reference
 order: 90
-updated: 2026-07-14
+updated: 2026-07-19
 ---
 
 The standalone server accepts static bearer keys or `msk-v1` access keys when configured in `~/.milim/config/server.json`. The desktop app uses its own per-launch bearer token and resolves the actual loopback port through Tauri.
@@ -41,7 +41,7 @@ Root aliases are also mounted for OpenAI chat, completions, models, and embeddin
 | Managed preview apps | `GET /preview-apps/{runtime_id}`, `POST /preview-apps/{runtime_id}/stage`, `POST /preview-apps/{runtime_id}/start`, `POST /preview-apps/{runtime_id}/stop`, `POST /preview-apps/{runtime_id}/restart`, `GET /preview-apps/{runtime_id}/logs` |
 | MCP | `GET /mcp/tools`, `POST /mcp/call`, host-only `POST /mcp/apps/resources/read`, host-only `POST /mcp/apps/tools/call`, ephemeral `GET /mcp/apps/views/{id}`, `GET/POST /mcp/servers`, `POST /mcp/servers/test`, `POST /mcp/servers/{id}/test`, `DELETE /mcp/servers/{id}` |
 | Agents | `POST /agents/run`, `GET/POST /agents`, `GET/PUT/DELETE /agents/{id}`, `POST /agents/{id}/run` |
-| Worker Runs | `GET/POST /worker-runs`, `GET /worker-runs/{id}`, `GET /worker-runs/{id}/events`, `POST /worker-runs/{id}/start`, `POST /worker-runs/{id}/stop`; writer diff review/apply routes are scoped to a worker in the Run. |
+| Worker Runs | `GET/POST /worker-runs`, `GET/DELETE /worker-runs/{id}`, `GET /worker-runs/{id}/events`, `POST /worker-runs/{id}/start`, `POST /worker-runs/{id}/stop`, `POST /worker-runs/{id}/tasks/{task_id}/retry`; writer diff review/apply routes are scoped to a worker in the Run. |
 | Threads | `GET /threads/{id}` (`include_events=true&event_limit=N` returns `event_count` and `events_truncated`), `DELETE /threads/{id}`, `GET /threads/{id}/children`, `GET /threads/{id}/events`, `POST /threads/{id}/stop` |
 | Memory | `POST /memory/ingest`, `POST /memory/search`, `POST /memory/register`, `POST /memory/graph/search`, `GET /memory/scopes`, `GET /memory/nodes` |
 | Privacy | `POST /privacy/scan`, `GET/POST /privacy/mode` |

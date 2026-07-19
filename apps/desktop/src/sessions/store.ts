@@ -1620,6 +1620,7 @@ interface SessionState {
   ) => void;
   updateChildThread: (thread: ChildThreadInfo, events?: ThreadEvent[]) => void;
   upsertWorkerRun: (record: WorkerRunRecord) => void;
+  removeWorkerRun: (runId: string) => void;
   setWorkerRunEvent: (runId: string, event: ThreadEvent) => void;
   markArtifactSaved: (
     id: string,
@@ -2790,6 +2791,19 @@ export const useSessions = create<SessionState>()(
               }),
             };
           }),
+
+        removeWorkerRun: (runId) =>
+          set((st) => ({
+            workerRuns: st.workerRuns.filter((record) => record.run.id !== runId),
+            sessions: st.sessions.map((session) => ({
+              ...session,
+              messages: session.messages.map((message) =>
+                message.workerRunId === runId
+                  ? { ...message, workerRunId: undefined }
+                  : message,
+              ),
+            })),
+          })),
 
         setWorkerRunEvent: (runId, event) =>
           set((st) => ({

@@ -60,8 +60,9 @@ const server = await createServer({
 });
 
 try {
-  const { groupSessionsByProjects, sidebarSectionNextRevealCount } = await server.ssrLoadModule("/src/components/Sidebar.tsx") as {
+  const { groupSessionsByProjects, runningWorkerParentThreadIdsKey, sidebarSectionNextRevealCount } = await server.ssrLoadModule("/src/components/Sidebar.tsx") as {
     groupSessionsByProjects: (sessions: SidebarSession[], projects: Project[], sidebar: SessionSidebarState, query: string) => SessionGroup[];
+    runningWorkerParentThreadIdsKey: (records: Array<{ run: { parent_thread_id: string; status: string } }>) => string;
     sidebarSectionNextRevealCount: (totalSessions: number, visibleLimit: number, activeIndex: number) => number;
   };
   const { SIDEBAR_CHATS_SECTION_ID, projectSectionId } = await server.ssrLoadModule("/src/sessions/store.ts") as {
@@ -121,6 +122,13 @@ try {
   assert(sidebarSectionNextRevealCount(12, 5, -1) === 5, "expanded sidebar sections should reveal a full next batch");
   assert(sidebarSectionNextRevealCount(7, 5, -1) === 2, "expanded sidebar sections should reveal only the remaining threads");
   assert(sidebarSectionNextRevealCount(12, 5, 8) === 4, "active overflow thread should not be counted as newly revealed");
+
+  const runningWorkerParents = runningWorkerParentThreadIdsKey(
+    ["proposed", "running", "done", "partial", "stopped", "error"].map((status) => ({
+      run: { parent_thread_id: `thread-${status}`, status },
+    })).concat([{ run: { parent_thread_id: "thread-running", status: "running" } }]),
+  );
+  assert(runningWorkerParents === "thread-running", "only running Worker Runs should activate their parent thread");
 } finally {
   await server.close();
 }

@@ -5648,6 +5648,123 @@ async fn agent_run_ask_waits_for_worker_approval() {
 }
 
 #[tokio::test]
+async fn worker_run_retry_preserves_task_context_and_terminal_stream_state() {
+    use milim_server::threads::ThreadSupervisor;
+    use milim_storage::Database;
+
+    let supervisor = ThreadSupervisor::new(
+        milim_agents::ThreadStore::new(Database::open_in_memory().unwrap()).unwrap(),
+    );
+    let store = supervisor.store();
+    let source = store
+        .create_worker_run(
+            "parent-1",
+            Some("turn-1"),
+            milim_agents::DelegationPolicy::Ask,
+            milim_agents::WorkerRuntime::Managed,
+            vec![milim_agents::WorkerPlanTask {
+                id: "failed-task".to_string(),
+                title: "Failed worker".to_string(),
+                prompt: "child task".to_string(),
+                role: Some("reviewer".to_string()),
+                agent_id: None,
+                model: "child-thread-tool".to_string(),
+                access: milim_agents::WorkerAccess::ReadOnly,
+            }],
+            Some("preserved retry context"),
+        )
+        .unwrap();
+    let proposed = store
+        .create_worker_run(
+            "parent-1",
+            Some("turn-1"),
+            milim_agents::DelegationPolicy::Ask,
+            milim_agents::WorkerRuntime::Managed,
+            vec![],
+            None,
+        )
+        .unwrap();
+    store
+        .update_worker_run_status(
+            &source.id,
+            milim_agents::WorkerRunStatus::Error,
+            Some("worker failed"),
+        )
+        .unwrap();
+    let state = AppState::new(
+        Arc::new(ChildThreadToolBackend),
+        ServerConfiguration::default(),
+    )
+    .with_tools(milim_tools::ToolRegistry::with_builtins())
+    .with_threads(supervisor);
+    let base = spawn(state).await;
+    let client = reqwest::Client::new();
+
+    let response = client
+        .get(format!("{base}/worker-runs/{}/events", source.id))
+        .send()
+        .await
+        .unwrap();
+    let chunk = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        response.bytes_stream().next(),
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .unwrap();
+    let event = String::from_utf8_lossy(&chunk);
+    assert!(event.contains("\"type\":\"worker_run_error\""), "{event}");
+    assert!(event.contains("\"status\":\"error\""), "{event}");
+
+    let retried: Value = client
+        .post(format!(
+            "{base}/worker-runs/{}/tasks/failed-task/retry",
+            source.id
+        ))
+        .json(&json!({"model":"child-thread-tool"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(retried["run"]["parent_thread_id"], "parent-1");
+    assert_eq!(retried["run"]["parent_turn_id"], "turn-1");
+    assert_eq!(retried["run"]["context"], "preserved retry context");
+    assert_eq!(retried["run"]["tasks"][0]["prompt"], "child task");
+    assert_eq!(retried["run"]["tasks"][0]["model"], "child-thread-tool");
+    assert_ne!(retried["run"]["tasks"][0]["id"], "failed-task");
+    assert_eq!(retried["workers"].as_array().unwrap().len(), 1);
+
+    let active_delete = client
+        .delete(format!("{base}/worker-runs/{}", proposed.id))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(active_delete.status(), reqwest::StatusCode::BAD_REQUEST);
+
+    let deleted: Value = client
+        .delete(format!("{base}/worker-runs/{}", source.id))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(deleted["deleted"], true);
+    assert_eq!(
+        client
+            .get(format!("{base}/worker-runs/{}", source.id))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        reqwest::StatusCode::NOT_FOUND
+    );
+}
+
+#[tokio::test]
 async fn agent_run_rejects_unavailable_child_thread_model() {
     use milim_server::threads::ThreadSupervisor;
     use milim_storage::Database;

@@ -2374,6 +2374,35 @@ export async function startWorkerRun(id: string): Promise<WorkerRunRecord> {
   );
 }
 
+export async function retryWorkerTask(
+  runId: string,
+  taskId: string,
+  model?: string,
+): Promise<WorkerRunRecord> {
+  return workerRunRecord(
+    await parseJsonResponse<{ run: WorkerRun; workers?: Worker[] }>(
+      await authFetch(
+        `${BASE}/worker-runs/${encodeURIComponent(runId)}/tasks/${encodeURIComponent(taskId)}/retry`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(model ? { model } : {}),
+        },
+      ),
+      "worker retry HTTP failed",
+    ),
+  );
+}
+
+export async function deleteWorkerRun(id: string): Promise<void> {
+  await parseJsonResponse<{ deleted: boolean }>(
+    await authFetch(`${BASE}/worker-runs/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    }),
+    "worker run delete HTTP failed",
+  );
+}
+
 export async function stopWorkerRun(id: string): Promise<WorkerRunRecord> {
   return workerRunRecord(
     await parseJsonResponse<{ run: WorkerRun; workers?: Worker[] }>(

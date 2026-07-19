@@ -205,10 +205,17 @@ pub fn build_router(state: AppState) -> Router {
             "/worker-runs",
             get(routes::worker_runs_list).post(routes::worker_run_create),
         )
-        .route("/worker-runs/{id}", get(routes::worker_run_get))
+        .route(
+            "/worker-runs/{id}",
+            get(routes::worker_run_get).delete(routes::worker_run_delete),
+        )
         .route("/worker-runs/{id}/events", get(routes::worker_run_events))
         .route("/worker-runs/{id}/start", post(routes::worker_run_start))
         .route("/worker-runs/{id}/stop", post(routes::worker_run_stop))
+        .route(
+            "/worker-runs/{id}/tasks/{task_id}/retry",
+            post(routes::worker_run_task_retry),
+        )
         .route(
             "/worker-runs/{id}/workers/{worker_id}/stop",
             post(routes::worker_run_worker_stop),

@@ -22,7 +22,7 @@ import type {
 import { modelDisplayName } from "../lib/modelPicker";
 import type { SessionWorkerRunRecord } from "../sessions/store";
 import { AgentAvatar } from "./AgentAvatar";
-import { ArrowRight, Check, ChevronDown, Copy, Gear, Sidebar, Square } from "./icons";
+import { ArrowRight, Check, ChevronDown, Copy, Gear, Refresh, Sidebar, Square, Trash } from "./icons";
 import { ModelPicker } from "./ModelPicker";
 
 const Markdown = lazy(() =>
@@ -44,9 +44,15 @@ const POLICY_DESCRIPTION: Record<DelegationPolicy, string> = {
   auto: "Run independent tasks automatically.",
 };
 
-function elapsedLabel(start: string, end?: string | null, now = Date.now()) {
-  const startedAt = Date.parse(start);
-  const endedAt = end ? Date.parse(end) : now;
+function workerTimestamp(value: string) {
+  return Date.parse(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?$/.test(value)
+    ? `${value.replace(" ", "T")}Z`
+    : value);
+}
+
+export function elapsedLabel(start: string, end?: string | null, now = Date.now()) {
+  const startedAt = workerTimestamp(start);
+  const endedAt = end ? workerTimestamp(end) : now;
   if (!Number.isFinite(startedAt) || !Number.isFinite(endedAt)) return "";
   const seconds = Math.max(0, Math.round((endedAt - startedAt) / 1000));
   if (seconds < 60) return `${seconds}s`;
@@ -54,13 +60,22 @@ function elapsedLabel(start: string, end?: string | null, now = Date.now()) {
 }
 
 function ageLabel(value: string, now = Date.now()) {
-  const timestamp = Date.parse(value);
+  const timestamp = workerTimestamp(value);
   if (!Number.isFinite(timestamp)) return "";
   const seconds = Math.max(0, Math.floor((now - timestamp) / 1000));
   if (seconds < 60) return `${seconds}s`;
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
   if (seconds < 86_400) return `${Math.floor(seconds / 3600)}h`;
   return `${Math.floor(seconds / 86_400)}d`;
+}
+
+export function retainedWorkerSelectionKey(
+  current: string,
+  focus: string,
+  fallback: string,
+  available: ReadonlySet<string>,
+) {
+  return available.has(current) ? current : (focus || fallback);
 }
 
 function taskForWorker(tasks: WorkerPlanTask[], worker: Worker) {
@@ -219,6 +234,8 @@ export function WorkersInspector({
   onStop,
   onContinueSolo,
   onStopWorker,
+  onRetryWorker,
+  onDeleteRun,
   onLoadDiff,
   onApplyDiff,
   onClose,
@@ -242,6 +259,8 @@ export function WorkersInspector({
   onStop: (runId: string) => void;
   onContinueSolo: (runId: string) => void;
   onStopWorker: (runId: string, workerId: string) => Promise<void>;
+  onRetryWorker: (runId: string, taskId: string, model?: string) => Promise<void>;
+  onDeleteRun: (runId: string) => Promise<void>;
   onLoadDiff: (runId: string, workerId: string) => Promise<WorkerDiffReview>;
   onApplyDiff: (runId: string, workerId: string) => Promise<WorkspaceGitActionResult>;
   onClose: () => void;
@@ -253,20 +272,26 @@ export function WorkersInspector({
   const [diffReview, setDiffReview] = useState<WorkerDiffReview>();
   const [reviewBusy, setReviewBusy] = useState(false);
   const [reviewNotice, setReviewNotice] = useState("");
-  const [modelPickerOpen, setModelPickerOpen] = useState(false);
+  const [confirmDeleteRunId, setConfirmDeleteRunId] = useState("");
+  const [modelPickerPurpose, setModelPickerPurpose] = useState<"settings" | "retry" | null>(null);
   const [modelPickerStyle, setModelPickerStyle] = useState<CSSProperties>();
   const modelPickerRef = useRef<HTMLDivElement>(null);
+  const retryModelPickerRef = useRef<HTMLDivElement>(null);
   const modelPickerMenuRef = useRef<HTMLDivElement>(null);
+  const modelPickerOpen = modelPickerPurpose !== null;
   const proposedRecords = records.filter((record) => record.run.status === "proposed");
   const entries = records.flatMap((record) =>
     record.workers.map((worker) => ({ record, worker })),
   );
   const activeEntries = entries
     .filter(({ worker }) => worker.status === "queued" || worker.status === "running")
-    .sort((a, b) => Date.parse(b.worker.updated_at) - Date.parse(a.worker.updated_at));
+    .sort((a, b) =>
+      workerTimestamp(a.worker.created_at) - workerTimestamp(b.worker.created_at) ||
+      a.worker.id.localeCompare(b.worker.id),
+    );
   const doneEntries = entries
     .filter(({ worker }) => worker.status !== "queued" && worker.status !== "running")
-    .sort((a, b) => Date.parse(b.worker.updated_at) - Date.parse(a.worker.updated_at));
+    .sort((a, b) => workerTimestamp(b.worker.updated_at) - workerTimestamp(a.worker.updated_at));
   const availableKeys = new Set([
     ...proposedRecords.map((record) => `run:${record.run.id}`),
     ...entries.map(({ record, worker }) => `worker:${record.run.id}:${worker.id}`),
@@ -303,7 +328,13 @@ export function WorkersInspector({
 
   useEffect(() => {
     if (focusKey) setSelectedKey(focusKey);
-  }, [focusKey]);
+  }, [focusRunId]);
+
+  useEffect(() => {
+    setSelectedKey((current) =>
+      retainedWorkerSelectionKey(current, focusKey, fallbackKey, availableKeys),
+    );
+  }, [effectiveKey]);
 
   useEffect(() => {
     if (!runningRecord) return;
@@ -314,7 +345,8 @@ export function WorkersInspector({
   useEffect(() => {
     setDiffReview(undefined);
     setReviewNotice("");
-  }, [selectedWorker?.id]);
+    setConfirmDeleteRunId("");
+  }, [selectedRecord?.run.id, selectedWorker?.id]);
 
   useEffect(() => {
     if (!modelPickerOpen) return;
@@ -324,16 +356,17 @@ export function WorkersInspector({
       if (
         target instanceof Node &&
         !modelPickerRef.current?.contains(target) &&
+        !retryModelPickerRef.current?.contains(target) &&
         !modelPickerMenuRef.current?.contains(target)
-      ) setModelPickerOpen(false);
+      ) setModelPickerPurpose(null);
     };
     document.addEventListener("mousedown", onDocumentMouseDown);
     return () => document.removeEventListener("mousedown", onDocumentMouseDown);
   }, [modelPickerOpen]);
 
-  function toggleModelPicker(button: HTMLButtonElement) {
-    if (modelPickerOpen) {
-      setModelPickerOpen(false);
+  function toggleModelPicker(button: HTMLButtonElement, purpose: "settings" | "retry") {
+    if (modelPickerPurpose === purpose) {
+      setModelPickerPurpose(null);
       return;
     }
     const edge = 8;
@@ -351,7 +384,7 @@ export function WorkersInspector({
       width,
       maxHeight,
     });
-    setModelPickerOpen(true);
+    setModelPickerPurpose(purpose);
   }
 
   async function copyResult() {
@@ -488,52 +521,60 @@ export function WorkersInspector({
                 data-testid="worker-model-picker-trigger"
                 aria-labelledby="worker-model-label"
                 aria-haspopup="dialog"
-                aria-expanded={modelPickerOpen}
-                onClick={(event) => toggleModelPicker(event.currentTarget)}
+                aria-expanded={modelPickerPurpose === "settings"}
+                onClick={(event) => toggleModelPicker(event.currentTarget, "settings")}
               >
                 <span>{workerModelLabel(workerModel, models)}</span>
                 <ChevronDown size={13} />
               </button>
-              {modelPickerOpen && modelPickerStyle && createPortal(
-                <div
-                  ref={modelPickerMenuRef}
-                  className="workers-model-menu"
-                  data-native-preview-blocker="true"
-                  role="dialog"
-                  aria-label="Choose Worker model"
-                  style={modelPickerStyle}
-                >
-                  <button
-                    className={`workers-model-inherit${workerModel ? "" : " active"}`}
-                    type="button"
-                    aria-pressed={!workerModel}
-                    onClick={() => {
-                      onWorkerModelChange("");
-                      setModelPickerOpen(false);
-                    }}
-                  >
-                    <span>{!workerModel && <Check size={12} />}</span>
-                    <strong>Inherit parent</strong>
-                    <small>Use the model selected for this chat</small>
-                  </button>
-                  <ModelPicker
-                    models={models}
-                    model={workerModel}
-                    providers={providers}
-                    toolIntent
-                    onModel={(selection) => onWorkerModelChange(selection.model)}
-                    onManageProviders={() => {}}
-                    onManageMcp={() => {}}
-                    onManageMemory={() => {}}
-                    onClose={() => setModelPickerOpen(false)}
-                    showManagementActions={false}
-                  />
-                </div>,
-                document.body,
-              )}
             </div>
           </div>
         </div>
+      )}
+
+      {modelPickerOpen && modelPickerStyle && createPortal(
+        <div
+          ref={modelPickerMenuRef}
+          className="workers-model-menu"
+          data-native-preview-blocker="true"
+          role="dialog"
+          aria-label={modelPickerPurpose === "retry" ? "Retry Worker with model" : "Choose Worker model"}
+          style={modelPickerStyle}
+        >
+          {modelPickerPurpose === "settings" && (
+            <button
+              className={`workers-model-inherit${workerModel ? "" : " active"}`}
+              type="button"
+              aria-pressed={!workerModel}
+              onClick={() => {
+                onWorkerModelChange("");
+                setModelPickerPurpose(null);
+              }}
+            >
+              <span>{!workerModel && <Check size={12} />}</span>
+              <strong>Inherit parent</strong>
+              <small>Use the model selected for this chat</small>
+            </button>
+          )}
+          <ModelPicker
+            models={models}
+            model={modelPickerPurpose === "retry" ? selectedWorker?.model ?? "" : workerModel}
+            providers={providers}
+            toolIntent
+            onModel={(selection) => {
+              if (modelPickerPurpose === "retry" && selectedRecord && selectedTask)
+                void onRetryWorker(selectedRecord.run.id, selectedTask.id, selection.model);
+              else onWorkerModelChange(selection.model);
+              setModelPickerPurpose(null);
+            }}
+            onManageProviders={() => {}}
+            onManageMcp={() => {}}
+            onManageMemory={() => {}}
+            onClose={() => setModelPickerPurpose(null)}
+            showManagementActions={false}
+          />
+        </div>,
+        document.body,
       )}
 
       <div className="workers-inspector-summary">
@@ -666,10 +707,43 @@ export function WorkersInspector({
               <div className="worker-detail-status">
                 <span className={`workers-status ${selectedRecord.run.status}`}>
                   {STATUS_LABEL[selectedRecord.run.status]}
-                  {selectedRecord.run.status === "running" && ` · ${elapsedLabel(selectedRecord.run.created_at, selectedRecord.run.finished_at, now)}`}
+                  {selectedRecord.run.status === "running" && ` · ${elapsedLabel(selectedWorker.created_at, selectedWorker.finished_at, now)}`}
                 </span>
                 <small>{selectedWorker.access === "write_review" ? "review write" : "read-only"}</small>
               </div>
+              {selectedRecord.run.status !== "proposed" && selectedRecord.run.status !== "running" && (
+                <div className="worker-run-actions" ref={retryModelPickerRef}>
+                  {(selectedWorker.status === "error" || selectedWorker.status === "stopped") && selectedTask && (
+                    <>
+                      <button className="btn-accent" type="button" disabled={busy} onClick={() => void onRetryWorker(selectedRecord.run.id, selectedTask.id)}>
+                        <Refresh size={12} /> Retry
+                      </button>
+                      <button
+                        className="btn-ghost"
+                        type="button"
+                        disabled={busy}
+                        aria-haspopup="dialog"
+                        aria-expanded={modelPickerPurpose === "retry"}
+                        onClick={(event) => toggleModelPicker(event.currentTarget, "retry")}
+                      >
+                        Retry with model <ChevronDown size={12} />
+                      </button>
+                    </>
+                  )}
+                  <button
+                    className="btn-ghost danger"
+                    type="button"
+                    disabled={busy}
+                    onClick={() => {
+                      if (confirmDeleteRunId === selectedRecord.run.id)
+                        void onDeleteRun(selectedRecord.run.id);
+                      else setConfirmDeleteRunId(selectedRecord.run.id);
+                    }}
+                  >
+                    <Trash size={12} /> {confirmDeleteRunId === selectedRecord.run.id ? "Confirm delete" : "Delete run"}
+                  </button>
+                </div>
+              )}
               <p className="worker-task-prompt">{selectedTask?.prompt || selectedWorker.prompt}</p>
               {selectedWorker.messages?.length ? (
                 <div className="worker-activity">

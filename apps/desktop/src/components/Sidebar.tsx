@@ -38,6 +38,14 @@ export function sidebarSectionNextRevealCount(totalSessions: number, visibleLimi
   return Math.max(0, sidebarSectionShownCount(totalSessions, nextLimit, activeIndex) - currentCount);
 }
 
+export function runningWorkerParentThreadIdsKey(records: readonly { run: { parent_thread_id: string; status: string } }[]): string {
+  return [...new Set(
+    records
+      .filter((record) => record.run.status === "running")
+      .map((record) => record.run.parent_thread_id),
+  )].sort().join("\0");
+}
+
 type SidebarDragItem = { type: "session" | "section"; id: string };
 type SidebarDropPosition = "before" | "after" | "inside";
 type SidebarDragTarget = { type: "session"; id: string; sectionId: string; position: Exclude<SidebarDropPosition, "inside"> } | { type: "section"; id: string; position: SidebarDropPosition };
@@ -284,6 +292,7 @@ export function Sidebar({
   const previewRuntimesByKey = useSessions((s) => s.previewRuntimesByKey);
   const activeId = useSessions((s) => s.activeId);
   const generatingSessionIds = useSessions((s) => s.generatingSessionIds);
+  const runningWorkerParentIdsKey = useSessions((s) => runningWorkerParentThreadIdsKey(s.workerRuns));
   const unreadSessionIds = useSessions((s) => s.unreadSessionIds);
   const sidebarState = useSessions((s) => s.sidebar);
   const switchTo = useSessions((s) => s.switchTo);
@@ -376,7 +385,14 @@ export function Sidebar({
   }
 
   const groupedSessions = useMemo(() => groupSessionsByProjects(sessions, projects, sidebarState, query), [projects, query, sessions, sidebarState]);
-  const generatingSessions = useMemo(() => new Set(generatingSessionIds), [generatingSessionIds]);
+  const runningWorkerParentThreads = useMemo(
+    () => new Set(runningWorkerParentIdsKey ? runningWorkerParentIdsKey.split("\0") : []),
+    [runningWorkerParentIdsKey],
+  );
+  const generatingSessions = useMemo(
+    () => new Set([...generatingSessionIds, ...runningWorkerParentThreads]),
+    [generatingSessionIds, runningWorkerParentThreads],
+  );
   const unreadSessions = useMemo(() => new Set(unreadSessionIds), [unreadSessionIds]);
   const archivedProjectFoldersForStatus = useMemo(
     () => new Set(projects.filter((project) => project.archivedAt).map((project) => project.folder)),
@@ -857,7 +873,7 @@ export function Sidebar({
               <div className="sidebar-rail-status" aria-label="Thread activity">
                 {collapsedStatusSessions.map((session) => {
                   const generating = generatingSessions.has(session.id);
-                  const statusLabel = generating ? "Working" : "Unread update";
+                  const statusLabel = runningWorkerParentThreads.has(session.id) ? "Workers running" : generating ? "Working" : "Unread update";
                   const active = session.id === activeId;
                   return (
                     <button
@@ -1094,13 +1110,14 @@ export function Sidebar({
                   >
                     <div className="context-section-inner session-section-content">
                   {visibleSessions.map((s) => {
-                  const workerRunning = s.worker?.status === "queued" || s.worker?.status === "running";
+                  const parentWorkersRunning = runningWorkerParentThreads.has(s.id);
+                  const workerRunning = parentWorkersRunning || s.worker?.status === "queued" || s.worker?.status === "running";
                   const generating = generatingSessions.has(s.id) || workerRunning;
                   const unread = unreadSessions.has(s.id);
                   const runtimeState = projectSection ? null : runtimePreviewSidebarState(s);
                   const pinned = !s.parentId && sidebarState.pinnedSessionIds.includes(s.id);
                   const showStatus = generating || unread;
-                  const statusLabel = s.worker ? `Worker ${s.worker.status}` : generating ? "Working" : unread ? "Unread update" : "Ready";
+                  const statusLabel = parentWorkersRunning ? "Workers running" : s.worker ? `Worker ${s.worker.status}` : generating ? "Working" : unread ? "Unread update" : "Ready";
                   const sessionDragOver = dragOver?.type === "session" && dragOver.id === s.id;
                   const sessionDropClass = sessionDragOver ? ` drag-over drop-${dragOver.position}` : "";
                   const sessionDragging = dragging?.type === "session" && dragging.id === s.id;

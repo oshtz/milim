@@ -55,6 +55,8 @@ import {
   previewArtifactFile,
   readWorkspaceAttachmentFile,
   restartPreviewApp,
+  retryWorkerTask,
+  deleteWorkerRun,
   runWorkspaceGitAction,
   saveArtifactFile,
   searchGraphMemory,
@@ -412,6 +414,7 @@ function mobileThreadMessages(
 }
 
 function workerRunSynthesisMessage(record: WorkerRunRecord): ChatMessage {
+  const allFailed = !record.workers.some((worker) => worker.status === "done");
   const results = record.workers.map((worker, index) => {
     const task = record.run.tasks.find(
       (item) => item.prompt === worker.prompt || item.title === worker.title,
@@ -427,7 +430,9 @@ function workerRunSynthesisMessage(record: WorkerRunRecord): ChatMessage {
     role: "system",
     content: [
       `Worker Run ${record.run.id} finished with status ${record.run.status}.`,
-      "Use the joined results below to answer the original request. Treat failures as visible evidence, not successful results.",
+      allFailed
+        ? "All workers failed or stopped. Acknowledge that briefly, then continue the original request yourself without delegating again."
+        : "Use the joined results below to answer the original request. Treat failures as visible evidence, not successful results.",
       ...results,
     ].join("\n\n"),
   };
@@ -3765,7 +3770,7 @@ export function ChatView({
   function maybeResumeAfterWorkerRun(record: WorkerRunRecord) {
     if (
       !approvedWorkerRunsRef.current.has(record.run.id) ||
-      !["done", "partial", "error"].includes(record.run.status)
+      !["done", "partial", "stopped", "error"].includes(record.run.status)
     ) return;
     approvedWorkerRunsRef.current.delete(record.run.id);
     workerRunEventControllersRef.current.get(record.run.id)?.abort();
@@ -4377,6 +4382,43 @@ export function ChatView({
       run: result.run,
       workers: current.workers.map((worker) => worker.id === workerId ? result.worker : worker),
     });
+  }
+
+  async function retryFailedWorker(runId: string, taskId: string, model?: string) {
+    setWorkerActionBusy(true);
+    try {
+      const record = await retryWorkerTask(runId, taskId, model);
+      approvedWorkerRunsRef.current.add(record.run.id);
+      useSessions.getState().upsertWorkerRun(record);
+      maybeResumeAfterWorkerRun(record);
+      startWorkerRunEvents(record);
+    } catch (error) {
+      setChatNotice({
+        tone: "error",
+        message: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      setWorkerActionBusy(false);
+    }
+  }
+
+  async function deleteFinishedWorkerRun(runId: string) {
+    setWorkerActionBusy(true);
+    try {
+      await deleteWorkerRun(runId);
+      approvedWorkerRunsRef.current.delete(runId);
+      workerRunEventControllersRef.current.get(runId)?.abort();
+      workerRunEventControllersRef.current.delete(runId);
+      useSessions.getState().removeWorkerRun(runId);
+      setWorkerFocusRunId("");
+    } catch (error) {
+      setChatNotice({
+        tone: "error",
+        message: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      setWorkerActionBusy(false);
+    }
   }
 
   async function continueWorkerRunSolo(runId: string) {
@@ -5112,10 +5154,11 @@ export function ChatView({
 
   useEffect(() => {
     if (
-      activeWorkerRun?.run.status === "proposed" ||
-      activeWorkerRun?.run.status === "running"
+      (activeWorkerRun?.run.status === "proposed" ||
+        activeWorkerRun?.run.status === "running") &&
+      (!sidePanelVisible || inspectorTab !== "workers")
     ) openWorkersInspector(activeWorkerRun.run.id);
-  }, [activeWorkerRun?.run.id, activeWorkerRun?.run.status]);
+  }, [activeWorkerRun?.run.id, activeWorkerRun?.run.status, inspectorTab, sidePanelVisible]);
 
   useEffect(() => {
     if (
@@ -8813,6 +8856,8 @@ export function ChatView({
                 onStop={(runId) => void stopActiveWorkerRun(runId)}
                 onContinueSolo={(runId) => void continueWorkerRunSolo(runId)}
                 onStopWorker={stopOneWorker}
+                onRetryWorker={retryFailedWorker}
+                onDeleteRun={deleteFinishedWorkerRun}
                 onLoadDiff={getWorkerDiff}
                 onApplyDiff={applyWorkerDiff}
                 onClose={closePreview}

@@ -9189,14 +9189,17 @@ fn child_thread_title(title: Option<String>, prompt: &str) -> String {
         .unwrap_or_else(|| prompt.chars().take(80).collect())
 }
 
-fn worker_run_notice(run: &milim_agents::WorkerRun, workers: &[milim_agents::Worker]) -> Value {
-    let event = match run.status {
+fn worker_run_event_name(status: milim_agents::WorkerRunStatus) -> &'static str {
+    match status {
         milim_agents::WorkerRunStatus::Proposed => "proposed",
         milim_agents::WorkerRunStatus::Running => "started",
         milim_agents::WorkerRunStatus::Done | milim_agents::WorkerRunStatus::Partial => "done",
         milim_agents::WorkerRunStatus::Stopped | milim_agents::WorkerRunStatus::Error => "error",
-    };
-    json!({ "event": event, "run": run, "workers": workers, "message": run.error })
+    }
+}
+
+fn worker_run_notice(run: &milim_agents::WorkerRun, workers: &[milim_agents::Worker]) -> Value {
+    json!({ "event": worker_run_event_name(run.status), "run": run, "workers": workers, "message": run.error })
 }
 
 struct DelegateWorkersTool {
@@ -10599,6 +10602,33 @@ pub(crate) async fn worker_run_get(
     Ok(Json(json!({ "run": run, "workers": workers })).into_response())
 }
 
+pub(crate) async fn worker_run_delete(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    peer: Peer,
+) -> Result<Response, ApiError> {
+    authorize(&st, &headers, peer_addr(peer))?;
+    let supervisor = thread_supervisor(&st)?;
+    let run = supervisor
+        .worker_run(&id)
+        .map_err(ApiError)?
+        .ok_or_else(|| ApiError(Error::ModelNotFound(format!("worker run {id}"))))?;
+    if matches!(
+        run.status,
+        milim_agents::WorkerRunStatus::Proposed | milim_agents::WorkerRunStatus::Running
+    ) {
+        return Err(ApiError(Error::InvalidRequest(
+            "active worker runs must be stopped before deletion".to_string(),
+        )));
+    }
+    let deleted = supervisor
+        .store()
+        .delete_worker_run(&id)
+        .map_err(ApiError)?;
+    Ok(Json(json!({ "deleted": deleted })).into_response())
+}
+
 pub(crate) async fn worker_run_start(
     State(st): State<AppState>,
     Path(id): Path<String>,
@@ -10613,6 +10643,78 @@ pub(crate) async fn worker_run_start(
         .ok_or_else(|| ApiError(Error::ModelNotFound(format!("worker run {id}"))))?;
     let (run, workers) =
         start_managed_worker_run(&st, &supervisor, &run, worker_review_registry(&st))
+            .await
+            .map_err(ApiError)?;
+    schedule_worker_run_deadline(supervisor, run.id.clone());
+    Ok(Json(json!({ "run": run, "workers": workers })).into_response())
+}
+
+#[derive(Default, Deserialize)]
+pub(crate) struct WorkerRunRetryRequest {
+    #[serde(default)]
+    model: Option<String>,
+}
+
+pub(crate) async fn worker_run_task_retry(
+    State(st): State<AppState>,
+    Path((id, task_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    peer: Peer,
+    Json(req): Json<WorkerRunRetryRequest>,
+) -> Result<Response, ApiError> {
+    authorize(&st, &headers, peer_addr(peer))?;
+    let supervisor = thread_supervisor(&st)?;
+    let source = supervisor
+        .worker_run(&id)
+        .map_err(ApiError)?
+        .ok_or_else(|| ApiError(Error::ModelNotFound(format!("worker run {id}"))))?;
+    if matches!(
+        source.status,
+        milim_agents::WorkerRunStatus::Proposed | milim_agents::WorkerRunStatus::Running
+    ) {
+        return Err(ApiError(Error::InvalidRequest(
+            "worker task can be retried only after its run finishes".to_string(),
+        )));
+    }
+    let task = source
+        .tasks
+        .iter()
+        .find(|task| task.id == task_id)
+        .ok_or_else(|| ApiError(Error::ModelNotFound(format!("worker task {task_id}"))))?;
+    let requested_model = req
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+        .unwrap_or(&task.model);
+    let (tasks, _) = resolve_worker_plan(
+        &st,
+        &task.model,
+        None,
+        vec![DelegateWorkerTaskArgs {
+            prompt: task.prompt.clone(),
+            title: Some(task.title.clone()),
+            role: task.role.clone(),
+            agent_id: task.agent_id.clone(),
+            model: Some(requested_model.to_string()),
+            access: Some(task.access),
+        }],
+    )
+    .await
+    .map_err(ApiError)?;
+    let retry = supervisor
+        .store()
+        .create_worker_run(
+            &source.parent_thread_id,
+            source.parent_turn_id.as_deref(),
+            source.policy,
+            milim_agents::WorkerRuntime::Managed,
+            tasks,
+            source.context.as_deref(),
+        )
+        .map_err(ApiError)?;
+    let (run, workers) =
+        start_managed_worker_run(&st, &supervisor, &retry, worker_review_registry(&st))
             .await
             .map_err(ApiError)?;
     schedule_worker_run_deadline(supervisor, run.id.clone());
@@ -10757,6 +10859,12 @@ pub(crate) async fn worker_run_events(
                 yield Ok::<Event, Infallible>(Event::default().data(data));
             }
         }
+        if let Ok(Some(run)) = supervisor.store().refresh_worker_run_status(&id) {
+            let workers = supervisor.workers_for_run(&id).unwrap_or_default();
+            let kind = format!("worker_run_{}", worker_run_event_name(run.status));
+            let data = serde_json::to_string(&json!({"type":kind,"run":run,"workers":workers})).unwrap_or_else(|_| "{}".to_string());
+            yield Ok::<Event, Infallible>(Event::default().data(data));
+        }
         loop {
             match events.recv().await {
                 Ok(event) if event.thread().run_id.as_deref() == Some(id.as_str()) => {
@@ -10764,7 +10872,7 @@ pub(crate) async fn worker_run_events(
                         if stored.seq <= last_seq { continue; }
                         last_seq = stored.seq;
                     }
-                    let run = supervisor.worker_run(&id).ok().flatten();
+                    let run = supervisor.store().refresh_worker_run_status(&id).ok().flatten();
                     let kind = match &event {
                         SupervisorEvent::ChildThreadStarted { .. } => "worker_run_worker_started",
                         SupervisorEvent::ChildThreadDone { .. } => "worker_run_worker_done",

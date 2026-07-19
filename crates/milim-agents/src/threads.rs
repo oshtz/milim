@@ -385,6 +385,39 @@ impl ThreadStore {
         rows.map(|row| row.map_err(sqlite)).collect()
     }
 
+    pub fn delete_worker_run(&self, run_id: &str) -> Result<bool> {
+        let db = self.db.lock().expect("threads db poisoned");
+        db.conn()
+            .execute_batch("BEGIN IMMEDIATE TRANSACTION;")
+            .map_err(sqlite)?;
+        let result = (|| -> Result<bool> {
+            db.conn()
+                .execute(
+                    "DELETE FROM thread_events WHERE thread_id IN (SELECT id FROM threads WHERE run_id = ?1)",
+                    params![run_id],
+                )
+                .map_err(sqlite)?;
+            db.conn()
+                .execute("DELETE FROM threads WHERE run_id = ?1", params![run_id])
+                .map_err(sqlite)?;
+            Ok(db
+                .conn()
+                .execute("DELETE FROM worker_runs WHERE id = ?1", params![run_id])
+                .map_err(sqlite)?
+                > 0)
+        })();
+        match result {
+            Ok(deleted) => {
+                db.conn().execute_batch("COMMIT;").map_err(sqlite)?;
+                Ok(deleted)
+            }
+            Err(error) => {
+                let _ = db.conn().execute_batch("ROLLBACK;");
+                Err(error)
+            }
+        }
+    }
+
     pub fn update_worker_run_status(
         &self,
         id: &str,
@@ -1050,6 +1083,12 @@ mod tests {
             s.list_worker_runs("parent-1", 10).unwrap()[0].tasks[0].prompt,
             "check"
         );
+        s.append_event(&worker.id, "final", serde_json::json!({"content":"done"}))
+            .unwrap();
+        assert!(s.delete_worker_run(&run.id).unwrap());
+        assert!(s.get_worker_run(&run.id).unwrap().is_none());
+        assert!(s.get(&worker.id).unwrap().is_none());
+        assert!(s.events(&worker.id, 10).unwrap().is_empty());
     }
 
     #[test]
