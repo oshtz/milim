@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use axum::response::sse::Event;
 use futures::{Stream, StreamExt};
+use milim_agents::ToolApprovalBroker;
 use milim_core::api::openai::{ReasoningEffort, Usage};
 use milim_core::{Error, Result};
 use serde::{Deserialize, Serialize};
@@ -42,9 +43,19 @@ pub(crate) struct ClaudeRunRequest {
     #[serde(default)]
     pub tool_approval_grant: bool,
     #[serde(default)]
+    pub interactive_tool_approval: bool,
+    #[serde(default)]
     pub plan_mode: bool,
     #[serde(default)]
     pub allow_session_recovery: bool,
+    #[serde(skip)]
+    pub approval_run_id: Option<String>,
+    #[serde(skip)]
+    pub approval_mcp_url: Option<String>,
+    #[serde(skip)]
+    pub approval_mcp_authorization: Option<String>,
+    #[serde(skip)]
+    approval_mcp_config: Option<PathBuf>,
 }
 
 #[derive(Debug, Serialize)]
@@ -89,6 +100,18 @@ enum ClaudeStreamEvent {
     },
     SessionRecoveryRequired {
         message: String,
+    },
+    ToolApprovalRequired {
+        approval_id: String,
+        call_id: String,
+        name: String,
+        arguments: String,
+        effect: milim_tools::ToolEffect,
+    },
+    ToolApprovalResolved {
+        approval_id: String,
+        call_id: String,
+        decision: &'static str,
     },
 }
 
@@ -149,21 +172,113 @@ pub(crate) async fn status() -> Result<Value> {
 }
 
 pub(crate) fn run_stream(
-    req: ClaudeRunRequest,
+    mut req: ClaudeRunRequest,
     redactions: BTreeMap<String, String>,
+    approval_broker: Option<std::sync::Arc<ToolApprovalBroker>>,
 ) -> impl Stream<Item = std::result::Result<Event, Infallible>> {
     async_stream::stream! {
+        let _approval_config = match ClaudeApprovalConfig::materialize(&req) {
+            Ok(config) => config,
+            Err(error) => {
+                yield sse_event(&ClaudeStreamEvent::Error {
+                    message: error.to_string(),
+                    usage: None,
+                    cost_usd: None,
+                });
+                yield Ok(Event::default().data("[DONE]"));
+                return;
+            }
+        };
+        if let Some(config) = &_approval_config {
+            req.approval_mcp_config = Some(config.path.clone());
+        }
+        let approval_run_id = req.approval_run_id.clone();
+        let mut approval_rx = approval_broker.as_ref().map(|broker| broker.subscribe());
         let (worker_tx, mut worker_rx) = tokio::sync::mpsc::unbounded_channel();
         let stream = run_stream_with_worker_events(req, redactions, Some(worker_tx));
         futures::pin_mut!(stream);
-        while let Some(event) = stream.next().await {
-            yield event;
+        loop {
+            let next = if let Some(receiver) = approval_rx.as_mut() {
+                tokio::select! {
+                    event = stream.next() => Some(Ok(event)),
+                    notice = receiver.recv() => Some(Err(notice)),
+                }
+            } else {
+                stream.next().await.map(|event| Ok(Some(event)))
+            };
+            match next {
+                Some(Ok(Some(event))) => yield event,
+                Some(Ok(None)) | None => break,
+                Some(Err(Ok(notice))) if Some(notice.run_id.as_str()) == approval_run_id.as_deref() => {
+                    let call_id = notice.call_id.unwrap_or_else(|| notice.approval_id.clone());
+                    if let Some(decision) = notice.decision {
+                        yield sse_event(&ClaudeStreamEvent::ToolApprovalResolved {
+                            approval_id: notice.approval_id,
+                            call_id,
+                            decision,
+                        });
+                    } else {
+                        yield sse_event(&ClaudeStreamEvent::ToolApprovalRequired {
+                            approval_id: notice.approval_id,
+                            call_id,
+                            name: notice.name,
+                            arguments: notice.arguments,
+                            effect: notice.effect,
+                        });
+                    }
+                }
+                Some(Err(Ok(_))) | Some(Err(Err(tokio::sync::broadcast::error::RecvError::Lagged(_)))) => {}
+                Some(Err(Err(tokio::sync::broadcast::error::RecvError::Closed))) => approval_rx = None,
+            }
             while let Ok(worker) = worker_rx.try_recv() {
                 if matches!(worker, AccountWorkerEvent::NativeWorker { .. }) {
                     yield sse_event(&worker);
                 }
             }
         }
+    }
+}
+
+struct ClaudeApprovalConfig {
+    path: PathBuf,
+}
+
+impl ClaudeApprovalConfig {
+    fn materialize(req: &ClaudeRunRequest) -> Result<Option<Self>> {
+        if !req.interactive_tool_approval
+            || account_runtime_policy(req.tool_approval_policy.as_deref()) != "review"
+        {
+            return Ok(None);
+        }
+        let url = req.approval_mcp_url.as_deref().ok_or_else(|| {
+            Error::InvalidRequest(
+                "Claude Review mode requires Milim's interactive approval endpoint".to_string(),
+            )
+        })?;
+        let path = std::env::temp_dir().join(format!(
+            "milim-claude-approval-{}.json",
+            uuid::Uuid::new_v4()
+        ));
+        let mut server = json!({ "type": "http", "url": url });
+        if let Some(authorization) = clean_optional(req.approval_mcp_authorization.as_deref()) {
+            server["headers"] = json!({ "Authorization": authorization });
+        }
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&json!({ "mcpServers": { "milim_approval": server } }))?,
+        )
+        .map_err(|error| {
+            Error::Other(format!(
+                "failed to create Claude approval configuration: {error}"
+            ))
+        })?;
+        Ok(Some(Self { path }))
+    }
+}
+
+impl Drop for ClaudeApprovalConfig {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
     }
 }
 
@@ -653,7 +768,9 @@ fn account_worker_event_from_claude(value: &ClaudeStreamEvent) -> Option<Account
                 message: message.clone(),
             })
         }
-        ClaudeStreamEvent::RateLimit { .. } => None,
+        ClaudeStreamEvent::RateLimit { .. }
+        | ClaudeStreamEvent::ToolApprovalRequired { .. }
+        | ClaudeStreamEvent::ToolApprovalResolved { .. } => None,
     }
 }
 
@@ -923,6 +1040,14 @@ fn claude_run_args(req: &ClaudeRunRequest) -> Vec<String> {
         "--permission-mode".to_string(),
         claude_permission_mode(req).to_string(),
     ]);
+    if let Some(path) = &req.approval_mcp_config {
+        args.extend([
+            "--mcp-config".to_string(),
+            path.to_string_lossy().into_owned(),
+            "--permission-prompt-tool".to_string(),
+            "mcp__milim_approval__request_tool_approval".to_string(),
+        ]);
+    }
     for denied in claude_denied_tools(req) {
         args.extend(["--disallowedTools".to_string(), denied.to_string()]);
     }
@@ -1069,7 +1194,7 @@ fn account_runtime_policy(value: Option<&str>) -> &str {
 fn claude_tools_allowed(req: &ClaudeRunRequest) -> bool {
     !req.plan_mode
         && match account_runtime_policy(req.tool_approval_policy.as_deref()) {
-            "review" => req.tool_approval_grant,
+            "review" => req.tool_approval_grant || req.interactive_tool_approval,
             _ => true,
         }
 }
@@ -1077,6 +1202,10 @@ fn claude_tools_allowed(req: &ClaudeRunRequest) -> bool {
 fn claude_permission_mode(req: &ClaudeRunRequest) -> &'static str {
     if req.plan_mode {
         "plan"
+    } else if req.interactive_tool_approval
+        && account_runtime_policy(req.tool_approval_policy.as_deref()) == "review"
+    {
+        "manual"
     } else if !claude_tools_allowed(req)
         || account_runtime_policy(req.tool_approval_policy.as_deref()) == "guarded"
     {
@@ -1325,8 +1454,13 @@ mod tests {
             session_id: Some("11111111-1111-4111-8111-111111111111".into()),
             tool_approval_policy: Some("open".into()),
             tool_approval_grant: true,
+            interactive_tool_approval: false,
             plan_mode: false,
             allow_session_recovery: false,
+            approval_run_id: None,
+            approval_mcp_url: None,
+            approval_mcp_authorization: None,
+            approval_mcp_config: None,
         });
         assert!(args
             .windows(2)
@@ -1347,8 +1481,13 @@ mod tests {
             session_id: None,
             tool_approval_policy: None,
             tool_approval_grant: false,
+            interactive_tool_approval: false,
             plan_mode: false,
             allow_session_recovery: false,
+            approval_run_id: None,
+            approval_mcp_url: None,
+            approval_mcp_authorization: None,
+            approval_mcp_config: None,
         });
         assert!(args.iter().any(|arg| arg == "--no-session-persistence"));
         assert!(!args.iter().any(|arg| arg == "--max-turns"));
@@ -1371,8 +1510,13 @@ mod tests {
             session_id: None,
             tool_approval_policy: None,
             tool_approval_grant: false,
+            interactive_tool_approval: false,
             plan_mode: false,
             allow_session_recovery: false,
+            approval_run_id: None,
+            approval_mcp_url: None,
+            approval_mcp_authorization: None,
+            approval_mcp_config: None,
         };
         let input = claude_stream_input(&req).unwrap();
         assert_eq!(input["type"], "user");
@@ -1407,8 +1551,13 @@ mod tests {
             session_id: None,
             tool_approval_policy: Some("guarded".into()),
             tool_approval_grant: false,
+            interactive_tool_approval: false,
             plan_mode: false,
             allow_session_recovery: false,
+            approval_run_id: None,
+            approval_mcp_url: None,
+            approval_mcp_authorization: None,
+            approval_mcp_config: None,
         };
         assert_eq!(claude_permission_mode(&req), "dontAsk");
         assert_eq!(
@@ -1418,6 +1567,11 @@ mod tests {
 
         req.tool_approval_policy = Some("open".into());
         assert_eq!(claude_permission_mode(&req), "bypassPermissions");
+        assert!(claude_denied_tools(&req).is_empty());
+
+        req.tool_approval_policy = Some("review".into());
+        req.interactive_tool_approval = true;
+        assert_eq!(claude_permission_mode(&req), "manual");
         assert!(claude_denied_tools(&req).is_empty());
 
         req.plan_mode = true;

@@ -16,7 +16,9 @@ import type {
   ChildThreadInfo,
   ClaudeRunEvent,
   CodexRunEvent,
+  ContextSnapshot,
   MemoryNotice,
+  ModelInfo,
   ProviderLimitInfo,
   ReasoningEffort,
   ResponseMetrics,
@@ -31,21 +33,88 @@ import {
   type PreparedTurnOutbound,
   type PrepareTurnOutboundOptions,
 } from "./turnContext.js";
-import { messagesForModelContext } from "./contextCompaction.js";
+import { estimateMessagesTokens, estimateTextTokens, messagesForModelContext, modelContextBudget } from "./contextCompaction.js";
 import {
   accountRuntimeToolPart,
   statusPart,
+  toolApprovalPart,
   toolCompletedPart,
   toolErrorMessage,
   toolStartedPart,
 } from "./turnEvents.js";
 import {
   contextMessagesForTurn,
+  toolDefinitionMessagesForRuntime,
+  workspaceRuleMessagesForRuntime,
   type TurnPromptContext,
 } from "./turnPrompt.js";
 
 // ponytail: local copy avoids importing browser/Tauri API code into pure turn-runtime tests.
 const MAX_ATTACHMENT_BYTES = 128 * 1024;
+
+function fixedContextCategories(
+  context: TurnPromptContext,
+  contextMessages: ChatMessage[],
+  reservedRules: ChatMessage[],
+  toolDefinitions: ChatMessage[],
+): Array<{ kind: string; label: string; tokens: number }> {
+  const category = (kind: string, label: string, messages: ChatMessage[]) => ({
+    kind,
+    label,
+    tokens: estimateMessagesTokens(messages),
+  });
+  const included = (messages: ChatMessage[]) => messages.filter((message) => contextMessages.includes(message));
+  return [
+    category("saved_instructions", "Saved instructions", included(context.instructionMessages)),
+    category("repository_rules", "Repository rules", reservedRules),
+    category("plan_goal", "Plan / Goal", included([...context.planMessages, ...context.goalMessages])),
+    category("skills", "Skills", included(context.skillMessages)),
+    category("memory", "Memory", included(context.memoryMessages)),
+    category("artifacts_schedules", "Artifacts / schedules", included([...context.artifactMessages, ...context.scheduleMessages])),
+    category("tool_definitions", "Tool definitions", toolDefinitions),
+  ];
+}
+
+function contextSnapshot(
+  context: TurnPromptContext,
+  contextMessages: ChatMessage[],
+  outbound: ChatMessage[],
+  model: string,
+  models: readonly ModelInfo[],
+  reservedRules: ChatMessage[],
+  toolDefinitions: ChatMessage[],
+): ContextSnapshot {
+  const fixed = fixedContextCategories(context, contextMessages, reservedRules, toolDefinitions);
+  const attachmentMessages = outbound
+    .filter((message) => message.attachments?.length)
+    .map((message) => ({ role: message.role, content: "", attachments: message.attachments }) as ChatMessage);
+  const attachmentTokens = estimateMessagesTokens(attachmentMessages);
+  const fixedTokens = fixed.reduce((total, item) => total + item.tokens, 0);
+  const reserved = [...reservedRules, ...toolDefinitions];
+  const estimatedPromptTokens = estimateMessagesTokens(outbound) + estimateMessagesTokens(reserved);
+  const conversationTokens = Math.max(0, estimatedPromptTokens - fixedTokens - attachmentTokens);
+  const budget = modelContextBudget(model, models);
+  const rules = context.workspaceContext?.instructions ?? [];
+  return {
+    model,
+    limit: budget?.promptBudget ?? null,
+    compactAt: budget ? Math.floor(budget.promptBudget * 0.85) : null,
+    estimatedPromptTokens,
+    freeTokens: budget ? Math.max(0, budget.promptBudget - estimatedPromptTokens) : null,
+    categories: [
+      { kind: "conversation", label: "Conversation", tokens: conversationTokens },
+      ...fixed,
+      { kind: "attachments", label: "Attachments", tokens: attachmentTokens },
+    ],
+    sources: rules.map((rule) => ({
+      path: rule.path,
+      family: rule.family,
+      tokens: rule.status === "loaded" ? estimateTextTokens(rule.content) : 0,
+      status: rule.status,
+    })),
+    warnings: [...(context.workspaceContext?.warnings ?? [])],
+  };
+}
 
 type ChatStreamEventPart = Extract<ChatStreamPart, { kind: "event" }>;
 type AccountRuntimeEvent = CodexRunEvent | ClaudeRunEvent;
@@ -60,6 +129,7 @@ type StreamCodexRunFn = (
     persist_thread?: boolean;
     tool_approval_policy?: ToolApprovalMode;
     tool_approval_grant?: boolean;
+    interactive_tool_approval?: boolean;
     plan_mode?: boolean;
     images?: AccountRuntimeImage[];
   },
@@ -75,6 +145,7 @@ type StreamClaudeRunFn = (
     session_id?: string;
     tool_approval_policy?: ToolApprovalMode;
     tool_approval_grant?: boolean;
+    interactive_tool_approval?: boolean;
     plan_mode?: boolean;
     allow_session_recovery?: boolean;
     images?: AccountRuntimeImage[];
@@ -436,6 +507,9 @@ export function createAccountRuntimeEventHandler({
   setCodexThreadId,
   appendImage,
   onNativeWorker,
+  runRef,
+  snapshot,
+  now = () => Date.now(),
 }: {
   append: (text: string) => void;
   appendThinking: (text: string) => void;
@@ -450,6 +524,9 @@ export function createAccountRuntimeEventHandler({
   setCodexThreadId?: (threadId: string) => void;
   appendImage?: (event: AccountRuntimeImageEvent) => void;
   onNativeWorker?: (lifecycle: AccountNativeWorkerLifecycle) => void;
+  runRef?: { current: RunTrace | null };
+  snapshot?: () => void;
+  now?: () => number;
 }): {
   state: AccountRuntimeEventState;
   handle: (event: AccountRuntimeEvent) => void;
@@ -469,8 +546,44 @@ export function createAccountRuntimeEventHandler({
       } else if (event.type === "tool") {
         flush();
         const part = accountRuntimeToolPart(event);
-        if (event.status === "running") appendStreamEvent(part);
-        else completeStreamEvent(event.id || event.name, part);
+        const run = runRef?.current;
+        if (event.status === "running") {
+          run?.steps.push({ callId: event.id ?? undefined, name: event.name ?? "tool", arguments: event.detail ?? undefined, startedAt: now() });
+          appendStreamEvent(part);
+        } else {
+          const step = run && lastOpenStep(run.steps, event.name ?? undefined, event.id);
+          if (step) step.endedAt = now();
+          completeStreamEvent(event.id || event.name, part);
+        }
+        snapshot?.();
+      } else if (event.type === "tool_approval_required") {
+        flush();
+        const step = runRef?.current && (
+          lastOpenStep(runRef.current.steps, event.name, event.call_id)
+          ?? lastOpenStep(runRef.current.steps, event.name)
+        );
+        if (step) {
+          step.arguments = event.arguments;
+          step.approval = {
+            id: event.approval_id,
+            status: "pending",
+            requestedAt: now(),
+          };
+        }
+        appendStreamEvent(toolApprovalPart(event));
+        snapshot?.();
+      } else if (event.type === "tool_approval_resolved") {
+        flush();
+        const step = runRef?.current?.steps
+          .slice()
+          .reverse()
+          .find((candidate) => candidate.approval?.id === event.approval_id);
+        if (step?.approval?.id === event.approval_id) {
+          step.approval.status = event.decision === "approve" ? "approved" : "denied";
+          step.approval.resolvedAt = now();
+        }
+        completeStreamEvent(`approval:${event.approval_id}`, toolApprovalPart(event));
+        snapshot?.();
       } else if (event.type === "thread") {
         setCodexThreadId?.(event.thread_id);
       } else if (event.type === "image") {
@@ -505,6 +618,10 @@ export async function runModelChatTurn({
   appendThinking,
   captureUsage,
   reasoningEffort,
+  models = [],
+  runRef,
+  snapshot,
+  workspace,
 }: {
   promptContext: TurnPromptContext;
   conversation: ChatMessage[];
@@ -521,15 +638,48 @@ export async function runModelChatTurn({
   appendThinking: (text: string) => void;
   captureUsage: (usage: TokenUsage) => void;
   reasoningEffort?: ReasoningEffort;
+  models?: ModelInfo[];
+  runRef?: { current: RunTrace | null };
+  snapshot?: () => void;
+  workspace?: string;
 }): Promise<void> {
+  if (runRef) {
+    runRef.current = {
+      model,
+      startedAt: Date.now(),
+      steps: [],
+      status: "running",
+      workspace,
+    };
+    snapshot?.();
+  }
   const contextMessages = contextMessagesForTurn(promptContext, "model");
+  const reservedRules = workspaceRuleMessagesForRuntime(promptContext, "native");
+  const toolDefinitions = toolDefinitionMessagesForRuntime(promptContext, "native");
+  const reservedContextMessages = [...reservedRules, ...toolDefinitions];
   const prepared = await prepareAndStartTurn({
     contextMessages,
     conversation,
     prepareOutbound,
     beginAssistant,
-    prepareOptions: { signal },
+    prepareOptions: {
+      signal,
+      reservedContextMessages,
+      fixedCategories: fixedContextCategories(promptContext, contextMessages, reservedRules, toolDefinitions),
+    },
   });
+  if (runRef?.current) {
+    runRef.current.context = contextSnapshot(
+      promptContext,
+      contextMessages,
+      prepared.outbound,
+      model,
+      models,
+      reservedRules,
+      toolDefinitions,
+    );
+    snapshot?.();
+  }
   throwIfTurnAborted(signal);
   await streamChat(
     model,
@@ -540,6 +690,11 @@ export async function runModelChatTurn({
     captureUsage,
     reasoningEffort,
   );
+  if (runRef?.current?.status === "running") {
+    runRef.current.status = "done";
+    runRef.current.endedAt = Date.now();
+    snapshot?.();
+  }
 }
 
 type RunAccountRuntimeTurnParams = {
@@ -572,6 +727,9 @@ type RunAccountRuntimeTurnParams = {
   captureProviderLimit?: (limit?: ProviderLimitInfo) => void;
   onNativeWorker?: (lifecycle: AccountNativeWorkerLifecycle) => void;
   signal?: AbortSignal;
+  models?: ModelInfo[];
+  runRef?: { current: RunTrace | null };
+  snapshot?: () => void;
 } & (
   | {
       kind: "codex";
@@ -614,8 +772,24 @@ export async function runAccountRuntimeTurn(
     captureProviderLimit,
     onNativeWorker,
     signal,
+    models = [],
+    runRef,
+    snapshot,
   } = params;
   const contextMessages = contextMessagesForTurn(promptContext, "model");
+  const reservedRules = workspaceRuleMessagesForRuntime(promptContext, params.kind);
+  const toolDefinitions = toolDefinitionMessagesForRuntime(promptContext, params.kind);
+  const reservedContextMessages = [...reservedRules, ...toolDefinitions];
+  if (runRef) {
+    runRef.current = {
+      model,
+      startedAt: Date.now(),
+      steps: [],
+      status: "running",
+      workspace,
+    };
+    snapshot?.();
+  }
   const hasNativeHistory =
     params.kind === "codex" ? Boolean(params.threadId) : params.hadSession;
   const prepared = await prepareAndStartTurn({
@@ -628,7 +802,11 @@ export async function runAccountRuntimeTurn(
       }),
     beginAssistant,
     checkpointWorkspace,
-    prepareOptions: { signal },
+    prepareOptions: {
+      signal,
+      reservedContextMessages,
+      fixedCategories: fixedContextCategories(promptContext, contextMessages, reservedRules, toolDefinitions),
+    },
   });
   throwIfTurnAborted(signal);
   const outbound = hasNativeHistory
@@ -651,6 +829,10 @@ export async function runAccountRuntimeTurn(
     appendImage: params.kind === "codex" ? params.appendImage : undefined,
   });
   const input = accountRuntimeInputFromMessages(outbound);
+  if (runRef?.current) {
+    runRef.current.context = contextSnapshot(promptContext, contextMessages, outbound, model, models, reservedRules, toolDefinitions);
+    snapshot?.();
+  }
 
   if (params.kind === "codex") {
     await params.stream(
@@ -664,6 +846,7 @@ export async function runAccountRuntimeTurn(
         persist_thread: true,
         tool_approval_policy: toolApproval,
         tool_approval_grant: toolApprovalGrant,
+        interactive_tool_approval: toolApproval === "review" && !planMode && !toolApprovalGrant,
         plan_mode: planMode,
       },
       events.handle,
@@ -680,6 +863,7 @@ export async function runAccountRuntimeTurn(
         session_id: params.sessionId,
         tool_approval_policy: toolApproval,
         tool_approval_grant: toolApprovalGrant,
+        interactive_tool_approval: toolApproval === "review" && !planMode && !toolApprovalGrant,
         plan_mode: planMode,
         allow_session_recovery: allowClaudeSessionRecovery,
       },
@@ -697,6 +881,11 @@ export async function runAccountRuntimeTurn(
         "warning",
       ),
     );
+    if (runRef?.current) {
+      runRef.current.status = "stopped";
+      runRef.current.endedAt = Date.now();
+      snapshot?.();
+    }
     return {
       status: "skipped",
       error: `${CLAUDE_SESSION_RECOVERY_REQUIRED}: ${events.state.sessionRecoveryRequired}`,
@@ -714,11 +903,21 @@ export async function runAccountRuntimeTurn(
         "warning",
       ),
     );
+    if (runRef?.current) {
+      runRef.current.status = "stopped";
+      runRef.current.endedAt = Date.now();
+      snapshot?.();
+    }
     return { status: "skipped", error: events.state.warning };
   }
   if (events.state.error) {
     if (signal?.aborted) throw turnAbortSentinel();
     throw new Error(events.state.error);
+  }
+  if (runRef?.current) {
+    runRef.current.status = "done";
+    runRef.current.endedAt = Date.now();
+    snapshot?.();
   }
   return { status: "done" };
 }
@@ -804,6 +1003,7 @@ export async function runToolAgentTurn({
   snapshot,
   workspace,
   sourceSessionId,
+  models = [],
   now = () => Date.now(),
 }: {
   promptContext: TurnPromptContext;
@@ -827,6 +1027,7 @@ export async function runToolAgentTurn({
   snapshot: () => void;
   workspace?: string;
   sourceSessionId: string;
+  models?: ModelInfo[];
   now?: () => number;
 }): Promise<{ status: "done" | "error"; error?: string }> {
   runRef.current = {
@@ -842,6 +1043,9 @@ export async function runToolAgentTurn({
     promptContext,
     agentId ? "agent" : "tools",
   );
+  const reservedRules = workspaceRuleMessagesForRuntime(promptContext, "native");
+  const toolDefinitions = toolDefinitionMessagesForRuntime(promptContext, "native");
+  const reservedContextMessages = [...reservedRules, ...toolDefinitions];
   const prepared = await prepareAndStartTurn({
     contextMessages,
     conversation,
@@ -849,8 +1053,16 @@ export async function runToolAgentTurn({
     beginAssistant,
     checkpointWorkspace,
     afterStart: snapshot,
-    prepareOptions: { signal },
+    prepareOptions: {
+      signal,
+      reservedContextMessages,
+      fixedCategories: fixedContextCategories(promptContext, contextMessages, reservedRules, toolDefinitions),
+    },
   });
+  if (runRef.current) {
+    runRef.current.context = contextSnapshot(promptContext, contextMessages, prepared.outbound, model, models, reservedRules, toolDefinitions);
+    snapshot();
+  }
   throwIfTurnAborted(signal);
   await streamAgentRun(
     agentId,
@@ -1049,6 +1261,30 @@ export function createAgentRunEventHandler({
           event.name ?? "tool",
           toolCompletedPart({ ...event, arguments: step?.arguments }),
           event.call_id,
+        );
+        break;
+      }
+      case "tool_approval_required": {
+        const step = lastOpenStep(run.steps, event.name, event.call_id);
+        if (step && event.approval_id) {
+          step.approval = {
+            id: event.approval_id,
+            status: "pending",
+            requestedAt: now(),
+          };
+        }
+        appendStreamEvent(toolApprovalPart(event));
+        break;
+      }
+      case "tool_approval_resolved": {
+        const step = lastOpenStep(run.steps, undefined, event.call_id);
+        if (step?.approval && event.approval_id === step.approval.id) {
+          step.approval.status = event.decision === "approve" ? "approved" : "denied";
+          step.approval.resolvedAt = now();
+        }
+        completeStreamEvent(
+          `approval:${event.approval_id}`,
+          toolApprovalPart(event),
         );
         break;
       }

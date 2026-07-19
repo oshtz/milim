@@ -18,6 +18,7 @@ mod sse;
 mod state;
 pub mod threads;
 mod translate;
+mod workspace_context;
 
 use std::future::Future;
 use std::net::SocketAddr;
@@ -101,6 +102,7 @@ pub fn build_router(state: AppState) -> Router {
             get(routes::workspace_get).post(routes::workspace_set),
         )
         .route("/workspace/git", get(routes::workspace_git_status))
+        .route("/workspace/context", get(routes::workspace_context))
         .route("/workspace/git/action", post(routes::workspace_git_action))
         // Managed preview apps for no-folder chat artifacts.
         .route("/preview-apps/{thread_id}", get(routes::preview_app_get))
@@ -161,6 +163,10 @@ pub fn build_router(state: AppState) -> Router {
         // Installed Claude CLI bridge (separate from Anthropic API-key providers)
         .route("/claude/status", get(routes::claude_status))
         .route("/claude/run", post(routes::claude_run))
+        .route(
+            "/internal/claude-approvals/{run_id}/mcp",
+            post(routes::claude_approval_mcp),
+        )
         // MCP tools (server bridge: exposes our tools to MCP clients)
         .route("/mcp/tools", get(routes::mcp_tools))
         .route("/mcp/call", post(routes::mcp_call))
@@ -183,6 +189,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/mcp/servers/{id}", delete(routes::mcp_server_delete))
         // Agents (server-side tool-use loop + named agents)
         .route("/agents/run", post(routes::agents_run))
+        .route("/tool-approvals/{id}", post(routes::tool_approval_resolve))
         .route(
             "/agents",
             get(routes::agents_list).post(routes::agent_create),

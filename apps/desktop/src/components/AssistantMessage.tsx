@@ -1,5 +1,5 @@
 import { lazy, memo, Suspense, useEffect, useRef, useState } from "react";
-import type { ChatArtifact, ChatStreamEventIcon, ChatStreamPart, ToolApprovalMode } from "../api";
+import { resolveToolApproval, type ChatArtifact, type ChatStreamEventIcon, type ChatStreamPart, type ToolApprovalMode } from "../api";
 import { markPerfRender } from "../lib/perf";
 import {
   groupCompletedStreamActivity,
@@ -99,10 +99,22 @@ function StreamEvent({
   toolApproval: ToolApprovalMode;
 }) {
   const status = part.status ?? "done";
+  const [resolving, setResolving] = useState(false);
+  async function decide(decision: "approve" | "deny") {
+    if (!part.approvalId || resolving) return;
+    setResolving(true);
+    try {
+      await resolveToolApproval(part.approvalId, decision);
+    } catch {
+      // The stream will surface expired or canceled approvals; keep the card actionable on transient failures.
+    } finally {
+      setResolving(false);
+    }
+  }
   return (
     <>
       <div
-        className={`stream-event stream-event-${part.eventType} stream-event-${status}`}
+        className={`stream-event stream-event-${part.eventType} stream-event-${status}${part.approvalId ? " stream-approval-card" : ""}`}
         data-testid="assistant-stream-event"
         role={status === "error" ? "alert" : "status"}
       >
@@ -116,11 +128,20 @@ function StreamEvent({
         >
           {part.label}
         </span>
-        {part.detail && (
+        {part.detail && !part.approvalId && (
           <StreamEventDetail
             detail={part.detail}
             running={status === "running"}
           />
+        )}
+        {part.approvalId && part.approvalStatus === "pending" && (
+          <span className="stream-approval-actions">
+            <button type="button" disabled={resolving} onClick={() => void decide("approve")}>Approve</button>
+            <button type="button" disabled={resolving} onClick={() => void decide("deny")}>Deny</button>
+          </span>
+        )}
+        {part.approvalId && part.detail && (
+          <pre className="stream-approval-arguments">{part.detail}</pre>
         )}
       </div>
       {part.mcpApp ? (

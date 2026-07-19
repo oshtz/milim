@@ -3,6 +3,7 @@ import type {
   ChatAttachment,
   ChatMessage,
   ChatStreamPart,
+  ContextSnapshot,
   MemoryNotice,
   WorkspaceGitStatus,
 } from "../api";
@@ -20,6 +21,7 @@ export type QuickSummaryRowKind =
   | "privacy"
   | "memory"
   | "usage"
+  | "context"
   | "limits";
 export type QuickSummarySourceKind = "attachment" | "artifact" | "memory";
 export const QUICK_SUMMARY_SECTION_IDS = [
@@ -71,6 +73,7 @@ export interface QuickSummary {
   rows: QuickSummaryRow[];
   sources: QuickSummarySource[];
   model?: string;
+  context?: ContextSnapshot;
 }
 
 export interface BuildQuickSummaryInput {
@@ -282,6 +285,14 @@ function activityRow(messages: ChatMessage[], turnRunning = false): QuickSummary
   return null;
 }
 
+function latestContextSnapshot(messages: ChatMessage[]): ContextSnapshot | null {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const snapshot = messages[index].run?.context;
+    if (snapshot) return snapshot;
+  }
+  return null;
+}
+
 export function buildQuickSummary(input: BuildQuickSummaryInput): QuickSummary {
   const folder = input.folder.trim();
   const plan = latestPlan(input.messages);
@@ -333,11 +344,40 @@ export function buildQuickSummary(input: BuildQuickSummaryInput): QuickSummary {
     tone: input.model.trim() ? undefined : "muted",
   });
 
+  const context = latestContextSnapshot(input.messages);
+  if (context) {
+    rows.push({
+      kind: "context",
+      label: "Prompt estimate",
+      value: context.limit == null
+        ? `~${context.estimatedPromptTokens.toLocaleString()} tokens`
+        : `~${context.estimatedPromptTokens.toLocaleString()} / ${context.limit.toLocaleString()}`,
+      meta: context.freeTokens == null ? undefined : `${context.freeTokens.toLocaleString()} free`,
+      tone: context.freeTokens === 0 ? "error" : undefined,
+    });
+    for (const category of context.categories.filter((item) => item.tokens > 0)) {
+      rows.push({
+        kind: "context",
+        label: category.label,
+        value: `${category.tokens.toLocaleString()} tokens`,
+      });
+    }
+    if (context.warnings.length) {
+      rows.push({
+        kind: "context",
+        label: "Context warnings",
+        value: plural(context.warnings.length, "warning"),
+        title: context.warnings.join("\n"),
+        tone: "warning",
+      });
+    }
+  }
+
   const usage = formatThreadMetricsBreakdown(input.messages);
   if (usage.label) {
     rows.push({
       kind: "usage",
-      label: "Thread usage",
+      label: "Cumulative usage",
       value: usage.label,
       title: usage.title ?? undefined,
     });
@@ -374,5 +414,6 @@ export function buildQuickSummary(input: BuildQuickSummaryInput): QuickSummary {
     rows,
     sources,
     model: input.model,
+    context: context ?? undefined,
   };
 }

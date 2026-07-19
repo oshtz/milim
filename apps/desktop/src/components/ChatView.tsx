@@ -4150,15 +4150,15 @@ export function ChatView({
   }
 
   const tokens = useMemo(() => {
-    const chars =
-      messages.reduce((n, m) => n + wireMessageContent(m).length, 0) +
-      input.length +
-      pendingAttachments.reduce(
-        (n, attachment) => n + (attachment.content?.length ?? 0),
-        0,
-      ) +
-      instructions.length;
-    return Math.round(chars / 4);
+    const fixed: ChatMessage[] = instructions.trim()
+      ? [{ role: "system", content: instructions.trim() }]
+      : [];
+    const draft: ChatMessage[] = input.trim() || pendingAttachments.length
+      ? [{ role: "user", content: input, attachments: pendingAttachments }]
+      : [];
+    return estimateMessagesTokens(
+      messagesForModelContext(fixed, [...messages, ...draft]),
+    );
   }, [messages, input, instructions, pendingAttachments]);
   const activeContextBudget = useMemo(
     () => modelContextBudget(effectiveModel.trim(), pickerModels),
@@ -5895,32 +5895,6 @@ export function ChatView({
     setChatNotice(null);
   }
 
-  function requestToolApprovalCard(
-    sessionId: string,
-    convo: ChatMessage[],
-    selectedModel: string,
-    scope: ToolApprovalScope,
-  ) {
-    const next = [
-      ...convo.filter(
-        (message) =>
-          !(
-            message.approval?.scope === scope &&
-            message.approval.status === "pending"
-          ),
-      ),
-      toolApprovalMessage(scope, selectedModel),
-    ];
-    setMessages(sessionId, next, { autoTitle: autoTitleChats });
-    setChatNotice({
-      tone: "info",
-      message:
-        scope === "goal"
-          ? "Goal waiting for tool approval."
-          : "Reply waiting for tool approval.",
-    });
-  }
-
   function requestClaudeSessionRecoveryCard(
     sessionId: string,
     convo: ChatMessage[],
@@ -5961,7 +5935,11 @@ export function ChatView({
     return next;
   }
 
-  function startApprovedGoalRun(sessionId: string, selectedModel: string) {
+  function startApprovedGoalRun(
+    sessionId: string,
+    selectedModel: string,
+    compatibilityGrant = false,
+  ) {
     if (goalLoopRef.current && !goalLoopRef.current.stopped) return;
     const savedGoal = sessionGoal(sessionId);
     if (!goalConfigured(savedGoal)) {
@@ -5986,7 +5964,7 @@ export function ChatView({
     setGoalPrefill(null);
     setGoalPanelOpen(false);
     setChatNotice({ tone: "info", message: "Goal running." });
-    void runGoalLoop(sessionId, selectedModel, runningGoal, true);
+    void runGoalLoop(sessionId, selectedModel, runningGoal, compatibilityGrant || undefined);
   }
 
   function approveToolApproval(messageIndex: number, message: ChatMessage) {
@@ -6008,7 +5986,7 @@ export function ChatView({
       return;
     }
     if (approval.scope === "goal") {
-      startApprovedGoalRun(activeId, selectedModel);
+      startApprovedGoalRun(activeId, selectedModel, true);
       return;
     }
     setChatNotice({
@@ -6275,20 +6253,6 @@ export function ChatView({
         tone: "info",
         message: "Add a goal objective before running.",
       });
-      return;
-    }
-    if (toolApproval === "review") {
-      updateGoalState(
-        sessionId,
-        { status: "paused", lastReason: "Goal waiting for tool approval." },
-        savedGoal,
-      );
-      requestToolApprovalCard(
-        sessionId,
-        sessionMessages(sessionId),
-        selectedModel,
-        "goal",
-      );
       return;
     }
     startApprovedGoalRun(sessionId, selectedModel);
@@ -7236,6 +7200,7 @@ export function ChatView({
           : sessionVirtualProjectFiles(
               store.sessions.find((session) => session.id === id),
             ),
+        tools: composerTools,
       });
     } catch (e) {
       releaseTurnGeneration({
@@ -7254,22 +7219,11 @@ export function ChatView({
       planMode: turnPlanMode,
       requestedGrant: options.toolApprovalGrant,
     });
-    if (
-      toolApprovalDecision.status === "denied" ||
-      toolApprovalDecision.status === "required"
-    ) {
+    if (toolApprovalDecision.status === "denied") {
       generationControllersRef.current.delete(id);
       store.setSessionGenerating(id, false);
-      if (toolApprovalDecision.status === "denied") {
-        setMessages(id, convo, { autoTitle: autoTitleChats });
-        setChatNotice({ tone: "info", message: "Tool run canceled." });
-        return {
-          status: "skipped",
-          messages: sessionMessages(id, convo),
-          error: toolApprovalDecision.error,
-        };
-      }
-      requestToolApprovalCard(id, convo, turnModel, "reply");
+      setMessages(id, convo, { autoTitle: autoTitleChats });
+      setChatNotice({ tone: "info", message: "Tool run canceled." });
       return {
         status: "skipped",
         messages: sessionMessages(id, convo),
@@ -7357,6 +7311,8 @@ export function ChatView({
         clearAccountRuntime: (targetId) => store.clearAccountRuntime(targetId),
         skipAutoCompaction: options?.skipAutoCompaction,
         signal: options?.signal,
+        reservedContextMessages: options?.reservedContextMessages,
+        fixedCategories: options?.fixedCategories,
       });
 
     try {
@@ -7422,6 +7378,9 @@ export function ChatView({
           streamCodexRun,
           streamClaudeRun,
           signal: controller.signal,
+          models: pickerModels,
+          runRef,
+          snapshot,
         });
         if (accountResult?.status === "skipped") {
           resultStatus = "skipped";
@@ -7463,6 +7422,7 @@ export function ChatView({
           snapshot,
           workspace: turnFolder.trim() || undefined,
           sourceSessionId: APP_SESSION_ID,
+          models: pickerModels,
         });
         if (agentResult.status === "error") {
           resultStatus = "error";
@@ -7481,6 +7441,10 @@ export function ChatView({
           appendThinking,
           captureUsage: metricsCapture.captureUsage,
           reasoningEffort: turnReasoningEffort,
+          models: pickerModels,
+          runRef,
+          snapshot,
+          workspace: turnFolder.trim() || undefined,
         });
       }
       if (resultStatus === "done") await streamBatcher.drain();
@@ -7502,6 +7466,32 @@ export function ChatView({
       resultError = errorResult.error;
     } finally {
       const endedAt = Date.now();
+      const pendingApprovals = runRef.current?.steps.filter(
+        (step) => step.approval?.status === "pending",
+      ) ?? [];
+      for (const step of pendingApprovals) {
+        const approval = step.approval;
+        if (!approval) continue;
+        approval.status = "canceled";
+        approval.resolvedAt = endedAt;
+        store.completeStreamEvent(
+          id,
+          assistantMessageId,
+          `approval:${approval.id}`,
+          {
+            kind: "event",
+            eventType: "status",
+            label: "Tool approval canceled",
+            detail: step.arguments,
+            icon: "tool",
+            name: `approval:${approval.id}`,
+            status: "done",
+            approvalId: approval.id,
+            approvalStatus: "canceled",
+          },
+        );
+      }
+      if (pendingApprovals.length) snapshot();
       if (resultStatus === "done" && assistantStart.state.started) {
         if (codexModel) {
           store.setAccountRuntime(id, {

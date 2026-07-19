@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   archiveMemoryNode,
   deleteMemoryNode,
+  getWorkspaceContext,
   listMemoryNodes,
   registerGraphMemory,
   searchGraphMemory,
@@ -9,6 +10,7 @@ import {
   type MemoryNode,
   type MemoryScopeKind,
   type MemoryScopeRef,
+  type WorkspaceContext,
 } from "../api";
 import { DEFAULT_THREAD_SETTINGS, useSessions } from "../sessions/store";
 import { Archive, Check, Pencil, Plus, Refresh, Search, Trash, X } from "./icons";
@@ -33,17 +35,18 @@ function projectLabel(folder: string): string {
   return folder.split(/[\\/]/).filter(Boolean).pop() || folder || "Project";
 }
 
-function tabScope(tab: MemoryTab, threadId: string, folder: string): MemoryScopeRef | null {
-  if (tab === "personal") return { kind: PERSONAL_SCOPE.kind, locator: PERSONAL_SCOPE.locator };
-  if (tab === "project" && folder.trim()) return { kind: "project", locator: folder.trim() };
-  if (tab === "legacy") return { kind: "thread", locator: threadId };
-  return null;
+function tabScopes(tab: MemoryTab, threadId: string, folder: string, workspace: WorkspaceContext | null): MemoryScopeRef[] {
+  if (tab === "personal") return [{ kind: PERSONAL_SCOPE.kind, locator: PERSONAL_SCOPE.locator }];
+  if (tab === "legacy") return [{ kind: "thread", locator: threadId }];
+  if (tab !== "project" || !folder.trim()) return [];
+  return [...new Set([workspace?.project_locator, workspace?.legacy_project_locator, folder.trim()].filter(Boolean))]
+    .map((locator) => ({ kind: "project" as const, locator: locator as string }));
 }
 
-function writeScope(tab: Exclude<MemoryTab, "legacy">, folder: string) {
+function writeScope(tab: Exclude<MemoryTab, "legacy">, folder: string, workspace: WorkspaceContext | null) {
   if (tab === "personal") return PERSONAL_SCOPE;
   return folder.trim()
-    ? { kind: "project" as const, label: projectLabel(folder), locator: folder.trim() }
+    ? { kind: "project" as const, label: projectLabel(folder), locator: workspace?.project_locator || folder.trim() }
     : null;
 }
 
@@ -94,6 +97,7 @@ export function MemoryManager({
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [workspaceContext, setWorkspaceContext] = useState<WorkspaceContext | null>(null);
 
   const selected = useMemo(() => nodes.find((node) => node.id === selectedId) ?? null, [nodes, selectedId]);
   const canUseProject = Boolean(folder.trim());
@@ -104,9 +108,19 @@ export function MemoryManager({
   }, [canUseProject, tab]);
 
   useEffect(() => {
+    if (!folder.trim()) {
+      setWorkspaceContext(null);
+      return;
+    }
+    void getWorkspaceContext()
+      .then(setWorkspaceContext)
+      .catch(() => setWorkspaceContext(null));
+  }, [folder]);
+
+  useEffect(() => {
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeId, folder, includeArchived, tab]);
+  }, [activeId, folder, includeArchived, tab, workspaceContext]);
 
   useEffect(() => {
     void listMemoryNodes({ scope: { kind: "thread", locator: activeId }, limit: 300 })
@@ -114,12 +128,13 @@ export function MemoryManager({
   }, [activeId]);
 
   async function load(selectId?: string | null) {
-    const scope = tabScope(tab, activeId, folder);
-    if (!scope) return;
+    const scopes = tabScopes(tab, activeId, folder, workspaceContext);
+    if (scopes.length === 0) return;
     setBusy(true);
     setNote(null);
     try {
-      const next = await listMemoryNodes({ scope, includeArchived, limit: 300 });
+      const lists = await Promise.all(scopes.map((scope) => listMemoryNodes({ scope, includeArchived, limit: 300 })));
+      const next = [...new Map(lists.flat().map((node) => [node.id, node])).values()];
       next.sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at));
       setNodes(next);
       setSelectedId((current) => {
@@ -139,13 +154,13 @@ export function MemoryManager({
       await load();
       return;
     }
-    const scope = tabScope(tab, activeId, folder);
-    if (!scope) return;
+    const scopes = tabScopes(tab, activeId, folder, workspaceContext);
+    if (scopes.length === 0) return;
     setBusy(true);
     setNote(null);
     try {
-      const hits = await searchGraphMemory(text, [scope], 100, model || undefined, includeArchived);
-      setNodes(hits.map((hit) => hit.node));
+      const hits = await searchGraphMemory(text, scopes, 100, model || undefined, includeArchived);
+      setNodes([...new Map(hits.map((hit) => [hit.node.id, hit.node])).values()]);
       setSelectedId(hits[0]?.node.id ?? null);
       setMode("view");
     } finally {
@@ -172,7 +187,7 @@ export function MemoryManager({
 
   async function addMemory() {
     if (tab === "legacy") return;
-    const scope = writeScope(tab, folder);
+    const scope = writeScope(tab, folder, workspaceContext);
     const content = draft.content.trim();
     const title = draft.title.trim() || content.split(/\r?\n/).find(Boolean)?.trim() || "Memory";
     if (!scope || (!draft.title.trim() && !content)) return;
@@ -259,7 +274,7 @@ export function MemoryManager({
 
   async function moveLegacy(target: "personal" | "project") {
     if (!selected || tab !== "legacy") return;
-    const scope = writeScope(target, folder);
+    const scope = writeScope(target, folder, workspaceContext);
     if (!scope) return;
     setBusy(true);
     setNote(null);

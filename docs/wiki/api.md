@@ -44,6 +44,8 @@ Root aliases are also mounted for OpenAI chat, completions, models, and embeddin
 | Worker Runs | `GET/POST /worker-runs`, `GET/DELETE /worker-runs/{id}`, `GET /worker-runs/{id}/events`, `POST /worker-runs/{id}/start`, `POST /worker-runs/{id}/stop`, `POST /worker-runs/{id}/tasks/{task_id}/retry`; writer diff review/apply routes are scoped to a worker in the Run. |
 | Threads | `GET /threads/{id}` (`include_events=true&event_limit=N` returns `event_count` and `events_truncated`), `DELETE /threads/{id}`, `GET /threads/{id}/children`, `GET /threads/{id}/events`, `POST /threads/{id}/stop` |
 | Memory | `POST /memory/ingest`, `POST /memory/search`, `POST /memory/register`, `POST /memory/graph/search`, `GET /memory/scopes`, `GET /memory/nodes` |
+| Workspace context | `GET /workspace/context` |
+| Tool approval | `POST /tool-approvals/{approval_id}` |
 | Privacy | `POST /privacy/scan`, `GET/POST /privacy/mode` |
 | Sandbox and computer | `POST /sandbox/run`, `GET/POST /computer` |
 | Skills and schedules | `GET/POST /skills`, `POST /skills/select`, `GET/PUT/DELETE /skills/{id}`, `GET/POST /schedules`, `GET /schedules/events`, `PUT/DELETE /schedules/{id}` |
@@ -59,6 +61,10 @@ The authenticated MCP Apps POST routes are for the desktop host, not iframe code
 `POST /schedules` and `PUT /schedules/{id}` require a provider/local API `model` for deterministic unattended execution; `codex:*` and `claude:*` account models are rejected. The optional `attachments` array uses the desktop chat shape (`id`, `name`, `mime`, `size`, `content`, `dataUrl`, `truncated`, `sourcePath`). Text content is appended to the scheduled prompt and stored image data becomes a real image part each time the automation fires. A legacy image without `dataUrl` records a visible error asking for reattachment. Existing schedules may have an empty model for compatibility; the runner falls back to their linked Agent's deprecated model, and records a visible error if neither exists. `GET /schedules/events` drains completed results for the desktop to land as local threads.
 
 `POST /codex/run` and `POST /claude/run` accept an optional `images` array of `{ "media_type": "image/png", "data": "<base64 bytes>" }`. PNG, JPEG, WebP, and GIF are limited to 2 MB each, and either a non-empty `prompt` or at least one valid image is required. Codex materializes validated bytes into temporary per-turn files and sends app-server `localImage` inputs; Claude pipes a native multimodal user message with base64 image blocks through `--input-format stream-json`. Account-runtime images require Privacy Off.
+
+`GET /workspace/context` returns the canonical root, sanitized origin display, stable and legacy Project memory locators, ordered AGENTS/Claude instruction files with contents, byte counts and statuses, plus discovery warnings. AGENTS loading uses override precedence and a 32 KiB aggregate limit; path-conditional Claude rules are returned as conditional with a warning rather than applied globally.
+
+Streamed run requests accept optional `interactive_tool_approval`. In Review, a consequential call emits `tool_approval_required { approval_id, call_id, name, arguments, effect }`; resolve it with authenticated `POST /tool-approvals/{approval_id}` and `{ "decision": "approve" | "deny" }`. A successful first resolution returns `204`, an expired/unknown id returns `404`, and a repeated resolution returns `409`. The stream then emits `tool_approval_resolved`. Approvals are ephemeral, exact, and one-shot. `tool_approval_grant: true` remains the explicit whole-run option for headless callers.
 
 The built-in `memory_register` tool accepts `content`, optional `title`, and optional `scope` (`personal` or `project`). The lower-level `/memory/*` HTTP routes remain compatible with scoped node records.
 

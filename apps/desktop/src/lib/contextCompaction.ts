@@ -38,6 +38,12 @@ export interface ContextSendPlan {
   error?: string;
 }
 
+export interface ContextSendPlanOptions {
+  /** Fixed context injected by the server/runtime but not duplicated in outbound messages. */
+  reservedMessages?: readonly ChatMessage[];
+  fixedCategories?: ReadonlyArray<{ label: string; tokens: number }>;
+}
+
 export interface CompactionTailSplit {
   head: ChatMessage[];
   tail: ChatMessage[];
@@ -313,12 +319,32 @@ export function contextSendPlan(
   conversation: readonly ChatMessage[],
   model: string,
   models: readonly ModelInfo[],
+  options: ContextSendPlanOptions = {},
 ): ContextSendPlan {
   const budget = modelContextBudget(model, models);
   const messages = messagesForModelContext(contextMessages, conversation);
-  const sentTokens = estimateMessagesTokens(messages);
+  const reservedTokens = estimateMessagesTokens(options.reservedMessages ?? []);
+  const sentTokens = estimateMessagesTokens(messages) + reservedTokens;
   if (!budget) {
     return { messages, shouldCompact: false, originalTokens: sentTokens, sentTokens, budget };
+  }
+  const fixedTokens = estimateMessagesTokens(contextMessages) + reservedTokens;
+  if (fixedTokens > budget.promptBudget) {
+    const categories = options.fixedCategories?.length
+      ? options.fixedCategories
+      : [{ label: "fixed context", tokens: fixedTokens }];
+    const breakdown = categories
+      .filter((category) => category.tokens > 0)
+      .map((category) => `${category.label}: ${category.tokens.toLocaleString()}`)
+      .join(", ");
+    return {
+      messages,
+      shouldCompact: false,
+      originalTokens: sentTokens,
+      sentTokens,
+      budget,
+      error: `Fixed context exceeds ${model}'s prompt budget (${fixedTokens.toLocaleString()} / ${budget.promptBudget.toLocaleString()} tokens). ${breakdown}.`,
+    };
   }
   const canCompact = canCompactBeforeLatestUser(conversation);
   const shouldCompact = canCompact && sentTokens > Math.floor(budget.promptBudget * COMPACT_AT);

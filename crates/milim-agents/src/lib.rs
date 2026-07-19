@@ -18,7 +18,8 @@ pub use threads::{
     THREAD_STATUS_STOPPED,
 };
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use futures::{Stream, StreamExt};
@@ -33,7 +34,7 @@ use milim_inference::{
     CompletionRequest, EventStream, ModelService, SamplingParams, SharedService, StreamEvent,
     ToolCallAccumulator,
 };
-use milim_tools::{ToolRegistry, ToolUiDescriptor};
+use milim_tools::{ToolEffect, ToolRegistry, ToolUiDescriptor};
 
 const DEFAULT_AGENT_MAX_ITERATIONS: usize = 100;
 const DEFAULT_INITIAL_STREAM_RETRY_BACKOFF_MS: u64 = 250;
@@ -48,6 +49,8 @@ pub struct AgentRunConfig {
     pub max_iterations: usize,
     /// Backoff before retrying a failed initial streaming request once.
     pub initial_stream_retry_backoff: Duration,
+    /// Interactive approval broker for consequential streamed tool calls.
+    pub approval_broker: Option<Arc<ToolApprovalBroker>>,
 }
 
 impl Default for AgentRunConfig {
@@ -57,7 +60,168 @@ impl Default for AgentRunConfig {
             initial_stream_retry_backoff: Duration::from_millis(
                 DEFAULT_INITIAL_STREAM_RETRY_BACKOFF_MS,
             ),
+            approval_broker: None,
         }
+    }
+}
+
+#[derive(Debug)]
+pub struct ToolApprovalBroker {
+    pending: Mutex<HashMap<String, Option<tokio::sync::oneshot::Sender<bool>>>>,
+    external: Mutex<HashMap<String, ExternalApprovalMeta>>,
+    notices: tokio::sync::broadcast::Sender<ApprovalNotice>,
+}
+
+#[derive(Debug, Clone)]
+struct ExternalApprovalMeta {
+    run_id: String,
+    call_id: Option<String>,
+    name: String,
+    arguments: String,
+    effect: ToolEffect,
+}
+
+#[derive(Debug, Clone)]
+pub struct ApprovalNotice {
+    pub run_id: String,
+    pub approval_id: String,
+    pub call_id: Option<String>,
+    pub name: String,
+    pub arguments: String,
+    pub effect: ToolEffect,
+    pub decision: Option<&'static str>,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum ApprovalResolve {
+    Resolved,
+    AlreadyResolved,
+    Missing,
+}
+
+pub struct PendingApproval {
+    pub id: String,
+    receiver: tokio::sync::oneshot::Receiver<bool>,
+    broker: Weak<ToolApprovalBroker>,
+}
+
+impl ToolApprovalBroker {
+    pub fn request(self: &Arc<Self>) -> PendingApproval {
+        let id = uuid::Uuid::new_v4().to_string();
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        let mut pending = self.pending.lock().expect("tool approval broker poisoned");
+        // ponytail: resolved ids are diagnostic only; discard them once the small cap is reached.
+        if pending.len() >= 2048 {
+            pending.retain(|_, sender| sender.is_some());
+        }
+        pending.insert(id.clone(), Some(sender));
+        PendingApproval {
+            id,
+            receiver,
+            broker: Arc::downgrade(self),
+        }
+    }
+
+    pub fn resolve(&self, id: &str, approved: bool) -> ApprovalResolve {
+        let mut pending = self.pending.lock().expect("tool approval broker poisoned");
+        match pending.get_mut(id) {
+            Some(sender @ Some(_)) => {
+                let sender = sender.take().expect("checked sender");
+                let _ = sender.send(approved);
+                if let Some(meta) = self
+                    .external
+                    .lock()
+                    .expect("tool approval broker poisoned")
+                    .get(id)
+                {
+                    let _ = self.notices.send(ApprovalNotice {
+                        run_id: meta.run_id.clone(),
+                        approval_id: id.to_string(),
+                        call_id: meta.call_id.clone(),
+                        name: meta.name.clone(),
+                        arguments: meta.arguments.clone(),
+                        effect: meta.effect,
+                        decision: Some(if approved { "approve" } else { "deny" }),
+                    });
+                }
+                ApprovalResolve::Resolved
+            }
+            Some(None) => ApprovalResolve::AlreadyResolved,
+            None => ApprovalResolve::Missing,
+        }
+    }
+
+    pub fn request_external(
+        self: &Arc<Self>,
+        run_id: String,
+        call_id: Option<String>,
+        name: String,
+        arguments: String,
+        effect: ToolEffect,
+    ) -> PendingApproval {
+        let pending = self.request();
+        let meta = ExternalApprovalMeta {
+            run_id: run_id.clone(),
+            call_id: call_id.clone(),
+            name: name.clone(),
+            arguments: arguments.clone(),
+            effect,
+        };
+        self.external
+            .lock()
+            .expect("tool approval broker poisoned")
+            .insert(pending.id.clone(), meta);
+        let _ = self.notices.send(ApprovalNotice {
+            run_id,
+            approval_id: pending.id.clone(),
+            call_id,
+            name,
+            arguments,
+            effect,
+            decision: None,
+        });
+        pending
+    }
+
+    pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<ApprovalNotice> {
+        self.notices.subscribe()
+    }
+}
+
+impl Default for ToolApprovalBroker {
+    fn default() -> Self {
+        let (notices, _) = tokio::sync::broadcast::channel(64);
+        Self {
+            pending: Mutex::new(HashMap::new()),
+            external: Mutex::new(HashMap::new()),
+            notices,
+        }
+    }
+}
+
+impl PendingApproval {
+    pub async fn wait(&mut self) -> bool {
+        (&mut self.receiver).await.unwrap_or(false)
+    }
+}
+
+impl Drop for PendingApproval {
+    fn drop(&mut self) {
+        let Some(broker) = self.broker.upgrade() else {
+            return;
+        };
+        let mut pending = broker
+            .pending
+            .lock()
+            .expect("tool approval broker poisoned");
+        if pending.get(&self.id).is_some_and(Option::is_some) {
+            pending.remove(&self.id);
+        }
+        broker
+            .external
+            .lock()
+            .expect("tool approval broker poisoned")
+            .remove(&self.id);
     }
 }
 
@@ -211,6 +375,18 @@ pub enum AgentEvent {
         arguments: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         mcp_app: Option<ToolUiDescriptor>,
+    },
+    ToolApprovalRequired {
+        approval_id: String,
+        call_id: Option<String>,
+        name: String,
+        arguments: String,
+        effect: ToolEffect,
+    },
+    ToolApprovalResolved {
+        approval_id: String,
+        call_id: Option<String>,
+        decision: &'static str,
     },
     /// The result of executing a tool.
     ToolResult {
@@ -389,12 +565,40 @@ pub fn run_agent_stream_with_config(
                     arguments: call.function.arguments.clone(),
                     mcp_app: tools.ui(&call.function.name),
                 };
-                let executed = execute_tool_call(
-                    tools.as_ref(),
-                    &call.function.name,
-                    &call.function.arguments,
-                )
-                .await;
+                let effect = tools.effect(&call.function.name).unwrap_or(ToolEffect::Unknown);
+                let approved = if effect != ToolEffect::ReadOnly {
+                    if let Some(broker) = config.approval_broker.as_ref() {
+                        let mut pending = broker.request();
+                        yield AgentEvent::ToolApprovalRequired {
+                            approval_id: pending.id.clone(),
+                            call_id: call.id.clone(),
+                            name: call.function.name.clone(),
+                            arguments: call.function.arguments.clone(),
+                            effect,
+                        };
+                        let approved = pending.wait().await;
+                        yield AgentEvent::ToolApprovalResolved {
+                            approval_id: pending.id.clone(),
+                            call_id: call.id.clone(),
+                            decision: if approved { "approve" } else { "deny" },
+                        };
+                        approved
+                    } else {
+                        true
+                    }
+                } else {
+                    true
+                };
+                let executed = if approved {
+                    execute_tool_call(
+                        tools.as_ref(),
+                        &call.function.name,
+                        &call.function.arguments,
+                    )
+                    .await
+                } else {
+                    denied_tool_call(tools.as_ref(), &call.function.name)
+                };
                 let visible = executed.visible;
                 yield AgentEvent::ToolResult {
                     call_id: call.id.clone(),
@@ -433,6 +637,18 @@ pub fn run_agent_stream_with_config(
             // each tool_call_id answered before any other role, per OpenAI).
             messages.extend(pending_images);
         }
+    }
+}
+
+fn denied_tool_call(tools: &ToolRegistry, name: &str) -> ExecutedToolResult {
+    ExecutedToolResult {
+        visible: json!({ "error": "Tool call denied by user", "denied": true }),
+        image_uri: None,
+        ui: tools.ui(name),
+        app_result: None,
+        memory_event: None,
+        child_event: None,
+        worker_event: None,
     }
 }
 
@@ -833,6 +1049,7 @@ mod tests {
             AgentRunConfig {
                 max_iterations: 2,
                 initial_stream_retry_backoff: Duration::ZERO,
+                approval_broker: None,
             },
         )
         .await
@@ -842,6 +1059,50 @@ mod tests {
         assert!(outcome.stopped_at_limit);
         assert_eq!(outcome.steps.len(), 1);
         assert!(outcome.message.text_content().contains("iteration limit"));
+    }
+
+    #[tokio::test]
+    async fn approval_broker_is_exact_one_shot_and_cleans_abandoned_calls() {
+        let broker = Arc::new(ToolApprovalBroker::default());
+        let mut pending = broker.request();
+        let id = pending.id.clone();
+        assert_eq!(broker.resolve(&id, true), ApprovalResolve::Resolved);
+        assert_eq!(broker.resolve(&id, true), ApprovalResolve::AlreadyResolved);
+        assert!(pending.wait().await);
+        drop(pending);
+
+        let abandoned = broker.request();
+        let abandoned_id = abandoned.id.clone();
+        drop(abandoned);
+        assert_eq!(
+            broker.resolve(&abandoned_id, true),
+            ApprovalResolve::Missing
+        );
+    }
+
+    #[tokio::test]
+    async fn external_approval_publishes_pending_and_resolution_notices() {
+        let broker = Arc::new(ToolApprovalBroker::default());
+        let mut notices = broker.subscribe();
+        let mut pending = broker.request_external(
+            "run-1".to_string(),
+            Some("call-1".to_string()),
+            "shell".to_string(),
+            r#"{"command":"cargo test"}"#.to_string(),
+            ToolEffect::Command,
+        );
+        let requested = notices.recv().await.unwrap();
+        assert_eq!(requested.run_id, "run-1");
+        assert_eq!(requested.call_id.as_deref(), Some("call-1"));
+        assert_eq!(requested.decision, None);
+
+        assert_eq!(
+            broker.resolve(&pending.id, false),
+            ApprovalResolve::Resolved
+        );
+        let resolved = notices.recv().await.unwrap();
+        assert_eq!(resolved.decision, Some("deny"));
+        assert!(!pending.wait().await);
     }
 
     #[tokio::test]
@@ -861,6 +1122,7 @@ mod tests {
             AgentRunConfig {
                 max_iterations: 100,
                 initial_stream_retry_backoff: Duration::ZERO,
+                approval_broker: None,
             },
         ));
 
@@ -907,6 +1169,8 @@ mod tests {
                 AgentEvent::UsageDelta { .. } => "usage_delta",
                 AgentEvent::ToolCall { .. } => "tool_call",
                 AgentEvent::ToolResult { .. } => "tool_result",
+                AgentEvent::ToolApprovalRequired { .. } => "tool_approval_required",
+                AgentEvent::ToolApprovalResolved { .. } => "tool_approval_resolved",
                 AgentEvent::MemoryRegistered { .. } => "memory_registered",
                 AgentEvent::ChildThreadStarted { .. } => "child_thread_started",
                 AgentEvent::ChildThreadDone { .. } => "child_thread_done",

@@ -1,7 +1,7 @@
 // Thin client for the local milim server.
 
 import { invoke } from "@tauri-apps/api/core";
-import { qualifyDuplicateProviderModels } from "./lib/modelPicker";
+import { qualifyDuplicateProviderModels } from "./lib/modelPicker.js";
 import { wireMessages } from "./lib/attachmentWire.js";
 import { assertValidImageAttachment } from "./lib/attachmentInput.js";
 import { assertDesktopRequestBodyFits } from "./lib/requestBody.js";
@@ -287,6 +287,8 @@ export type ChatStreamPart =
       mcpApp?: McpAppDescriptor;
       mcpAppResult?: unknown;
       toolArguments?: string;
+      approvalId?: string;
+      approvalStatus?: "pending" | "approved" | "denied" | "canceled";
     };
 
 export type RunStatus = "running" | "done" | "stopped" | "aborted" | "error";
@@ -302,6 +304,23 @@ export interface RunStep {
   error?: string;
   startedAt: number;
   endedAt?: number;
+  approval?: {
+    id: string;
+    status: "pending" | "approved" | "denied" | "canceled";
+    requestedAt: number;
+    resolvedAt?: number;
+  };
+}
+
+export interface ContextSnapshot {
+  model: string;
+  limit: number | null;
+  compactAt: number | null;
+  estimatedPromptTokens: number;
+  freeTokens: number | null;
+  categories: Array<{ kind: string; label: string; tokens: number }>;
+  sources: Array<{ path: string; family: string; tokens: number; status: string }>;
+  warnings: string[];
 }
 
 /** Structured timeline of one agent/tool-use run, built from the AgentEvent
@@ -316,6 +335,7 @@ export interface RunTrace {
   iterations?: number;
   status: RunStatus;
   error?: string;
+  context?: ContextSnapshot;
 }
 
 const DEFAULT_BASE = "http://127.0.0.1:7377";
@@ -1576,6 +1596,7 @@ export type CodexRunEvent =
   | { type: "start"; thread_id: string; turn_id: string }
   | { type: "token"; text: string }
   | { type: "reasoning"; text: string }
+  | ToolApprovalEvent
   | {
       type: "tool";
       id: string;
@@ -1608,6 +1629,7 @@ export type CodexRunEvent =
 export type ClaudeRunEvent =
   | { type: "token"; text: string }
   | { type: "reasoning"; text: string }
+  | ToolApprovalEvent
   | {
       type: "tool";
       id: string;
@@ -1749,6 +1771,7 @@ export async function streamCodexRun(
     persist_thread?: boolean;
     tool_approval_policy?: ToolApprovalMode;
     tool_approval_grant?: boolean;
+    interactive_tool_approval?: boolean;
     plan_mode?: boolean;
     images?: AccountRuntimeImageInput[];
   },
@@ -1777,6 +1800,7 @@ export async function streamClaudeRun(
     session_id?: string;
     tool_approval_policy?: ToolApprovalMode;
     tool_approval_grant?: boolean;
+    interactive_tool_approval?: boolean;
     plan_mode?: boolean;
     allow_session_recovery?: boolean;
     images?: AccountRuntimeImageInput[];
@@ -1965,6 +1989,7 @@ export interface ToolInfo {
   name: string;
   description: string;
   effect: "read_only" | "mutating" | "command" | "unknown";
+  input_schema?: unknown;
 }
 
 export async function listAgents(): Promise<Agent[]> {
@@ -2096,10 +2121,11 @@ export async function listTools(): Promise<ToolInfo[]> {
   try {
     const r = await authFetch(`${BASE}/mcp/tools`);
     const j = await r.json();
-    return (j.tools ?? []).map((t: { name: string; description?: string; effect?: ToolInfo["effect"] }) => ({
+    return (j.tools ?? []).map((t: { name: string; description?: string; effect?: ToolInfo["effect"]; input_schema?: unknown }) => ({
       name: t.name,
       description: t.description ?? "",
       effect: t.effect ?? "unknown",
+      input_schema: t.input_schema,
     }));
   } catch {
     return [];
@@ -2188,6 +2214,7 @@ export type WorkerRunStatus =
 export interface AgentToolContext {
   tool_approval_policy?: ToolApprovalMode;
   tool_approval_grant?: boolean;
+  interactive_tool_approval?: boolean;
   sandbox_enabled?: boolean;
   computer_use_enabled?: boolean;
   preview_tools_enabled?: boolean;
@@ -2493,6 +2520,8 @@ export interface AgentEvent {
     | "usage_delta"
     | "tool_call"
     | "tool_result"
+    | "tool_approval_required"
+    | "tool_approval_resolved"
     | "memory_registered"
     | "child_thread_started"
     | "child_thread_done"
@@ -2538,7 +2567,26 @@ export interface AgentEvent {
   workers?: Worker[];
   worker?: Worker;
   run_id?: string;
+  approval_id?: string;
+  effect?: "read_only" | "mutating" | "command" | "unknown";
+  decision?: "approve" | "deny";
 }
+
+export type ToolApprovalEvent =
+  | {
+      type: "tool_approval_required";
+      approval_id: string;
+      call_id?: string;
+      name: string;
+      arguments: string;
+      effect: "read_only" | "mutating" | "command" | "unknown";
+    }
+  | {
+      type: "tool_approval_resolved";
+      approval_id: string;
+      call_id?: string;
+      decision: "approve" | "deny";
+    };
 
 // ----- Providers (LLM remotes and media credentials) -----
 
@@ -2953,6 +3001,24 @@ export interface WorkspaceGitStatus {
   message: string | null;
 }
 
+export interface WorkspaceInstruction {
+  family: "agents" | "claude";
+  scope: "global" | "project";
+  path: string;
+  content: string;
+  bytes: number;
+  status: "loaded" | "conditional" | "limit_exceeded";
+}
+
+export interface WorkspaceContext {
+  root: string | null;
+  project_locator: string | null;
+  legacy_project_locator: string | null;
+  origin: string | null;
+  instructions: WorkspaceInstruction[];
+  warnings: string[];
+}
+
 export interface WorkspaceGitFileChange {
   status: string;
   path: string;
@@ -3019,6 +3085,27 @@ export async function getWorkspaceGitStatus(): Promise<WorkspaceGitStatus | null
   } catch {
     return null;
   }
+}
+
+export async function getWorkspaceContext(): Promise<WorkspaceContext | null> {
+  try {
+    const r = await authFetch(`${BASE}/workspace/context`);
+    return r.ok ? ((await r.json()) as WorkspaceContext) : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function resolveToolApproval(
+  approvalId: string,
+  decision: "approve" | "deny",
+): Promise<void> {
+  const response = await authFetch(`${BASE}/tool-approvals/${encodeURIComponent(approvalId)}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ decision }),
+  });
+  if (!response.ok) throw new Error(await responseErrorMessage(response, "Tool approval failed"));
 }
 
 export async function runWorkspaceGitAction(

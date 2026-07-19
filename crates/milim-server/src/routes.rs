@@ -12,9 +12,10 @@ use async_trait::async_trait;
 use axum::body::Body;
 use axum::extract::{ConnectInfo, Path, Query, State};
 use axum::http::header::{
-    AUTHORIZATION, CACHE_CONTROL, CONTENT_LENGTH, CONTENT_SECURITY_POLICY, CONTENT_TYPE, USER_AGENT,
+    AUTHORIZATION, CACHE_CONTROL, CONTENT_LENGTH, CONTENT_SECURITY_POLICY, CONTENT_TYPE, HOST,
+    USER_AGENT,
 };
-use axum::http::{HeaderMap, HeaderValue};
+use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Response};
 use axum::Json;
@@ -2219,7 +2220,8 @@ pub(crate) async fn openai_chat(
         .and_then(|o| o.include_usage)
         .unwrap_or(false);
 
-    let creq = openai_to_completion(req);
+    let mut creq = openai_to_completion(req);
+    add_workspace_instructions(&mut creq.messages, &st);
     let ctx = ChunkCtx {
         id: gen_id("chatcmpl"),
         created: now_unix(),
@@ -2915,7 +2917,8 @@ pub(crate) async fn ollama_chat(
 
     let model = req.model.clone();
     let want_stream = req.wants_stream();
-    let creq = ollama_to_completion(req);
+    let mut creq = ollama_to_completion(req);
+    add_workspace_instructions(&mut creq.messages, &st);
 
     if want_stream {
         let inner = st.service.stream(creq).await.map_err(ApiError)?;
@@ -3319,13 +3322,19 @@ pub(crate) async fn codex_run(
             "Codex requires a prompt or at least one image".to_string(),
         )));
     }
+    req.prompt = account_runtime_workspace_prompt(&st, req.cwd.as_deref(), &req.prompt, "claude");
     let (prompt, redactions) =
         account_runtime_prompt_for_remote(&st, &req.prompt, "Codex").map_err(ApiError)?;
     account_runtime_images_for_remote(&st, &req.images, "Codex").map_err(ApiError)?;
     req.prompt = prompt;
-    Ok(Sse::new(crate::codex_bridge::run_stream(req, redactions))
-        .keep_alive(KeepAlive::default())
-        .into_response())
+    let approvals = req
+        .interactive_tool_approval
+        .then(|| st.tool_approvals.clone());
+    Ok(
+        Sse::new(crate::codex_bridge::run_stream(req, redactions, approvals))
+            .keep_alive(KeepAlive::default())
+            .into_response(),
+    )
 }
 
 /// `GET /claude/status` - current installed Claude CLI auth/runtime state.
@@ -3352,13 +3361,142 @@ pub(crate) async fn claude_run(
             "Claude requires a prompt or at least one image".to_string(),
         )));
     }
+    req.prompt = account_runtime_workspace_prompt(&st, req.cwd.as_deref(), &req.prompt, "agents");
     let (prompt, redactions) =
         account_runtime_prompt_for_remote(&st, &req.prompt, "Claude").map_err(ApiError)?;
     account_runtime_images_for_remote(&st, &req.images, "Claude").map_err(ApiError)?;
     req.prompt = prompt;
-    Ok(Sse::new(crate::claude_bridge::run_stream(req, redactions))
-        .keep_alive(KeepAlive::default())
-        .into_response())
+    let approvals = if req.interactive_tool_approval {
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let host = headers
+            .get(HOST)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("127.0.0.1:7377");
+        let host = loopback_host(host).ok_or_else(|| {
+            ApiError(Error::InvalidRequest(
+                "Claude Review requires a loopback Milim server address".to_string(),
+            ))
+        })?;
+        req.approval_run_id = Some(run_id.clone());
+        req.approval_mcp_url = Some(format!(
+            "http://{host}/internal/claude-approvals/{run_id}/mcp"
+        ));
+        req.approval_mcp_authorization = headers
+            .get(AUTHORIZATION)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
+        Some(st.tool_approvals.clone())
+    } else {
+        None
+    };
+    Ok(
+        Sse::new(crate::claude_bridge::run_stream(req, redactions, approvals))
+            .keep_alive(KeepAlive::default())
+            .into_response(),
+    )
+}
+
+fn loopback_host(value: &str) -> Option<String> {
+    let value = value.trim();
+    let url = reqwest::Url::parse(&format!("http://{value}")).ok()?;
+    let host = url.host_str()?;
+    (host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback()))
+    .then(|| value.to_string())
+}
+
+pub(crate) async fn claude_approval_mcp(
+    State(st): State<AppState>,
+    Path(run_id): Path<String>,
+    headers: HeaderMap,
+    peer: Peer,
+    Json(request): Json<Value>,
+) -> Result<Response, ApiError> {
+    authorize(&st, &headers, peer_addr(peer))?;
+    let id = request.get("id").cloned().unwrap_or(Value::Null);
+    let method = request
+        .get("method")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let result = match method {
+        "initialize" => json!({
+            "protocolVersion": "2025-06-18",
+            "capabilities": { "tools": {} },
+            "serverInfo": { "name": "milim-approval", "version": env!("CARGO_PKG_VERSION") }
+        }),
+        "tools/list" => json!({ "tools": [{
+            "name": "request_tool_approval",
+            "description": "Ask the Milim user to approve one Claude tool call.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "tool_name": { "type": "string" }, "input": { "type": "object" } },
+                "required": ["tool_name", "input"]
+            }
+        }] }),
+        "tools/call" => {
+            let params = request.get("params").unwrap_or(&Value::Null);
+            if params.get("name").and_then(Value::as_str) != Some("request_tool_approval") {
+                return Ok(Json(json!({
+                    "jsonrpc": "2.0", "id": id,
+                    "error": { "code": -32601, "message": "unknown approval tool" }
+                }))
+                .into_response());
+            }
+            let args = params.get("arguments").unwrap_or(&Value::Null);
+            let name = args
+                .get("tool_name")
+                .and_then(Value::as_str)
+                .unwrap_or("tool")
+                .to_string();
+            let input = args.get("input").cloned().unwrap_or(Value::Null);
+            let arguments = serde_json::to_string(&input).unwrap_or_else(|_| "{}".to_string());
+            let effect = match name.as_str() {
+                "Bash" | "PowerShell" => ToolEffect::Command,
+                "Edit" | "Write" | "NotebookEdit" => ToolEffect::Mutating,
+                _ => ToolEffect::Unknown,
+            };
+            let mut pending = st
+                .tool_approvals
+                .request_external(run_id, None, name, arguments, effect);
+            let approved = pending.wait().await;
+            let payload = if approved {
+                json!({ "behavior": "allow", "updatedInput": input })
+            } else {
+                json!({ "behavior": "deny", "message": "Tool call denied by user" })
+            };
+            json!({
+                "content": [{ "type": "text", "text": payload.to_string() }],
+                "isError": false
+            })
+        }
+        _ if method.starts_with("notifications/") => {
+            return Ok(StatusCode::ACCEPTED.into_response())
+        }
+        _ => {
+            return Ok(Json(json!({
+                "jsonrpc": "2.0", "id": id,
+                "error": { "code": -32601, "message": "method not found" }
+            }))
+            .into_response())
+        }
+    };
+    Ok(Json(json!({ "jsonrpc": "2.0", "id": id, "result": result })).into_response())
+}
+
+fn account_runtime_workspace_prompt(
+    st: &AppState,
+    cwd: Option<&str>,
+    prompt: &str,
+    family: &str,
+) -> String {
+    let folder = cwd.map(PathBuf::from).or_else(|| workspace_snapshot(st));
+    let context = crate::workspace_context::resolve(folder.as_deref());
+    match crate::workspace_context::formatted(&context, Some(family)) {
+        Some(instructions) => format!("{instructions}\n\nUser request:\n{prompt}"),
+        None => prompt.to_string(),
+    }
 }
 
 fn account_runtime_prompt_for_remote(
@@ -4061,6 +4199,25 @@ pub(crate) async fn workspace_git_status(
         .await
         .map_err(|e| ApiError(Error::Other(format!("git status task failed: {e}"))))?;
     Ok(Json(status).into_response())
+}
+
+/// `GET /workspace/context` - resolved repository instructions and stable identity.
+pub(crate) async fn workspace_context(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    peer: Peer,
+) -> Result<Response, ApiError> {
+    authorize(&st, &headers, peer_addr(peer))?;
+    let folder = workspace_snapshot(&st);
+    let context =
+        tokio::task::spawn_blocking(move || crate::workspace_context::resolve(folder.as_deref()))
+            .await
+            .map_err(|error| {
+                ApiError(Error::Other(format!(
+                    "workspace context task failed: {error}"
+                )))
+            })?;
+    Ok(Json(context).into_response())
 }
 
 /// `POST /workspace/git/action` - run a narrow, guarded Git sidebar action.
@@ -8686,6 +8843,7 @@ enum ToolApprovalPolicy {
 struct ToolRunPolicy {
     approval: ToolApprovalPolicy,
     approval_granted: bool,
+    interactive_approval: bool,
     sandbox_enabled: bool,
     computer_use_enabled: bool,
     preview_tools_enabled: bool,
@@ -8698,6 +8856,7 @@ impl Default for ToolRunPolicy {
         Self {
             approval: ToolApprovalPolicy::Guarded,
             approval_granted: false,
+            interactive_approval: false,
             sandbox_enabled: false,
             computer_use_enabled: false,
             preview_tools_enabled: false,
@@ -8729,6 +8888,7 @@ fn tool_run_policy_from_request(req: &ChatCompletionRequest) -> ToolRunPolicy {
     ToolRunPolicy {
         approval,
         approval_granted: bool_extra(req, "tool_approval_grant"),
+        interactive_approval: bool_extra(req, "interactive_tool_approval"),
         sandbox_enabled: bool_extra(req, "sandbox_enabled"),
         computer_use_enabled: bool_extra(req, "computer_use_enabled"),
         preview_tools_enabled: bool_extra(req, "preview_tools_enabled"),
@@ -8826,6 +8986,15 @@ fn add_workspace_notice_if_needed(messages: &mut Vec<ChatMessage>, workspace_una
     );
 }
 
+fn add_workspace_instructions(messages: &mut Vec<ChatMessage>, st: &AppState) {
+    let folder = workspace_snapshot(st);
+    let context = crate::workspace_context::resolve(folder.as_deref());
+    let Some(instructions) = crate::workspace_context::formatted(&context, None) else {
+        return;
+    };
+    messages.insert(0, ChatMessage::text("system", instructions));
+}
+
 /// The effective tool registry for an agent run: the static tools (builtins,
 /// host fs/shell, Docker sandbox) plus any tools exposed by connected MCP
 /// servers. Rebuilt per-run (cheap clone) so newly-added MCP servers are
@@ -8885,7 +9054,10 @@ fn agent_base_registry_with_memory(
     if !policy.experimental_hashline_patch {
         reg = reg.without(HASHLINE_TOOL_NAMES);
     }
-    if policy.approval == ToolApprovalPolicy::Review && !policy.approval_granted {
+    if policy.approval == ToolApprovalPolicy::Review
+        && !policy.approval_granted
+        && !policy.interactive_approval
+    {
         reg = ToolRegistry::new();
     } else if policy.approval == ToolApprovalPolicy::Guarded {
         reg = reg.read_only();
@@ -8894,7 +9066,47 @@ fn agent_base_registry_with_memory(
 }
 
 fn tools_available(policy: &ToolRunPolicy) -> bool {
-    (policy.approval_granted || policy.approval != ToolApprovalPolicy::Review) && !policy.plan_mode
+    (policy.approval_granted
+        || policy.interactive_approval
+        || policy.approval != ToolApprovalPolicy::Review)
+        && !policy.plan_mode
+}
+
+#[derive(Deserialize)]
+pub(crate) struct ToolApprovalDecision {
+    decision: String,
+}
+
+pub(crate) async fn tool_approval_resolve(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    peer: Peer,
+    Json(req): Json<ToolApprovalDecision>,
+) -> Result<Response, ApiError> {
+    authorize(&st, &headers, peer_addr(peer))?;
+    let approved = match req.decision.trim() {
+        "approve" => true,
+        "deny" => false,
+        _ => {
+            return Err(ApiError(Error::InvalidRequest(
+                "decision must be approve or deny".to_string(),
+            )))
+        }
+    };
+    match st.tool_approvals.resolve(&id, approved) {
+        milim_agents::ApprovalResolve::Resolved => Ok(StatusCode::NO_CONTENT.into_response()),
+        milim_agents::ApprovalResolve::AlreadyResolved => Ok((
+            StatusCode::CONFLICT,
+            Json(json!({ "error": "tool approval already resolved" })),
+        )
+            .into_response()),
+        milim_agents::ApprovalResolve::Missing => Ok((
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "tool approval not found or expired" })),
+        )
+            .into_response()),
+    }
 }
 
 fn plan_mode_registry(
@@ -9463,6 +9675,10 @@ fn managed_worker_context(state: &AppState, base: Option<&str>) -> Option<String
                 .map(|value| format!("\nBranch: {value}"))
                 .unwrap_or_default(),
         ));
+        let context = crate::workspace_context::resolve(Some(&workspace));
+        if let Some(instructions) = crate::workspace_context::formatted(&context, None) {
+            sections.push(instructions);
+        }
     }
     (!sections.is_empty()).then(|| sections.join("\n\n"))
 }
@@ -10023,11 +10239,19 @@ pub(crate) async fn agents_run(
     let model = req.model.clone();
     let want_stream = req.wants_stream();
     let reasoning_effort = req.reasoning_effort;
-    let agent_config = agent_run_config_from_request(&req);
+    let mut agent_config = agent_run_config_from_request(&req);
     let tool_policy = tool_run_policy_from_request(&req);
+    if want_stream
+        && tool_policy.approval == ToolApprovalPolicy::Review
+        && tool_policy.interactive_approval
+        && !tool_policy.approval_granted
+    {
+        agent_config.approval_broker = Some(st.tool_approvals.clone());
+    }
     let memory = memory_context_from_request(&req, model.clone());
     let workspace_unavailable = desktop_workspace_unavailable(&st);
     let mut messages = req.messages;
+    add_workspace_instructions(&mut messages, &st);
     add_workspace_notice_if_needed(&mut messages, workspace_unavailable);
 
     if want_stream {
@@ -10160,8 +10384,15 @@ pub(crate) async fn agent_run_by_id(
     let want_stream = req.wants_stream();
     let requested_model = req.model.clone();
     let reasoning_effort = req.reasoning_effort;
-    let agent_config = agent_run_config_from_request(&req);
+    let mut agent_config = agent_run_config_from_request(&req);
     let tool_policy = tool_run_policy_from_request(&req);
+    if want_stream
+        && tool_policy.approval == ToolApprovalPolicy::Review
+        && tool_policy.interactive_approval
+        && !tool_policy.approval_granted
+    {
+        agent_config.approval_broker = Some(st.tool_approvals.clone());
+    }
     let mut memory = memory_context_from_request(&req, requested_model.clone());
     let mut messages = Vec::new();
     if !agent.system_prompt.is_empty() {
@@ -10195,6 +10426,7 @@ pub(crate) async fn agent_run_by_id(
         );
     }
     messages.extend(req.messages);
+    add_workspace_instructions(&mut messages, &st);
     let model = requested_model;
     let memory = AgentMemoryContext {
         model: model.clone(),

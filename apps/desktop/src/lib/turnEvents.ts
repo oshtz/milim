@@ -280,6 +280,25 @@ export function statusPart(label: string, detail?: string, tone: "status" | "war
   };
 }
 
+export function toolApprovalPart(
+  event: Pick<AgentEvent, "approval_id" | "name" | "arguments" | "decision">,
+): ChatStreamEventPart {
+  const resolved = event.decision != null;
+  return {
+    kind: "event",
+    eventType: "status",
+    label: resolved
+      ? event.decision === "approve" ? "Tool approved" : "Tool denied"
+      : `Approve ${event.name ?? "tool"}`,
+    detail: event.arguments,
+    icon: toolEventIcon(event.name),
+    name: `approval:${event.approval_id}`,
+    status: "done",
+    approvalId: event.approval_id,
+    approvalStatus: resolved ? (event.decision === "approve" ? "approved" : "denied") : "pending",
+  };
+}
+
 export function runtimeWarningMessage(label: string, detail: string): ChatMessage {
   return { role: "assistant", content: "", streamParts: [statusPart(label, detail, "warning")] };
 }

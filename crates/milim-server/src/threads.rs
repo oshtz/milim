@@ -588,6 +588,8 @@ async fn run_child_thread(
                 return;
             }
             AgentEvent::Start { .. }
+            | AgentEvent::ToolApprovalRequired { .. }
+            | AgentEvent::ToolApprovalResolved { .. }
             | AgentEvent::MemoryRegistered { .. }
             | AgentEvent::ChildThreadStarted { .. }
             | AgentEvent::ChildThreadDone { .. }

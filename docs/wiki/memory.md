@@ -9,7 +9,7 @@ order: 60
 updated: 2026-07-12
 ---
 
-The normal memory library has two scopes. **Personal** follows you across projects; **Project** is bound to the active workspace folder. Existing thread-scoped memories remain searchable in their original thread and can be moved into Personal or Project from the library's Legacy view.
+The normal memory library has two scopes. **Personal** follows you across projects; **Project** uses a sanitized Git-origin identity when one exists, so clones and worktrees of the same remote share memory. Different origins stay isolated. Outside Git, Project falls back to the canonical folder path. Existing exact-folder and thread-scoped memories remain searchable and can be moved into Personal or Project from the library's Legacy view.
 
 When Memory is enabled, normal chat turns search scoped memory and inject only the retrieved hits as model context. That recall path does not force the agent/tool loop by itself. Durable writes use `memory_register` only when the user explicitly asks to remember/save/store context, or when the turn is already running through a tool-capable agent path.
 
@@ -29,7 +29,7 @@ When Memory is enabled, normal chat turns search scoped memory and inject only t
 | Personal | Durable preferences and facts that should follow you across projects. |
 | Project | Repo conventions, architecture decisions, and product facts tied to one workspace folder. |
 
-Project memory requires an active project folder. Each enabled turn searches Personal and Project memory, plus legacy memories from that same thread, and injects at most five relevant entries. New thread-scoped memories are not created.
+Project memory requires an active project folder. Each enabled turn searches Personal, the stable Project identity, the legacy exact-folder identity, and legacy memories from that same thread; results are deduplicated by memory node id before at most five relevant entries are injected. New writes use only the stable identity. Changing a repository's origin starts a new stable scope while legacy folder memories remain readable. No migration rewrites existing records, and new thread-scoped memories are not created.
 
 ## Remote embedding boundary
 

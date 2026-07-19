@@ -20,16 +20,20 @@ Agents are for repeatable behavior, tool access, and longer work. Keep one-off q
 | Skill modes | `auto`, `custom`, or `none`; auto selects enabled skills by keyword, while explicit `@Skill Name` and `/Skill Name` prompt tags inject matching enabled skills for that turn. |
 | Run timeline | Start, token, reasoning, tool call, bounded tool result, memory, Worker Run, per-request usage deltas, final usage, and error events render as structured stream parts. Tool results are capped before timeline persistence and again for model replay. Worker events carry monotonic cursors and reload on demand. Runs stop at 100 model turns by default (`stopped_at_limit: true`), and stream-open failures are retried once before surfacing an error. |
 | Schedules | Cron schedules capture an explicit model, creation workspace, prompt, files, and optional Agent. Legacy schedules with no model temporarily fall back to their Agent's deprecated saved model; editing persists that fallback. Missing both records a visible error. |
-| Tool approval | The UI sends approval policy and grants to the server-side agent loop. |
+| Tool approval | The UI sends approval policy to the server-side agent loop and resolves exact one-shot Review requests inline. |
 | MCP Apps | Negotiated MCP tools may attach a server-authored `ui://` view. The agent sees bounded fallback content while the transcript retains the full structured App result and descriptor. App-only tools stay out of the model catalog. |
 
 ## Approval modes
 
 | Mode | Server behavior |
 |---|---|
-| `review` | Tools are withheld until the UI sends an approval grant for the run. |
+| `review` | Read-only tools run automatically. Every mutating, command, or unknown call pauses before execution and shows its exact arguments inline. Approve or Deny resolves only that invocation; Stop, disconnect, or restart cancels it. |
 | `guarded` | Only tools declaring a read-only effect are exposed. Writes, commands, schedules, computer/preview actions, memory writes, and unclassified MCP tools are withheld. This is the default. |
 | `open` | Eligible tools are exposed according to the selected folder, sandbox, computer-use, MCP, memory, and skill settings. |
+
+Milim-native uses the registry's effect metadata. Codex keeps `onRequest` with a workspace-write sandbox and relays app-server command/file requests. Claude uses a temporary per-run Streamable HTTP MCP permission tool and deletes its run token/configuration on completion. A runtime that cannot support its approval protocol fails Review instead of silently switching modes. API callers may still set `tool_approval_grant: true` as an explicit whole-run compatibility grant; streamed desktop runs do not.
+
+Each turn also reloads workspace instructions. Milim-native receives both AGENTS and Claude families. Codex relies on its native AGENTS discovery and receives Claude-family additions; Claude relies on native Claude discovery and receives AGENTS-family additions. Conditional Claude rules with `paths:` frontmatter are reported but not globally applied by Milim.
 
 Approval is not just UI decoration. The server rebuilds the effective tool registry per run and removes tools that are not allowed by the current policy.
 

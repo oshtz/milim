@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import type { ChatMessage, PreviewSurfaceTarget } from "../src/api.js";
-import { buildTurnPromptContext, contextMessagesForTurn, folderLabel, memoryScopes, prepareTurnPromptContext, resolveTurnToolApproval } from "../src/lib/turnPrompt.js";
+import { buildTurnPromptContext, contextMessagesForTurn, folderLabel, memoryScopes, prepareTurnPromptContext, resolveTurnToolApproval, workspaceRuleMessagesForRuntime } from "../src/lib/turnPrompt.js";
 
 function user(content: string): ChatMessage {
   return { role: "user", content };
@@ -14,6 +14,19 @@ assert.deepEqual(memoryScopes("thread-1", " C:\\work "), [
 ]);
 assert.deepEqual(memoryScopes("thread-1", ""), [
   { kind: "global", locator: "personal" },
+  { kind: "thread", locator: "thread-1" },
+]);
+assert.deepEqual(memoryScopes("thread-1", "C:\\clone", {
+  root: "C:\\clone",
+  project_locator: "git:github.com/Owner/Repo",
+  legacy_project_locator: "C:\\clone",
+  origin: "github.com/Owner/Repo",
+  instructions: [],
+  warnings: [],
+}), [
+  { kind: "global", locator: "personal" },
+  { kind: "project", locator: "git:github.com/Owner/Repo" },
+  { kind: "project", locator: "C:\\clone" },
   { kind: "thread", locator: "thread-1" },
 ]);
 
@@ -236,6 +249,40 @@ const accountRuntime = buildTurnPromptContext({
 assert.equal(accountRuntime.useTools, false);
 assert.equal(accountRuntime.accountRuntimeMayUseTools, true);
 
+const instructionFamilies = buildTurnPromptContext({
+  sessionId: "families",
+  threadTitle: "Families",
+  folder: "C:\\repo",
+  instructions: "",
+  planMode: false,
+  memory: false,
+  conversation: [user("continue")],
+  memoryHits: [],
+  selectedSkills: [],
+  turnId: "families-turn",
+  sandbox: false,
+  computerUse: false,
+  activeAgentId: null,
+  toolApproval: "guarded",
+  toolApprovalGrant: false,
+  experimentalHashlinePatch: false,
+  workspaceContext: {
+    root: "C:\\repo",
+    project_locator: "git:github.com/Owner/Repo",
+    legacy_project_locator: "C:\\repo",
+    origin: "github.com/Owner/Repo",
+    instructions: [
+      { family: "agents", scope: "project", path: "AGENTS.md", content: "agents", bytes: 6, status: "loaded" },
+      { family: "claude", scope: "project", path: "CLAUDE.md", content: "claude", bytes: 6, status: "loaded" },
+    ],
+    warnings: [],
+  },
+});
+assert.match(workspaceRuleMessagesForRuntime(instructionFamilies, "native")[0].content, /agents/);
+assert.match(workspaceRuleMessagesForRuntime(instructionFamilies, "native")[0].content, /claude/);
+assert.doesNotMatch(workspaceRuleMessagesForRuntime(instructionFamilies, "codex")[0].content, /AGENTS\.md/);
+assert.doesNotMatch(workspaceRuleMessagesForRuntime(instructionFamilies, "claude")[0].content, /CLAUDE\.md/);
+
 const planModeAccountRuntime = buildTurnPromptContext({
   sessionId: "s4-plan",
   threadTitle: "Runtime",
@@ -447,7 +494,7 @@ assert.deepEqual(resolveTurnToolApproval({
   accountRuntimeMayUseTools: false,
   toolApproval: "review",
   planMode: false,
-}), { status: "required", grant: false, error: "Tool approval required." });
+}), { status: "not_required", grant: false });
 assert.equal(resolveTurnToolApproval({
   useTools: true,
   accountRuntimeMayUseTools: false,

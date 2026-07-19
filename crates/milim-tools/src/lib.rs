@@ -314,6 +314,11 @@ impl ToolRegistry {
         self.tool(name).ok()?.ui()
     }
 
+    /// Effect declared by a tool, resolving aliases the same way as calls.
+    pub fn effect(&self, name: &str) -> Option<ToolEffect> {
+        self.tool(name).ok().map(|tool| tool.effect())
+    }
+
     fn tool(&self, name: &str) -> Result<Arc<dyn Tool>> {
         let name = self.aliases.get(name).map(String::as_str).unwrap_or(name);
         self.tools

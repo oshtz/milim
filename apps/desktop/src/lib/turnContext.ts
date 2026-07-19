@@ -25,6 +25,8 @@ export type PreparedTurnOutbound = {
 export type PrepareTurnOutboundOptions = {
   skipAutoCompaction?: boolean;
   signal?: AbortSignal;
+  reservedContextMessages?: ChatMessage[];
+  fixedCategories?: Array<{ label: string; tokens: number }>;
 };
 
 export type TurnModelResolution =
@@ -323,6 +325,8 @@ export async function prepareTurnOutbound({
   clearAccountRuntime,
   skipAutoCompaction,
   signal,
+  reservedContextMessages,
+  fixedCategories,
 }: {
   sessionId: string;
   contextMessages: ChatMessage[];
@@ -347,6 +351,8 @@ export async function prepareTurnOutbound({
   clearAccountRuntime: (sessionId: string) => void;
   skipAutoCompaction?: boolean;
   signal?: AbortSignal;
+  reservedContextMessages?: ChatMessage[];
+  fixedCategories?: Array<{ label: string; tokens: number }>;
 }): Promise<PreparedTurnOutbound> {
   if (skipAutoCompaction) {
     const plan = contextSendPlan(
@@ -354,12 +360,16 @@ export async function prepareTurnOutbound({
       latestUserOrLast(conversation),
       model,
       models,
+      { reservedMessages: reservedContextMessages, fixedCategories },
     );
     if (plan.error) throw new Error(plan.error);
     return { conversation, outbound: plan.messages };
   }
 
-  let plan = contextSendPlan(contextMessages, conversation, model, models);
+  let plan = contextSendPlan(contextMessages, conversation, model, models, {
+    reservedMessages: reservedContextMessages,
+    fixedCategories,
+  });
   if (plan.error) throw new Error(plan.error);
   if (!plan.shouldCompact) return { conversation, outbound: plan.messages };
 
@@ -400,6 +410,7 @@ export async function prepareTurnOutbound({
       compactedConversation,
       model,
       models,
+      { reservedMessages: reservedContextMessages, fixedCategories },
     );
     if (plan.error) throw new Error(plan.error);
     clearAccountRuntime(sessionId);

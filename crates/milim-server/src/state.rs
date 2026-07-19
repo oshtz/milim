@@ -144,6 +144,8 @@ pub struct AppState {
     /// tools. Set via `POST /workspace` (the GUI's "Folder" chip). When unset,
     /// host tools refuse to run. Shared (not cloned) across handlers + tools.
     pub workspace: Arc<RwLock<Option<PathBuf>>>,
+    /// One-shot user decisions for consequential streamed tool calls.
+    pub tool_approvals: Arc<milim_agents::ToolApprovalBroker>,
     /// Optional MCP client hub: external MCP servers whose tools are merged
     /// into the agent's registry. Managed via `/mcp/servers`.
     pub mcp: Option<Arc<milim_mcp_client::McpHub>>,
@@ -181,6 +183,7 @@ impl AppState {
             skills: None,
             providers: None,
             workspace: Arc::new(RwLock::new(None)),
+            tool_approvals: Arc::new(milim_agents::ToolApprovalBroker::default()),
             mcp: None,
             mcp_app_views: Arc::new(McpAppViewStore::default()),
             computer_use: Arc::new(AtomicBool::new(false)),

@@ -174,7 +174,7 @@ export function QuickSummaryPanel({
     { id: "environment", label: "Environment", kinds: ["workspace", "browser"] },
     { id: "task", label: "Task", kinds: ["goal", "plan"] },
     { id: "activity", label: "Activity", kinds: ["activity"] },
-    { id: "context", label: "Context", kinds: ["model", "usage", "limits", "privacy", "memory"] },
+    { id: "context", label: "Context", kinds: ["model", "context", "usage", "limits", "privacy", "memory"] },
   ];
   const sourcesCollapsed = collapsedSections.includes("sources");
 
@@ -212,7 +212,7 @@ export function QuickSummaryPanel({
                     <div className="context-section-inner quick-summary-section-content">
                       {sectionRows.map((row) => (
                         <ContextRow
-                          key={row.kind}
+                          key={`${row.kind}:${row.label}`}
                           row={row}
                           onClick={
                             row.kind === "workspace" && canOpenGit
@@ -221,6 +221,19 @@ export function QuickSummaryPanel({
                                 ? onOpenGoal
                                 : undefined
                           }
+                        />
+                      ))}
+                      {group.id === "context" && summary.context?.sources.map((source) => (
+                        <ContextRow
+                          key={`rule:${source.path}`}
+                          row={{
+                            kind: "context",
+                            label: source.path.split(/[\\/]/).pop() || source.path,
+                            value: source.status === "loaded" ? `${source.tokens.toLocaleString()} tokens` : source.status,
+                            meta: source.family,
+                            title: source.path,
+                            tone: source.status === "loaded" ? undefined : "warning",
+                          }}
                         />
                       ))}
                     </div>

@@ -117,6 +117,24 @@ assert.equal(estimateMessagesTokens(approvalThread), estimateMessagesTokens([app
 const sendPlan = contextSendPlan([], longMessages, "tiny", [tinyModel]);
 assert.equal(sendPlan.shouldCompact, true, "long uncheckpointed context should request a visible checkpoint");
 
+const reservedRules = [{ role: "system", content: "repository rule ".repeat(900) }] satisfies ChatMessage[];
+const fixedOverflow = contextSendPlan(
+  [{ role: "system", content: "saved instructions" }],
+  [user("latest")],
+  "tiny",
+  [tinyModel],
+  {
+    reservedMessages: reservedRules,
+    fixedCategories: [
+      { label: "saved instructions", tokens: 2 },
+      { label: "repository rules", tokens: estimateMessagesTokens(reservedRules) },
+    ],
+  },
+);
+assert.equal(fixedOverflow.shouldCompact, false);
+assert.match(fixedOverflow.error ?? "", /Fixed context exceeds/);
+assert.match(fixedOverflow.error ?? "", /repository rules/);
+
 const oversizedAfterCheckpoint = contextSendPlan(
   [],
   [user("old visible message ".repeat(1000)), checkpoint, user("latest ".repeat(2000))],

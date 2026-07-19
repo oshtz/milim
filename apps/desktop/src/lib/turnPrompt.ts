@@ -1,4 +1,4 @@
-import type { AgentMemoryContext, AgentToolContext, ChatMessage, DelegationPolicy, MemoryScopeRef, PreviewAppFile, PreviewSurfaceTarget, SkillInfo, ToolApprovalMode } from "../api.js";
+import { getWorkspaceContext, type AgentMemoryContext, type AgentToolContext, type ChatMessage, type DelegationPolicy, type MemoryScopeRef, type PreviewAppFile, type PreviewSurfaceTarget, type SkillInfo, type ToolApprovalMode, type ToolInfo, type WorkspaceContext } from "../api.js";
 import { planModeInstructionMessages, threadArtifactInstructionMessages } from "./chatInstructions.js";
 import { goalInstructionMessage, type GoalSettings } from "./goals.js";
 import { skillInstructionMessage } from "./skills.js";
@@ -20,11 +20,13 @@ export type TurnPromptContext = {
   artifactMessages: ChatMessage[];
   memoryMessages: ChatMessage[];
   scheduleMessages: ChatMessage[];
+  toolDefinitionMessages?: ChatMessage[];
   useScheduleTools: boolean;
   useTools: boolean;
   accountRuntimeMayUseTools: boolean;
   runMemoryContext: AgentMemoryContext;
   toolContext: AgentToolContext;
+  workspaceContext?: WorkspaceContext | null;
 };
 
 export type TurnContextMessageMode = "model" | "agent" | "tools";
@@ -36,6 +38,8 @@ export type TurnToolApprovalDecision =
   | { status: "required"; grant: false; error: string };
 
 type TurnPromptAgent = {
+  tool_mode?: string;
+  enabled_tools?: string[];
   skill_mode?: string;
   enabled_skills?: string[];
 };
@@ -44,9 +48,16 @@ export function folderLabel(folder: string): string {
   return folder.split(/[\\/]/).filter(Boolean).pop() || folder || "Project";
 }
 
-export function memoryScopes(threadId: string, folder: string): MemoryScopeRef[] {
+export function memoryScopes(threadId: string, folder: string, workspace?: WorkspaceContext | null): MemoryScopeRef[] {
   const scopes: MemoryScopeRef[] = [{ kind: "global", locator: "personal" }];
-  if (folder.trim()) scopes.push({ kind: "project", locator: folder.trim() });
+  const project = workspace?.project_locator?.trim();
+  const legacy = workspace?.legacy_project_locator?.trim() || folder.trim();
+  if (project) scopes.push({ kind: "project", locator: project });
+  if (legacy && legacy !== project) scopes.push({ kind: "project", locator: legacy });
+  const exactFolder = folder.trim();
+  if (exactFolder && exactFolder !== project && exactFolder !== legacy) {
+    scopes.push({ kind: "project", locator: exactFolder });
+  }
   scopes.push({ kind: "thread", locator: threadId });
   return scopes;
 }
@@ -81,6 +92,8 @@ export function buildTurnPromptContext({
   delegationPolicy = "ask",
   workerModel = "",
   virtualProjectFiles = [],
+  workspaceContext = null,
+  tools = [],
 }: {
   sessionId: string;
   threadTitle: string;
@@ -107,6 +120,8 @@ export function buildTurnPromptContext({
   delegationPolicy?: DelegationPolicy;
   workerModel?: string;
   virtualProjectFiles?: PreviewAppFile[];
+  workspaceContext?: WorkspaceContext | null;
+  tools?: ToolInfo[];
 }): TurnPromptContext {
   const skillMessage = skillInstructionMessage(selectedSkills);
   const userText = lastUserText ?? latestUserContent(conversation);
@@ -138,12 +153,27 @@ export function buildTurnPromptContext({
     memory_enabled: memoryWriteEnabled,
     thread_id: sessionId,
     thread_label: threadTitle,
-    project_locator: folder.trim() || undefined,
+    project_locator: workspaceContext?.project_locator || folder.trim() || undefined,
     project_label: folder.trim() ? folderLabel(folder) : undefined,
     message_id: turnId,
   };
   const useTools = !codexModel && !claudeModel && (nonMemoryTools || memoryWriteEnabled);
   const accountRuntimeMayUseTools = Boolean(codexModel || claudeModel) && !planMode;
+  const effectiveTools = useTools
+    ? tools.filter((tool) => !planMode && (
+        toolApproval === "open"
+        || toolApproval === "review"
+        || tool.effect === "read_only"
+      ))
+    : [];
+  const toolDefinitionMessages: ChatMessage[] = effectiveTools.length ? [{
+    role: "system",
+    content: JSON.stringify(effectiveTools.map((tool) => ({
+      name: tool.name,
+      description: tool.description,
+      input_schema: tool.input_schema ?? {},
+    }))),
+  }] : [];
   return {
     instructionMessages,
     planMessages,
@@ -152,6 +182,7 @@ export function buildTurnPromptContext({
     artifactMessages,
     memoryMessages,
     scheduleMessages,
+    toolDefinitionMessages,
     useScheduleTools,
     useTools,
     accountRuntimeMayUseTools,
@@ -159,6 +190,7 @@ export function buildTurnPromptContext({
     toolContext: {
       tool_approval_policy: toolApproval,
       tool_approval_grant: toolApprovalGrant,
+      interactive_tool_approval: toolApproval === "review" && !planMode && !toolApprovalGrant,
       sandbox_enabled: sandbox,
       computer_use_enabled: computerUse,
       preview_tools_enabled: previewToolsEnabled,
@@ -168,6 +200,7 @@ export function buildTurnPromptContext({
       delegation_policy: delegationPolicy,
       worker_model: workerModel.trim() || undefined,
     },
+    workspaceContext,
   };
 }
 
@@ -200,6 +233,7 @@ export async function prepareTurnPromptContext({
   searchMemory,
   selectSkills,
   virtualProjectFiles,
+  tools = [],
 }: {
   sessionId: string;
   threadTitle: string;
@@ -229,16 +263,24 @@ export async function prepareTurnPromptContext({
   searchMemory: (query: string, scopes: MemoryScopeRef[], limit: number, model?: string) => Promise<MemoryHit[]>;
   selectSkills: (query: string, limit: number) => Promise<SkillInfo[]>;
   virtualProjectFiles?: PreviewAppFile[];
+  tools?: ToolInfo[];
 }): Promise<TurnPromptContext> {
   const lastUser = conversation
     .slice()
     .reverse()
     .find((message) => message.role === "user");
   const lastUserText = lastUser ? messageContent(lastUser) : "";
+  const workspaceContext = folder.trim() ? await getWorkspaceContext() : null;
   const memoryHits = memory && !planMode && lastUser
-    ? await searchMemory(lastUserText, memoryScopes(sessionId, folder), 5, codexModel || claudeModel ? undefined : model)
+    ? await searchMemory(lastUserText, memoryScopes(sessionId, folder, workspaceContext), 5, codexModel || claudeModel ? undefined : model)
     : [];
   const selectedSkills = await skillsForTurn(activeAgent, lastUserText, skills, selectSkills);
+  const wantedTools = new Set(activeAgent?.enabled_tools ?? []);
+  const selectedTools = activeAgent?.tool_mode === "none"
+    ? []
+    : activeAgent?.tool_mode === "custom"
+      ? tools.filter((tool) => wantedTools.has(tool.name))
+      : tools;
   return buildTurnPromptContext({
     sessionId,
     threadTitle,
@@ -265,6 +307,8 @@ export async function prepareTurnPromptContext({
     delegationPolicy,
     workerModel,
     virtualProjectFiles,
+    workspaceContext,
+    tools: selectedTools,
   });
 }
 
@@ -282,6 +326,33 @@ export function contextMessagesForTurn(context: TurnPromptContext, mode: TurnCon
   ];
 }
 
+export function workspaceRuleMessagesForRuntime(
+  context: TurnPromptContext,
+  runtime: "native" | "codex" | "claude",
+): ChatMessage[] {
+  const files = context.workspaceContext?.instructions.filter((file) =>
+    file.status === "loaded" && (
+      runtime === "native"
+      || (runtime === "codex" && file.family === "claude")
+      || (runtime === "claude" && file.family === "agents")
+    )
+  ) ?? [];
+  if (!files.length) return [];
+  return [{
+    role: "system",
+    content: files.map((file) =>
+      `Workspace instructions (${file.family}) from ${file.path}:\n\n${file.content}`
+    ).join("\n\n---\n\n"),
+  }];
+}
+
+export function toolDefinitionMessagesForRuntime(
+  context: TurnPromptContext,
+  runtime: "native" | "codex" | "claude",
+): ChatMessage[] {
+  return runtime === "native" ? (context.toolDefinitionMessages ?? []) : [];
+}
+
 export function resolveTurnToolApproval({
   useTools,
   accountRuntimeMayUseTools,
@@ -295,11 +366,16 @@ export function resolveTurnToolApproval({
   planMode: boolean;
   requestedGrant?: boolean;
 }): TurnToolApprovalDecision {
-  const required = (useTools || accountRuntimeMayUseTools) && toolApproval === "review" && !planMode;
-  if (!required) return { status: "not_required", grant: false };
+  if ((!useTools && !accountRuntimeMayUseTools) || planMode || toolApproval !== "review") {
+    return { status: "not_required", grant: false };
+  }
   if (requestedGrant === true) return { status: "granted", grant: true };
-  if (requestedGrant === false) return { status: "denied", grant: false, error: "Tool run canceled." };
-  return { status: "required", grant: false, error: "Tool approval required." };
+  if (requestedGrant === false) {
+    return { status: "denied", grant: false, error: "Tool run canceled." };
+  }
+  // Desktop Review is interactive per invocation. The explicit boolean remains
+  // the whole-run compatibility grant for non-interactive callers.
+  return { status: "not_required", grant: false };
 }
 
 async function skillsForTurn(

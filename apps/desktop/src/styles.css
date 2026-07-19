@@ -5560,6 +5560,44 @@ html[data-dark="true"] .preview-control-cursor {
   font-family: var(--mono);
   font-size: 11.5px;
 }
+.stream-approval-actions {
+  display: inline-flex;
+  gap: 5px;
+  margin-left: auto;
+}
+.stream-approval-actions button {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 2px 7px;
+  background: var(--surface-raised);
+  color: var(--secondary-text);
+  font: inherit;
+  cursor: pointer;
+}
+.stream-approval-actions button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.stream-approval-card {
+  flex-wrap: wrap;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--surface-raised) 82%, transparent);
+}
+.stream-approval-arguments {
+  flex: 1 0 100%;
+  max-height: 180px;
+  margin: 2px 0 0;
+  padding: 7px 9px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--secondary-text);
+  font: 11.5px/1.45 var(--mono);
+}
 .stream-diff-stat {
   display: inline-block;
   font-weight: 750;

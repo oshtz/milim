@@ -1090,6 +1090,28 @@ function normalizePersistedStreamParts(message: ChatMessage): ChatMessage {
   };
 }
 
+function normalizeStaleToolApprovals(message: ChatMessage): ChatMessage {
+  const hasPendingStep = message.run?.steps.some((step) => step.approval?.status === "pending") ?? false;
+  const hasPendingPart = message.streamParts?.some(
+    (part) => part.kind === "event" && part.approvalStatus === "pending",
+  ) ?? false;
+  if (!hasPendingStep && !hasPendingPart) return message;
+  return {
+    ...message,
+    run: message.run ? {
+      ...message.run,
+      steps: message.run.steps.map((step) => step.approval?.status === "pending"
+        ? { ...step, approval: { ...step.approval, status: "canceled", resolvedAt: step.approval.resolvedAt ?? Date.now() } }
+        : step),
+    } : undefined,
+    streamParts: message.streamParts?.map((part) =>
+      part.kind === "event" && part.approvalStatus === "pending"
+        ? { ...part, label: "Tool approval canceled", approvalStatus: "canceled", status: "done" }
+        : part
+    ),
+  };
+}
+
 function normalizeSessionArtifacts(session: Session): Session {
   const archivedAt = timestamp(session.archivedAt);
   const messages = Array.isArray(session.messages) ? session.messages : [];
@@ -1125,7 +1147,7 @@ function normalizeSessionArtifacts(session: Session): Session {
     retryWorkspace: normalizeRetryWorkspace(session.retryWorkspace),
     settings: normalizeSettings(session.settings, { pauseRunningGoal: true }),
     messages: messages.map((message) =>
-      normalizeMessageArtifacts(normalizePersistedStreamParts(message)),
+      normalizeMessageArtifacts(normalizeStaleToolApprovals(normalizePersistedStreamParts(message))),
     ),
   };
 }

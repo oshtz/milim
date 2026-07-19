@@ -127,6 +127,8 @@ pub(crate) struct CodexRunRequest {
     #[serde(default)]
     pub tool_approval_grant: bool,
     #[serde(default)]
+    pub interactive_tool_approval: bool,
+    #[serde(default)]
     pub plan_mode: bool,
 }
 
@@ -202,6 +204,18 @@ enum CodexStreamEvent {
     },
     Reasoning {
         text: String,
+    },
+    ToolApprovalRequired {
+        approval_id: String,
+        call_id: Option<String>,
+        name: String,
+        arguments: String,
+        effect: &'static str,
+    },
+    ToolApprovalResolved {
+        approval_id: String,
+        call_id: Option<String>,
+        decision: &'static str,
     },
     Tool {
         id: String,
@@ -516,10 +530,11 @@ fn login_stream(
 pub(crate) fn run_stream(
     req: CodexRunRequest,
     redactions: BTreeMap<String, String>,
+    approval_broker: Option<std::sync::Arc<milim_agents::ToolApprovalBroker>>,
 ) -> impl Stream<Item = std::result::Result<Event, Infallible>> {
     async_stream::stream! {
         let (worker_tx, mut worker_rx) = tokio::sync::mpsc::unbounded_channel();
-        let stream = run_stream_with_worker_events(req, redactions, Some(worker_tx));
+        let stream = run_stream_with_worker_events(req, redactions, Some(worker_tx), approval_broker);
         futures::pin_mut!(stream);
         while let Some(event) = stream.next().await {
             yield event;
@@ -536,6 +551,7 @@ fn run_stream_with_worker_events(
     req: CodexRunRequest,
     redactions: BTreeMap<String, String>,
     worker_events: Option<tokio::sync::mpsc::UnboundedSender<AccountWorkerEvent>>,
+    approval_broker: Option<std::sync::Arc<milim_agents::ToolApprovalBroker>>,
 ) -> impl Stream<Item = std::result::Result<Event, Infallible>> {
     async_stream::stream! {
         let turn_images = match CodexTurnImages::materialize(&req.images) {
@@ -675,7 +691,41 @@ fn run_stream_with_worker_events(
             match method {
                 "item/commandExecution/requestApproval" | "item/fileChange/requestApproval" => {
                     if let Some(id) = response_id(&msg) {
-                        let result = codex_approval_response(&req, method);
+                        let interactive = account_runtime_policy(req.tool_approval_policy.as_deref()) == "review"
+                            && req.interactive_tool_approval
+                            && !req.tool_approval_grant;
+                        let result = if interactive {
+                            let Some(broker) = approval_broker.as_ref() else {
+                                yield sse_event_with_worker(&CodexStreamEvent::Error {
+                                    message: "Codex Review approval broker is unavailable".to_string(),
+                                    usage: None,
+                                    cost_usd: None,
+                                }, &worker_events);
+                                yield Ok(Event::default().data("[DONE]"));
+                                return;
+                            };
+                            let mut pending = broker.request();
+                            let call_id = extract_string(params, &["itemId"])
+                                .or_else(|| extract_string(params, &["id"]));
+                            let name = if method.contains("commandExecution") { "command" } else { "file_change" };
+                            let arguments = serde_json::to_string(params).unwrap_or_else(|_| "{}".to_string());
+                            yield sse_event_with_worker(&CodexStreamEvent::ToolApprovalRequired {
+                                approval_id: pending.id.clone(),
+                                call_id: call_id.clone(),
+                                name: name.to_string(),
+                                arguments,
+                                effect: if name == "command" { "command" } else { "mutating" },
+                            }, &worker_events);
+                            let approved = pending.wait().await;
+                            yield sse_event_with_worker(&CodexStreamEvent::ToolApprovalResolved {
+                                approval_id: pending.id.clone(),
+                                call_id,
+                                decision: if approved { "approve" } else { "deny" },
+                            }, &worker_events);
+                            json!({ "decision": if approved { "accept" } else { "decline" } })
+                        } else {
+                            codex_approval_response(&req, method)
+                        };
                         if let Err(e) = proc.respond(id, result).await {
                             yield sse_event_with_worker(&CodexStreamEvent::Error {
                                 message: e.to_string(),
@@ -827,6 +877,8 @@ fn account_worker_event_from_codex(value: &CodexStreamEvent) -> Option<AccountWo
         CodexStreamEvent::Reasoning { text } => {
             Some(AccountWorkerEvent::Reasoning { text: text.clone() })
         }
+        CodexStreamEvent::ToolApprovalRequired { .. }
+        | CodexStreamEvent::ToolApprovalResolved { .. } => None,
         CodexStreamEvent::Tool {
             id,
             name,
@@ -1079,13 +1131,16 @@ fn account_runtime_policy(value: Option<&str>) -> &str {
 fn codex_tools_allowed(req: &CodexRunRequest) -> bool {
     !req.plan_mode
         && match account_runtime_policy(req.tool_approval_policy.as_deref()) {
-            "review" => req.tool_approval_grant,
+            "review" => req.tool_approval_grant || req.interactive_tool_approval,
             _ => true,
         }
 }
 
 fn codex_approval_policy(req: &CodexRunRequest) -> &'static str {
-    if !codex_tools_allowed(req)
+    if (account_runtime_policy(req.tool_approval_policy.as_deref()) == "review"
+        && req.interactive_tool_approval
+        && !req.tool_approval_grant)
+        || !codex_tools_allowed(req)
         || account_runtime_policy(req.tool_approval_policy.as_deref()) == "guarded"
     {
         "onRequest"
@@ -1108,7 +1163,8 @@ fn codex_sandbox_policy(req: &CodexRunRequest, cwd: Option<&str>) -> Value {
 
 fn codex_sandbox_mode(req: &CodexRunRequest, cwd: Option<&str>) -> &'static str {
     let policy = account_runtime_policy(req.tool_approval_policy.as_deref());
-    let mutations_allowed = policy == "open" || (policy == "review" && req.tool_approval_grant);
+    let mutations_allowed = policy == "open"
+        || (policy == "review" && (req.tool_approval_grant || req.interactive_tool_approval));
     if !req.plan_mode && mutations_allowed && cwd.is_some() {
         "workspace-write"
     } else {
@@ -1555,6 +1611,7 @@ mod tests {
             persist_thread: false,
             tool_approval_policy: None,
             tool_approval_grant: false,
+            interactive_tool_approval: false,
             plan_mode: false,
         };
         let materialized = CodexTurnImages::materialize(&req.images).unwrap().unwrap();
@@ -1596,6 +1653,7 @@ mod tests {
             persist_thread: true,
             tool_approval_policy: Some("open".into()),
             tool_approval_grant: true,
+            interactive_tool_approval: false,
             plan_mode: false,
         };
         let (method, params) = codex_thread_request(&req, "gpt-5.4");
@@ -1634,6 +1692,7 @@ mod tests {
             persist_thread: true,
             tool_approval_policy: Some("guarded".into()),
             tool_approval_grant: false,
+            interactive_tool_approval: false,
             plan_mode: false,
         };
         assert_eq!(codex_approval_policy(&req), "onRequest");
@@ -1650,6 +1709,14 @@ mod tests {
             codex_sandbox_policy(&req, req.cwd.as_deref())["type"],
             "readOnly"
         );
+
+        req.interactive_tool_approval = true;
+        assert_eq!(codex_approval_policy(&req), "onRequest");
+        assert_eq!(
+            codex_sandbox_mode(&req, req.cwd.as_deref()),
+            "workspace-write"
+        );
+        req.interactive_tool_approval = false;
 
         req.tool_approval_grant = true;
         assert_eq!(codex_approval_policy(&req), "never");
