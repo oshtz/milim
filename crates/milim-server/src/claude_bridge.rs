@@ -198,18 +198,17 @@ pub(crate) fn run_stream(
         let stream = run_stream_with_worker_events(req, redactions, Some(worker_tx));
         futures::pin_mut!(stream);
         loop {
-            let next = if let Some(receiver) = approval_rx.as_mut() {
+            let (event, notice) = if let Some(receiver) = approval_rx.as_mut() {
                 tokio::select! {
-                    event = stream.next() => Some(Ok(event)),
-                    notice = receiver.recv() => Some(Err(notice)),
+                    event = stream.next() => (event, None),
+                    notice = receiver.recv() => (None, Some(notice)),
                 }
             } else {
-                stream.next().await.map(|event| Ok(Some(event)))
+                (stream.next().await, None)
             };
-            match next {
-                Some(Ok(Some(event))) => yield event,
-                Some(Ok(None)) | None => break,
-                Some(Err(Ok(notice))) if Some(notice.run_id.as_str()) == approval_run_id.as_deref() => {
+            match (event, notice) {
+                (Some(event), _) => yield event,
+                (None, Some(Ok(notice))) if Some(notice.run_id.as_str()) == approval_run_id.as_deref() => {
                     let call_id = notice.call_id.unwrap_or_else(|| notice.approval_id.clone());
                     if let Some(decision) = notice.decision {
                         yield sse_event(&ClaudeStreamEvent::ToolApprovalResolved {
@@ -227,8 +226,10 @@ pub(crate) fn run_stream(
                         });
                     }
                 }
-                Some(Err(Ok(_))) | Some(Err(Err(tokio::sync::broadcast::error::RecvError::Lagged(_)))) => {}
-                Some(Err(Err(tokio::sync::broadcast::error::RecvError::Closed))) => approval_rx = None,
+                (None, Some(Ok(_)))
+                | (None, Some(Err(tokio::sync::broadcast::error::RecvError::Lagged(_)))) => {}
+                (None, Some(Err(tokio::sync::broadcast::error::RecvError::Closed))) => approval_rx = None,
+                (None, None) => break,
             }
             while let Ok(worker) = worker_rx.try_recv() {
                 if matches!(worker, AccountWorkerEvent::NativeWorker { .. }) {
