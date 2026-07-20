@@ -607,7 +607,7 @@ impl MemoryStore {
         };
         let fts_query = safe_fts_query(query);
         let result_limit = top_k.clamp(1, 200);
-        let candidate_limit = result_limit.saturating_mul(4).max(20).min(200);
+        let candidate_limit = result_limit.saturating_mul(4).clamp(20, 200);
         let scope_ids = scopes
             .iter()
             .map(normalize_scope_ref)
