@@ -125,6 +125,7 @@ import {
   type ThreadEvent,
   type WorkspaceFileSuggestion,
   type WorkspaceCheckpoint,
+  type WorkspaceGitActionResult,
   type WorkspaceGitStatus,
   type Worker,
   type WorkerRunRecord,
@@ -344,10 +345,15 @@ import { AssistantMessage } from "./AssistantMessage";
 import { ArtifactList } from "./ArtifactList";
 import { CommandPalette, type RuntimeCommand } from "./ChatSearchPopover";
 import { useContextMenu, type ContextMenuItem } from "./ContextMenu";
-import { GitWorkspacePanel } from "./GitPanel";
+import { GitWorkspacePanel, type GitPanelDiffRequest } from "./GitPanel";
 import { PreviewPanel } from "./PreviewPanel";
 import { QuickSummaryPanel } from "./QuickSummaryPanel";
 import { RunTimeline } from "./RunTimeline";
+import {
+  TurnChangesCard,
+  turnChangesFromDiff,
+  type TurnChanges,
+} from "./TurnChangesCard";
 import { SheetDialog } from "./SheetDialog";
 import { WorkspaceLauncherButton } from "./WorkspaceLauncher";
 import { BatonMenu, BatonTargetSheet, HotSwapPreflightSheet } from "./HotSwapDialogs";
@@ -924,6 +930,10 @@ type MessageRowActions = {
     messageIndex: number,
   ) => void;
   undoTurnChanges: (messageIndex: number) => Promise<void>;
+  reviewTurnChanges: (
+    checkpoint: WorkspaceCheckpoint,
+    result: WorkspaceGitActionResult,
+  ) => void;
   editResend: (messageIndex: number, text: string) => void;
   editMessageInPlace: (messageIndex: number, text: string) => void;
   approveToolApproval: (messageIndex: number, message: ChatMessage) => void;
@@ -968,6 +978,7 @@ type MessageRowProps = {
   previewAppBusy: "start" | "stop" | "restart" | null;
   previewAppStatus: PreviewAppStatus | null;
   toolApproval: ToolApprovalMode;
+  turnChanges?: TurnChanges | null;
   actionsRef: MutableRefObject<MessageRowActions | null>;
 };
 
@@ -986,6 +997,7 @@ function MessageRowView({
   previewAppBusy,
   previewAppStatus,
   toolApproval,
+  turnChanges,
   actionsRef,
 }: MessageRowProps) {
   markPerfRender("MessageRow");
@@ -1319,6 +1331,19 @@ function MessageRowView({
                 </button>
               </div>
             )}
+            {turnChanges && (
+              <TurnChangesCard
+                sections={turnChanges.sections}
+                stats={turnChanges.stats}
+                onUndo={() => void actions?.undoTurnChanges(i)}
+                onReview={() =>
+                  actions?.reviewTurnChanges(
+                    turnChanges.checkpoint,
+                    turnChanges.result,
+                  )
+                }
+              />
+            )}
             {metricsLabel && (
               <div className="response-metrics">{metricsLabel}</div>
             )}
@@ -1350,7 +1375,7 @@ function MessageRowView({
             <span>Execute plan</span>
           </button>
         )}
-        {m.workspaceCheckpoint && !busy && (
+        {m.workspaceCheckpoint && !busy && !turnChanges && (
           <button
             className="msg-act"
             title="Restore workspace to before this turn"
@@ -1417,15 +1442,10 @@ function MessageRowView({
           </button>
         )}
         {isLastAssistant && !busy && (
-          <>
-            <BatonMenu
-              retryDisabled={!folderIsEmpty && !m.workspaceCheckpoint && !m.plan}
-              onAction={(action) => actions?.startBaton(action, i)}
-            />
-            {m.workspaceCheckpoint && (
-              <button className="msg-act msg-act-text" type="button" onClick={() => void actions?.undoTurnChanges(i)}>Undo changes</button>
-            )}
-          </>
+          <BatonMenu
+            retryDisabled={!folderIsEmpty && !m.workspaceCheckpoint && !m.plan}
+            onAction={(action) => actions?.startBaton(action, i)}
+          />
         )}
         {isLastAssistant && !busy && (
           <button
@@ -1458,6 +1478,7 @@ const MessageRow = memo(
     prev.previewAppBusy === next.previewAppBusy &&
     prev.previewAppStatus === next.previewAppStatus &&
     prev.toolApproval === next.toolApproval &&
+    prev.turnChanges === next.turnChanges &&
     prev.actionsRef === next.actionsRef,
 );
 
@@ -3143,6 +3164,11 @@ export function ChatView({
   );
   const [gitStatus, setGitStatus] = useState<WorkspaceGitStatus | null>(null);
   const [gitStatusLoading, setGitStatusLoading] = useState(false);
+  const [turnChanges, setTurnChanges] = useState<TurnChanges | null>(null);
+  const [gitDiffRequest, setGitDiffRequest] = useState<
+    (GitPanelDiffRequest & { sessionId: string; folder: string }) | null
+  >(null);
+  const gitDiffRequestIdRef = useRef(0);
   const [dismissedPreviewKey, setDismissedPreviewKey] = useState<string | null>(
     null,
   );
@@ -3537,6 +3563,58 @@ export function ChatView({
     activeWorker?.status === "running" ||
     activeWorkerRun?.run.status === "running";
   const busy = generatingSessionIds.includes(activeId) || activeWorkerRunning;
+  const latestTurnMessage = messages[messages.length - 1];
+  const latestTurnCheckpoint = latestTurnMessage?.workspaceCheckpoint;
+  const latestTurnChangesKey =
+    latestTurnMessage?.role === "assistant" && latestTurnCheckpoint
+      ? `${activeId}:${latestTurnMessage.id ?? messages.length - 1}:${latestTurnCheckpoint.ref}`
+      : "";
+
+  useEffect(() => {
+    if (
+      busy ||
+      !latestTurnChangesKey ||
+      latestTurnMessage?.role !== "assistant" ||
+      latestTurnMessage.plan ||
+      !latestTurnCheckpoint ||
+      !previewRuntimeFoldersEqual(latestTurnCheckpoint.folder, folder)
+    ) {
+      setTurnChanges(null);
+      return;
+    }
+
+    let cancelled = false;
+    void (async () => {
+      try {
+        const selected = await setWorkspace(latestTurnCheckpoint.folder);
+        if (!selected || cancelled) return;
+        const result = await runWorkspaceGitAction("diff", {
+          diff_scope: "last_turn",
+          diff_base: latestTurnCheckpoint.ref,
+        });
+        if (cancelled) return;
+        setTurnChanges(
+          turnChangesFromDiff(
+            latestTurnChangesKey,
+            latestTurnCheckpoint,
+            result,
+          ),
+        );
+      } catch {
+        if (!cancelled) setTurnChanges(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    activeId,
+    busy,
+    folder,
+    latestTurnChangesKey,
+    latestTurnCheckpoint,
+    latestTurnMessage,
+  ]);
 
   const chatScrollRef = useRef<HTMLDivElement>(null);
   const chatBodyRef = useRef<HTMLDivElement>(null);
@@ -4470,6 +4548,21 @@ export function ChatView({
     setPreviewPanelClosing(false);
     setDismissedPreviewKey(latestPreviewSelection?.autoOpenKey ?? null);
     setSessionInspectorTab(activeId, "git");
+  }
+
+  function reviewTurnChanges(
+    checkpoint: WorkspaceCheckpoint,
+    result: WorkspaceGitActionResult,
+  ) {
+    gitDiffRequestIdRef.current += 1;
+    setGitDiffRequest({
+      id: gitDiffRequestIdRef.current,
+      sessionId: activeId,
+      folder: checkpoint.folder,
+      checkpoint: checkpoint.ref,
+      result,
+    });
+    openGitPanel();
   }
 
   async function approveWorkerRun(runId: string) {
@@ -8791,6 +8884,7 @@ export function ChatView({
     startBaton: (action, messageIndex) =>
       setBatonRequest({ action, messageIndex }),
     undoTurnChanges,
+    reviewTurnChanges,
     editResend,
     editMessageInPlace,
     approveToolApproval,
@@ -8867,6 +8961,9 @@ export function ChatView({
                     !messageIsCompaction &&
                     !isApprovalMessage &&
                     i === messages.length - 1;
+                  const messageTurnChangesKey = m.workspaceCheckpoint
+                    ? `${activeId}:${m.id ?? i}:${m.workspaceCheckpoint.ref}`
+                    : "";
                   const row = (
                     <MessageRow
                       key={m.id ?? i}
@@ -8884,6 +8981,12 @@ export function ChatView({
                       previewAppBusy={previewAppBusy}
                       previewAppStatus={activePreviewAppStatus}
                       toolApproval={toolApproval}
+                      turnChanges={
+                        isLastAssistant &&
+                        turnChanges?.key === messageTurnChangesKey
+                          ? turnChanges
+                          : null
+                      }
                       actionsRef={messageRowActionsRef}
                     />
                   );
@@ -9145,6 +9248,12 @@ export function ChatView({
                   folder={folder}
                   model={effectiveModel}
                   onDraftAction={loadGitActionDraft}
+                  diffRequest={
+                    gitDiffRequest?.sessionId === activeId &&
+                    previewRuntimeFoldersEqual(gitDiffRequest.folder, folder)
+                      ? gitDiffRequest
+                      : null
+                  }
                   closing={previewPanelClosing}
                   noEnterMotion={sidePanelAlreadyOpen}
                   onClose={closeGitPanel}

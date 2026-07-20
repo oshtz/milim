@@ -77,6 +77,11 @@ const DIFF_SCOPE_OPTIONS: { value: WorkspaceGitDiffScope; label: string }[] = [
   { value: "commit", label: "Commit" },
   { value: "branch", label: "Branch" },
 ];
+export type GitPanelDiffRequest = {
+  id: number;
+  checkpoint: string;
+  result: WorkspaceGitActionResult;
+};
 const COMMIT_MESSAGE_SYSTEM_PROMPT =
   "Write one professional Git commit subject. Return exactly one line, no markdown, no quotes. Use imperative mood when natural. Keep it under 72 characters.";
 
@@ -572,12 +577,14 @@ export function GitPanel({
   model,
   onOpenPanel,
   forceExpanded = false,
+  diffRequest,
 }: {
   folder: string;
   onDraftAction: (text: string) => void;
   model: string;
   onOpenPanel?: () => void;
   forceExpanded?: boolean;
+  diffRequest?: GitPanelDiffRequest | null;
 }) {
   const { openContextMenu } = useContextMenu();
   const [status, setStatus] = useState<WorkspaceGitStatus | null>(null);
@@ -658,6 +665,13 @@ export function GitPanel({
     setActiveDiffSectionId(null);
     setCollapsedFileTreePaths(new Set());
   }, [selectedFolder]);
+
+  useEffect(() => {
+    if (!diffRequest) return;
+    setDiffScope("last_turn");
+    setDiffBase(diffRequest.checkpoint);
+    setDiffResult(diffRequest.result);
+  }, [diffRequest]);
 
   useEffect(() => {
     setNotice(null);
@@ -2428,6 +2442,7 @@ export function GitWorkspacePanel({
   folder,
   model,
   onDraftAction,
+  diffRequest,
   closing = false,
   noEnterMotion = false,
   onClose,
@@ -2438,6 +2453,7 @@ export function GitWorkspacePanel({
   folder: string;
   model: string;
   onDraftAction: (text: string) => void;
+  diffRequest?: GitPanelDiffRequest | null;
   closing?: boolean;
   noEnterMotion?: boolean;
   onClose: () => void;
@@ -2471,6 +2487,7 @@ export function GitWorkspacePanel({
           model={model}
           onDraftAction={onDraftAction}
           forceExpanded
+          diffRequest={diffRequest}
         />
       </div>
     </aside>

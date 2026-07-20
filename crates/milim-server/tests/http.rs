@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -4527,6 +4527,19 @@ async fn workspace_git_action_checkpoint_restores_worktree() {
     fs::write(root.join("user-note.txt"), "changed by turn\n").unwrap();
     fs::write(root.join("agent-new.txt"), "new by turn\n").unwrap();
 
+    std::thread::sleep(Duration::from_secs(1));
+    let newer_checkpoint: Value = client
+        .post(format!("{base}/workspace/git/action"))
+        .json(&json!({ "action": "checkpoint", "message": "newer-turn" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(newer_checkpoint["ok"], true);
+    fs::write(root.join("note.txt"), "after newer turn\n").unwrap();
+
     let last_turn: Value = client
         .post(format!("{base}/workspace/git/action"))
         .json(&json!({ "action": "diff", "diff_scope": "last_turn" }))
@@ -4540,11 +4553,72 @@ async fn workspace_git_action_checkpoint_restores_worktree() {
     assert!(last_turn["stdout"]
         .as_str()
         .unwrap()
+        .contains("after newer turn"));
+    assert!(!last_turn["stdout"]
+        .as_str()
+        .unwrap()
         .contains("changed by turn"));
-    assert!(last_turn["stdout"]
+
+    let selected_turn: Value = client
+        .post(format!("{base}/workspace/git/action"))
+        .json(&json!({
+            "action": "diff",
+            "diff_scope": "last_turn",
+            "diff_base": checkpoint_ref,
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(selected_turn["ok"], true, "{selected_turn}");
+    assert!(selected_turn["stdout"]
+        .as_str()
+        .unwrap()
+        .contains("changed by turn"));
+    assert!(selected_turn["stdout"]
         .as_str()
         .unwrap()
         .contains("agent-new.txt"));
+
+    let invalid_turn: Value = client
+        .post(format!("{base}/workspace/git/action"))
+        .json(&json!({
+            "action": "diff",
+            "diff_scope": "last_turn",
+            "diff_base": "HEAD",
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(invalid_turn["ok"], false, "{invalid_turn}");
+    assert!(invalid_turn["message"]
+        .as_str()
+        .unwrap()
+        .contains("valid Milim turn checkpoint"));
+
+    let missing_turn: Value = client
+        .post(format!("{base}/workspace/git/action"))
+        .json(&json!({
+            "action": "diff",
+            "diff_scope": "last_turn",
+            "diff_base": "refs/milim/checkpoints/missing",
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(missing_turn["ok"], false, "{missing_turn}");
+    assert!(missing_turn["message"]
+        .as_str()
+        .unwrap()
+        .contains("valid Milim turn checkpoint"));
 
     let restored: Value = client
         .post(format!("{base}/workspace/git/action"))

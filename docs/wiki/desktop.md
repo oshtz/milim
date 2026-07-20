@@ -56,7 +56,7 @@ For a stale native session, **Fresh** starts from Milim's complete context while
 
 The Git inspector is a review-first workspace with a compact repository header for branch, status, fetch, commit, sync, and agent review actions. Its edge-to-edge body places a folder-structured changed-file navigator on the left and the local unified diff on the right. The scope selector immediately switches between all changes, unstaged changes, staged changes, the latest turn checkpoint, a recent commit, or another local branch without contacting GitHub. Selecting a file loads the current scope when needed, expands its section, and scrolls it into view; the toolbar can expand or collapse every rendered section, show or hide the navigator, the divider resizes it, and narrow panels stack it above the diff.
 
-**Undo changes** restores the latest code-changing turn's checkpoint, removes that assistant response, retains the user request, and clears stale account-runtime state.
+The latest code-changing turn ends with a compact changed-files card. **Review changes** opens that checkpoint diff in the Git inspector, while **Undo** restores the checkpoint, removes that assistant response, retains the user request, and clears stale account-runtime state.
 
 | Control | Behavior |
 |---|---|

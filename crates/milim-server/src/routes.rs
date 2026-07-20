@@ -5670,24 +5670,40 @@ fn workspace_git_diff_action(
             .map(str::to_string)
             .collect(),
         "last_turn" => {
-            let Some(checkpoint) = git_text(
-                root,
-                &[
-                    "for-each-ref",
-                    "--sort=-creatordate",
-                    "--sort=-refname",
-                    "--count=1",
-                    "--format=%(refname)",
-                    "refs/milim/checkpoints/",
-                ],
-            ) else {
-                return workspace_git_action_message(
-                    action,
-                    "git diff <last-turn-checkpoint> --",
-                    false,
-                    "No turn checkpoint is available.",
-                );
-            };
+            let checkpoint =
+                if let Some(candidate) = base.map(str::trim).filter(|value| !value.is_empty()) {
+                    if !candidate.starts_with("refs/milim/checkpoints/")
+                        || git_text(root, &["show-ref", "--verify", candidate]).is_none()
+                    {
+                        return workspace_git_action_message(
+                            action,
+                            "git diff <last-turn-checkpoint> --",
+                            false,
+                            "Select a valid Milim turn checkpoint.",
+                        );
+                    }
+                    candidate.to_string()
+                } else {
+                    let Some(checkpoint) = git_text(
+                        root,
+                        &[
+                            "for-each-ref",
+                            "--sort=-refname",
+                            "--sort=-creatordate",
+                            "--count=1",
+                            "--format=%(refname)",
+                            "refs/milim/checkpoints/",
+                        ],
+                    ) else {
+                        return workspace_git_action_message(
+                            action,
+                            "git diff <last-turn-checkpoint> --",
+                            false,
+                            "No turn checkpoint is available.",
+                        );
+                    };
+                    checkpoint
+                };
             let Some(index_path) = git_text(root, &["rev-parse", "--git-path", "index"]) else {
                 return workspace_git_action_message(
                     action,

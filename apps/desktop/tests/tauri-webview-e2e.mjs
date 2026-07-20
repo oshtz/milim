@@ -19,6 +19,7 @@ const mcpAppsOnly = process.argv.includes("--mcp-apps-only");
 const sidebarMotionOnly = process.argv.includes("--sidebar-motion-only");
 const commandPaletteOnly = process.argv.includes("--command-palette-only");
 const appMenuOnly = process.argv.includes("--app-menu-only");
+const turnChangesOnly = process.argv.includes("--turn-changes-only");
 const mcpAppKinds = ["chart", "diagram", "form", "dashboard", "viewer"];
 const screenshots = {
   avatars: join(tmpdir(), "milim-tauri-webview-agent-avatars.png"),
@@ -34,6 +35,7 @@ const screenshots = {
   workersNarrow: join(tmpdir(), "milim-tauri-webview-workers-narrow.png"),
   mcpAppsLight: join(tmpdir(), "milim-tauri-webview-mcp-apps-light.png"),
   mcpAppsDark: join(tmpdir(), "milim-tauri-webview-mcp-apps-dark.png"),
+  turnChanges: join(tmpdir(), "milim-tauri-webview-turn-changes.png"),
   failure: join(tmpdir(), "milim-tauri-webview-failure.png"),
 };
 
@@ -87,11 +89,17 @@ const milimHome = mkdtempSync(join(tmpdir(), "milim-tauri-e2e-"));
 const consoleErrors = [];
 let session;
 let failure;
+let turnChangesRepo;
 
 try {
   session = await launchTauri(milimHome);
   await resetFrontendStorage(session.page);
-  if (nativePreviewOnly) {
+  if (turnChangesOnly) {
+    const errors = collectErrors(session.page);
+    turnChangesRepo = createTurnChangesRepo();
+    await runTurnChangesCheck(session.page, turnChangesRepo);
+    consoleErrors.push(...errors);
+  } else if (nativePreviewOnly) {
     const errors = collectErrors(session.page);
     await runNativePreviewOcclusionCheck(session.page, session.child.pid);
     consoleErrors.push(...errors);
@@ -160,6 +168,9 @@ try {
   }
   await ensureNoWorkspaceMilimProcesses().catch((err) => cleanupErrors.push(err));
   await rmWithRetry(milimHome, { label: "MILIM_HOME" }).catch((err) => cleanupErrors.push(err));
+  if (turnChangesRepo) {
+    await rmWithRetry(turnChangesRepo.folder, { label: "turn changes repository" }).catch((err) => cleanupErrors.push(err));
+  }
   printEvidencePaths(milimHome);
   if (cleanupErrors.length) {
     const cleanupMessage = cleanupErrors.map((err) => err.stack || err.message || String(err)).join("\n\n");
@@ -172,6 +183,122 @@ try {
 }
 
 if (failure) throw failure;
+
+function createTurnChangesRepo() {
+  const folder = mkdtempSync(join(tmpdir(), "milim-turn-changes-e2e-"));
+  const checkpoint = "refs/milim/checkpoints/e2e-turn-changes";
+  runGit(folder, ["init"]);
+  runGit(folder, ["config", "user.email", "milim-e2e@example.test"]);
+  runGit(folder, ["config", "user.name", "Milim E2E"]);
+  for (let index = 1; index <= 5; index += 1) {
+    writeFileSync(join(folder, `file-${index}.txt`), "before\n", "utf8");
+  }
+  runGit(folder, ["add", "."]);
+  runGit(folder, ["commit", "-m", "Initial fixture"]);
+  runGit(folder, ["update-ref", checkpoint, "HEAD"]);
+  for (let index = 1; index <= 5; index += 1) {
+    writeFileSync(join(folder, `file-${index}.txt`), `before\nchange ${index}\n`, "utf8");
+  }
+  return { folder, checkpoint };
+}
+
+function runGit(folder, args) {
+  const result = spawnSync("git", args, { cwd: folder, encoding: "utf8" });
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    throw new Error(`Git fixture command failed: git ${args.join(" ")}\n${result.stderr}`);
+  }
+}
+
+async function runTurnChangesCheck(page, fixture) {
+  const gitActionRequests = [];
+  page.on("request", (request) => {
+    if (request.method() === "POST" && request.url().includes("/workspace/git/action")) {
+      gitActionRequests.push(request.postData() ?? "");
+    }
+  });
+  const now = Date.now();
+  await page.evaluate(async ({ folder, checkpoint, timestamp }) => {
+    const invoke = window.__TAURI_INTERNALS__.invoke;
+    const settings = {
+      model: "",
+      instructions: "",
+      activeAgentId: null,
+      folder,
+      sandbox: false,
+      computerUse: false,
+      memory: false,
+      privacy: "off",
+      toolApproval: "review",
+      delegationPolicy: "off",
+      workerModel: "",
+      planMode: false,
+    };
+    const workspaceCheckpoint = { ref: checkpoint, createdAt: timestamp, folder };
+    const value = JSON.stringify({
+      state: {
+        sessions: [{
+          id: "e2e-turn-changes",
+          title: "Turn changes fixture",
+          messages: [
+            { id: "old-request", role: "user", content: "Previous request" },
+            { id: "old-response", role: "assistant", content: "Previous response", workspaceCheckpoint },
+            { id: "latest-request", role: "user", content: "Please update the fixture files" },
+            { id: "latest-response", role: "assistant", content: "Updated all fixture files.", workspaceCheckpoint },
+          ],
+          settings,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        }],
+        activeId: "e2e-turn-changes",
+      },
+      version: 0,
+    });
+    await invoke("user_sessions_set", { value });
+  }, { ...fixture, timestamp: now });
+  await page.reload();
+  await page.getByTestId("chat-shell").waitFor();
+  await dismissOnboardingIfPresent(page);
+
+  const card = page.getByTestId("turn-changes-card");
+  await card.waitFor();
+  if (await page.getByTestId("turn-changes-card").count() !== 1) {
+    throw new Error("Only the latest assistant response should show a turn changes card.");
+  }
+  await assertTextContains(card, "Changed 5 files");
+  await assertTextContains(card, "+5");
+  await assertTextContains(card, "-0");
+  await assertTextContains(card, "file-1.txt");
+  await assertHidden(card.getByText("file-4.txt", { exact: true }), "fourth changed path before expansion");
+  await page.screenshot({ path: screenshots.turnChanges, fullPage: false });
+  await card.getByTestId("turn-changes-toggle").click();
+  await card.getByText("file-4.txt", { exact: true }).waitFor();
+
+  const requestsBeforeReview = gitActionRequests.length;
+  await card.getByTestId("turn-changes-review").click();
+  const gitPanel = page.getByTestId("git-workspace-panel");
+  await gitPanel.waitFor();
+  await assertTextContains(gitPanel.getByLabel("Diff scope"), "Last turn");
+  await assertTextContains(gitPanel.getByLabel("Changed files", { exact: true }), "file-5.txt");
+  await page.waitForTimeout(300);
+  if (gitActionRequests.length !== requestsBeforeReview) {
+    throw new Error("Review changes should use the cached turn diff without another Git action request.");
+  }
+
+  await page.getByRole("button", { name: "Close Git panel" }).click();
+  await gitPanel.waitFor({ state: "hidden" });
+  await page.evaluate(() => {
+    window.confirm = () => true;
+  });
+  await card.getByTestId("turn-changes-undo").click();
+  await card.waitFor({ state: "hidden" });
+  await page.getByText("Please update the fixture files", { exact: true }).waitFor();
+  await assertHidden(page.getByText("Updated all fixture files.", { exact: true }), "removed assistant response");
+  for (let index = 1; index <= 5; index += 1) {
+    const content = readFileSync(join(fixture.folder, `file-${index}.txt`), "utf8").replaceAll("\r\n", "\n");
+    if (content !== "before\n") throw new Error(`Undo did not restore file-${index}.txt.`);
+  }
+}
 
 async function runProfileSetup(page) {
   const errors = collectErrors(page);
@@ -2942,6 +3069,7 @@ function printEvidencePaths(milimHome) {
   console.log(`workersNarrowScreenshot=${screenshots.workersNarrow}`);
   console.log(`mcpAppsLightScreenshot=${screenshots.mcpAppsLight}`);
   console.log(`mcpAppsDarkScreenshot=${screenshots.mcpAppsDark}`);
+  console.log(`turnChangesScreenshot=${screenshots.turnChanges}`);
   for (const theme of ["light", "dark"]) {
     for (const kind of mcpAppKinds) console.log(`mcpApp${kind}Screenshot(${theme})=${mcpAppViewScreenshot(kind, theme)}`);
   }
