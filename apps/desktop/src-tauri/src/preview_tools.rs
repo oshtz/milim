@@ -214,10 +214,18 @@ pub fn set_active_preview_target(
 
 pub fn preview_tools(state: SharedPreviewToolState) -> Vec<Arc<dyn Tool>> {
     vec![
-        Arc::new(PreviewDomSnapshotTool { state: state.clone() }),
-        Arc::new(PreviewClickTool { state: state.clone() }),
-        Arc::new(PreviewTypeTextTool { state: state.clone() }),
-        Arc::new(PreviewKeyPressTool { state: state.clone() }),
+        Arc::new(PreviewDomSnapshotTool {
+            state: state.clone(),
+        }),
+        Arc::new(PreviewClickTool {
+            state: state.clone(),
+        }),
+        Arc::new(PreviewTypeTextTool {
+            state: state.clone(),
+        }),
+        Arc::new(PreviewKeyPressTool {
+            state: state.clone(),
+        }),
         Arc::new(PreviewScrollTool { state }),
     ]
 }
@@ -232,7 +240,9 @@ async fn run_preview_action(
         .read()
         .ok()
         .and_then(|target| target.clone())
-        .ok_or_else(|| Error::InvalidRequest("No active preview panel is available.".to_string()))?;
+        .ok_or_else(|| {
+            Error::InvalidRequest("No active preview panel is available.".to_string())
+        })?;
     let capability = capability_for_action(action);
     if target.status != "ready" || !target.capabilities.iter().any(|item| item == capability) {
         return Err(Error::InvalidRequest(format!(
@@ -246,13 +256,12 @@ async fn run_preview_action(
         .ok()
         .and_then(|app| app.clone())
         .ok_or_else(|| Error::InvalidRequest("Preview tools are not ready yet.".to_string()))?;
-    let label = target
-        .label
-        .as_deref()
-        .ok_or_else(|| Error::InvalidRequest("Active preview surface has no webview target.".to_string()))?;
-    let webview = app
-        .get_webview(label)
-        .ok_or_else(|| Error::InvalidRequest("The active preview webview is no longer available.".to_string()))?;
+    let label = target.label.as_deref().ok_or_else(|| {
+        Error::InvalidRequest("Active preview surface has no webview target.".to_string())
+    })?;
+    let webview = app.get_webview(label).ok_or_else(|| {
+        Error::InvalidRequest("The active preview webview is no longer available.".to_string())
+    })?;
     let action_json = serde_json::to_string(action).map_err(|e| Error::Other(e.to_string()))?;
     let args_json = serde_json::to_string(&args).map_err(|e| Error::Other(e.to_string()))?;
     let script = format!(
@@ -282,10 +291,18 @@ async fn run_preview_action(
 }
 
 fn default_preview_capabilities() -> Vec<String> {
-    ["dom_snapshot", "click", "type", "key", "scroll", "logs", "source"]
-        .iter()
-        .map(|capability| (*capability).to_string())
-        .collect()
+    [
+        "dom_snapshot",
+        "click",
+        "type",
+        "key",
+        "scroll",
+        "logs",
+        "source",
+    ]
+    .iter()
+    .map(|capability| (*capability).to_string())
+    .collect()
 }
 
 fn capability_for_action(action: &str) -> &str {
@@ -350,7 +367,12 @@ impl Tool for PreviewDomSnapshotTool {
         let args: DomSnapshotArgs = serde_json::from_value(args).map_err(|error| {
             Error::InvalidRequest(format!("invalid preview_dom_snapshot arguments: {error}"))
         })?;
-        run_preview_action(&self.state, "snapshot", json!({ "max_chars": args.max_chars })).await
+        run_preview_action(
+            &self.state,
+            "snapshot",
+            json!({ "max_chars": args.max_chars }),
+        )
+        .await
     }
 }
 
@@ -393,7 +415,8 @@ impl Tool for PreviewClickTool {
     }
 
     async fn invoke(&self, args: Value) -> Result<Value> {
-        let args = serde_json::to_value(normalize_target_args(args)?).map_err(|e| Error::Other(e.to_string()))?;
+        let args = serde_json::to_value(normalize_target_args(args)?)
+            .map_err(|e| Error::Other(e.to_string()))?;
         run_preview_action(&self.state, "click", args).await
     }
 }
@@ -445,8 +468,9 @@ impl Tool for PreviewTypeTextTool {
     }
 
     async fn invoke(&self, args: Value) -> Result<Value> {
-        let args: TypeTextArgs = serde_json::from_value(args)
-            .map_err(|e| Error::InvalidRequest(format!("invalid preview_type_text arguments: {e}")))?;
+        let args: TypeTextArgs = serde_json::from_value(args).map_err(|e| {
+            Error::InvalidRequest(format!("invalid preview_type_text arguments: {e}"))
+        })?;
         validate_coordinate_pair(args.x, args.y)?;
         let args = serde_json::to_value(args).map_err(|e| Error::Other(e.to_string()))?;
         run_preview_action(&self.state, "type_text", args).await
@@ -497,8 +521,9 @@ impl Tool for PreviewKeyPressTool {
     }
 
     async fn invoke(&self, args: Value) -> Result<Value> {
-        let args: KeyPressArgs = serde_json::from_value(args)
-            .map_err(|e| Error::InvalidRequest(format!("invalid preview_key_press arguments: {e}")))?;
+        let args: KeyPressArgs = serde_json::from_value(args).map_err(|e| {
+            Error::InvalidRequest(format!("invalid preview_key_press arguments: {e}"))
+        })?;
         let args = serde_json::to_value(args).map_err(|e| Error::Other(e.to_string()))?;
         run_preview_action(&self.state, "key_press", args).await
     }
@@ -601,7 +626,10 @@ mod tests {
     #[test]
     fn registers_preview_tools() {
         let state = Arc::new(PreviewToolState::default());
-        let mut names: Vec<String> = preview_tools(state).iter().map(|tool| tool.name().to_string()).collect();
+        let mut names: Vec<String> = preview_tools(state)
+            .iter()
+            .map(|tool| tool.name().to_string())
+            .collect();
         names.sort_unstable();
         assert_eq!(
             names,
@@ -662,9 +690,6 @@ mod tests {
         let err = tauri::async_runtime::block_on(run_preview_action(&state, "snapshot", json!({})))
             .unwrap_err()
             .to_string();
-        assert!(
-            err.contains("not inspectable"),
-            "unexpected error: {err}"
-        );
+        assert!(err.contains("not inspectable"), "unexpected error: {err}");
     }
 }

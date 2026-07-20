@@ -104,8 +104,7 @@ impl Tool for ReadFileTool {
     async fn invoke(&self, args: Value) -> Result<Value> {
         let path = safe_join(&self.ws, arg_str(&args, "path")?)?;
         let offset = optional_u64(&args, "offset", 0)?;
-        let limit = usize::try_from(optional_u64(&args, "limit", MAX_READ)?)
-            .unwrap_or(usize::MAX);
+        let limit = usize::try_from(optional_u64(&args, "limit", MAX_READ)?).unwrap_or(usize::MAX);
         let (content, next_offset, eof) = read_text_range(&path, offset, limit)?;
         Ok(json!({ "content": content, "offset": offset, "next_offset": next_offset, "eof": eof }))
     }
@@ -834,12 +833,12 @@ mod tests {
         let run_registry = registry.scoped_to_workspace(&first);
         *workspace.write().unwrap() = Some(second.clone());
 
-        block_on(run_registry.call(
-            "write_file",
-            json!({"path":"bound.txt","content":"first"}),
-        ))
-        .unwrap();
-        assert_eq!(std::fs::read_to_string(first.join("bound.txt")).unwrap(), "first");
+        block_on(run_registry.call("write_file", json!({"path":"bound.txt","content":"first"})))
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(first.join("bound.txt")).unwrap(),
+            "first"
+        );
         assert!(!second.join("bound.txt").exists());
 
         let _ = std::fs::remove_dir_all(first);
@@ -861,7 +860,10 @@ mod tests {
             ]
         })))
         .unwrap();
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "one\nfirst\nsecond\ntwo\n");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "one\nfirst\nsecond\ntwo\n"
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 

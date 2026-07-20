@@ -57,10 +57,7 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
         .build()
 }
 
-fn emit_navigation<R: Runtime>(
-    webview: &Webview<R>,
-    event: PreviewWebviewNavigationPayload,
-) {
+fn emit_navigation<R: Runtime>(webview: &Webview<R>, event: PreviewWebviewNavigationPayload) {
     if let Some(main) = webview.get_webview("main") {
         let _ = main.emit(PREVIEW_WEBVIEW_NAVIGATION_EVENT, event);
     }
@@ -125,15 +122,16 @@ fn allowed_preview_url(value: &str) -> Result<Url, String> {
 
 fn preview_url_allowed(url: &Url) -> bool {
     url.scheme() == "https"
-        || (url.scheme() == "http"
-            && is_loopback_host(url.host_str().unwrap_or_default()))
+        || (url.scheme() == "http" && is_loopback_host(url.host_str().unwrap_or_default()))
 }
 
 fn is_preview_label(label: &str) -> bool {
     label.starts_with(PREVIEW_WEBVIEW_LABEL_PREFIX)
         && label[PREVIEW_WEBVIEW_LABEL_PREFIX.len()..]
             .chars()
-            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | ':'))
+            .all(|character| {
+                character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | ':')
+            })
 }
 
 fn is_loopback_host(host: &str) -> bool {

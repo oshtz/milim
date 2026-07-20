@@ -181,7 +181,9 @@ fn capture(idx: usize, path: &std::path::Path, gate: &ComputerGate) -> Result<Va
 }
 
 fn prune_captures(dir: &std::path::Path, current: &std::path::Path, keep: usize) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
     let mut files = entries
         .filter_map(|entry| entry.ok())
         .filter(|entry| entry.path().extension().and_then(|ext| ext.to_str()) == Some("png"))
