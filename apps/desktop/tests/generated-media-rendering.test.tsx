@@ -125,6 +125,12 @@ try {
   const source = readFileSync(resolve(process.cwd(), "src/components/GeneratedMedia.tsx"), "utf8");
   assert(source.includes("<SheetDialog"), "Visual media should reuse the focus-trapped dialog");
   assert(source.includes("generated-media-stage"), "Expanded visual media should render in the contained stage");
+  assert(source.includes("media-zoom-increase"), "Expanded visual media should expose zoom controls");
+  assert(source.includes("media-preview-close"), "Expanded visual media should expose a visible close action");
+  assert(source.includes("scrollLeft = start.left"), "Zoomed visual media should support pointer panning");
+  assert(source.includes("onWheel={zoomWithWheel}"), "Expanded visual media should zoom with the mouse wheel");
+  assert(source.includes("createPortal("), "Chat media previews should escape clipped message-card layout");
+  assert(source.includes("closeFromBackdropClick"), "Dark canvas clicks should dismiss the fullscreen preview");
   assert(source.includes("Open externally"), "Direct web media should retain the secondary external action");
   assert(source.includes("onActivate"), "Library thumbnails should support selection without forcing full-screen preview");
 
@@ -145,6 +151,10 @@ try {
   assert(managerSource.includes("Saving locally..."), "The preview should distinguish local saving from generation");
   assert(managerSource.includes("This run failed"), "The preview should present a specific failed state");
   assert(managerSource.includes("Loading local library..."), "Initial library loading should not leave a blank grid");
+  assert(managerSource.includes('stageStatus !== "ready"'), "Ready outputs should not repeat their state in the stage header");
+  assert(managerSource.includes('className="media-library-count"'), "The library total should render as a distinct count badge");
+  assert(managerSource.includes('item.save_state !== "ready"'), "Ready library cards should not repeat their state over the thumbnail");
+  assert(managerSource.includes('className="media-library-card-meta"'), "Library cards should separate prompt and source metadata");
   assert(managerSource.includes("showLibraryFilters"), "Empty libraries should hide inactive filter chrome");
   assert(managerSource.includes("aria-current="), "The selected library card should be exposed semantically");
   assert(managerSource.includes('<aside className="media-library"'), "The local library should render as a collapsible sidebar");
@@ -156,6 +166,7 @@ try {
 
   const styleSource = readFileSync(resolve(process.cwd(), "src/styles.css"), "utf8");
   assert(styleSource.includes(".inline-media-parameter-controls"), "The shared inline media controls should retain compact parameter layout");
+  assert(styleSource.includes("grid-auto-rows: max-content"), "Library cards should not stretch to fill an otherwise empty sidebar");
   assert(styleSource.includes(".inline-media-popover::before"), "The media settings surface should keep nested dropdown backdrop blur working");
 
   const apiSource = readFileSync(resolve(process.cwd(), "src/api.ts"), "utf8");

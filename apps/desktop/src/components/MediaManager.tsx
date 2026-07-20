@@ -819,16 +819,16 @@ export function MediaManager({
           <section className={`media-workspace${libraryOpen ? " library-open" : ""}`} aria-label="Generated media and library">
             <div className="media-stage" data-testid="media-stage">
               <div className="media-stage-head">
-                <div>
-                  <span className="media-eyebrow">Selected output</span>
-                  <strong>{stageModel || "No generation selected"}</strong>
+                <div className="media-stage-title">
+                  <strong>Output</strong>
+                  <span title={stageModel}>{stageModel || "Nothing selected"}</span>
                 </div>
                 <div className="media-stage-head-actions">
-                  {stageStatus && <span className={`media-status ${stageStatus}`} role="status" aria-live="polite">{stageStatus}</span>}
+                  {stageStatus && stageStatus !== "ready" && <span className={`media-status ${stageStatus}`} role="status" aria-live="polite">{stageStatus}</span>}
                   <button
                     className={`btn-ghost media-library-toggle${libraryOpen ? " active" : ""}`}
                     type="button"
-                    aria-label={`${libraryOpen ? "Close" : "Open"} local library`}
+                    aria-label={`${libraryOpen ? "Close" : "Open"} local library, ${libraryItems.length} ${libraryItems.length === 1 ? "item" : "items"}`}
                     aria-controls="media-library-sidebar"
                     aria-expanded={libraryOpen}
                     onClick={() => {
@@ -837,7 +837,8 @@ export function MediaManager({
                     }}
                   >
                     <Sidebar size={14} />
-                    Library{libraryItems.length ? ` ${libraryItems.length}` : ""}
+                    <span>Library</span>
+                    <span className="media-library-count" aria-hidden="true">{libraryItems.length}</span>
                   </button>
                 </div>
               </div>
@@ -938,11 +939,14 @@ export function MediaManager({
                           <Image size={20} />
                         </button>
                       )}
-                      <span className={`media-status ${item.save_state}`}>{item.save_state}</span>
+                      {item.save_state !== "ready" && <span className={`media-status ${item.save_state}`}>{item.save_state}</span>}
                     </div>
                     <button className="media-library-card-body" type="button" onClick={() => setSelectedLibraryId(item.id)}>
-                      <strong>{item.prompt}</strong>
-                      <span>{item.provider} - {item.model}</span>
+                      <strong title={item.prompt}>{item.prompt}</strong>
+                      <span className="media-library-card-meta" aria-label={`${item.provider}, ${item.model}`}>
+                        <span className="media-library-card-provider">{item.provider}</span>
+                        <span className="media-library-card-model" title={item.model}>{item.model.split("/").pop() || item.model}</span>
+                      </span>
                     </button>
                   </article>
                 ))}
