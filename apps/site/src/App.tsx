@@ -327,7 +327,7 @@ function LandingPage() {
         <section className="hero" id="top">
           <HeroBackgroundEffect />
           <div className="hero-copy">
-            <h1><TyperText text="milim" delay={0.12} /></h1>
+            <h1>milim</h1>
             <p className="hero-line"><TyperText text="A model-agnostic development app for people who use more than one model." delay={0.27} /></p>
             <p className="hero-subline">
               Development chat, instant model switching, tools, memory, artifacts, previews, and privacy controls

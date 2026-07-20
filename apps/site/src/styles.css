@@ -576,7 +576,7 @@ main {
 [data-typer] {
   --typer-fg: currentColor;
   --typer-bg: var(--bg);
-  --typer-accent: var(--cool);
+  --typer-accent: var(--muted);
   --typer-accent-ink: var(--bg);
   --typer-radius: 5px;
 }
