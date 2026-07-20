@@ -156,6 +156,7 @@ try {
 
   const styleSource = readFileSync(resolve(process.cwd(), "src/styles.css"), "utf8");
   assert(styleSource.includes(".inline-media-parameter-controls"), "The shared inline media controls should retain compact parameter layout");
+  assert(styleSource.includes(".inline-media-popover::before"), "The media settings surface should keep nested dropdown backdrop blur working");
 
   const apiSource = readFileSync(resolve(process.cwd(), "src/api.ts"), "utf8");
   assert(apiSource.includes("new URL(`${BASE}/media/library`)"), "The desktop API should list the media library");
