@@ -6,6 +6,7 @@ import Lenis from "lenis";
 import { DocsPage } from "./DocsPage";
 import { HeroAsciiField } from "./HeroAsciiField";
 import { ShaderField } from "./ShaderField";
+import { SiteMobileNav } from "./SiteMobileNav";
 import { ThemeControl } from "./ThemeControl";
 
 gsap.registerPlugin(useGSAP, ScrollTrigger);
@@ -789,18 +790,6 @@ function HeroBackgroundEffect({ dither = true }: { dither?: boolean }) {
 }
 
 function Nav() {
-  const [menuOpen, setMenuOpen] = useState(false);
-
-  useEffect(() => {
-    if (!menuOpen) return;
-
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setMenuOpen(false);
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [menuOpen]);
-
   return (
     <header className="nav">
       <a className="brand" href="/" aria-label="milim home">
@@ -815,24 +804,8 @@ function Nav() {
           ))}
         </nav>
         <ThemeControl />
-        <button
-          className="menu-toggle"
-          type="button"
-          aria-controls="mobile-nav"
-          aria-expanded={menuOpen}
-          aria-label={menuOpen ? "Close navigation" : "Open navigation"}
-          onClick={() => setMenuOpen((open) => !open)}
-        >
-          {menuOpen ? <CloseIcon /> : <MenuIcon />}
-        </button>
+        <SiteMobileNav links={navLinks} />
       </div>
-      <nav className="mobile-menu" id="mobile-nav" aria-label="Mobile primary" hidden={!menuOpen}>
-        {navLinks.map((link) => (
-          <a className={link.className} href={link.href} key={link.href} onClick={() => setMenuOpen(false)}>
-            {link.label}
-          </a>
-        ))}
-      </nav>
     </header>
   );
 }
@@ -880,22 +853,6 @@ function DownloadIcon() {
   return (
     <svg aria-hidden="true" viewBox="0 0 24 24">
       <path d="M12 3v11m0 0 4-4m-4 4-4-4M5 18h14" />
-    </svg>
-  );
-}
-
-function MenuIcon() {
-  return (
-    <svg aria-hidden="true" viewBox="0 0 24 24">
-      <path d="M4 7h16M4 12h16M4 17h16" />
-    </svg>
-  );
-}
-
-function CloseIcon() {
-  return (
-    <svg aria-hidden="true" viewBox="0 0 24 24">
-      <path d="M6 6l12 12M18 6 6 18" />
     </svg>
   );
 }

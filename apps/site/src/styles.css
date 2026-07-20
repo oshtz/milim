@@ -310,6 +310,7 @@ main {
 }
 
 .menu-toggle {
+  position: relative;
   width: 38px;
   height: 34px;
   place-items: center;
@@ -318,6 +319,32 @@ main {
   color: var(--nav-fg);
   background: rgba(127, 127, 127, 0.08);
   cursor: pointer;
+}
+
+.menu-toggle-icon {
+  display: grid;
+  grid-area: 1 / 1;
+  place-items: center;
+  opacity: 1;
+  transform: rotate(0deg) scale(1);
+  transition:
+    opacity 160ms cubic-bezier(0.23, 1, 0.32, 1),
+    transform 160ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.menu-toggle-icon-close {
+  opacity: 0;
+  transform: rotate(-45deg) scale(0.82);
+}
+
+.menu-toggle[data-open] .menu-toggle-icon-menu {
+  opacity: 0;
+  transform: rotate(45deg) scale(0.82);
+}
+
+.menu-toggle[data-open] .menu-toggle-icon-close {
+  opacity: 1;
+  transform: rotate(0deg) scale(1);
 }
 
 .menu-toggle svg,
@@ -365,6 +392,8 @@ main {
 }
 
 .theme-control {
+  position: relative;
+  isolation: isolate;
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   width: 156px;
@@ -377,12 +406,36 @@ main {
   transition: opacity 160ms ease;
 }
 
+.theme-control::before {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  left: 2px;
+  z-index: 0;
+  width: calc((100% - 4px) / 3);
+  border-radius: 999px;
+  content: "";
+  background: var(--paper);
+  transform: translateX(0);
+  transition: transform 160ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.theme-control[data-theme-mode="dark"]::before {
+  transform: translateX(100%);
+}
+
+.theme-control[data-theme-mode="light"]::before {
+  transform: translateX(200%);
+}
+
 .theme-control:hover,
 .theme-control:focus-within {
   opacity: 1;
 }
 
 .theme-control button {
+  position: relative;
+  z-index: 1;
   border: 0;
   border-radius: 999px;
   color: var(--nav-link);
@@ -397,7 +450,7 @@ main {
 
 .theme-control button[aria-pressed="true"] {
   color: var(--ink);
-  background: var(--paper);
+  background: transparent;
 }
 
 .nav nav a,
@@ -2886,6 +2939,19 @@ main {
     color-mix(in srgb, var(--bg) 92%, var(--text) 8%);
   box-shadow: 0 28px 78px rgba(0, 0, 0, 0.34);
   backdrop-filter: blur(18px);
+  opacity: 1;
+  transform: translateY(0);
+  transform-origin: top left;
+  transition:
+    opacity 160ms cubic-bezier(0.23, 1, 0.32, 1),
+    transform 160ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+@starting-style {
+  .docs-search-nav .docs-search-results {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
 }
 
 .docs-search-results-head {
@@ -3275,11 +3341,74 @@ h4:hover > .doc-anchor,
 }
 
 .doc-example figcaption {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
   padding: 13px 16px;
   border-bottom: 1px solid var(--line-soft);
   color: var(--text);
   font-size: 0.9rem;
   font-weight: 600;
+}
+
+.doc-copy {
+  display: inline-grid;
+  min-width: 60px;
+  min-height: 30px;
+  padding: 0 9px;
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+  color: var(--muted);
+  background: color-mix(in srgb, var(--bg) 88%, var(--text) 12%);
+  font: inherit;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.doc-copy:focus-visible {
+  outline: 2px solid var(--text);
+  outline-offset: 2px;
+}
+
+.doc-copy-labels {
+  display: grid;
+  grid-area: 1 / 1;
+  place-items: center;
+  overflow: hidden;
+}
+
+.doc-copy-labels > span {
+  grid-area: 1 / 1;
+  opacity: 1;
+  transform: translateY(0);
+  transition:
+    opacity 160ms cubic-bezier(0.23, 1, 0.32, 1),
+    transform 160ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.doc-copy-labels > span:last-child {
+  opacity: 0;
+  transform: translateY(4px);
+}
+
+.doc-copy[data-copied] .doc-copy-labels > span:first-child {
+  opacity: 0;
+  transform: translateY(-4px);
+}
+
+.doc-copy[data-copied] .doc-copy-labels > span:last-child {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.doc-copy-status {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
 }
 
 .doc-example pre {
@@ -3939,6 +4068,11 @@ h4:hover > .doc-anchor,
   .doc-table-wrap:hover {
     transform: none;
     border-color: color-mix(in srgb, var(--text) 11%, var(--line));
+  }
+
+  .doc-copy:hover {
+    color: var(--text);
+    background: color-mix(in srgb, var(--bg) 82%, var(--text) 18%);
   }
 
   .feature-cell-visual:hover .privacy-board span {

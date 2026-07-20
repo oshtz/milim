@@ -5,6 +5,7 @@ import { ScrollTrigger } from "gsap/ScrollTrigger";
 import versionRaw from "../../../VERSION?raw";
 import { HeroAsciiField } from "./HeroAsciiField";
 import { ShaderField } from "./ShaderField";
+import { SiteMobileNav } from "./SiteMobileNav";
 import { ThemeControl } from "./ThemeControl";
 
 gsap.registerPlugin(useGSAP, ScrollTrigger);
@@ -14,6 +15,12 @@ const RELEASES_URL = `${GITHUB_URL}/releases/latest`;
 const WINDOWS_URL = `${RELEASES_URL}/download/milim-windows-x64-portable.exe`;
 const MACOS_URL = `${RELEASES_URL}/download/milim-macos-universal.dmg`;
 const DOCS_VERSION = versionRaw.trim();
+const docsNavLinks = [
+  { label: "Home", href: "https://milim.ai/" },
+  { label: "Product", href: "https://milim.ai/#product" },
+  { label: "Releases", href: "https://milim.ai/#releases" },
+  { label: "GitHub", href: GITHUB_URL },
+];
 
 const docModules = import.meta.glob("../../../docs/wiki/*.md", {
   eager: true,
@@ -528,12 +535,10 @@ export function DocsPage() {
         </div>
         <div className="nav-actions">
           <nav aria-label="Primary">
-            <a href="https://milim.ai/">Home</a>
-            <a href="https://milim.ai/#product">Product</a>
-            <a href="https://milim.ai/#releases">Releases</a>
-            <a href={GITHUB_URL}>GitHub</a>
+            {docsNavLinks.map((link) => <a href={link.href} key={link.href}>{link.label}</a>)}
           </nav>
           <ThemeControl />
+          <SiteMobileNav links={docsNavLinks} />
         </div>
       </header>
 
@@ -760,9 +765,40 @@ function inlineNodes(text: string): ReactNode[] {
 }
 
 function Example({ title, language, children }: { title: string; language: string; children: string }) {
+  const [copied, setCopied] = useState(false);
+  const resetTimer = useRef<number>();
+
+  useEffect(() => () => window.clearTimeout(resetTimer.current), []);
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(children.trim());
+      window.clearTimeout(resetTimer.current);
+      setCopied(true);
+      resetTimer.current = window.setTimeout(() => setCopied(false), 1200);
+    } catch {
+      // Clipboard access can be blocked; leave the button ready to retry.
+    }
+  };
+
   return (
     <figure className="doc-example">
-      <figcaption>{title}</figcaption>
+      <figcaption>
+        <span>{title}</span>
+        <button
+          className="doc-copy"
+          type="button"
+          aria-label={copied ? "Copied" : "Copy code"}
+          data-copied={copied ? "" : undefined}
+          onClick={() => void copy()}
+        >
+          <span className="doc-copy-labels" aria-hidden="true">
+            <span>Copy</span>
+            <span>Copied</span>
+          </span>
+          <span className="doc-copy-status" aria-live="polite">{copied ? "Code copied" : ""}</span>
+        </button>
+      </figcaption>
       <pre data-lenis-prevent><code className={language ? `language-${language}` : undefined}>{children.trim()}</code></pre>
     </figure>
   );
