@@ -241,7 +241,10 @@ export function checkpointSummary(message: ChatMessage): string {
 
 export function messagesForModelContext(contextMessages: readonly ChatMessage[], conversation: readonly ChatMessage[]): ChatMessage[] {
   const checkpointIndex = latestCompactionIndex(conversation);
-  const modelMessage = (message: ChatMessage) => !isCompactionCheckpoint(message) && !isTranscriptControlMessage(message);
+  const modelMessage = (message: ChatMessage) =>
+    !isCompactionCheckpoint(message)
+    && !isTranscriptControlMessage(message)
+    && !(message.role === "assistant" && !message.content.trim() && !message.attachments?.length);
   if (checkpointIndex < 0) {
     return [...contextMessages, ...conversation.filter(modelMessage)];
   }

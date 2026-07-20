@@ -77,6 +77,47 @@ assert.equal(plain.accountRuntimeMayUseTools, false);
 assert.equal(contextMessagesForTurn(plain, "model")[0].content, "Be terse.");
 assert.equal(contextMessagesForTurn(plain, "agent").some((message) => message.content === "Be terse."), false);
 
+const explicitMcp = buildTurnPromptContext({
+  sessionId: "s-mcp",
+  threadTitle: "MCP",
+  folder: "",
+  instructions: "",
+  planMode: false,
+  memory: false,
+  conversation: [user("use paper-mcp for this")],
+  memoryHits: [],
+  selectedSkills: [],
+  turnId: "turn-mcp",
+  sandbox: false,
+  computerUse: false,
+  activeAgentId: null,
+  toolApproval: "guarded",
+  toolApprovalGrant: false,
+  experimentalHashlinePatch: false,
+});
+assert.equal(explicitMcp.useTools, true, "an explicit MCP request should use the Milim tool loop without a workspace");
+
+const explicitMcpTool = buildTurnPromptContext({
+  sessionId: "s-mcp-tool",
+  threadTitle: "MCP tool",
+  folder: "",
+  instructions: "",
+  planMode: false,
+  memory: false,
+  conversation: [user("Use /paper__get_basic_info")],
+  memoryHits: [],
+  selectedSkills: [],
+  turnId: "turn-mcp-tool",
+  sandbox: false,
+  computerUse: false,
+  activeAgentId: null,
+  toolApproval: "guarded",
+  toolApprovalGrant: false,
+  experimentalHashlinePatch: false,
+  tools: [{ name: "paper__get_basic_info", description: "Inspect Paper", effect: "read_only" }],
+});
+assert.equal(explicitMcpTool.useTools, true, "an explicit MCP tool token should use the Milim tool loop");
+
 const workspaceProviderTools = buildTurnPromptContext({
   sessionId: "s-workspace",
   threadTitle: "Workspace",

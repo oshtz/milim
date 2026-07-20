@@ -133,8 +133,9 @@ export function buildTurnPromptContext({
   const skillMessage = skillInstructionMessage(selectedSkills);
   const userText = lastUserText ?? latestUserContent(conversation);
   const useScheduleTools = !planMode && looksLikeScheduleRequest(userText);
+  const useMcpTools = !planMode && looksLikeMcpToolRequest(userText, tools);
   const previewToolsEnabled = previewSurface === undefined ? Boolean(previewTools) : previewSurfaceCanInspect(previewSurface);
-  const nonMemoryTools = planMode || sandbox || computerUse || previewToolsEnabled || activeAgentId != null || folder.trim() !== "" || useScheduleTools;
+  const nonMemoryTools = planMode || sandbox || computerUse || previewToolsEnabled || activeAgentId != null || folder.trim() !== "" || useScheduleTools || useMcpTools;
   const memoryWriteEnabled = memory && !planMode && !codexModel && !claudeModel && (nonMemoryTools || looksLikeMemoryWriteRequest(userText));
   const memorySystem = memory && !planMode
     ? [
@@ -562,6 +563,13 @@ export function looksLikeMemoryWriteRequest(input: string): boolean {
   return /\b(?:remember|memorize)\b/.test(text) ||
     /\b(?:save|store|keep)\b.{0,80}\b(?:memory|for later|as context|preference|decision)\b/.test(text) ||
     /\b(?:add|put)\b.{0,80}\b(?:to|in)\s+(?:memory|memories)\b/.test(text);
+}
+
+export function looksLikeMcpToolRequest(input: string, tools: readonly ToolInfo[] = []): boolean {
+  const text = input.toLowerCase();
+  if (!text.trim()) return false;
+  if (/(?:^|[^a-z0-9])mcp(?:$|[^a-z0-9])/.test(text)) return true;
+  return tools.some((tool) => tool.name.includes("__") && text.includes(`/${tool.name.toLowerCase()}`));
 }
 
 export function looksLikeScheduleRequest(input: string): boolean {

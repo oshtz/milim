@@ -114,6 +114,17 @@ const approvalOutbound = messagesForModelContext([], approvalThread);
 assert.deepEqual(approvalOutbound, [approvalThread[0]], "approval cards should stay out of model context");
 assert.equal(estimateMessagesTokens(approvalThread), estimateMessagesTokens([approvalThread[0]]), "approval cards should not affect token estimates");
 
+const interruptedThread = [
+  user("use paper-mcp for this"),
+  assistant(""),
+  user("what is open in paper?"),
+];
+assert.deepEqual(
+  messagesForModelContext([], interruptedThread),
+  [interruptedThread[0], interruptedThread[2]],
+  "empty assistant placeholders from interrupted turns should stay out of model context",
+);
+
 const sendPlan = contextSendPlan([], longMessages, "tiny", [tinyModel]);
 assert.equal(sendPlan.shouldCompact, true, "long uncheckpointed context should request a visible checkpoint");
 

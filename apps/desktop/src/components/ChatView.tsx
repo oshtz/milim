@@ -275,6 +275,7 @@ import {
   type PrepareTurnOutboundOptions,
 } from "../lib/turnContext";
 import {
+  looksLikeMcpToolRequest,
   looksLikeMemoryWriteRequest,
   looksLikeScheduleRequest,
   prepareTurnPromptContext,
@@ -5141,6 +5142,7 @@ export function ChatView({
         sandbox ||
         computerUse ||
         previewToolsIntent ||
+        looksLikeMcpToolRequest(input, composerTools) ||
         looksLikeScheduleRequest(input) ||
         (memory && looksLikeMemoryWriteRequest(input))),
   );
@@ -7571,6 +7573,12 @@ export function ChatView({
       captureUsageDelta: captureAgentUsageDelta,
       snapshot,
     });
+    const onAgentEvent = (event: AgentEvent) => {
+      onEvent(event);
+      if (event.type === "tool_result" && event.name === "mcp_server_save") {
+        void listTools().then(setComposerTools).catch(() => {});
+      }
+    };
     const prepareOutbound = (
       contextMessages: ChatMessage[],
       conversation: ChatMessage[],
@@ -7692,7 +7700,7 @@ export function ChatView({
           streamAgentRun,
           agentId: turnActiveAgentId,
           model: turnModel,
-          onEvent,
+          onEvent: onAgentEvent,
           signal: controller.signal,
           runMemoryContext,
           toolContext,
