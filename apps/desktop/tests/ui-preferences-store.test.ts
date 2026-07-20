@@ -62,6 +62,7 @@ equal(useUiPreferences.getState().previewPanelWidth, 420, "preview panel should 
 equal(useUiPreferences.getState().uiSize, DEFAULT_UI_SIZE, "UI size should default to 100%");
 equal(useUiPreferences.getState().showAccountUsageInTitleBar, true, "title-bar account usage should default on");
 equal(useUiPreferences.getState().windowAlwaysOnTop, false, "window always-on-top should default off");
+equal(useUiPreferences.getState().interfaceSounds, false, "interface sounds should default off");
 equal(useUiPreferences.getState().composerSendShortcut, "enter", "Enter should send by default");
 equal(useUiPreferences.getState().composerDensity, "comfortable", "composer should default to comfortable density");
 equal(useUiPreferences.getState().autoTitleChats, true, "new chats should auto-title by default");
@@ -144,6 +145,10 @@ useUiPreferences.getState().setWindowAlwaysOnTop(true);
 equal(useUiPreferences.getState().windowAlwaysOnTop, true, "always-on-top preference should update");
 equal(localStorage.getItem("milim.window.alwaysOnTop"), "true", "always-on-top should mirror the legacy window key");
 
+useUiPreferences.getState().setInterfaceSounds(true);
+equal(useUiPreferences.getState().interfaceSounds, true, "interface sounds should update");
+equal(persistedUiState().interfaceSounds, true, "interface sounds should be persisted");
+
 useUiPreferences.getState().setComposerSendShortcut("modEnter");
 equal(useUiPreferences.getState().composerSendShortcut, "modEnter", "send shortcut should update");
 
@@ -221,6 +226,7 @@ useUiPreferences.setState({
   uiSize: DEFAULT_UI_SIZE,
   showAccountUsageInTitleBar: true,
   windowAlwaysOnTop: false,
+  interfaceSounds: false,
   composerSendShortcut: "enter",
   composerDensity: "comfortable",
   autoTitleChats: true,
@@ -240,7 +246,7 @@ useUiPreferences.setState({
 });
 localStorage.setItem(
   "milim.ui",
-  '{"state":{"sidebarOpen":false,"sidebarWidth":384,"previewPanelWidth":512,"uiSize":130,"windowAlwaysOnTop":true,"composerSendShortcut":"modEnter","composerDensity":"compact","autoTitleChats":false,"aiThreadNames":true,"aiThreadNameModel":"persisted-title-model","newChatButtonAtBottom":true,"interfaceMode":"workbench","developerMode":true,"experimentalHashlinePatch":true,"chatLayoutStyle":"compact","messageWidth":"full","avatarStyle":"role","codeBlockTheme":"high-contrast","backgroundFit":"contain","backgroundTreatment":"blur","thinkingBlocksOpen":true,"gitPanelExpanded":true,"appShortcuts":{"newChat":"Mod+Shift+N","focusSearch":"Mod+Shift+N","focusComposer":"x","stopGeneration":"F2","toggleSidebar":"Mod+B","previousThread":"Mod+Tab"}},"version":0}',
+  '{"state":{"sidebarOpen":false,"sidebarWidth":384,"previewPanelWidth":512,"uiSize":130,"windowAlwaysOnTop":true,"interfaceSounds":"loud","composerSendShortcut":"modEnter","composerDensity":"compact","autoTitleChats":false,"aiThreadNames":true,"aiThreadNameModel":"persisted-title-model","newChatButtonAtBottom":true,"interfaceMode":"workbench","developerMode":true,"experimentalHashlinePatch":true,"chatLayoutStyle":"compact","messageWidth":"full","avatarStyle":"role","codeBlockTheme":"high-contrast","backgroundFit":"contain","backgroundTreatment":"blur","thinkingBlocksOpen":true,"gitPanelExpanded":true,"appShortcuts":{"newChat":"Mod+Shift+N","focusSearch":"Mod+Shift+N","focusComposer":"x","stopGeneration":"F2","toggleSidebar":"Mod+B","previousThread":"Mod+Tab"}},"version":0}',
 );
 await useUiPreferences.persist.rehydrate();
 equal(useUiPreferences.getState().sidebarOpen, false, "sidebar should rehydrate persisted closed state");
@@ -249,6 +255,7 @@ equal(useUiPreferences.getState().previewPanelWidth, 512, "preview panel should 
 equal(useUiPreferences.getState().uiSize, 130, "UI size should rehydrate persisted value");
 equal(useUiPreferences.getState().showAccountUsageInTitleBar, true, "missing title-bar account usage preference should keep its enabled default");
 equal(useUiPreferences.getState().windowAlwaysOnTop, true, "always-on-top should rehydrate");
+equal(useUiPreferences.getState().interfaceSounds, false, "malformed interface sounds should rehydrate as off");
 equal(useUiPreferences.getState().composerSendShortcut, "modEnter", "send shortcut should rehydrate");
 equal(useUiPreferences.getState().composerDensity, "compact", "composer density should rehydrate");
 equal(useUiPreferences.getState().autoTitleChats, false, "auto-title should rehydrate");

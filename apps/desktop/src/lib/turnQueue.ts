@@ -45,26 +45,27 @@ export async function drainQueuedMessages({
   setChatNotice: (notice: ChatNotice | null) => void;
   sessionMessages: (sessionId: string) => ChatMessage[];
   runTurn: (convo: ChatMessage[], selectedModel: string, sessionId: string) => Promise<TurnRunResult>;
-}): Promise<void> {
-  if (queueDrainRef.current.has(sessionId)) return;
+}): Promise<TurnRunResult | undefined> {
+  if (queueDrainRef.current.has(sessionId)) return undefined;
   queueDrainRef.current.add(sessionId);
+  let lastResult: TurnRunResult | undefined;
   try {
     for (;;) {
-      if (generationControllersRef.current.has(sessionId)) return;
+      if (generationControllersRef.current.has(sessionId)) return lastResult;
       const selectedModel = queuedModelForSession(sessionId, fallbackModel, agents);
       if (!selectedModel) {
         setChatNotice({ tone: "error", message: "Choose a model before running queued messages." });
-        return;
+        return { status: "error", messages: sessionMessages(sessionId), error: "Choose a model before running queued messages." };
       }
       const queued = useSessions.getState().shiftQueuedMessage(sessionId);
-      if (!queued) return;
+      if (!queued) return lastResult;
       const latest = sessionMessages(sessionId);
-      const result = await runTurn(
+      lastResult = await runTurn(
         appendUserTurn(latest, queued.content, queued.attachments),
         selectedModel,
         sessionId,
       );
-      if (result.status !== "done") return;
+      if (lastResult.status !== "done") return lastResult;
     }
   } finally {
     queueDrainRef.current.delete(sessionId);

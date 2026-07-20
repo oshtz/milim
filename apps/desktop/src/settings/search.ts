@@ -14,6 +14,7 @@ export const SETTINGS_SEARCH_ENTRIES: SettingSearchEntry[] = [
   { id: "appearance-theme", label: "Theme", section: "appearance", aliases: ["custom", "edit", "delete", "palette"] },
   { id: "appearance-chat-surface", label: "Chat surface", section: "appearance", aliases: ["layout", "message width", "avatars"] },
   { id: "appearance-code-blocks", label: "Code blocks", section: "appearance", aliases: ["theme", "syntax"] },
+  { id: "appearance-interface-sounds", label: "Interface sounds", section: "appearance", aliases: ["sound", "audio", "feedback", "cuelume"] },
   { id: "appearance-background", label: "Background image", section: "appearance", aliases: ["fit", "treatment"] },
   { id: "history-retention", label: "Archive retention", section: "history", aliases: ["delete", "purge", "7 days", "14 days", "30 days"] },
   { id: "history-projects", label: "Archived projects", section: "history", aliases: ["restore", "delete"] },

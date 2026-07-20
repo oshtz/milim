@@ -44,6 +44,10 @@ import {
   useSessions,
 } from "./sessions/store";
 import { hydrateThemeFromUserState, useTheme } from "./theme/store";
+import {
+  installInterfaceSoundClicks,
+  setInterfaceSoundsEnabled,
+} from "./ui/sounds";
 import { useUiPreferences } from "./ui/store";
 
 const SettingsDialog = lazy(() =>
@@ -367,6 +371,7 @@ function AppContent() {
   const sidebarOpen = useUiPreferences((s) => s.sidebarOpen);
   const toggleSidebar = useUiPreferences((s) => s.toggleSidebar);
   const uiSize = useUiPreferences((s) => s.uiSize);
+  const interfaceSounds = useUiPreferences((s) => s.interfaceSounds);
   const chatLayoutStyle = useUiPreferences((s) => s.chatLayoutStyle);
   const messageWidth = useUiPreferences((s) => s.messageWidth);
   const avatarStyle = useUiPreferences((s) => s.avatarStyle);
@@ -382,6 +387,9 @@ function AppContent() {
     `bg-fit-${backgroundFit}`,
     `bg-treatment-${backgroundTreatment}`,
   ].join(" ");
+
+  useEffect(() => installInterfaceSoundClicks(), []);
+  useEffect(() => setInterfaceSoundsEnabled(interfaceSounds), [interfaceSounds]);
 
   function focusComposer() {
     document

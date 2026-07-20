@@ -42,6 +42,7 @@ interface UiPreferencesState {
   uiSize: number;
   showAccountUsageInTitleBar: boolean;
   windowAlwaysOnTop: boolean;
+  interfaceSounds: boolean;
   composerSendShortcut: ComposerSendShortcut;
   composerDensity: ComposerDensity;
   autoTitleChats: boolean;
@@ -67,6 +68,7 @@ interface UiPreferencesState {
   setUiSize: (uiSize: number) => void;
   setShowAccountUsageInTitleBar: (showAccountUsageInTitleBar: boolean) => void;
   setWindowAlwaysOnTop: (windowAlwaysOnTop: boolean) => void;
+  setInterfaceSounds: (interfaceSounds: boolean) => void;
   setComposerSendShortcut: (composerSendShortcut: ComposerSendShortcut) => void;
   setComposerDensity: (composerDensity: ComposerDensity) => void;
   setAutoTitleChats: (autoTitleChats: boolean) => void;
@@ -168,6 +170,7 @@ export const useUiPreferences = create<UiPreferencesState>()(
       uiSize: DEFAULT_UI_SIZE,
       showAccountUsageInTitleBar: true,
       windowAlwaysOnTop: false,
+      interfaceSounds: false,
       composerSendShortcut: "enter",
       composerDensity: "comfortable",
       autoTitleChats: true,
@@ -196,6 +199,7 @@ export const useUiPreferences = create<UiPreferencesState>()(
         persistWindowAlwaysOnTop(windowAlwaysOnTop);
         set({ windowAlwaysOnTop });
       },
+      setInterfaceSounds: (interfaceSounds) => set({ interfaceSounds }),
       setComposerSendShortcut: (composerSendShortcut) =>
         set({ composerSendShortcut: normalizeComposerSendShortcut(composerSendShortcut) }),
       setComposerDensity: (composerDensity) => set({ composerDensity: normalizeComposerDensity(composerDensity) }),
@@ -278,6 +282,7 @@ export const useUiPreferences = create<UiPreferencesState>()(
           uiSize: normalizeUiSize(saved?.uiSize ?? current.uiSize),
           showAccountUsageInTitleBar: typeof saved?.showAccountUsageInTitleBar === "boolean" ? saved.showAccountUsageInTitleBar : current.showAccountUsageInTitleBar,
           windowAlwaysOnTop: typeof saved?.windowAlwaysOnTop === "boolean" ? saved.windowAlwaysOnTop : current.windowAlwaysOnTop,
+          interfaceSounds: typeof saved?.interfaceSounds === "boolean" ? saved.interfaceSounds : false,
           composerSendShortcut: normalizeComposerSendShortcut(saved?.composerSendShortcut),
           composerDensity: normalizeComposerDensity(saved?.composerDensity),
           autoTitleChats: typeof saved?.autoTitleChats === "boolean" ? saved.autoTitleChats : current.autoTitleChats,
@@ -311,6 +316,7 @@ export const useUiPreferences = create<UiPreferencesState>()(
         uiSize: normalizeUiSize(state.uiSize),
         showAccountUsageInTitleBar: state.showAccountUsageInTitleBar,
         windowAlwaysOnTop: state.windowAlwaysOnTop,
+        interfaceSounds: state.interfaceSounds,
         composerSendShortcut: normalizeComposerSendShortcut(state.composerSendShortcut),
         composerDensity: normalizeComposerDensity(state.composerDensity),
         autoTitleChats: state.autoTitleChats,

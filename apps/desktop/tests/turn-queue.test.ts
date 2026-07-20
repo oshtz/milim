@@ -61,7 +61,7 @@ useSessions.getState().moveQueuedMessage(sessionId, secondQueued.id, firstQueued
 assert(hasQueuedMessages(sessionId), "queued messages should be visible before drain");
 
 const ran: string[] = [];
-await drainQueuedMessages({
+const successfulDrain = await drainQueuedMessages({
   sessionId,
   queueDrainRef: { current: new Set<string>() },
   generationControllersRef: { current: new Map<string, AbortController>() },
@@ -76,11 +76,12 @@ await drainQueuedMessages({
 });
 
 equal(ran.join(","), "second,first", "drain should run queued messages in reordered order");
+equal(successfulDrain?.status, "done", "drain should return the last successful queued run");
 assert(!hasQueuedMessages(sessionId), "drain should clear queued messages");
 
 useSessions.getState().enqueueQueuedMessage(sessionId, { content: "fails" });
 useSessions.getState().enqueueQueuedMessage(sessionId, { content: "remains" });
-await drainQueuedMessages({
+const failedDrain = await drainQueuedMessages({
   sessionId,
   queueDrainRef: { current: new Set<string>() },
   generationControllersRef: { current: new Map<string, AbortController>() },
@@ -88,6 +89,7 @@ await drainQueuedMessages({
   sessionMessages: () => [],
   runTurn: async (convo) => ({ status: "error", messages: convo }),
 });
+equal(failedDrain?.status, "error", "drain should return the terminal queued run result");
 equal(
   useSessions.getState().queuedMessagesBySession[sessionId]?.map((item) => item.content).join(","),
   "remains",

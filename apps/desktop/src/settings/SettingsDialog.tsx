@@ -89,7 +89,7 @@ const SETTINGS_SECTIONS: SettingsSection[] = [
     label: "Appearance",
     detail: "Themes and custom styles",
     icon: Sun,
-    search: ["theme", "themes", "dark", "light", "custom", "color", "style", "visual", "chat layout", "bubbles", "width", "avatar", "code", "background"],
+    search: ["theme", "themes", "dark", "light", "custom", "color", "style", "visual", "chat layout", "bubbles", "width", "avatar", "code", "background", "sound", "audio", "feedback", "cuelume"],
   },
   {
     id: "history",
@@ -177,6 +177,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
   const uiSize = useUiPreferences((s) => s.uiSize);
   const showAccountUsageInTitleBar = useUiPreferences((s) => s.showAccountUsageInTitleBar);
   const windowAlwaysOnTop = useUiPreferences((s) => s.windowAlwaysOnTop);
+  const interfaceSounds = useUiPreferences((s) => s.interfaceSounds);
   const composerSendShortcut = useUiPreferences((s) => s.composerSendShortcut);
   const composerDensity = useUiPreferences((s) => s.composerDensity);
   const autoTitleChats = useUiPreferences((s) => s.autoTitleChats);
@@ -196,6 +197,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
   const setUiSize = useUiPreferences((s) => s.setUiSize);
   const setShowAccountUsageInTitleBar = useUiPreferences((s) => s.setShowAccountUsageInTitleBar);
   const setWindowAlwaysOnTop = useUiPreferences((s) => s.setWindowAlwaysOnTop);
+  const setInterfaceSounds = useUiPreferences((s) => s.setInterfaceSounds);
   const setComposerSendShortcut = useUiPreferences((s) => s.setComposerSendShortcut);
   const setComposerDensity = useUiPreferences((s) => s.setComposerDensity);
   const setAutoTitleChats = useUiPreferences((s) => s.setAutoTitleChats);
@@ -966,6 +968,15 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
               <AppearanceCodeBlockThemeChoices
                 value={codeBlockTheme}
                 onChange={setCodeBlockTheme}
+              />
+            </SettingsBlock>
+            <SettingsBlock title="Interface sounds" data-setting-id="appearance-interface-sounds" className={settingHighlightClass("appearance-interface-sounds").trim()}>
+              <Toggle
+                checked={interfaceSounds}
+                onChange={setInterfaceSounds}
+                ariaLabel="Interface sounds"
+                testId="interface-sounds-toggle"
+                label="Play subtle local sounds for key interface actions and active chat results."
               />
             </SettingsBlock>
             {activeBackgroundImage && (

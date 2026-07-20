@@ -16,6 +16,7 @@ import { previewRuntimeKeyForThread } from "../lib/previewRuntimeKeys";
 import { sessionRecencyLabel } from "../lib/sessionRecency.js";
 import { chatExportFilename, sessionExportPayload } from "../lib/threadExport";
 import { DEFAULT_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH, MIN_SIDEBAR_WIDTH, normalizeSidebarWidth, useUiPreferences } from "../ui/store";
+import { playInterfaceSound } from "../ui/sounds";
 import { GitPanel } from "./GitPanel";
 import { useContextMenu } from "./ContextMenu";
 import { Archive, ArrowUp, Bolt, Calendar, ChevronDown, Cube, Download, Folder, FolderOpen, Gear, GitBranch, Image, Lightbulb, MoreHorizontal, Pin, Plus, Search, Sidebar as PanelIcon } from "./icons";
@@ -335,6 +336,12 @@ export function Sidebar({
   const [dragging, setDragging] = useState<SidebarDragItem | null>(null);
   const [dragOver, setDragOver] = useState<SidebarDragTarget | null>(null);
   const [sectionVisibleLimits, setSectionVisibleLimits] = useState<Record<string, number>>(() => ({}));
+
+  function switchVisibleSession(id: string) {
+    if (id === activeId) return;
+    playInterfaceSound("page");
+    switchTo(id);
+  }
 
   useEffect(() => {
     if (!projectMenuOpen && !confirmArchiveId) return;
@@ -865,7 +872,7 @@ export function Sidebar({
                       type="button"
                       title={`${statusLabel}: ${session.title}`}
                       aria-label={`Open ${statusLabel.toLowerCase()} thread: ${session.title}`}
-                      onClick={() => switchTo(session.id)}
+                      onClick={() => switchVisibleSession(session.id)}
                     >
                       <span className={"session-loader " + (generating ? "working" : "unread")} aria-hidden="true">
                         {generating ? <WorkingSessionLoader /> : <span className="loader" />}
@@ -1115,7 +1122,7 @@ export function Sidebar({
                         if (isSidebarDragInteractiveTarget(event.target)) return;
                         if (consumeSuppressedClick()) return;
                         setConfirmArchiveId(null);
-                        switchTo(s.id);
+                        switchVisibleSession(s.id);
                       }}
                       onDoubleClick={(event) => {
                         if (isSidebarDragInteractiveTarget(event.target)) return;

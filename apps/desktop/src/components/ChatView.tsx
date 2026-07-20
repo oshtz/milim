@@ -311,6 +311,7 @@ import { useSettings, type MediaSettings } from "../settings/store";
 import { themeCssVariables } from "../theme/applyTheme";
 import { useTheme } from "../theme/store";
 import { shortcutLabel, shortcutMatchesEvent } from "../ui/shortcuts";
+import { playInterfaceSound } from "../ui/sounds";
 import { DEFAULT_PREVIEW_PANEL_WIDTH, useUiPreferences } from "../ui/store";
 import { AgentAvatar } from "./AgentAvatar";
 import { Composer } from "./Composer";
@@ -5935,8 +5936,16 @@ export function ChatView({
   ) {
     const sessionId = activeId;
     const result = await runTurn(convo, selectedModel, options, sessionId);
+    let terminalResult = result;
     if (result.status === "done") {
-      await drainQueuedMessages(sessionId, selectedModel);
+      terminalResult = await drainQueuedMessages(sessionId, selectedModel) ?? result;
+    }
+    if (
+      document.visibilityState === "visible" &&
+      useSessions.getState().activeId === sessionId
+    ) {
+      if (terminalResult.status === "done") playInterfaceSound("ready");
+      else if (terminalResult.status === "error") playInterfaceSound("error");
     }
     return result;
   }
@@ -7915,9 +7924,15 @@ export function ChatView({
     setRecentThreadSwitcher(null);
   }
 
+  function switchVisibleSession(id: string) {
+    if (id === activeId) return;
+    playInterfaceSound("page");
+    switchToSession(id);
+  }
+
   function selectRecentThread(id: string) {
     closeRecentThreadSwitcher();
-    if (id !== activeId) switchToSession(id);
+    switchVisibleSession(id);
   }
 
   function switchToPreviousThread() {
@@ -7930,7 +7945,7 @@ export function ChatView({
       const nextId = next.items[activeIndex]?.id;
       setRecentThreadSwitcher(next);
       scheduleRecentThreadSwitcherClose();
-      if (nextId && nextId !== activeId) switchToSession(nextId);
+      if (nextId) switchVisibleSession(nextId);
       return;
     }
 
@@ -7944,7 +7959,7 @@ export function ChatView({
     if (!nextId) return;
     setRecentThreadSwitcher({ items, activeIndex: 0 });
     scheduleRecentThreadSwitcherClose();
-    if (nextId !== activeId) switchToSession(nextId);
+    switchVisibleSession(nextId);
   }
 
   function startShortcutNewChat() {
@@ -9192,7 +9207,7 @@ export function ChatView({
           projects={projects}
           activeId={activeId}
           commands={paletteCommands}
-          onSelect={switchToSession}
+          onSelect={switchVisibleSession}
           onClose={() => setChatSearchOpen(false)}
         />
       )}
