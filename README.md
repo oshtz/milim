@@ -126,7 +126,7 @@ crates/
   milim-cli/        the `milim` binary
 apps/
   desktop/          Tauri 2 + Vite/React/TypeScript desktop app
-  site/             Vite/React Cloudflare Pages site for milim.ai
+  site/             Vite/React Cloudflare Pages site for milim.ai and docs.milim.ai, with Lenis smooth scrolling
 ```
 
 ## Desktop App

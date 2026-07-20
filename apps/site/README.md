@@ -2,7 +2,7 @@
 
 Static Vite/React site for `milim.ai`, deployed with Cloudflare Pages.
 
-The build imports `docs/wiki/*.md`, emits route-specific docs metadata under an internal static namespace, and generates the Pages Worker that serves those files on `docs.milim.ai`. The landing page and docs share one Pages project; do not edit generated `dist` files.
+The build imports `docs/wiki/*.md`, emits route-specific docs metadata under an internal static namespace, and generates the Pages Worker that serves those files on `docs.milim.ai`. The landing page and docs share one Pages project and one reduced-motion-aware Lenis smooth-scroll setup; do not edit generated `dist` files.
 
 ## Cloudflare Pages
 

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type CSSProperties, type ReactNode, type S
 import { useGSAP } from "@gsap/react";
 import gsap from "gsap";
 import { ScrollTrigger } from "gsap/ScrollTrigger";
+import Lenis from "lenis";
 import { DocsPage } from "./DocsPage";
 import { HeroAsciiField } from "./HeroAsciiField";
 import { ShaderField } from "./ShaderField";
@@ -157,6 +158,14 @@ const chapters: Array<{ title: string; body: string; kind: ChapterKind }> = [
 ];
 
 export function App() {
+  useEffect(() => {
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+
+    const lenis = new Lenis({ autoRaf: true, anchors: true, stopInertiaOnNavigate: true });
+    lenis.on("scroll", ScrollTrigger.update);
+    return () => lenis.destroy();
+  }, []);
+
   const path = window.location.pathname.replace(/\/+$/, "") || "/";
   if (window.location.hostname === "docs.milim.ai") return <DocsPage />;
   if (path === "/docs" || path === "/wiki" || path.startsWith("/docs/") || path.startsWith("/wiki/")) return <DocsPage />;

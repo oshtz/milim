@@ -649,7 +649,7 @@ function DocsSearch({ index, variant }: { index: SearchIndex; variant?: "nav" })
         placeholder="models, privacy, api..."
       />
       {trimmedQuery.length >= 2 ? (
-        <div className="docs-search-results">
+        <div className="docs-search-results" data-lenis-prevent>
           <div className="docs-search-results-head">
             <span>{results.length ? "Top matches" : "No matches"}</span>
             {results.length ? <em>{results.length}</em> : null}
@@ -710,7 +710,7 @@ function MarkdownHeading({ block }: { block: Extract<MarkdownBlock, { type: "hea
 
 function Table({ headers, rows }: { headers: string[]; rows: string[][] }) {
   return (
-    <div className="doc-table-wrap">
+    <div className="doc-table-wrap" data-lenis-prevent>
       <table className={`doc-table doc-table-${headers.length}`}>
         <thead>
           <tr>{headers.map((header) => <th key={header}>{header}</th>)}</tr>
@@ -763,7 +763,7 @@ function Example({ title, language, children }: { title: string; language: strin
   return (
     <figure className="doc-example">
       <figcaption>{title}</figcaption>
-      <pre><code className={language ? `language-${language}` : undefined}>{children.trim()}</code></pre>
+      <pre data-lenis-prevent><code className={language ? `language-${language}` : undefined}>{children.trim()}</code></pre>
     </figure>
   );
 }
