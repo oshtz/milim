@@ -3017,7 +3017,7 @@ dependencies = [
 
 [[package]]
 name = "milim-agents"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "async-stream",
  "futures",
@@ -3034,7 +3034,7 @@ dependencies = [
 
 [[package]]
 name = "milim-automation"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -3050,7 +3050,7 @@ dependencies = [
 
 [[package]]
 name = "milim-core"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "directories",
  "serde",
@@ -3060,7 +3060,7 @@ dependencies = [
 
 [[package]]
 name = "milim-desktop"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -3095,7 +3095,7 @@ dependencies = [
 
 [[package]]
 name = "milim-identity"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "base64 0.22.1",
  "hex",
@@ -3109,7 +3109,7 @@ dependencies = [
 
 [[package]]
 name = "milim-inference"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -3126,7 +3126,7 @@ dependencies = [
 
 [[package]]
 name = "milim-mcp-client"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "async-trait",
  "milim-core",
@@ -3141,7 +3141,7 @@ dependencies = [
 
 [[package]]
 name = "milim-memory"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "milim-core",
  "milim-inference",
@@ -3155,7 +3155,7 @@ dependencies = [
 
 [[package]]
 name = "milim-privacy"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "regex",
  "serde",
@@ -3163,7 +3163,7 @@ dependencies = [
 
 [[package]]
 name = "milim-sandbox"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "milim-core",
  "serde",
@@ -3172,7 +3172,7 @@ dependencies = [
 
 [[package]]
 name = "milim-server"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -3204,7 +3204,7 @@ dependencies = [
 
 [[package]]
 name = "milim-skills"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "milim-core",
  "milim-storage",
@@ -3217,7 +3217,7 @@ dependencies = [
 
 [[package]]
 name = "milim-storage"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "aes-gcm",
  "milim-core",
@@ -3229,7 +3229,7 @@ dependencies = [
 
 [[package]]
 name = "milim-tools"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "async-trait",
  "milim-core",
@@ -3374,6 +3374,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "noop_proc_macro"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0676bb32a98c1a483ce53e500a81ad9c3d5b3f7c920c28c24e9cb0980d0b5bc8"
+
+[[package]]
 name = "nu-ansi-term"
 version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3381,12 +3387,6 @@ checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
  "windows-sys 0.61.2",
 ]
-
-[[package]]
-name = "noop_proc_macro"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0676bb32a98c1a483ce53e500a81ad9c3d5b3f7c920c28c24e9cb0980d0b5bc8"
 
 [[package]]
 name = "num-bigint"
@@ -5054,15 +5054,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "sharded-slab"
-version = "0.1.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f40ca3c46823713e0d4209592e8d6e826aa57e928f09752619fc696c499637f6"
-dependencies = [
- "lazy_static",
-]
-
-[[package]]
 name = "sha3"
 version = "0.10.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5070,6 +5061,15 @@ checksum = "77fd7028345d415a4034cf8777cd4f8ab1851274233b45f84e3d955502d93874"
 dependencies = [
  "digest",
  "keccak",
+]
+
+[[package]]
+name = "sharded-slab"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f40ca3c46823713e0d4209592e8d6e826aa57e928f09752619fc696c499637f6"
+dependencies = [
+ "lazy_static",
 ]
 
 [[package]]
@@ -5727,15 +5727,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "thread_local"
-version = "1.1.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1ad99c4c6d32803332c548b1af0540b357b3f5fc0be8f6c6bfe8b2e6ae784070"
-dependencies = [
- "cfg-if",
-]
-
-[[package]]
 name = "thiserror-impl"
 version = "2.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5744,6 +5735,15 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.118",
+]
+
+[[package]]
+name = "thread_local"
+version = "1.1.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1ad99c4c6d32803332c548b1af0540b357b3f5fc0be8f6c6bfe8b2e6ae784070"
+dependencies = [
+ "cfg-if",
 ]
 
 [[package]]
@@ -6268,12 +6268,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "valuable"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
-
-[[package]]
 name = "v_frame"
 version = "0.3.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6283,6 +6277,12 @@ dependencies = [
  "num-traits",
  "wasm-bindgen",
 ]
+
+[[package]]
+name = "valuable"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
 
 [[package]]
 name = "vcpkg"
