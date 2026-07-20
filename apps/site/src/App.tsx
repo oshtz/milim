@@ -17,6 +17,7 @@ const DOCS_URL = "https://docs.milim.ai/";
 const DOCS_QUICKSTART_URL = `${DOCS_URL}quickstart`;
 const GITHUB_RELEASE_API_URL = "https://api.github.com/repos/oshtz/milim/releases/latest";
 const RELEASE_CACHE_KEY = "milim-release-latest";
+const TYPER_VARIATIONS = ["typer-fill", "typer-accent", "typer-accent-fill", "typer-border"];
 
 type DownloadPlatform = "windows" | "macos";
 
@@ -201,7 +202,7 @@ function LandingPage() {
       const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
       if (reduceMotion) return;
 
-      gsap.from(".hero-copy > *", {
+      gsap.from(".hero-copy > :not(h1):not(.hero-line)", {
         y: 28,
         opacity: 0,
         duration: 0.9,
@@ -326,8 +327,8 @@ function LandingPage() {
         <section className="hero" id="top">
           <HeroBackgroundEffect />
           <div className="hero-copy">
-            <h1>milim</h1>
-            <p className="hero-line">A model-agnostic development app for people who use more than one model.</p>
+            <h1><TyperText text="milim" delay={0.12} /></h1>
+            <p className="hero-line"><TyperText text="A model-agnostic development app for people who use more than one model." delay={0.27} /></p>
             <p className="hero-subline">
               Development chat, instant model switching, tools, memory, artifacts, previews, and privacy controls
               <br className="desktop-copy-break" /> in one MIT-licensed desktop app.{" "}
@@ -467,6 +468,56 @@ function LandingPage() {
       </main>
       <FaqJsonLd />
     </div>
+  );
+}
+
+function TyperText({ text, delay }: { text: string; delay: number }) {
+  const ref = useRef<HTMLSpanElement>(null);
+
+  useEffect(() => {
+    const element = ref.current;
+    if (!element) return;
+
+    const chars = Array.from(element.querySelectorAll<HTMLElement>(".typer-char"));
+    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (reduceMotion) {
+      chars.forEach((char) => char.classList.remove("typer-init"));
+      element.dataset.typerType = "done";
+      return;
+    }
+
+    const variations = [...TYPER_VARIATIONS].sort(() => Math.random() - 0.5);
+    const start = performance.now() + delay * 1000;
+    const duration = 1000 + chars.length * 10;
+    const divisor = Math.max(chars.length - 1, 1);
+    let frame = 0;
+
+    const draw = (now: number) => {
+      const progress = (now - start) / duration;
+      if (progress >= 0) element.dataset.typerType = "in";
+
+      chars.forEach((char, index) => {
+        const local = Math.max(0, Math.min(1, (progress - (index / divisor) * 0.35) / 0.65));
+        const variation = variations[Math.min(variations.length - 1, Math.floor(local * variations.length))];
+        char.className = `typer-char${local <= 0 ? " typer-init" : local >= 1 ? "" : ` ${variation}`}`;
+      });
+
+      if (progress < 1) frame = window.requestAnimationFrame(draw);
+      else element.dataset.typerType = "done";
+    };
+
+    frame = window.requestAnimationFrame(draw);
+    return () => window.cancelAnimationFrame(frame);
+  }, [delay, text]);
+
+  return (
+    <span ref={ref} data-typer data-typer-type="initial" aria-label={text}>
+      <span aria-hidden="true">
+        {text.split(/(\s+)/).map((part, index) => part.trim()
+          ? <span className="typer-word" key={index}>{[...part].map((char, charIndex) => <span className="typer-char typer-init" key={charIndex}>{char}</span>)}</span>
+          : part)}
+      </span>
+    </span>
   );
 }
 

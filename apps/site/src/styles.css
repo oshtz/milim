@@ -573,6 +573,117 @@ main {
   color: var(--muted);
 }
 
+[data-typer] {
+  --typer-fg: currentColor;
+  --typer-bg: var(--bg);
+  --typer-accent: var(--cool);
+  --typer-accent-ink: var(--bg);
+  --typer-radius: 5px;
+}
+
+[data-typer][data-typer-type="initial"] {
+  opacity: 0;
+}
+
+.typer-word {
+  display: inline-block;
+  white-space: pre;
+}
+
+.typer-char {
+  box-sizing: content-box;
+  display: inline-block;
+  color: var(--typer-fg);
+  background: transparent;
+}
+
+.typer-char.typer-init {
+  color: transparent;
+}
+
+.typer-char.typer-fill {
+  border-radius: var(--typer-radius);
+  color: var(--typer-bg);
+  background: var(--typer-fg);
+  text-shadow: none;
+}
+
+.typer-char.typer-fill:has(+ .typer-fill) {
+  border-radius: var(--typer-radius) 0 0 var(--typer-radius);
+}
+
+.typer-char.typer-fill + .typer-fill {
+  border-radius: 0;
+}
+
+.typer-char.typer-fill + .typer-fill:last-child,
+.typer-char.typer-fill + .typer-fill:has(+ :not(.typer-fill)) {
+  border-radius: 0 var(--typer-radius) var(--typer-radius) 0;
+}
+
+.typer-char.typer-accent {
+  color: var(--typer-accent);
+}
+
+.typer-char.typer-accent-fill {
+  color: var(--typer-accent-ink);
+  background: var(--typer-accent);
+  border-radius: var(--typer-radius);
+  text-shadow: none;
+}
+
+.typer-char.typer-accent-fill:has(+ .typer-accent-fill) {
+  border-radius: var(--typer-radius) 0 0 var(--typer-radius);
+}
+
+.typer-char.typer-accent-fill + .typer-accent-fill {
+  border-radius: 0;
+}
+
+.typer-char.typer-accent-fill + .typer-accent-fill:last-child,
+.typer-char.typer-accent-fill + .typer-accent-fill:has(+ :not(.typer-accent-fill)) {
+  border-radius: 0 var(--typer-radius) var(--typer-radius) 0;
+}
+
+.typer-char.typer-border {
+  position: relative;
+}
+
+.typer-char.typer-border::after {
+  position: absolute;
+  inset: 0;
+  border: 1px solid var(--typer-accent);
+  border-radius: var(--typer-radius);
+  content: "";
+}
+
+.typer-char.typer-border:has(+ .typer-border)::after {
+  border-right-color: transparent;
+  border-radius: var(--typer-radius) 0 0 var(--typer-radius);
+}
+
+.typer-char.typer-border + .typer-border::after {
+  border-right-color: transparent;
+  border-left-color: transparent;
+  border-radius: 0;
+}
+
+.typer-char.typer-border + .typer-border:last-child::after,
+.typer-char.typer-border + .typer-border:has(+ :not(.typer-border))::after {
+  border-right-color: var(--typer-accent);
+  border-radius: 0 var(--typer-radius) var(--typer-radius) 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-typer][data-typer-type="initial"] {
+    opacity: 1;
+  }
+
+  .typer-char.typer-init {
+    color: var(--typer-fg);
+  }
+}
+
 .copy-doc-link {
   color: var(--text);
   font-weight: 600;
