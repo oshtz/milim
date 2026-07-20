@@ -3675,13 +3675,13 @@ button.git-row:hover svg {
   opacity: 1;
   transition: flex-basis var(--motion-standard) var(--motion-ease-out), opacity var(--motion-fast) var(--motion-ease-out);
 }
-.chat-body.inspector-stacked > .quick-summary-panel.open {
+.chat-body.inspector-stacked .chat-main > .quick-summary-panel.open {
   flex: 0 0 min(38vh, 300px);
   width: 100%;
   min-width: 0;
   max-width: none;
 }
-.chat-body.inspector-stacked > .quick-summary-panel.open .quick-summary-card {
+.chat-body.inspector-stacked .chat-main > .quick-summary-panel.open .quick-summary-card {
   max-height: calc(100% - 16px);
   margin: 8px;
 }
@@ -3727,6 +3727,13 @@ button.git-row:hover svg {
   display: flex;
   align-items: center;
   gap: 4px;
+}
+.chat-body:not(.inspector-stacked) .chat-main.context-open .chat-main-actions {
+  right: 312px;
+}
+.chat-body:not(.inspector-stacked) .chat-main.context-open .chat-scroll,
+.chat-body:not(.inspector-stacked) .chat-main.context-open .dock {
+  padding-right: 316px;
 }
 .preview-open-btn svg {
   transform: scaleX(-1);
@@ -4007,6 +4014,11 @@ button.git-row:hover svg {
   opacity: 1;
   overflow: visible;
   pointer-events: auto;
+}
+.chat-body:not(.inspector-stacked) .chat-main > .quick-summary-panel {
+  position: absolute;
+  z-index: 10;
+  inset: 0 10px 0 auto;
 }
 .quick-summary-card {
   display: flex;
@@ -10665,6 +10677,24 @@ html[data-dark="true"] .preview-control-cursor {
     flex: 0 0 min(38vh, 300px);
     width: 100%;
     min-width: 0;
+  }
+  .chat-body:not(.inspector-stacked) .chat-main > .quick-summary-panel {
+    position: relative;
+    z-index: auto;
+    inset: auto;
+  }
+  .chat-body:not(.inspector-stacked) .chat-main > .quick-summary-panel.open .quick-summary-card {
+    max-height: calc(100% - 16px);
+    margin: 8px;
+  }
+  .chat-body:not(.inspector-stacked) .chat-main.context-open .chat-main-actions {
+    right: 12px;
+  }
+  .chat-body:not(.inspector-stacked) .chat-main.context-open .chat-scroll {
+    padding-right: 16px;
+  }
+  .chat-body:not(.inspector-stacked) .chat-main.context-open .dock {
+    padding-right: 16px;
   }
   .preview-toolbar {
     padding: 8px 10px;

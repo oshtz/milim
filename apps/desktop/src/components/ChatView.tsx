@@ -8812,7 +8812,7 @@ export function ChatView({
         className={`chat-body${panelsStacked ? " inspector-stacked" : ""}${previewPanelOverlay && !panelsStacked ? " inspector-overlay" : ""}`}
         style={previewPanelStyle}
       >
-        <div className="chat-main">
+        <div className={`chat-main${contextPanelOpen ? " context-open" : ""}`}>
           <div className="chat-main-actions">
             {folder.trim() && <WorkspaceLauncherButton folder={folder} />}
             {!contextPanelOpen && (
@@ -9043,33 +9043,33 @@ export function ChatView({
               />
             )}
           </div>
+          <QuickSummaryPanel
+            summary={quickSummary}
+            open={contextPanelOpen}
+            workerPanel={(
+              <WorkersSummary
+                records={activeWorkerRuns}
+                policy={delegationPolicy}
+                workerModel={workerModel}
+                agents={agents}
+                models={pickerModels.filter(
+                  (item) => !item.capabilities?.imageOutput && !item.capabilities?.videoOutput && !item.capabilities?.musicOutput,
+                )}
+                onOpen={() => openWorkersInspector()}
+                onOpenSettings={() => openWorkersInspector(undefined, true)}
+              />
+            )}
+            collapsedSections={contextCollapsedSectionIds}
+            canOpenGit={canOpenGitPanel}
+            onOpenChange={(open) => open ? openContextPanel() : closeContextPanel()}
+            onSectionCollapsedChange={(sectionId, collapsed) =>
+              setSessionContextSectionCollapsed(activeId, sectionId, collapsed)
+            }
+            onOpenGit={openGitPanel}
+            onOpenGoal={() => openGoalPanel()}
+            onOpenSource={openQuickSummarySource}
+          />
         </div>
-        <QuickSummaryPanel
-          summary={quickSummary}
-          open={contextPanelOpen}
-          workerPanel={(
-            <WorkersSummary
-              records={activeWorkerRuns}
-              policy={delegationPolicy}
-              workerModel={workerModel}
-              agents={agents}
-              models={pickerModels.filter(
-                (item) => !item.capabilities?.imageOutput && !item.capabilities?.videoOutput && !item.capabilities?.musicOutput,
-              )}
-              onOpen={() => openWorkersInspector()}
-              onOpenSettings={() => openWorkersInspector(undefined, true)}
-            />
-          )}
-          collapsedSections={contextCollapsedSectionIds}
-          canOpenGit={canOpenGitPanel}
-          onOpenChange={(open) => open ? openContextPanel() : closeContextPanel()}
-          onSectionCollapsedChange={(sectionId, collapsed) =>
-            setSessionContextSectionCollapsed(activeId, sectionId, collapsed)
-          }
-          onOpenGit={openGitPanel}
-          onOpenGoal={() => openGoalPanel()}
-          onOpenSource={openQuickSummarySource}
-        />
         {sidePanelVisible && (
           <>
             {previewPanelOverlay && !panelsStacked && (
