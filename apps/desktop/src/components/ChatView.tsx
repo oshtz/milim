@@ -311,7 +311,7 @@ import { useSettings, type MediaSettings } from "../settings/store";
 import { themeCssVariables } from "../theme/applyTheme";
 import { useTheme } from "../theme/store";
 import { shortcutLabel, shortcutMatchesEvent } from "../ui/shortcuts";
-import { playInterfaceSound } from "../ui/sounds";
+import { pendingAttentionKey, playInterfaceSound } from "../ui/sounds";
 import { DEFAULT_PREVIEW_PANEL_WIDTH, useUiPreferences } from "../ui/store";
 import { AgentAvatar } from "./AgentAvatar";
 import { Composer } from "./Composer";
@@ -3203,6 +3203,24 @@ export function ChatView({
     [activeId, workerRuns],
   );
   const activeWorkerRun = activeWorkerRuns[0];
+  const announcedAttentionKeysRef = useRef(new Set<string>());
+  const attentionKey = useMemo(
+    () => pendingAttentionKey(
+      messages,
+      activeWorkerRun?.run.status === "proposed" ? activeWorkerRun.run.id : undefined,
+    ),
+    [activeWorkerRun?.run.id, activeWorkerRun?.run.status, messages],
+  );
+  useEffect(() => {
+    if (!attentionKey || announcedAttentionKeysRef.current.has(attentionKey)) return;
+    announcedAttentionKeysRef.current.add(attentionKey);
+    const preferences = useUiPreferences.getState();
+    if (
+      document.visibilityState === "visible" &&
+      preferences.interfaceSounds &&
+      preferences.soundOnAttention
+    ) playInterfaceSound(preferences.attentionSound);
+  }, [attentionKey]);
   const projects = useSessions((s) => s.projects);
   const sidebarState = useSessions((s) => s.sidebar);
   const generatingSessionIds = useSessions((s) => s.generatingSessionIds);
@@ -5944,8 +5962,17 @@ export function ChatView({
       document.visibilityState === "visible" &&
       useSessions.getState().activeId === sessionId
     ) {
-      if (terminalResult.status === "done") playInterfaceSound("ready");
-      else if (terminalResult.status === "error") playInterfaceSound("error");
+      const preferences = useUiPreferences.getState();
+      if (
+        preferences.interfaceSounds &&
+        terminalResult.status === "done" &&
+        preferences.soundOnFinished
+      ) playInterfaceSound(preferences.finishedSound);
+      else if (
+        preferences.interfaceSounds &&
+        terminalResult.status === "error" &&
+        preferences.soundOnAttention
+      ) playInterfaceSound(preferences.attentionSound);
     }
     return result;
   }
@@ -7926,7 +7953,6 @@ export function ChatView({
 
   function switchVisibleSession(id: string) {
     if (id === activeId) return;
-    playInterfaceSound("page");
     switchToSession(id);
   }
 

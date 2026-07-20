@@ -63,6 +63,11 @@ equal(useUiPreferences.getState().uiSize, DEFAULT_UI_SIZE, "UI size should defau
 equal(useUiPreferences.getState().showAccountUsageInTitleBar, true, "title-bar account usage should default on");
 equal(useUiPreferences.getState().windowAlwaysOnTop, false, "window always-on-top should default off");
 equal(useUiPreferences.getState().interfaceSounds, false, "interface sounds should default off");
+equal(useUiPreferences.getState().soundOnFinished, true, "finished sounds should default on within the disabled master setting");
+equal(useUiPreferences.getState().soundOnAttention, true, "attention sounds should default on within the disabled master setting");
+equal(useUiPreferences.getState().soundOnInteractions, false, "interaction sounds should default off");
+equal(useUiPreferences.getState().finishedSound, "ready", "finished sounds should use ready by default");
+equal(useUiPreferences.getState().attentionSound, "error", "attention sounds should use error by default");
 equal(useUiPreferences.getState().composerSendShortcut, "enter", "Enter should send by default");
 equal(useUiPreferences.getState().composerDensity, "comfortable", "composer should default to comfortable density");
 equal(useUiPreferences.getState().autoTitleChats, true, "new chats should auto-title by default");
@@ -148,6 +153,16 @@ equal(localStorage.getItem("milim.window.alwaysOnTop"), "true", "always-on-top s
 useUiPreferences.getState().setInterfaceSounds(true);
 equal(useUiPreferences.getState().interfaceSounds, true, "interface sounds should update");
 equal(persistedUiState().interfaceSounds, true, "interface sounds should be persisted");
+useUiPreferences.getState().setSoundOnFinished(false);
+useUiPreferences.getState().setSoundOnAttention(false);
+useUiPreferences.getState().setSoundOnInteractions(true);
+useUiPreferences.getState().setFinishedSound("bloom");
+useUiPreferences.getState().setAttentionSound("droplet");
+equal(persistedUiState().soundOnFinished, false, "finished sound preference should be persisted");
+equal(persistedUiState().soundOnAttention, false, "attention sound preference should be persisted");
+equal(persistedUiState().soundOnInteractions, true, "interaction sound preference should be persisted");
+equal(persistedUiState().finishedSound, "bloom", "finished sound choice should be persisted");
+equal(persistedUiState().attentionSound, "droplet", "attention sound choice should be persisted");
 
 useUiPreferences.getState().setComposerSendShortcut("modEnter");
 equal(useUiPreferences.getState().composerSendShortcut, "modEnter", "send shortcut should update");
@@ -227,6 +242,11 @@ useUiPreferences.setState({
   showAccountUsageInTitleBar: true,
   windowAlwaysOnTop: false,
   interfaceSounds: false,
+  soundOnFinished: true,
+  soundOnAttention: true,
+  soundOnInteractions: false,
+  finishedSound: "ready",
+  attentionSound: "error",
   composerSendShortcut: "enter",
   composerDensity: "comfortable",
   autoTitleChats: true,
@@ -246,7 +266,7 @@ useUiPreferences.setState({
 });
 localStorage.setItem(
   "milim.ui",
-  '{"state":{"sidebarOpen":false,"sidebarWidth":384,"previewPanelWidth":512,"uiSize":130,"windowAlwaysOnTop":true,"interfaceSounds":"loud","composerSendShortcut":"modEnter","composerDensity":"compact","autoTitleChats":false,"aiThreadNames":true,"aiThreadNameModel":"persisted-title-model","newChatButtonAtBottom":true,"interfaceMode":"workbench","developerMode":true,"experimentalHashlinePatch":true,"chatLayoutStyle":"compact","messageWidth":"full","avatarStyle":"role","codeBlockTheme":"high-contrast","backgroundFit":"contain","backgroundTreatment":"blur","thinkingBlocksOpen":true,"gitPanelExpanded":true,"appShortcuts":{"newChat":"Mod+Shift+N","focusSearch":"Mod+Shift+N","focusComposer":"x","stopGeneration":"F2","toggleSidebar":"Mod+B","previousThread":"Mod+Tab"}},"version":0}',
+  '{"state":{"sidebarOpen":false,"sidebarWidth":384,"previewPanelWidth":512,"uiSize":130,"windowAlwaysOnTop":true,"interfaceSounds":"loud","soundOnFinished":"yes","soundOnAttention":0,"soundOnInteractions":"sometimes","finishedSound":"error","attentionSound":"ready","composerSendShortcut":"modEnter","composerDensity":"compact","autoTitleChats":false,"aiThreadNames":true,"aiThreadNameModel":"persisted-title-model","newChatButtonAtBottom":true,"interfaceMode":"workbench","developerMode":true,"experimentalHashlinePatch":true,"chatLayoutStyle":"compact","messageWidth":"full","avatarStyle":"role","codeBlockTheme":"high-contrast","backgroundFit":"contain","backgroundTreatment":"blur","thinkingBlocksOpen":true,"gitPanelExpanded":true,"appShortcuts":{"newChat":"Mod+Shift+N","focusSearch":"Mod+Shift+N","focusComposer":"x","stopGeneration":"F2","toggleSidebar":"Mod+B","previousThread":"Mod+Tab"}},"version":0}',
 );
 await useUiPreferences.persist.rehydrate();
 equal(useUiPreferences.getState().sidebarOpen, false, "sidebar should rehydrate persisted closed state");
@@ -256,6 +276,11 @@ equal(useUiPreferences.getState().uiSize, 130, "UI size should rehydrate persist
 equal(useUiPreferences.getState().showAccountUsageInTitleBar, true, "missing title-bar account usage preference should keep its enabled default");
 equal(useUiPreferences.getState().windowAlwaysOnTop, true, "always-on-top should rehydrate");
 equal(useUiPreferences.getState().interfaceSounds, false, "malformed interface sounds should rehydrate as off");
+equal(useUiPreferences.getState().soundOnFinished, true, "malformed finished sound toggle should use its default");
+equal(useUiPreferences.getState().soundOnAttention, true, "malformed attention sound toggle should use its default");
+equal(useUiPreferences.getState().soundOnInteractions, false, "malformed interaction sound toggle should use its default");
+equal(useUiPreferences.getState().finishedSound, "ready", "malformed finished sound should use ready");
+equal(useUiPreferences.getState().attentionSound, "error", "malformed attention sound should use error");
 equal(useUiPreferences.getState().composerSendShortcut, "modEnter", "send shortcut should rehydrate");
 equal(useUiPreferences.getState().composerDensity, "compact", "composer density should rehydrate");
 equal(useUiPreferences.getState().autoTitleChats, false, "auto-title should rehydrate");

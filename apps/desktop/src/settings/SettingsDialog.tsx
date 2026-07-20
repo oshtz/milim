@@ -40,16 +40,21 @@ import {
   type AppShortcutAction,
 } from "../ui/shortcuts";
 import {
+  ATTENTION_SOUND_OPTIONS,
   DEFAULT_UI_SIZE,
   DEFAULT_PREVIEW_PANEL_WIDTH,
   DEFAULT_SIDEBAR_WIDTH,
+  FINISHED_SOUND_OPTIONS,
   MAX_UI_SIZE,
   MIN_UI_SIZE,
   UI_SIZE_STEP,
   useUiPreferences,
+  type AttentionSound,
   type ComposerDensity,
   type ComposerSendShortcut,
+  type FinishedSound,
 } from "../ui/store";
+import { playInterfaceSound } from "../ui/sounds";
 import { Archive, Check, Code, Download, FolderOpen, Gear, GitLogo, Pencil, PlusSquare, Refresh, Search, Sidebar, Smartphone, Sun, Trash, X } from "../components/icons";
 import { MobileCompanionSettings } from "../components/MobileCompanionSettings";
 import { SheetDialog } from "../components/SheetDialog";
@@ -66,6 +71,16 @@ type SettingsSection = {
 type SettingsStatusTone = "ready" | "warn" | "muted";
 type SettingsSectionActivation = { focusTab?: boolean; remember?: boolean };
 type ShortcutRecordingTarget = AppShortcutAction;
+
+const SOUND_LABELS: Record<AttentionSound | FinishedSound, string> = {
+  ready: "Ready",
+  success: "Success",
+  chime: "Chime",
+  bloom: "Bloom",
+  error: "Error",
+  tick: "Tick",
+  droplet: "Droplet",
+};
 
 let lastSettingsSection: SettingsSectionId = "app";
 
@@ -178,6 +193,11 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
   const showAccountUsageInTitleBar = useUiPreferences((s) => s.showAccountUsageInTitleBar);
   const windowAlwaysOnTop = useUiPreferences((s) => s.windowAlwaysOnTop);
   const interfaceSounds = useUiPreferences((s) => s.interfaceSounds);
+  const soundOnFinished = useUiPreferences((s) => s.soundOnFinished);
+  const soundOnAttention = useUiPreferences((s) => s.soundOnAttention);
+  const soundOnInteractions = useUiPreferences((s) => s.soundOnInteractions);
+  const finishedSound = useUiPreferences((s) => s.finishedSound);
+  const attentionSound = useUiPreferences((s) => s.attentionSound);
   const composerSendShortcut = useUiPreferences((s) => s.composerSendShortcut);
   const composerDensity = useUiPreferences((s) => s.composerDensity);
   const autoTitleChats = useUiPreferences((s) => s.autoTitleChats);
@@ -198,6 +218,11 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
   const setShowAccountUsageInTitleBar = useUiPreferences((s) => s.setShowAccountUsageInTitleBar);
   const setWindowAlwaysOnTop = useUiPreferences((s) => s.setWindowAlwaysOnTop);
   const setInterfaceSounds = useUiPreferences((s) => s.setInterfaceSounds);
+  const setSoundOnFinished = useUiPreferences((s) => s.setSoundOnFinished);
+  const setSoundOnAttention = useUiPreferences((s) => s.setSoundOnAttention);
+  const setSoundOnInteractions = useUiPreferences((s) => s.setSoundOnInteractions);
+  const setFinishedSound = useUiPreferences((s) => s.setFinishedSound);
+  const setAttentionSound = useUiPreferences((s) => s.setAttentionSound);
   const setComposerSendShortcut = useUiPreferences((s) => s.setComposerSendShortcut);
   const setComposerDensity = useUiPreferences((s) => s.setComposerDensity);
   const setAutoTitleChats = useUiPreferences((s) => s.setAutoTitleChats);
@@ -971,13 +996,73 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
               />
             </SettingsBlock>
             <SettingsBlock title="Interface sounds" data-setting-id="appearance-interface-sounds" className={settingHighlightClass("appearance-interface-sounds").trim()}>
-              <Toggle
-                checked={interfaceSounds}
-                onChange={setInterfaceSounds}
-                ariaLabel="Interface sounds"
-                testId="interface-sounds-toggle"
-                label="Play subtle local sounds for key interface actions and active chat results."
-              />
+              <div className="setting-stack">
+                <div className="setting-toggle-row">
+                  <div>
+                    <strong>Enable sounds</strong>
+                    <span>Locally synthesized alerts, off by default.</span>
+                  </div>
+                  <Toggle
+                    checked={interfaceSounds}
+                    onChange={setInterfaceSounds}
+                    ariaLabel="Enable interface sounds"
+                    testId="interface-sounds-toggle"
+                  />
+                </div>
+                {interfaceSounds && (
+                  <>
+                    <div className="setting-toggle-row">
+                      <div>
+                        <strong>Needs attention</strong>
+                        <span>Tool approvals, proposed worker plans, and terminal errors.</span>
+                      </div>
+                      <Toggle checked={soundOnAttention} onChange={setSoundOnAttention} ariaLabel="Needs attention sounds" testId="attention-sounds-toggle" />
+                    </div>
+                    {soundOnAttention && (
+                      <div className="setting-field">
+                        <span className="setting-mini-title">Attention sound</span>
+                        <div className="setting-field-action">
+                          <Select
+                            value={attentionSound}
+                            options={ATTENTION_SOUND_OPTIONS.map((value) => ({ value, label: SOUND_LABELS[value] }))}
+                            onChange={(value) => setAttentionSound(value as AttentionSound)}
+                            testId="attention-sound-select"
+                          />
+                          <button type="button" className="btn-ghost" onClick={() => playInterfaceSound(attentionSound)}>Preview</button>
+                        </div>
+                      </div>
+                    )}
+                    <div className="setting-toggle-row">
+                      <div>
+                        <strong>Finished</strong>
+                        <span>A visible active chat completes, including its queued messages.</span>
+                      </div>
+                      <Toggle checked={soundOnFinished} onChange={setSoundOnFinished} ariaLabel="Finished sounds" testId="finished-sounds-toggle" />
+                    </div>
+                    {soundOnFinished && (
+                      <div className="setting-field">
+                        <span className="setting-mini-title">Finished sound</span>
+                        <div className="setting-field-action">
+                          <Select
+                            value={finishedSound}
+                            options={FINISHED_SOUND_OPTIONS.map((value) => ({ value, label: SOUND_LABELS[value] }))}
+                            onChange={(value) => setFinishedSound(value as FinishedSound)}
+                            testId="finished-sound-select"
+                          />
+                          <button type="button" className="btn-ghost" onClick={() => playInterfaceSound(finishedSound)}>Preview</button>
+                        </div>
+                      </div>
+                    )}
+                    <div className="setting-toggle-row">
+                      <div>
+                        <strong>Interaction feedback</strong>
+                        <span>Optional cues for toggles, menus, dismissals, and primary actions.</span>
+                      </div>
+                      <Toggle checked={soundOnInteractions} onChange={setSoundOnInteractions} ariaLabel="Interaction feedback sounds" testId="interaction-sounds-toggle" />
+                    </div>
+                  </>
+                )}
+              </div>
             </SettingsBlock>
             {activeBackgroundImage && (
               <SettingsBlock title="Background image" data-setting-id="appearance-background" className={settingHighlightClass("appearance-background").trim()}>

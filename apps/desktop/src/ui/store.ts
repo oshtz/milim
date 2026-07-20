@@ -24,6 +24,10 @@ export type AvatarStyle = "none" | "avatar" | "role";
 export type CodeBlockTheme = "match" | "terminal" | "github" | "high-contrast";
 export type BackgroundFit = "cover" | "contain" | "tile" | "center";
 export type BackgroundTreatment = "clear" | "dim" | "blur" | "mono";
+export const FINISHED_SOUND_OPTIONS = ["ready", "success", "chime", "bloom"] as const;
+export const ATTENTION_SOUND_OPTIONS = ["error", "tick", "chime", "droplet"] as const;
+export type FinishedSound = (typeof FINISHED_SOUND_OPTIONS)[number];
+export type AttentionSound = (typeof ATTENTION_SOUND_OPTIONS)[number];
 export type AppNoticeTone = "info" | "success" | "warning" | "error";
 
 export interface AppNotice {
@@ -43,6 +47,11 @@ interface UiPreferencesState {
   showAccountUsageInTitleBar: boolean;
   windowAlwaysOnTop: boolean;
   interfaceSounds: boolean;
+  soundOnFinished: boolean;
+  soundOnAttention: boolean;
+  soundOnInteractions: boolean;
+  finishedSound: FinishedSound;
+  attentionSound: AttentionSound;
   composerSendShortcut: ComposerSendShortcut;
   composerDensity: ComposerDensity;
   autoTitleChats: boolean;
@@ -69,6 +78,11 @@ interface UiPreferencesState {
   setShowAccountUsageInTitleBar: (showAccountUsageInTitleBar: boolean) => void;
   setWindowAlwaysOnTop: (windowAlwaysOnTop: boolean) => void;
   setInterfaceSounds: (interfaceSounds: boolean) => void;
+  setSoundOnFinished: (soundOnFinished: boolean) => void;
+  setSoundOnAttention: (soundOnAttention: boolean) => void;
+  setSoundOnInteractions: (soundOnInteractions: boolean) => void;
+  setFinishedSound: (finishedSound: FinishedSound) => void;
+  setAttentionSound: (attentionSound: AttentionSound) => void;
   setComposerSendShortcut: (composerSendShortcut: ComposerSendShortcut) => void;
   setComposerDensity: (composerDensity: ComposerDensity) => void;
   setAutoTitleChats: (autoTitleChats: boolean) => void;
@@ -157,6 +171,18 @@ function normalizeBackgroundTreatment(value: unknown): BackgroundTreatment {
   return value === "dim" || value === "blur" || value === "mono" ? value : "clear";
 }
 
+function normalizeFinishedSound(value: unknown): FinishedSound {
+  return typeof value === "string" && FINISHED_SOUND_OPTIONS.includes(value as FinishedSound)
+    ? value as FinishedSound
+    : "ready";
+}
+
+function normalizeAttentionSound(value: unknown): AttentionSound {
+  return typeof value === "string" && ATTENTION_SOUND_OPTIONS.includes(value as AttentionSound)
+    ? value as AttentionSound
+    : "error";
+}
+
 function persistWindowAlwaysOnTop(windowAlwaysOnTop: boolean): void {
   void Promise.resolve(writeUserStateKey(WINDOW_ALWAYS_ON_TOP_KEY, String(windowAlwaysOnTop))).catch(() => {});
 }
@@ -171,6 +197,11 @@ export const useUiPreferences = create<UiPreferencesState>()(
       showAccountUsageInTitleBar: true,
       windowAlwaysOnTop: false,
       interfaceSounds: false,
+      soundOnFinished: true,
+      soundOnAttention: true,
+      soundOnInteractions: false,
+      finishedSound: "ready",
+      attentionSound: "error",
       composerSendShortcut: "enter",
       composerDensity: "comfortable",
       autoTitleChats: true,
@@ -200,6 +231,11 @@ export const useUiPreferences = create<UiPreferencesState>()(
         set({ windowAlwaysOnTop });
       },
       setInterfaceSounds: (interfaceSounds) => set({ interfaceSounds }),
+      setSoundOnFinished: (soundOnFinished) => set({ soundOnFinished }),
+      setSoundOnAttention: (soundOnAttention) => set({ soundOnAttention }),
+      setSoundOnInteractions: (soundOnInteractions) => set({ soundOnInteractions }),
+      setFinishedSound: (finishedSound) => set({ finishedSound: normalizeFinishedSound(finishedSound) }),
+      setAttentionSound: (attentionSound) => set({ attentionSound: normalizeAttentionSound(attentionSound) }),
       setComposerSendShortcut: (composerSendShortcut) =>
         set({ composerSendShortcut: normalizeComposerSendShortcut(composerSendShortcut) }),
       setComposerDensity: (composerDensity) => set({ composerDensity: normalizeComposerDensity(composerDensity) }),
@@ -283,6 +319,11 @@ export const useUiPreferences = create<UiPreferencesState>()(
           showAccountUsageInTitleBar: typeof saved?.showAccountUsageInTitleBar === "boolean" ? saved.showAccountUsageInTitleBar : current.showAccountUsageInTitleBar,
           windowAlwaysOnTop: typeof saved?.windowAlwaysOnTop === "boolean" ? saved.windowAlwaysOnTop : current.windowAlwaysOnTop,
           interfaceSounds: typeof saved?.interfaceSounds === "boolean" ? saved.interfaceSounds : false,
+          soundOnFinished: typeof saved?.soundOnFinished === "boolean" ? saved.soundOnFinished : true,
+          soundOnAttention: typeof saved?.soundOnAttention === "boolean" ? saved.soundOnAttention : true,
+          soundOnInteractions: typeof saved?.soundOnInteractions === "boolean" ? saved.soundOnInteractions : false,
+          finishedSound: normalizeFinishedSound(saved?.finishedSound),
+          attentionSound: normalizeAttentionSound(saved?.attentionSound),
           composerSendShortcut: normalizeComposerSendShortcut(saved?.composerSendShortcut),
           composerDensity: normalizeComposerDensity(saved?.composerDensity),
           autoTitleChats: typeof saved?.autoTitleChats === "boolean" ? saved.autoTitleChats : current.autoTitleChats,
@@ -317,6 +358,11 @@ export const useUiPreferences = create<UiPreferencesState>()(
         showAccountUsageInTitleBar: state.showAccountUsageInTitleBar,
         windowAlwaysOnTop: state.windowAlwaysOnTop,
         interfaceSounds: state.interfaceSounds,
+        soundOnFinished: state.soundOnFinished,
+        soundOnAttention: state.soundOnAttention,
+        soundOnInteractions: state.soundOnInteractions,
+        finishedSound: normalizeFinishedSound(state.finishedSound),
+        attentionSound: normalizeAttentionSound(state.attentionSound),
         composerSendShortcut: normalizeComposerSendShortcut(state.composerSendShortcut),
         composerDensity: normalizeComposerDensity(state.composerDensity),
         autoTitleChats: state.autoTitleChats,

@@ -16,7 +16,6 @@ import { previewRuntimeKeyForThread } from "../lib/previewRuntimeKeys";
 import { sessionRecencyLabel } from "../lib/sessionRecency.js";
 import { chatExportFilename, sessionExportPayload } from "../lib/threadExport";
 import { DEFAULT_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH, MIN_SIDEBAR_WIDTH, normalizeSidebarWidth, useUiPreferences } from "../ui/store";
-import { playInterfaceSound } from "../ui/sounds";
 import { GitPanel } from "./GitPanel";
 import { useContextMenu } from "./ContextMenu";
 import { Archive, ArrowUp, Bolt, Calendar, ChevronDown, Cube, Download, Folder, FolderOpen, Gear, GitBranch, Image, Lightbulb, MoreHorizontal, Pin, Plus, Search, Sidebar as PanelIcon } from "./icons";
@@ -339,7 +338,6 @@ export function Sidebar({
 
   function switchVisibleSession(id: string) {
     if (id === activeId) return;
-    playInterfaceSound("page");
     switchTo(id);
   }
 

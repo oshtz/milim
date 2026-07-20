@@ -372,6 +372,7 @@ function AppContent() {
   const toggleSidebar = useUiPreferences((s) => s.toggleSidebar);
   const uiSize = useUiPreferences((s) => s.uiSize);
   const interfaceSounds = useUiPreferences((s) => s.interfaceSounds);
+  const soundOnInteractions = useUiPreferences((s) => s.soundOnInteractions);
   const chatLayoutStyle = useUiPreferences((s) => s.chatLayoutStyle);
   const messageWidth = useUiPreferences((s) => s.messageWidth);
   const avatarStyle = useUiPreferences((s) => s.avatarStyle);
@@ -388,8 +389,11 @@ function AppContent() {
     `bg-treatment-${backgroundTreatment}`,
   ].join(" ");
 
-  useEffect(() => installInterfaceSoundClicks(), []);
   useEffect(() => setInterfaceSoundsEnabled(interfaceSounds), [interfaceSounds]);
+  useEffect(() => {
+    if (!interfaceSounds || !soundOnInteractions) return;
+    return installInterfaceSoundClicks();
+  }, [interfaceSounds, soundOnInteractions]);
 
   function focusComposer() {
     document
