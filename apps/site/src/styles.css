@@ -853,8 +853,9 @@ main {
 .workbench-object {
   display: grid;
   grid-template-rows: minmax(0, 1fr) auto;
+  width: min(92%, 820px);
   min-height: clamp(420px, 48vw, 620px);
-  margin-left: clamp(-72px, -5vw, -40px);
+  justify-self: end;
 }
 
 .workbench-object::after {
@@ -4037,7 +4038,7 @@ h4:hover > .doc-anchor,
   }
 
   .workbench-object {
-    margin-left: 0;
+    width: 100%;
   }
 
   .hero > .shader-field {
