@@ -4100,6 +4100,21 @@ button.git-row:hover svg {
   text-align: left;
   font: inherit;
 }
+.quick-summary-prompt > summary {
+  list-style: none;
+  cursor: pointer;
+}
+.quick-summary-prompt > summary::-webkit-details-marker { display: none; }
+.quick-summary-prompt > summary:hover { background: var(--panel-row-hover); }
+.quick-summary-prompt-chevron {
+  flex: none;
+  margin-left: auto;
+  transform: rotate(-90deg);
+  transition: transform var(--motion-fast) var(--motion-ease-out);
+}
+.quick-summary-prompt[open] .quick-summary-prompt-chevron { transform: rotate(0); }
+.quick-summary-prompt-details > .quick-summary-row { padding-left: 24px; }
+.quick-summary-prompt-details > .quick-summary-rule-source { padding-left: 40px; }
 button.quick-summary-row {
   cursor: pointer;
 }

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useMemo, useState, type ReactNode } from "react";
 import { getCodexRateLimits, isCodexModel } from "../api";
 import type {
   QuickSummary,
@@ -93,7 +93,8 @@ function sourceIcon(source: QuickSummarySource): ReactNode {
   return <FileText size={13} />;
 }
 
-function ContextRow({ row, onClick }: { row: QuickSummaryRow; onClick?: () => void }) {
+function ContextRow({ row, onClick, className = "" }: { row: QuickSummaryRow; onClick?: () => void; className?: string }) {
+  const classes = `quick-summary-row${className ? ` ${className}` : ""}${toneClass(row.tone)}`;
   const content = (
     <>
       <span className="quick-summary-row-icon" aria-hidden="true">{rowIcon(row)}</span>
@@ -105,12 +106,54 @@ function ContextRow({ row, onClick }: { row: QuickSummaryRow; onClick?: () => vo
     </>
   );
   if (!onClick) {
-    return <div className={`quick-summary-row${toneClass(row.tone)}`} title={row.title}>{content}</div>;
+    return <div className={classes} title={row.title}>{content}</div>;
   }
   return (
-    <button className={`quick-summary-row${toneClass(row.tone)}`} type="button" title={row.title} onClick={onClick}>
+    <button className={classes} type="button" title={row.title} onClick={onClick}>
       {content}
     </button>
+  );
+}
+
+function PromptContext({ summary, row, rows }: { summary: QuickSummary; row: QuickSummaryRow; rows: QuickSummaryRow[] }) {
+  const sources = summary.context?.sources ?? [];
+  const ruleRows = sources.map((source) => (
+    <ContextRow
+      key={`rule:${source.path}`}
+      className="quick-summary-rule-source"
+      row={{
+        kind: "context",
+        label: source.path.split(/[\\/]/).pop() || source.path,
+        value: source.status === "loaded" ? `${source.tokens.toLocaleString()} tokens` : source.status,
+        meta: source.family,
+        title: source.path,
+        tone: source.status === "loaded" ? undefined : "warning",
+      }}
+    />
+  ));
+  const hasRepositoryRules = rows.some((detail) => detail.label.toLowerCase() === "repository rules");
+
+  return (
+    <details className="quick-summary-prompt">
+      <summary className={`quick-summary-row${toneClass(row.tone)}`} title={row.title}>
+        <span className="quick-summary-row-icon" aria-hidden="true">{rowIcon(row)}</span>
+        <span className="quick-summary-row-copy">
+          <strong>Prompt context</strong>
+          <small>{rowValue(row)}</small>
+          {row.meta && <em>{row.meta}</em>}
+        </span>
+        <ChevronDown className="quick-summary-prompt-chevron" size={12} aria-hidden="true" />
+      </summary>
+      <div className="quick-summary-prompt-details">
+        {rows.map((detail) => (
+          <Fragment key={`${detail.kind}:${detail.label}`}>
+            <ContextRow row={detail} />
+            {detail.label.toLowerCase() === "repository rules" && ruleRows}
+          </Fragment>
+        ))}
+        {!hasRepositoryRules && ruleRows}
+      </div>
+    </details>
   );
 }
 
@@ -249,6 +292,12 @@ export function QuickSummaryPanel({
               const sectionRows = displayRows.filter((row) => group.kinds.includes(row.kind));
               if (!sectionRows.length) return null;
               const collapsed = collapsedSections.includes(group.id);
+              const promptRow = group.id === "context"
+                ? sectionRows.find((row) => row.kind === "context" && row.label.toLowerCase() === "prompt estimate")
+                : undefined;
+              const promptDetails = promptRow
+                ? sectionRows.filter((row) => row.kind === "context" && row !== promptRow)
+                : [];
               return (
                 <section className="quick-summary-section" key={group.id} aria-label={group.label}>
                   <SectionHeader id={group.id} label={group.label} collapsed={collapsed} onCollapsedChange={onSectionCollapsedChange} />
@@ -259,20 +308,26 @@ export function QuickSummaryPanel({
                     aria-hidden={collapsed}
                   >
                     <div className="context-section-inner quick-summary-section-content">
-                      {sectionRows.map((row) => (
-                        <ContextRow
-                          key={`${row.kind}:${row.label}`}
-                          row={row}
-                          onClick={
-                            row.kind === "workspace" && canOpenGit
-                              ? onOpenGit
-                              : row.kind === "goal"
-                                ? onOpenGoal
-                                : undefined
-                          }
-                        />
-                      ))}
-                      {group.id === "context" && summary.context?.sources.map((source) => (
+                      {sectionRows.map((row) => {
+                        if (row === promptRow) {
+                          return <PromptContext key="prompt-context" summary={summary} row={row} rows={promptDetails} />;
+                        }
+                        if (promptRow && row.kind === "context") return null;
+                        return (
+                          <ContextRow
+                            key={`${row.kind}:${row.label}`}
+                            row={row}
+                            onClick={
+                              row.kind === "workspace" && canOpenGit
+                                ? onOpenGit
+                                : row.kind === "goal"
+                                  ? onOpenGoal
+                                  : undefined
+                            }
+                          />
+                        );
+                      })}
+                      {group.id === "context" && !promptRow && summary.context?.sources.map((source) => (
                         <ContextRow
                           key={`rule:${source.path}`}
                           row={{

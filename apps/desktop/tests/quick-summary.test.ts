@@ -236,11 +236,36 @@ try {
   assert.match(missingRowsMarkup, />Sources</);
   assert.match(missingRowsMarkup, />None</);
 
+  const withPromptContext: QuickSummary = {
+    ...withActivity,
+    rows: [
+      ...withActivity.rows,
+      { kind: "context", label: "Prompt estimate", value: "~5,421 / 1,044,480", meta: "1,039,059 free" },
+      { kind: "context", label: "Conversation", value: "28 tokens" },
+      { kind: "context", label: "Repository rules", value: "2,559 tokens" },
+      { kind: "context", label: "Plan / Goal", value: "82 tokens" },
+      { kind: "context", label: "Skills", value: "2,752 tokens" },
+      { kind: "usage", label: "Cumulative usage", value: "14.7s - 12k tokens - est. $0.04" },
+    ],
+    context: {
+      model: "gpt-5",
+      limit: 1_044_480,
+      compactAt: 887_808,
+      estimatedPromptTokens: 5_421,
+      freeTokens: 1_039_059,
+      categories: [],
+      sources: [
+        { path: "C:\\rules\\AGENTS.md", family: "agents", tokens: 62, status: "loaded" },
+        { path: "C:\\rules\\CLAUDE.md", family: "claude", tokens: 0, status: "limit_exceeded" },
+      ],
+      warnings: [],
+    },
+  };
   const groupedMarkup = renderToStaticMarkup(
     createElement(QuickSummaryPanel, {
       summary: {
-        ...withActivity,
-        rows: [row(dirty, "workspace"), ...withActivity.rows.filter((item) => item.kind !== "workspace"), row(active, "goal")],
+        ...withPromptContext,
+        rows: [row(dirty, "workspace"), ...withPromptContext.rows.filter((item) => item.kind !== "workspace"), row(active, "goal")],
         sources: Array.from({ length: 7 }, (_, index) => ({
           kind: "attachment" as const,
           label: index === 0 ? "C:\\workspace\\source-1.txt" : `source-${index + 1}`,
@@ -275,6 +300,21 @@ try {
   assert.match(groupedMarkup, />2 more<\/button>/);
   assert.match(groupedMarkup, /source-5/);
   assert.doesNotMatch(groupedMarkup, /source-6/);
+  const promptStart = groupedMarkup.indexOf('<details class="quick-summary-prompt">');
+  const promptEnd = groupedMarkup.indexOf("</details>", promptStart);
+  assert.ok(promptStart >= 0 && promptEnd > promptStart, "Prompt context should be a closed native disclosure");
+  const promptMarkup = groupedMarkup.slice(promptStart, promptEnd);
+  assert.match(promptMarkup, /<summary[^>]*>.*>Prompt context<\/strong>/);
+  assert.doesNotMatch(promptMarkup, />Prompt estimate<\/strong>/);
+  for (const label of ["Conversation", "Repository rules", "Plan / Goal", "Skills"]) {
+    assert.match(promptMarkup, new RegExp(`>${label.replace("/", "\\/")}<`));
+  }
+  const repositoryRulesIndex = promptMarkup.indexOf(">Repository rules<");
+  const agentsIndex = promptMarkup.indexOf(">AGENTS.md<");
+  assert.ok(repositoryRulesIndex >= 0 && agentsIndex > repositoryRulesIndex, "Rule files should follow Repository rules");
+  assert.match(promptMarkup, /quick-summary-row quick-summary-rule-source warning/);
+  assert.ok(promptMarkup.includes('title="C:\\rules\\AGENTS.md"'));
+  assert.ok(groupedMarkup.indexOf(">Cumulative usage<") > promptEnd, "Cumulative usage should remain outside Prompt context");
 
   const collapsedMarkup = renderToStaticMarkup(
     createElement(QuickSummaryPanel, {
