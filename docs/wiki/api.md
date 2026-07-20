@@ -6,7 +6,7 @@ title: HTTP API surface
 summary: OpenAI-compatible, Anthropic-compatible, Ollama-compatible, providers, media, workspace, MCP, Agents, Worker Runs, memory, privacy, skills, schedules, mobile, and account runtime routes.
 group: Reference
 order: 90
-updated: 2026-07-19
+updated: 2026-07-20
 ---
 
 The standalone server accepts static bearer keys or `msk-v1` access keys when configured in `~/.milim/config/server.json`. The desktop app uses its own per-launch bearer token and resolves the actual loopback port through Tauri.
@@ -51,6 +51,8 @@ Root aliases are also mounted for OpenAI chat, completions, models, and embeddin
 | Skills and schedules | `GET/POST /skills`, `POST /skills/select`, `GET/PUT/DELETE /skills/{id}`, `GET/POST /schedules`, `GET /schedules/events`, `PUT/DELETE /schedules/{id}` |
 | Mobile companion | `GET /mobile`, PWA assets under `/mobile/*`, `GET /mobile/status`, `POST /mobile/enabled`, `POST /mobile/pairing`, `POST /mobile/pair`, `GET /mobile/device/status`, `POST /mobile/relay`, `GET/POST /mobile/thread`, `GET /mobile/thread/events`, `GET /mobile/events`, `DELETE /mobile/devices/{id}` |
 | Account runtimes | `GET /codex/account`, `POST /codex/login/device`, `POST /codex/login/chatgpt-device`, `POST /codex/login/api-key`, `POST /codex/logout`, `GET /codex/rate-limits`, `GET /codex/models`, `POST /codex/run`, `GET /claude/status`, `POST /claude/run` |
+
+`POST /memory/graph/search` is the compatibility route for scoped hybrid retrieval; it does not perform graph traversal. The request and response shapes are unchanged. Each `MemoryGraphHit.score` is normalized fused relevance in `0..1`, combining exact-term FTS and embedding ranks with equal-weight reciprocal rank fusion. Scope, archive, and `top_k` filters still apply. Desktop turns request 20 candidates and inject no more than five provenance-labeled entries within a 1,024-token memory budget.
 
 `GET /mcp/tools` is the complete agent-configuration catalog and each entry includes an `effect` (`read_only`, `mutating`, `command`, or `unknown`). `GET /mcp/tools?callable=true` returns the read-only subset that `POST /mcp/call` can invoke; mutations must run through an agent with Review approval or Open mode. External MCP tools use stable id-derived namespaces, cannot shadow first-party tools, and default to `unknown` unless their MCP annotations explicitly mark them read-only. Previous display-name-derived MCP names remain accepted as non-advertised aliases for saved custom-agent selections.
 

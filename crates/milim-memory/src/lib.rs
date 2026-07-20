@@ -1,11 +1,14 @@
-//! `milim-memory` - an embedding-backed memory/RAG store.
+//! `milim-memory` - a hybrid lexical and embedding-backed memory store.
 //!
 //! [`MemoryStore::add`] embeds text (via any [`ModelService`]) and persists it
 //! through `milim-storage`; [`MemoryStore::search`] embeds a query and returns
-//! the most cosine-similar entries. Scoped graph memory builds on the same
-//! store for thread and project recall.
+//! the most cosine-similar entries. Scoped memory combines embeddings with
+//! exact-term retrieval for thread and project recall.
 
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -85,6 +88,37 @@ pub const MEMORY_MIGRATIONS: &[Migration] = &[
           );
           CREATE INDEX memory_events_scope_idx ON memory_events(scope_id);
           CREATE INDEX memory_events_node_idx ON memory_events(node_id);",
+    },
+    Migration {
+        version: 3,
+        name: "memory_nodes_fts",
+        sql: "CREATE VIRTUAL TABLE memory_nodes_fts USING fts5(
+            node_id UNINDEXED,
+            title,
+            body,
+            tokenize = 'unicode61'
+          );
+
+          INSERT INTO memory_nodes_fts (node_id, title, body)
+          SELECT id, title, body FROM memory_nodes;
+
+          CREATE TRIGGER memory_nodes_fts_insert
+          AFTER INSERT ON memory_nodes BEGIN
+            INSERT INTO memory_nodes_fts (node_id, title, body)
+            VALUES (new.id, new.title, new.body);
+          END;
+
+          CREATE TRIGGER memory_nodes_fts_update
+          AFTER UPDATE OF title, body ON memory_nodes BEGIN
+            DELETE FROM memory_nodes_fts WHERE node_id = old.id;
+            INSERT INTO memory_nodes_fts (node_id, title, body)
+            VALUES (new.id, new.title, new.body);
+          END;
+
+          CREATE TRIGGER memory_nodes_fts_delete
+          AFTER DELETE ON memory_nodes BEGIN
+            DELETE FROM memory_nodes_fts WHERE node_id = old.id;
+          END;",
     },
 ];
 
@@ -567,12 +601,13 @@ impl MemoryStore {
         let q = match self.embed_one(model, query).await {
             Ok(v) => v,
             Err(e) => {
-                tracing::warn!(
-                    "memory graph search embedding unavailable; returning lexical order: {e}"
-                );
+                tracing::warn!("memory search embedding unavailable; using lexical recall: {e}");
                 Vec::new()
             }
         };
+        let fts_query = safe_fts_query(query);
+        let result_limit = top_k.clamp(1, 200);
+        let candidate_limit = result_limit.saturating_mul(4).max(20).min(200);
         let scope_ids = scopes
             .iter()
             .map(normalize_scope_ref)
@@ -624,25 +659,60 @@ impl MemoryStore {
                 out
             };
 
-            let mut hits = rows
-                .into_iter()
-                .map(|(node, blob)| MemoryGraphHit {
-                    score: if q.is_empty() {
-                        0.0
-                    } else {
-                        cosine(&q, &bytes_to_vec(&blob))
-                    },
-                    node,
-                })
-                .collect::<Vec<_>>();
-            hits.sort_by(|a, b| {
-                b.score
-                    .partial_cmp(&a.score)
+            let mut candidates = HashMap::new();
+            let mut semantic = Vec::new();
+            for (node, blob) in rows {
+                if candidates.contains_key(&node.id) {
+                    continue;
+                }
+                let embedding = bytes_to_vec(&blob);
+                if !q.is_empty() && !embedding.is_empty() && q.len() == embedding.len() {
+                    semantic.push((node.clone(), cosine(&q, &embedding)));
+                }
+                candidates.insert(node.id.clone(), node);
+            }
+            semantic.sort_by(|(a_node, a_score), (b_node, b_score)| {
+                b_score
+                    .partial_cmp(a_score)
                     .unwrap_or(std::cmp::Ordering::Equal)
-                    .then_with(|| b.node.updated_at.cmp(&a.node.updated_at))
+                    .then_with(|| b_node.updated_at.cmp(&a_node.updated_at))
+                    .then_with(|| a_node.id.cmp(&b_node.id))
             });
-            hits.truncate(top_k.clamp(1, 50));
-            Ok(hits)
+            let semantic = semantic
+                .into_iter()
+                .take(candidate_limit)
+                .map(|(node, _)| node)
+                .collect::<Vec<_>>();
+
+            let lexical = if let Some(fts_query) = fts_query {
+                let mut stmt = db
+                    .conn()
+                    .prepare(
+                        "SELECT node_id
+                         FROM memory_nodes_fts
+                         WHERE memory_nodes_fts MATCH ?1
+                         ORDER BY bm25(memory_nodes_fts), node_id",
+                    )
+                    .map_err(sqlite)?;
+                let rows = stmt
+                    .query_map(params![fts_query], |row| row.get::<_, String>(0))
+                    .map_err(sqlite)?;
+                let mut ranked = Vec::new();
+                for row in rows {
+                    let id = row.map_err(sqlite)?;
+                    if let Some(node) = candidates.get(&id) {
+                        ranked.push(node.clone());
+                        if ranked.len() == candidate_limit {
+                            break;
+                        }
+                    }
+                }
+                ranked
+            } else {
+                Vec::new()
+            };
+
+            Ok(fuse_rankings(vec![semantic, lexical], result_limit))
         })
         .await
         .map_err(|error| Error::Other(format!("memory graph search task: {error}")))?
@@ -981,6 +1051,75 @@ fn bytes_to_vec(b: &[u8]) -> Vec<f32> {
         .collect()
 }
 
+fn safe_fts_query(query: &str) -> Option<String> {
+    let mut tokens = Vec::new();
+    let mut token = String::new();
+    for ch in query.chars() {
+        if ch.is_alphanumeric() || ch == '_' || ch == '-' {
+            token.push(ch);
+        } else if !token.is_empty() {
+            tokens.push(std::mem::take(&mut token));
+            if tokens.len() == 16 {
+                break;
+            }
+        }
+    }
+    if tokens.len() < 16 && !token.is_empty() {
+        tokens.push(token);
+    }
+    (!tokens.is_empty()).then(|| {
+        tokens
+            .into_iter()
+            .map(|token| format!("\"{token}\""))
+            .collect::<Vec<_>>()
+            .join(" OR ")
+    })
+}
+
+fn fuse_rankings(rankings: Vec<Vec<MemoryNode>>, top_k: usize) -> Vec<MemoryGraphHit> {
+    const RRF_K: f32 = 60.0;
+
+    let rankings = rankings
+        .into_iter()
+        .filter(|ranking| !ranking.is_empty())
+        .collect::<Vec<_>>();
+    if rankings.is_empty() {
+        return Vec::new();
+    }
+
+    let max_score = rankings.len() as f32 / (RRF_K + 1.0);
+    let mut fused: HashMap<String, MemoryGraphHit> = HashMap::new();
+    for ranking in rankings {
+        for (index, node) in ranking.into_iter().enumerate() {
+            let contribution = 1.0 / (RRF_K + index as f32 + 1.0);
+            fused
+                .entry(node.id.clone())
+                .and_modify(|hit| hit.score += contribution)
+                .or_insert(MemoryGraphHit {
+                    node,
+                    score: contribution,
+                });
+        }
+    }
+
+    let mut hits = fused
+        .into_values()
+        .map(|mut hit| {
+            hit.score = (hit.score / max_score).clamp(0.0, 1.0);
+            hit
+        })
+        .collect::<Vec<_>>();
+    hits.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| b.node.updated_at.cmp(&a.node.updated_at))
+            .then_with(|| a.node.id.cmp(&b.node.id))
+    });
+    hits.truncate(top_k);
+    hits
+}
+
 /// Cosine similarity; 0.0 if either vector is zero or lengths differ.
 fn cosine(a: &[f32], b: &[f32]) -> f32 {
     if a.len() != b.len() {
@@ -1015,6 +1154,30 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         let embedder: SharedService = Arc::new(milim_inference::test_backend::TestBackend::new());
         MemoryStore::new(db, embedder).unwrap()
+    }
+
+    fn lexical_store() -> MemoryStore {
+        let db = Database::open_in_memory().unwrap();
+        let embedder: SharedService =
+            Arc::new(milim_inference::unavailable::UnavailableBackend::new());
+        MemoryStore::new(db, embedder).unwrap()
+    }
+
+    fn test_node(id: &str, updated_at: &str) -> MemoryNode {
+        MemoryNode {
+            id: id.into(),
+            scope_id: "scope".into(),
+            scope_kind: "project".into(),
+            scope_label: "Project".into(),
+            kind: "fact".into(),
+            title: id.into(),
+            body: String::new(),
+            confidence: 1.0,
+            source: "test".into(),
+            created_at: updated_at.into(),
+            updated_at: updated_at.into(),
+            archived_at: None,
+        }
     }
 
     #[tokio::test]
@@ -1184,5 +1347,153 @@ mod tests {
             .unwrap()
             .is_empty());
         assert!(mem.delete_node(&reg.node.id).unwrap());
+    }
+
+    #[tokio::test]
+    async fn fts_migration_backfills_existing_nodes() {
+        let db = Database::open_in_memory().unwrap();
+        db.migrate(&MEMORY_MIGRATIONS[..2]).unwrap();
+        db.conn()
+            .execute(
+                "INSERT INTO memory_scopes (id, kind, label, locator, locator_hash)
+                 VALUES ('scope', 'project', 'Project', 'project', 'hash')",
+                [],
+            )
+            .unwrap();
+        db.conn()
+            .execute(
+                "INSERT INTO memory_nodes
+                 (id, scope_id, kind, title, body, dim, embedding)
+                 VALUES ('legacy', 'scope', 'fact', 'Legacy MILIM-4279', 'Backfilled body', 0, X'')",
+                [],
+            )
+            .unwrap();
+
+        let embedder: SharedService =
+            Arc::new(milim_inference::unavailable::UnavailableBackend::new());
+        let mem = MemoryStore::new(db, embedder).unwrap();
+        let hits = mem
+            .search_graph("m", "MILIM-4279", &[], 5, false)
+            .await
+            .unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].node.id, "legacy");
+    }
+
+    #[tokio::test]
+    async fn lexical_recall_survives_unavailable_embeddings_and_fts_punctuation() {
+        let mem = lexical_store();
+        let scope = MemoryScopeInput {
+            kind: "project".into(),
+            label: "milim".into(),
+            locator: "C:\\dev\\milim".into(),
+        };
+        for (title, body) in [
+            ("Release identifier", "Track exact ticket MILIM-4279"),
+            ("Unrelated recent note", "Polish the settings panel"),
+        ] {
+            mem.register(
+                "m",
+                scope.clone(),
+                MemoryNodeInput {
+                    kind: "fact".into(),
+                    title: title.into(),
+                    body: body.into(),
+                    confidence: 1.0,
+                    source: "test".into(),
+                },
+                Vec::new(),
+                MemoryEventInput::default(),
+            )
+            .await
+            .unwrap();
+        }
+
+        let hits = mem
+            .search_graph(
+                "m",
+                "MILIM-4279 \" OR * ( )",
+                &[MemoryScopeRef {
+                    kind: "project".into(),
+                    locator: "C:\\dev\\milim".into(),
+                }],
+                5,
+                false,
+            )
+            .await
+            .unwrap();
+        assert_eq!(hits[0].node.title, "Release identifier");
+        assert!((0.0..=1.0).contains(&hits[0].score));
+
+        let no_hits = mem.search_graph("m", "!!!", &[], 5, false).await.unwrap();
+        assert!(no_hits.is_empty());
+    }
+
+    #[tokio::test]
+    async fn hybrid_search_keeps_scope_archive_and_top_k_filters() {
+        let mem = lexical_store();
+        let project_a = MemoryScopeInput {
+            kind: "project".into(),
+            label: "A".into(),
+            locator: "project-a".into(),
+        };
+        let project_b = MemoryScopeInput {
+            kind: "project".into(),
+            label: "B".into(),
+            locator: "project-b".into(),
+        };
+        let mut ids = Vec::new();
+        for (scope, title) in [
+            (project_a.clone(), "Active TOKEN-42"),
+            (project_a.clone(), "Archived TOKEN-42"),
+            (project_b, "Other scope TOKEN-42"),
+        ] {
+            let registration = mem
+                .register(
+                    "m",
+                    scope,
+                    MemoryNodeInput {
+                        kind: "fact".into(),
+                        title: title.into(),
+                        body: "Exact scoped identifier".into(),
+                        confidence: 1.0,
+                        source: "test".into(),
+                    },
+                    Vec::new(),
+                    MemoryEventInput::default(),
+                )
+                .await
+                .unwrap();
+            ids.push(registration.node.id);
+        }
+        assert!(mem.archive_node(&ids[1]).unwrap());
+
+        let scope = [MemoryScopeRef {
+            kind: "project".into(),
+            locator: "project-a".into(),
+        }];
+        let active = mem
+            .search_graph("m", "TOKEN-42", &scope, 1, false)
+            .await
+            .unwrap();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].node.title, "Active TOKEN-42");
+
+        let with_archived = mem
+            .search_graph("m", "TOKEN-42", &scope, 2, true)
+            .await
+            .unwrap();
+        assert_eq!(with_archived.len(), 2);
+        assert!(with_archived.iter().all(|hit| hit.node.scope_label == "A"));
+    }
+
+    #[test]
+    fn reciprocal_rank_fusion_rewards_agreement() {
+        let a = test_node("a", "2025-01-01 00:00:00");
+        let b = test_node("b", "2025-01-02 00:00:00");
+        let c = test_node("c", "2025-01-03 00:00:00");
+        let hits = fuse_rankings(vec![vec![a, b.clone()], vec![b, c]], 3);
+        assert_eq!(hits[0].node.id, "b");
+        assert!(hits.iter().all(|hit| (0.0..=1.0).contains(&hit.score)));
     }
 }

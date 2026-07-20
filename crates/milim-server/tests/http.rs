@@ -5251,6 +5251,24 @@ async fn memory_graph_register_search_update_and_delete() {
         .await
         .unwrap();
     assert_eq!(hits["hits"][0]["node"]["id"], node_id);
+    let score = hits["hits"][0]["score"].as_f64().unwrap();
+    assert!((0.0..=1.0).contains(&score));
+    assert!(hits["hits"][0].get("node").is_some());
+
+    let repeated_hits: Value = client
+        .post(format!("{base}/memory/graph/search"))
+        .json(&json!({
+            "model": "test-echo",
+            "query": "graph memory nodes",
+            "scopes": [{ "kind": "thread", "locator": "thread-http" }]
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(hits["hits"], repeated_hits["hits"]);
 
     let updated: Value = client
         .put(format!("{base}/memory/nodes/{node_id}"))

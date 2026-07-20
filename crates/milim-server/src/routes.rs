@@ -12269,7 +12269,7 @@ struct MemoryGraphSearchResponse {
     hits: Vec<milim_memory::MemoryGraphHit>,
 }
 
-/// `POST /memory/graph/search` — semantic search over scoped graph memories.
+/// `POST /memory/graph/search` — hybrid lexical/semantic search over scoped memories.
 pub(crate) async fn memory_graph_search(
     State(st): State<AppState>,
     headers: HeaderMap,

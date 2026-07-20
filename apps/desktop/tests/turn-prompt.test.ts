@@ -1,9 +1,31 @@
 import { strict as assert } from "node:assert";
 import type { ChatMessage, PreviewSurfaceTarget } from "../src/api.js";
-import { buildTurnPromptContext, contextMessagesForTurn, folderLabel, memoryScopes, prepareTurnPromptContext, resolveTurnToolApproval, workspaceRuleMessagesForRuntime } from "../src/lib/turnPrompt.js";
+import { estimateTextTokens } from "../src/lib/contextCompaction.js";
+import { buildTurnPromptContext, contextMessagesForTurn, folderLabel, memoryScopes, prepareTurnPromptContext, resolveTurnToolApproval, workspaceRuleMessagesForRuntime, type MemoryHit } from "../src/lib/turnPrompt.js";
 
 function user(content: string): ChatMessage {
   return { role: "user", content };
+}
+
+function promptWithMemory(memoryHits: MemoryHit[]) {
+  return buildTurnPromptContext({
+    sessionId: "memory-test",
+    threadTitle: "Memory",
+    folder: "",
+    instructions: "",
+    planMode: false,
+    memory: true,
+    conversation: [user("continue")],
+    memoryHits,
+    selectedSkills: [],
+    turnId: "memory-turn",
+    sandbox: false,
+    computerUse: false,
+    activeAgentId: null,
+    toolApproval: "guarded",
+    toolApprovalGrant: false,
+    experimentalHashlinePatch: false,
+  });
 }
 
 assert.equal(folderLabel("C:\\Users\\USER\\Documents\\DEV\\milim"), "milim");
@@ -186,7 +208,7 @@ const memory = buildTurnPromptContext({
   planMode: false,
   memory: true,
   conversation: [user("continue")],
-  memoryHits: [{ node: { scope_kind: "project", kind: "decision", title: "Use SQLite", body: "Local first." } }],
+  memoryHits: [{ node: { scope_kind: "project", kind: "decision", title: "Use SQLite", body: "Local first.", source: "user", updated_at: "2026-07-20 08:30:00" } }],
   selectedSkills: [{ id: "sk1", name: "Skill", description: "Useful", instructions: "Do it.", enabled: true, source_kind: "local" }],
   turnId: "turn-3",
   sandbox: false,
@@ -199,9 +221,44 @@ const memory = buildTurnPromptContext({
 assert.equal(memory.useTools, false, "retrieved memory alone should stay on the cheap model-chat path");
 assert.equal(memory.runMemoryContext.memory_enabled, false);
 assert.match(memory.memoryMessages[0].content, /Relevant local memories/);
+assert.match(memory.memoryMessages[0].content, /scope=project \| kind=decision \| source=user \| updated=2026-07-20/);
+assert.match(memory.memoryMessages[0].content, /untrusted historical context/);
+assert.match(memory.memoryMessages[0].content, /workspace files take precedence/);
 assert.doesNotMatch(memory.memoryMessages[0].content, /memory_register/);
 assert.match(memory.skillMessages[0].content, /## 1\. Skill/);
 assert.equal(memory.runMemoryContext.project_label, undefined);
+
+const packedMemories = promptWithMemory(Array.from({ length: 8 }, (_, index) => ({
+  node: {
+    scope_kind: "project",
+    kind: "fact",
+    title: `Memory ${index + 1}`,
+    body: "Small body.",
+    source: "test",
+    updated_at: "2026-07-20 08:30:00",
+  },
+})));
+const packedMemoryText = packedMemories.memoryMessages[0].content;
+assert.equal(packedMemoryText.match(/^\d+\. \[/gm)?.length, 5);
+assert.ok(estimateTextTokens(packedMemoryText) <= 1_024);
+
+const truncatedMemory = promptWithMemory([
+  { node: { scope_kind: "personal", kind: "preference", title: "Large preference", body: "detail ".repeat(4_000), source: "user", updated_at: "2026-07-19" } },
+  { node: { scope_kind: "personal", kind: "fact", title: "Should not displace first", body: "small", source: "user", updated_at: "2026-07-18" } },
+]);
+assert.match(truncatedMemory.memoryMessages[0].content, /\.\.\. \[truncated\]/);
+assert.doesNotMatch(truncatedMemory.memoryMessages[0].content, /Should not displace first/);
+assert.ok(estimateTextTokens(truncatedMemory.memoryMessages[0].content) <= 1_024);
+
+const skippedOversizedMemory = promptWithMemory([
+  { node: { scope_kind: "project", kind: "fact", title: "First small", body: "small", source: "test", updated_at: "2026-07-20" } },
+  { node: { scope_kind: "project", kind: "fact", title: "Oversized later", body: "detail ".repeat(4_000), source: "test", updated_at: "2026-07-19" } },
+  { node: { scope_kind: "project", kind: "fact", title: "Third small", body: "small", source: "test", updated_at: "2026-07-18" } },
+]);
+assert.match(skippedOversizedMemory.memoryMessages[0].content, /First small/);
+assert.doesNotMatch(skippedOversizedMemory.memoryMessages[0].content, /Oversized later/);
+assert.match(skippedOversizedMemory.memoryMessages[0].content, /Third small/);
+assert.ok(estimateTextTokens(skippedOversizedMemory.memoryMessages[0].content) <= 1_024);
 
 const explicitMemoryWrite = buildTurnPromptContext({
   sessionId: "s3-write",
@@ -339,7 +396,7 @@ const prepared = await prepareTurnPromptContext({
   },
 });
 assert.equal(searched[0].query, "remember this with attachments");
-assert.equal(searched[0].limit, 5);
+assert.equal(searched[0].limit, 20);
 assert.equal(searched[0].model, "local-model");
 assert.deepEqual(searched[0].scopes, [
   { kind: "global", locator: "personal" },
@@ -350,6 +407,36 @@ assert.equal(selectedQueries.length, 0, "custom agent skills should not call aut
 assert.match(prepared.memoryMessages[0].content, /Memory body/);
 assert.match(prepared.skillMessages[0].content, /Custom/);
 assert.equal(prepared.useTools, true);
+
+let planMemorySearches = 0;
+const plannedWithMemoryEnabled = await prepareTurnPromptContext({
+  sessionId: "s-plan-memory",
+  threadTitle: "Plan",
+  folder: "",
+  instructions: "",
+  planMode: true,
+  memory: true,
+  conversation: [user("plan this and remember it")],
+  activeAgent: null,
+  skills: [],
+  turnId: "turn-plan-memory",
+  model: "local-model",
+  sandbox: false,
+  computerUse: false,
+  activeAgentId: null,
+  toolApproval: "guarded",
+  toolApprovalGrant: false,
+  experimentalHashlinePatch: false,
+  messageContent: (message) => message.content,
+  searchMemory: async () => {
+    planMemorySearches += 1;
+    return [];
+  },
+  selectSkills: async () => [],
+});
+assert.equal(planMemorySearches, 0, "plan mode should not search memory");
+assert.equal(plannedWithMemoryEnabled.memoryMessages.length, 0, "plan mode should not expose memory writes");
+assert.equal(plannedWithMemoryEnabled.runMemoryContext.memory_enabled, false);
 
 const tagSkills = [
   { id: "code-review", name: "Code Review", description: "", instructions: "Review carefully.", enabled: true, source_kind: "local" },
