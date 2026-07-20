@@ -17,6 +17,7 @@ use milim_tools::ToolRegistry;
 use serde::Serialize;
 
 use crate::companion::MobileCompanionBridge;
+use crate::media_library::MediaLibrary;
 use crate::preview_runtime::PreviewRuntimeManager;
 use crate::threads::ThreadSupervisor;
 
@@ -140,6 +141,8 @@ pub struct AppState {
     pub skills: Option<Arc<SkillStore>>,
     /// Optional multi-provider registry exposed via `/providers`.
     pub providers: Option<Arc<crate::providers::ProviderRegistry>>,
+    /// Durable local media metadata and generated files.
+    pub media_library: Option<Arc<MediaLibrary>>,
     /// Host working-folder root shared with the desktop's filesystem/shell
     /// tools. Set via `POST /workspace` (the GUI's "Folder" chip). When unset,
     /// host tools refuse to run. Shared (not cloned) across handlers + tools.
@@ -182,6 +185,7 @@ impl AppState {
             schedule_runs: Arc::new(ScheduleRunQueue::default()),
             skills: None,
             providers: None,
+            media_library: None,
             workspace: Arc::new(RwLock::new(None)),
             tool_approvals: Arc::new(milim_agents::ToolApprovalBroker::default()),
             mcp: None,
@@ -233,6 +237,12 @@ impl AppState {
     /// Attach a multi-provider registry for the `/providers` endpoints.
     pub fn with_providers(mut self, providers: Arc<crate::providers::ProviderRegistry>) -> Self {
         self.providers = Some(providers);
+        self
+    }
+
+    /// Attach the durable local media library.
+    pub fn with_media_library(mut self, library: MediaLibrary) -> Self {
+        self.media_library = Some(Arc::new(library));
         self
     }
 

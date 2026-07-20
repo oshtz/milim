@@ -13,10 +13,16 @@ type ModelPickerProps = {
   toolIntent?: boolean;
   planMode?: boolean;
   onModel: (selection: { model: string; source: "model" | "preset"; reasoningEffort?: ReasoningEffort }) => void;
-  onManageProviders: () => void;
-  onManageMcp: () => void;
-  onManageMemory: () => void;
+  onManageProviders?: () => void;
+  onManageMcp?: () => void;
+  onManageMemory?: () => void;
   onClose: () => void;
+  showManagementActions?: boolean;
+  favoriteIds?: string[];
+  favoritesOnlyValue?: boolean;
+  onToggleFavorite?: (modelId: string) => void;
+  onFavoritesOnlyChange?: (favoritesOnly: boolean) => void;
+  searchPlaceholder?: string;
 };
 
 function assert(condition: unknown, message: string): asserts condition {
@@ -112,6 +118,24 @@ try {
   assert(!markup.includes(">Models<") && !markup.includes(">Presets<"), "Picker should not render redundant model or preset views");
   assert(markup.includes('aria-label="Collapse OpenAI models"'), "Provider headers should render accessible collapse controls");
   assert(markup.includes('aria-expanded="true"'), "Provider headers should expose their expanded state");
+
+  const mediaMarkup = renderToStaticMarkup(
+    createElement(ModelPicker, {
+      models: [models[1]],
+      model: models[1].id,
+      onModel: () => {},
+      onClose: () => {},
+      showManagementActions: false,
+      favoriteIds: [models[1].id],
+      favoritesOnlyValue: false,
+      onToggleFavorite: () => {},
+      onFavoritesOnlyChange: () => {},
+      searchPlaceholder: "Search image models...",
+    }),
+  );
+  assert(mediaMarkup.includes("Search image models..."), "The shared picker should accept media-specific search copy");
+  assert(mediaMarkup.includes('aria-pressed="true"'), "The shared picker should render provider-scoped media favorites");
+  assert(!mediaMarkup.includes('data-testid="manage-providers"'), "Media picker usage should hide chat management actions");
 
   const { ControlBar } = (await server.ssrLoadModule(
     "/src/components/ControlBar.tsx",

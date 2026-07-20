@@ -316,6 +316,7 @@ import { pendingAttentionKey, playInterfaceSound } from "../ui/sounds";
 import { DEFAULT_PREVIEW_PANEL_WIDTH, useUiPreferences } from "../ui/store";
 import { AgentAvatar } from "./AgentAvatar";
 import { Composer } from "./Composer";
+import { ComposerSurface } from "./ComposerSurface";
 import { ControlBar } from "./ControlBar";
 import type { ModelPickerSelection } from "./ModelPicker";
 import { GoalPanel, type GoalPanelDraft } from "./GoalPanel";
@@ -9019,7 +9020,7 @@ export function ChatView({
                 {chatNotice.message}
               </div>
             )}
-            <div className="dock-surface">
+            <ComposerSurface>
               <ControlBar
                 models={pickerModels}
                 model={model}
@@ -9067,6 +9068,7 @@ export function ChatView({
                       parameterValues={mediaParameterValues}
                       advanced={mediaAdvanced}
                       error={mediaError}
+                      popover
                       onKindChange={setMediaKind}
                       onParameterChange={updateInlineMediaParameter}
                       onAdvancedChange={updateInlineMediaAdvanced}
@@ -9138,7 +9140,7 @@ export function ChatView({
                 contextBudgetTokens={activeContextBudget?.promptBudget}
                 busy={busy}
               />
-            </div>
+            </ComposerSurface>
             {emptyThread && !input.trim() && !activeMediaTarget && (
               <EmptyStarterActions
                 strip={emptyStarterStrip}

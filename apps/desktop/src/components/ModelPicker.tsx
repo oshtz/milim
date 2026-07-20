@@ -77,6 +77,12 @@ export function ModelPicker({
   onManageMemory,
   onClose,
   showManagementActions = true,
+  favoriteIds,
+  favoritesOnlyValue,
+  onToggleFavorite,
+  onFavoritesOnlyChange,
+  searchPlaceholder,
+  emptyMessage,
 }: {
   models: ModelInfo[];
   model: string;
@@ -84,14 +90,20 @@ export function ModelPicker({
   toolIntent?: boolean;
   planMode?: boolean;
   onModel: (selection: ModelPickerSelection) => void;
-  onManageProviders: () => void;
-  onManageMcp: () => void;
-  onManageMemory: () => void;
+  onManageProviders?: () => void;
+  onManageMcp?: () => void;
+  onManageMemory?: () => void;
   onClose: () => void;
   showManagementActions?: boolean;
+  favoriteIds?: string[];
+  favoritesOnlyValue?: boolean;
+  onToggleFavorite?: (modelId: string) => void;
+  onFavoritesOnlyChange?: (favoritesOnly: boolean) => void;
+  searchPlaceholder?: string;
+  emptyMessage?: string;
 }) {
-  const favorites = useSettings((s) => s.favorites);
-  const favoritesOnly = useSettings((s) => s.favoritesOnly);
+  const storedFavorites = useSettings((s) => s.favorites);
+  const storedFavoritesOnly = useSettings((s) => s.favoritesOnly);
   const collapsedModelGroups = useSettings((s) => s.collapsedModelGroups);
   const toggleFavorite = useSettings((s) => s.toggleFavorite);
   const setFavoritesOnly = useSettings((s) => s.setFavoritesOnly);
@@ -100,6 +112,9 @@ export function ModelPicker({
   const setModelReasoningEffort = useSettings((s) => s.setModelReasoningEffort);
   const [q, setQ] = useState("");
   const [effortMenu, setEffortMenu] = useState<EffortMenuState | null>(null);
+  const favorites = favoriteIds ?? storedFavorites;
+  const favoritesOnly = favoritesOnlyValue ?? storedFavoritesOnly;
+  const applyFavorite = onToggleFavorite ?? toggleFavorite;
 
   const groups = useMemo<Array<[string, ModelInfo[]]>>(() => {
     return modelPickerGroups(models, favorites, favoritesOnly, q);
@@ -114,14 +129,14 @@ export function ModelPicker({
           aria-label="Search models"
           value={q}
           onChange={(e) => setQ(e.target.value)}
-          placeholder={favoritesOnly ? "Search favorites..." : "Search models..."}
+          placeholder={favoritesOnly ? "Search favorites..." : searchPlaceholder ?? "Search models..."}
         />
       </div>
       <div className="mp-list" onScroll={() => effortMenu && setEffortMenu(null)}>
         <>
             {groups.length === 0 && (
               <div className="mp-empty" role="status">
-                {favoritesOnly ? "No favorites yet." : "No models - add a provider."}
+                {favoritesOnly ? "No favorites yet." : emptyMessage ?? "No models - add a provider."}
               </div>
             )}
             {groups.map(([label, ms]) => {
@@ -163,7 +178,7 @@ export function ModelPicker({
                     title={favorites.includes(m.id) ? "Unfavorite" : "Favorite"}
                     aria-label={favorites.includes(m.id) ? `Remove ${m.id} from favorites` : `Add ${m.id} to favorites`}
                     aria-pressed={favorites.includes(m.id)}
-                    onClick={() => toggleFavorite(m.id)}
+                    onClick={() => applyFavorite(m.id)}
                   >
                     <Star filled={favorites.includes(m.id)} />
                   </button>
@@ -243,20 +258,20 @@ export function ModelPicker({
         </>
       </div>
       <div className="mp-foot">
-        <button type="button" className={"mp-foot-toggle" + (favoritesOnly ? " on" : "")} aria-pressed={favoritesOnly} onClick={() => setFavoritesOnly(!favoritesOnly)}>
+        <button type="button" className={"mp-foot-toggle" + (favoritesOnly ? " on" : "")} aria-pressed={favoritesOnly} onClick={() => onFavoritesOnlyChange ? onFavoritesOnlyChange(!favoritesOnly) : setFavoritesOnly(!favoritesOnly)}>
           <span className="mp-checkbox">{favoritesOnly && <Check size={10} />}</span>
           Favorites only
         </button>
-        {showManagementActions && <div className="mp-foot-actions">
-          <button type="button" className="mp-foot-btn" data-testid="manage-providers" onClick={() => { onClose(); onManageProviders(); }}>
+        {showManagementActions && (onManageProviders || onManageMcp || onManageMemory) && <div className="mp-foot-actions">
+          {onManageProviders && <button type="button" className="mp-foot-btn" data-testid="manage-providers" onClick={() => { onClose(); onManageProviders(); }}>
             <PlusSquare size={13} /> Providers
-          </button>
-          <button type="button" className="mp-foot-btn" onClick={() => { onClose(); onManageMcp(); }}>
+          </button>}
+          {onManageMcp && <button type="button" className="mp-foot-btn" onClick={() => { onClose(); onManageMcp(); }}>
             <Plug size={13} /> MCP
-          </button>
-          <button type="button" className="mp-foot-btn" onClick={() => { onClose(); onManageMemory(); }}>
+          </button>}
+          {onManageMemory && <button type="button" className="mp-foot-btn" onClick={() => { onClose(); onManageMemory(); }}>
             <Memory size={13} /> Memory
-          </button>
+          </button>}
         </div>}
       </div>
     </div>

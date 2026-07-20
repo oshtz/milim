@@ -1,24 +1,39 @@
-import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type KeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
+import { createPortal } from "react-dom";
+import {
+  deleteMediaLibraryItem,
   generateMedia,
+  getPrivacyMode,
   getMediaModelSchema,
   getMediaStatus,
-  isOpenRouterProvider,
+  listMediaLibrary,
   listMediaModels,
   listProviders,
   mediaProviders,
+  openArtifactLocation,
   openExternalUrl,
+  refreshMediaLibraryItem,
   supportsMediaMetadataProvider,
   type MediaGenerationResult,
   type MediaKind,
+  type MediaLibraryItem,
+  type MediaLibraryStatus,
   type MediaModelInfo,
   type MediaModelSchema,
   type MediaSchemaControl,
+  type ModelInfo,
   type ProviderInfo,
 } from "../api";
 import {
   DEFAULT_MEDIA_ADVANCED_INPUT,
-  controlValue,
   defaultMediaAdvanced,
   defaultMediaModel,
   inputWithSchemaControls,
@@ -30,17 +45,23 @@ import {
   isTerminalMediaStatus,
 } from "../lib/media";
 import { useSettings } from "../settings/store";
-import { Image, X } from "./icons";
+import {
+  DEFAULT_MEDIA_STUDIO_HEIGHT,
+  DEFAULT_MEDIA_STUDIO_WIDTH,
+  MIN_MEDIA_STUDIO_HEIGHT,
+  MIN_MEDIA_STUDIO_WIDTH,
+  normalizeMediaStudioSize,
+  useUiPreferences,
+} from "../ui/store";
+import { ArrowUp, Check, ChevronDown, FolderOpen, Image, Refresh, Search, Sidebar, Trash, X } from "./icons";
+import { ComposerSurface } from "./ComposerSurface";
 import { GeneratedMedia } from "./GeneratedMedia";
+import { InlineMediaControls } from "./InlineMediaControls";
+import { ModelPicker } from "./ModelPicker";
 import { SheetDialog } from "./SheetDialog";
 import { Select } from "./ui";
 
-function modelPlaceholder(provider?: ProviderInfo | null): string {
-  if (!provider) return "black-forest-labs/flux-schnell";
-  if (provider.kind === "fal") return "fal-ai/flux/schnell";
-  if (isOpenRouterProvider(provider)) return "google/gemini-2.5-flash-image";
-  return "black-forest-labs/flux-schnell";
-}
+type MediaModelCatalog = Record<string, Partial<Record<MediaKind, MediaModelInfo[]>>>;
 
 export function MediaManager({
   onClose,
@@ -51,16 +72,22 @@ export function MediaManager({
 }) {
   const mediaSettings = useSettings((s) => s.media);
   const setMediaSettings = useSettings((s) => s.setMediaSettings);
+  const savedStudioWidth = useUiPreferences((s) => s.mediaStudioWidth);
+  const savedStudioHeight = useUiPreferences((s) => s.mediaStudioHeight);
+  const setMediaStudioSize = useUiPreferences((s) => s.setMediaStudioSize);
+  const [studioSize, setStudioSize] = useState(() => normalizeMediaStudioSize(savedStudioWidth, savedStudioHeight));
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
   const available = useMemo(() => mediaProviders(providers), [providers]);
   const [providerId, setProviderId] = useState("");
-  const selectedProvider = available.find((provider) => provider.id === providerId) ?? available[0] ?? null;
+  const selectedProvider = (providerId ? available.find((provider) => provider.id === providerId) : available[0]) ?? null;
   const [kind, setKind] = useState<MediaKind>("image");
   const [model, setModel] = useState("");
   const [prompt, setPrompt] = useState("");
   const [advanced, setAdvanced] = useState(DEFAULT_MEDIA_ADVANCED_INPUT);
   const [modelOptions, setModelOptions] = useState<MediaModelInfo[]>([]);
-  const [modelSearch, setModelSearch] = useState("");
+  const [modelCatalog, setModelCatalog] = useState<MediaModelCatalog>({});
+  const [modelPickerOpen, setModelPickerOpen] = useState(false);
+  const [modelPickerStyle, setModelPickerStyle] = useState<CSSProperties>();
   const [favoritesOnly, setFavoritesOnly] = useState(false);
   const [modelSchema, setModelSchema] = useState<MediaModelSchema | null>(null);
   const [parameterValues, setParameterValues] = useState<Record<string, unknown>>({});
@@ -69,24 +96,94 @@ export function MediaManager({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [results, setResults] = useState<MediaGenerationResult[]>([]);
+  const [libraryItems, setLibraryItems] = useState<MediaLibraryItem[]>([]);
+  const [libraryCursor, setLibraryCursor] = useState<string | null>(null);
+  const [libraryQuery, setLibraryQuery] = useState("");
+  const [libraryKind, setLibraryKind] = useState<MediaKind | "">("");
+  const [libraryProvider, setLibraryProvider] = useState("");
+  const [libraryStatus, setLibraryStatus] = useState<MediaLibraryStatus | "">("");
+  const [libraryLoading, setLibraryLoading] = useState(false);
+  const [libraryOpen, setLibraryOpen] = useState(false);
+  const [selectedLibraryId, setSelectedLibraryId] = useState("");
+  const [confirmDeleteId, setConfirmDeleteId] = useState("");
+  const [privacyMode, setPrivacyModeLabel] = useState("off");
   const pollingKeys = useRef<Set<string>>(new Set());
+  const libraryRequest = useRef(0);
+  const libraryVisibilityInitialized = useRef(false);
+  const reusedModelRef = useRef<string | null>(null);
+  const resizeCleanupRef = useRef<(() => void) | null>(null);
+  const modelPickerTriggerRef = useRef<HTMLButtonElement>(null);
+  const modelPickerPopoverRef = useRef<HTMLDivElement>(null);
   const metadataProvider = Boolean(selectedProvider && supportsMediaMetadataProvider(selectedProvider));
-  const favoriteModelIds = selectedProvider ? mediaSettings.favoriteModelIdsByProvider[selectedProvider.id] ?? [] : [];
-  const visibleModelOptions = useMemo(() => {
-    const query = modelSearch.trim().toLowerCase();
-    return modelOptions
-      .filter((item) => {
-        if (favoritesOnly && !favoriteModelIds.includes(item.id)) return false;
-        if (!query) return true;
-        return (
-          item.id.toLowerCase().includes(query) ||
-          item.name.toLowerCase().includes(query) ||
-          item.description.toLowerCase().includes(query)
-        );
-      })
-      .sort((a, b) => Number(favoriteModelIds.includes(b.id)) - Number(favoriteModelIds.includes(a.id)));
-  }, [modelOptions, modelSearch, favoritesOnly, favoriteModelIds.join("\u0000")]);
-  const selectedModelFavorite = Boolean(model && favoriteModelIds.includes(model));
+  const mediaPickerRoutes = useMemo(() => {
+    const routes = new Map<string, { provider: ProviderInfo; info: MediaModelInfo; kinds: MediaKind[] }>();
+    const orderedProviders = selectedProvider
+      ? [selectedProvider, ...available.filter((provider) => provider.id !== selectedProvider.id)]
+      : available;
+    for (const provider of orderedProviders) {
+      for (const catalogKind of ["image", "video", "music"] as MediaKind[]) {
+        for (const info of modelCatalog[provider.id]?.[catalogKind] ?? []) {
+          const existing = routes.get(info.id);
+          if (existing?.provider.id === provider.id) {
+            if (!existing.kinds.includes(catalogKind)) existing.kinds.push(catalogKind);
+          } else if (!existing) {
+            routes.set(info.id, { provider, info, kinds: [catalogKind] });
+          }
+        }
+      }
+    }
+    return routes;
+  }, [available, modelCatalog, selectedProvider]);
+  const mediaPickerModels = useMemo<ModelInfo[]>(() => Array.from(mediaPickerRoutes)
+    .filter(([, route]) => route.kinds.includes(kind))
+    .map(([id, route]) => ({
+      id,
+      display_id: route.info.name ? `${route.info.name} (${id})` : id,
+      owned_by: route.provider.name,
+      capabilities: {
+        imageOutput: route.kinds.includes("image"),
+        videoOutput: route.kinds.includes("video"),
+        musicOutput: route.kinds.includes("music"),
+      },
+    })), [kind, mediaPickerRoutes]);
+  const favoriteModelIds = useMemo(() => Array.from(new Set(
+    Object.values(mediaSettings.favoriteModelIdsByProvider).flat(),
+  )), [mediaSettings.favoriteModelIdsByProvider]);
+  const selectedModelRoute = mediaPickerRoutes.get(model);
+  const selectedModelInfo = selectedModelRoute?.info ?? modelOptions.find((item) => item.id === model);
+  const selectedModelLabel = selectedModelInfo?.name
+    ? `${selectedModelInfo.name} (${selectedModelInfo.id})`
+    : model;
+  const selectedLibraryItem = libraryItems.find((item) => item.id === selectedLibraryId)
+    ?? (!selectedLibraryId ? libraryItems[0] ?? null : null);
+  const latestResult = results[0] ?? null;
+
+  useEffect(() => {
+    setStudioSize(normalizeMediaStudioSize(savedStudioWidth, savedStudioHeight));
+  }, [savedStudioWidth, savedStudioHeight]);
+
+  useEffect(() => () => resizeCleanupRef.current?.(), []);
+
+  useEffect(() => {
+    if (!modelPickerOpen) return;
+    const closeOnOutsideClick = (event: MouseEvent) => {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (modelPickerTriggerRef.current?.contains(target) || modelPickerPopoverRef.current?.contains(target)) return;
+      setModelPickerOpen(false);
+    };
+    const closeOnResize = () => setModelPickerOpen(false);
+    document.addEventListener("mousedown", closeOnOutsideClick);
+    window.addEventListener("resize", closeOnResize);
+    return () => {
+      document.removeEventListener("mousedown", closeOnOutsideClick);
+      window.removeEventListener("resize", closeOnResize);
+    };
+  }, [modelPickerOpen]);
+
+  useEffect(() => {
+    setConfirmDeleteId("");
+  }, [selectedLibraryId]);
 
   useEffect(() => {
     listProviders().then((next) => {
@@ -104,9 +201,33 @@ export function MediaManager({
         ? saved.advancedByProviderModel[key] ?? defaultMediaAdvanced(initialProvider)
         : current);
       setParameterValues(key ? saved.parametersByProviderModel[key] ?? {} : {});
-      if (initialProvider) setModelSearch(saved.modelSearchByProvider[initialProvider.id] ?? "");
     });
+    getPrivacyMode()
+      .then(setPrivacyModeLabel)
+      .catch(() => undefined);
   }, []);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void loadLibrary();
+    }, 150);
+    return () => window.clearTimeout(timer);
+  }, [libraryQuery, libraryKind, libraryProvider, libraryStatus]);
+
+  useEffect(() => {
+    if (!libraryItems.some((item) => item.save_state === "running" || item.save_state === "saving")) return;
+    const timer = window.setInterval(() => {
+      const running = libraryItems.filter((item) => item.save_state === "running");
+      if (running.length) {
+        void Promise.all(running.map((item) => refreshMediaLibraryItem(item.id)))
+          .then(() => loadLibrary())
+          .catch(() => loadLibrary());
+      } else {
+        void loadLibrary();
+      }
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [libraryItems.map((item) => `${item.id}:${item.save_state}`).join("\u0000")]);
 
   useEffect(() => {
     if (!selectedProvider) return;
@@ -114,6 +235,33 @@ export function MediaManager({
     setMediaSettings({ providerId: selectedProvider.id });
     setModel((current) => current || mediaSettings.modelByProvider[selectedProvider.id] || defaultMediaModel(selectedProvider));
   }, [selectedProvider]);
+
+  useEffect(() => {
+    if (!available.length) {
+      setModelCatalog({});
+      return;
+    }
+    let cancelled = false;
+    void Promise.all(available.flatMap((provider) =>
+      (["image", "video", "music"] as MediaKind[]).map(async (catalogKind) => {
+        try {
+          return { providerId: provider.id, kind: catalogKind, models: await listMediaModels(provider.id, catalogKind) };
+        } catch {
+          return { providerId: provider.id, kind: catalogKind, models: [] as MediaModelInfo[] };
+        }
+      }),
+    )).then((entries) => {
+      if (cancelled) return;
+      const next: MediaModelCatalog = {};
+      for (const entry of entries) {
+        next[entry.providerId] = { ...next[entry.providerId], [entry.kind]: entry.models };
+      }
+      setModelCatalog(next);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [available.map((provider) => provider.id).join("\u0000")]);
 
   useEffect(() => {
     if (!selectedProvider || !metadataProvider) {
@@ -126,16 +274,25 @@ export function MediaManager({
     let cancelled = false;
     setModelsLoading(true);
     setError(null);
-    listMediaModels(selectedProvider.id, kind, { query: modelSearch })
+    listMediaModels(selectedProvider.id, kind)
       .then((models) => {
         if (cancelled) return;
         setModelOptions(models);
+        setModelCatalog((current) => ({
+          ...current,
+          [selectedProvider.id]: {
+            ...current[selectedProvider.id],
+            [kind]: models,
+          },
+        }));
         const savedModel = useSettings.getState().media.modelByProvider[selectedProvider.id];
-        const nextModel = savedModel && models.some((item) => item.id === savedModel)
+        const reusedModel = reusedModelRef.current;
+        reusedModelRef.current = null;
+        const nextModel = reusedModel ?? (savedModel && models.some((item) => item.id === savedModel)
           ? savedModel
           : model && models.some((item) => item.id === model)
             ? model
-            : models[0]?.id || defaultMediaModel(selectedProvider);
+            : models[0]?.id || defaultMediaModel(selectedProvider));
         if (nextModel && nextModel !== model) {
           applyModel(nextModel, selectedProvider);
         }
@@ -149,7 +306,7 @@ export function MediaManager({
     return () => {
       cancelled = true;
     };
-  }, [selectedProvider?.id, metadataProvider, kind, modelSearch]);
+  }, [selectedProvider?.id, metadataProvider, kind]);
 
   useEffect(() => {
     if (!selectedProvider || !metadataProvider || !model.trim()) {
@@ -193,72 +350,80 @@ export function MediaManager({
     });
   }
 
-  function applyProvider(id: string) {
-    const provider = available.find((item) => item.id === id);
-    setProviderId(id);
-    if (!provider) return;
-    const saved = useSettings.getState().media;
-    const nextModel = saved.modelByProvider[id] || defaultMediaModel(provider);
-    const key = mediaPreferenceKey(id, nextModel);
-    setModel(nextModel);
-    setAdvanced(saved.advancedByProviderModel[key] ?? defaultMediaAdvanced(provider));
-    setParameterValues(saved.parametersByProviderModel[key] ?? {});
-    setModelSearch(saved.modelSearchByProvider[id] ?? "");
-    setMediaSettings({ providerId: id });
+  function applyPickerModel(nextModel: string) {
+    const route = mediaPickerRoutes.get(nextModel);
+    if (!route) {
+      applyModel(nextModel);
+      return;
+    }
+    const nextKind = route.kinds.includes(kind) ? kind : route.kinds[0];
+    setProviderId(route.provider.id);
+    if (nextKind !== kind) setKind(nextKind);
+    applyModel(nextModel, route.provider);
   }
 
-  function updateModelSearch(value: string) {
-    setModelSearch(value);
-    if (!selectedProvider) return;
-    const saved = useSettings.getState().media;
-    setMediaSettings({
-      modelSearchByProvider: {
-        ...saved.modelSearchByProvider,
-        [selectedProvider.id]: value,
-      },
-    });
+  function toggleMediaModelPicker() {
+    if (modelPickerOpen) {
+      setModelPickerOpen(false);
+      return;
+    }
+    const rect = modelPickerTriggerRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const edge = 12;
+    const gap = 6;
+    const width = Math.min(480, window.innerWidth - edge * 2);
+    const maxHeight = Math.min(440, window.innerHeight - edge * 2);
+    const left = Math.max(edge, Math.min(window.innerWidth - width - edge, rect.right - width));
+    const below = rect.bottom + gap;
+    setModelPickerStyle(below + maxHeight <= window.innerHeight - edge
+      ? { left, top: below, width, maxHeight }
+      : { left, bottom: window.innerHeight - rect.top + gap, width, maxHeight });
+    setModelPickerOpen(true);
   }
 
-  function toggleSelectedFavorite() {
-    if (!selectedProvider || !model.trim()) return;
+  async function loadLibrary(cursor?: string, append = false) {
+    const request = ++libraryRequest.current;
+    setLibraryLoading(true);
+    try {
+      const page = await listMediaLibrary({
+        query: libraryQuery.trim() || undefined,
+        kind: libraryKind || undefined,
+        provider: libraryProvider || undefined,
+        status: libraryStatus || undefined,
+        cursor,
+        limit: 40,
+      });
+      if (request !== libraryRequest.current) return;
+      setLibraryItems((current) => append ? [...current, ...page.items] : page.items);
+      setLibraryCursor(page.next_cursor ?? null);
+      if (!libraryVisibilityInitialized.current) {
+        libraryVisibilityInitialized.current = true;
+        setLibraryOpen(page.items.length > 0);
+      }
+      if (!append) {
+        setSelectedLibraryId((current) => page.items.some((item) => item.id === current) ? current : page.items[0]?.id ?? "");
+      }
+    } catch (e) {
+      if (request === libraryRequest.current) setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      if (request === libraryRequest.current) setLibraryLoading(false);
+    }
+  }
+
+  function toggleModelFavorite(modelId: string) {
+    const provider = mediaPickerRoutes.get(modelId)?.provider ?? selectedProvider;
+    if (!provider || !modelId.trim()) return;
     const saved = useSettings.getState().media;
-    const current = saved.favoriteModelIdsByProvider[selectedProvider.id] ?? [];
-    const next = current.includes(model)
-      ? current.filter((item) => item !== model)
-      : [...current, model];
+    const current = saved.favoriteModelIdsByProvider[provider.id] ?? [];
+    const next = current.includes(modelId)
+      ? current.filter((item) => item !== modelId)
+      : [...current, modelId];
     setMediaSettings({
       favoriteModelIdsByProvider: {
         ...saved.favoriteModelIdsByProvider,
-        [selectedProvider.id]: next,
+        [provider.id]: next,
       },
     });
-  }
-
-  async function refreshMediaMetadata() {
-    if (!selectedProvider || !metadataProvider) return;
-    setModelsLoading(true);
-    setSchemaLoading(true);
-    setError(null);
-    try {
-      const [models, schema] = await Promise.all([
-        listMediaModels(selectedProvider.id, kind, { query: modelSearch, refresh: true }),
-        model.trim()
-          ? getMediaModelSchema(selectedProvider.id, model.trim(), kind, { refresh: true })
-          : Promise.resolve(null),
-      ]);
-      setModelOptions(models);
-      if (schema) {
-        setModelSchema(schema);
-        const key = mediaPreferenceKey(selectedProvider.id, model.trim());
-        const saved = useSettings.getState().media.parametersByProviderModel[key];
-        setParameterValues({ ...schemaDefaults(schema), ...saved });
-      }
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setModelsLoading(false);
-      setSchemaLoading(false);
-    }
   }
 
   function updateAdvanced(value: string) {
@@ -315,6 +480,7 @@ export function MediaManager({
         setResults((items) => items.map((item) => (
           item.provider_id === next.provider_id && item.id === next.id ? { ...item, ...next } : item
         )));
+        void loadLibrary();
         if (isTerminalMediaStatus(next.status) || next.media.length > 0) break;
       }
     } catch (e) {
@@ -334,6 +500,10 @@ export function MediaManager({
       setError("Model id is required.");
       return;
     }
+    if (metadataProvider && (modelsLoading || !modelOptions.some((item) => item.id === model))) {
+      setError("Choose an available media model before generating.");
+      return;
+    }
     if (!prompt.trim()) {
       setError("Prompt is required.");
       return;
@@ -349,6 +519,8 @@ export function MediaManager({
         input: inputWithSchemaControls(advanced, metadataProvider ? modelSchema : null, parameterValues),
       });
       setResults((current) => [result, ...current].slice(0, 8));
+      if (result.library_id) setSelectedLibraryId(result.library_id);
+      void loadLibrary();
       void pollMediaStatus(result);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -357,244 +529,490 @@ export function MediaManager({
     }
   }
 
+  function reuseLibraryItem(item: MediaLibraryItem) {
+    const provider = available.find((candidate) => candidate.id === item.provider_id);
+    reusedModelRef.current = item.model;
+    setKind(item.kind);
+    setPrompt(item.prompt);
+    setAdvanced(JSON.stringify(item.input ?? {}, null, 2));
+    setParameterValues({});
+    if (provider) {
+      setProviderId(provider.id);
+      setModel(item.model);
+      setMediaSettings({
+        providerId: provider.id,
+        modelByProvider: {
+          ...useSettings.getState().media.modelByProvider,
+          [provider.id]: item.model,
+        },
+      });
+    } else {
+      setProviderId(item.provider_id);
+      setModel(item.model);
+      setError(`The original provider ${item.provider} is unavailable. Choose another provider before generating.`);
+    }
+  }
+
+  async function refreshSelected() {
+    if (!selectedLibraryItem) return;
+    setLibraryLoading(true);
+    setError(null);
+    try {
+      const next = await refreshMediaLibraryItem(selectedLibraryItem.id);
+      setLibraryItems((items) => items.map((item) => item.id === next.id ? next : item));
+      window.setTimeout(() => void loadLibrary(), next.save_state === "saving" ? 800 : 0);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLibraryLoading(false);
+    }
+  }
+
+  async function deleteSelected() {
+    if (!selectedLibraryItem) return;
+    if (confirmDeleteId !== selectedLibraryItem.id) {
+      setConfirmDeleteId(selectedLibraryItem.id);
+      return;
+    }
+    setLibraryLoading(true);
+    setError(null);
+    try {
+      await deleteMediaLibraryItem(selectedLibraryItem.id);
+      setConfirmDeleteId("");
+      setSelectedLibraryId("");
+      await loadLibrary();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLibraryLoading(false);
+    }
+  }
+
+  async function revealSelected() {
+    const path = selectedLibraryItem?.media[0]?.local_path;
+    if (!path) return;
+    setError(null);
+    try {
+      await openArtifactLocation(path, "folder");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  function onStudioKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+      event.preventDefault();
+      if (!busy) void submit();
+    }
+  }
+
+  function startStudioResize(event: ReactPointerEvent<HTMLButtonElement>) {
+    if (event.button !== 0) return;
+    const sheet = event.currentTarget.closest<HTMLElement>(".media-sheet");
+    if (!sheet) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    resizeCleanupRef.current?.();
+
+    const bounds = sheet.getBoundingClientRect();
+    const origin = { x: event.clientX, y: event.clientY, width: bounds.width, height: bounds.height };
+    let latest = { width: bounds.width, height: bounds.height };
+    let moved = false;
+
+    const cleanup = () => {
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp);
+      window.removeEventListener("pointercancel", onPointerCancel);
+      document.body.classList.remove("media-studio-resizing");
+      resizeCleanupRef.current = null;
+    };
+    const onPointerMove = (moveEvent: PointerEvent) => {
+      moved = true;
+      const maxWidth = Math.max(320, window.innerWidth - 24);
+      const maxHeight = Math.max(360, window.innerHeight - 24);
+      const minWidth = Math.min(MIN_MEDIA_STUDIO_WIDTH, maxWidth);
+      const minHeight = Math.min(MIN_MEDIA_STUDIO_HEIGHT, maxHeight);
+      latest = {
+        width: Math.round(Math.min(Math.max(origin.width + ((moveEvent.clientX - origin.x) * 2), minWidth), maxWidth)),
+        height: Math.round(Math.min(Math.max(origin.height + ((moveEvent.clientY - origin.y) * 2), minHeight), maxHeight)),
+      };
+      setStudioSize(latest);
+    };
+    const onPointerUp = () => {
+      cleanup();
+      if (moved) setMediaStudioSize(latest.width, latest.height);
+    };
+    const onPointerCancel = () => cleanup();
+
+    resizeCleanupRef.current = cleanup;
+    document.body.classList.add("media-studio-resizing");
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", onPointerUp);
+    window.addEventListener("pointercancel", onPointerCancel);
+  }
+
+  function resizeStudioWithKeyboard(event: KeyboardEvent<HTMLButtonElement>) {
+    const step = event.shiftKey ? 64 : 32;
+    const sheet = event.currentTarget.closest<HTMLElement>(".media-sheet");
+    const bounds = sheet?.getBoundingClientRect();
+    const current = bounds
+      ? { width: bounds.width, height: bounds.height }
+      : studioSize;
+    let next: { width: number; height: number } | null = null;
+
+    if (event.key === "ArrowLeft") next = { ...current, width: current.width - step };
+    if (event.key === "ArrowRight") next = { ...current, width: current.width + step };
+    if (event.key === "ArrowUp") next = { ...current, height: current.height - step };
+    if (event.key === "ArrowDown") next = { ...current, height: current.height + step };
+    if (event.key === "Home") next = { width: DEFAULT_MEDIA_STUDIO_WIDTH, height: DEFAULT_MEDIA_STUDIO_HEIGHT };
+    if (!next) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    const normalized = normalizeMediaStudioSize(next.width, next.height);
+    setStudioSize(normalized);
+    setMediaStudioSize(normalized.width, normalized.height);
+  }
+
+  function resetStudioSize() {
+    const size = { width: DEFAULT_MEDIA_STUDIO_WIDTH, height: DEFAULT_MEDIA_STUDIO_HEIGHT };
+    setStudioSize(size);
+    setMediaStudioSize(size.width, size.height);
+  }
+
+  const stageMedia = selectedLibraryItem?.media[0] ?? latestResult?.media[0];
+  const stageModel = selectedLibraryItem?.model ?? latestResult?.model ?? model;
+  const stageKind = selectedLibraryItem?.kind ?? latestResult?.kind ?? kind;
+  const stageStatus = selectedLibraryItem?.save_state ?? latestResult?.save_state ?? (busy ? "running" : null);
+  const stageEmptyTitle = stageStatus === "running"
+    ? `Generating ${stageKind}...`
+    : stageStatus === "saving"
+      ? "Saving locally..."
+      : stageStatus === "failed"
+        ? "This run failed"
+        : "Your next output will appear here";
+  const stageEmptyDetail = stageStatus === "running"
+    ? "The output will appear here when it is ready."
+    : stageStatus === "saving"
+      ? "Milim is adding the finished output to your local library."
+      : stageStatus === "failed"
+        ? selectedLibraryItem ? "Refresh it to retry, or reuse its settings." : "Review the error details and try again."
+        : "Choose a model, write a prompt, and generate.";
+  const showLibraryFilters = libraryItems.length > 0 || Boolean(
+    libraryQuery.trim() || libraryKind || libraryProvider || libraryStatus,
+  );
+  const mediaSettingsLabel = selectedProvider
+    ? `${selectedProvider.name} · ${model || `Choose a ${kind} model`}`
+    : "Choose a provider";
+  const selectedProviderAvailable = Boolean(selectedProvider);
+  const selectedModelAvailable = metadataProvider
+    ? !modelsLoading && modelOptions.some((item) => item.id === model)
+    : Boolean(model.trim());
+  const mediaSheetStyle = {
+    width: studioSize.width,
+    height: studioSize.height,
+  } satisfies CSSProperties;
+
   return (
-    <SheetDialog title="Generate media" className="sheet media-sheet" testId="media-generator" onClose={onClose}>
-        <div className="sheet-header">
-          <h2>Generate media</h2>
-          <button className="icon-btn" onClick={onClose} title="Close">
+    <SheetDialog
+      title="Media studio"
+      className="sheet media-sheet"
+      testId="media-generator"
+      style={mediaSheetStyle}
+      onClose={onClose}
+    >
+      <div className="media-studio" onKeyDown={onStudioKeyDown}>
+        <div className="sheet-header media-studio-header">
+          <div>
+            <h2>Media studio</h2>
+            <p>Quick generations here. Iteration stays in chat.</p>
+          </div>
+          <button className="icon-btn" type="button" onClick={onClose} title="Close" aria-label="Close media studio">
             <X size={15} />
           </button>
         </div>
-        <p className="sheet-sub">Use encrypted Replicate, fal, or OpenRouter credentials for image, video, and music runs.</p>
 
         <div className="media-grid">
-          <section className="media-form">
-            <label className="field">
-              <span>Provider</span>
-              <Select
-                value={selectedProvider?.id ?? ""}
-                testId="media-provider-select"
-                placeholder="Choose a media provider..."
-                options={available.map((provider) => ({
-                  label: `${provider.name} (${provider.kind})`,
-                  value: provider.id,
-                }))}
-                onChange={applyProvider}
-              />
-            </label>
-
-            <div className="media-kind-tabs" data-testid="media-kind-tabs">
-              {(["image", "video", "music"] as MediaKind[]).map((item) => (
-                <button
-                  key={item}
-                  type="button"
-                  className={kind === item ? "active" : ""}
-                  onClick={() => {
-                    setKind(item);
-                    setModel("");
-                    setModelSchema(null);
-                  }}
-                >
-                  {item}
-                </button>
-              ))}
-            </div>
-
-            <label className="field">
-              <span>Model id</span>
-              {metadataProvider && (
-                <div className="media-model-tools">
-                  <input
-                    className="css-input"
-                    data-testid="media-model-search"
-                    value={modelSearch}
-                    placeholder={`Search ${kind} models...`}
-                    onChange={(e) => updateModelSearch(e.target.value)}
-                  />
-                  <button
-                    className="btn-ghost"
-                    data-testid="media-model-refresh"
-                    type="button"
-                    onClick={() => void refreshMediaMetadata()}
-                    disabled={modelsLoading || schemaLoading}
-                  >
-                    Refresh
-                  </button>
-                  <button
-                    className="btn-ghost"
-                    data-testid="media-model-favorite"
-                    type="button"
-                    onClick={toggleSelectedFavorite}
-                    disabled={!model.trim()}
-                  >
-                    {selectedModelFavorite ? "Unfavorite" : "Favorite"}
-                  </button>
-                  <label className="tool-check" title={`Only show favorited ${kind} models`}>
-                    <input
-                      data-testid="media-model-favorites-only"
-                      type="checkbox"
-                      checked={favoritesOnly}
-                      onChange={(e) => setFavoritesOnly(e.target.checked)}
+          <section className="media-form media-composer-dock" aria-label="Media generator">
+            <ComposerSurface className="media-composer-surface">
+              <div className="control-bar media-control-bar">
+                <div className="chips">
+                  <div className="chip-wrap media-model-picker-wrap">
+                    <button
+                      ref={modelPickerTriggerRef}
+                      className="chip chip-model media-model-picker-trigger"
+                      data-testid="media-model-picker-trigger"
+                      type="button"
+                      title={mediaSettingsLabel}
+                      aria-label={`Choose ${kind} model${selectedModelLabel ? `, current model ${selectedModelLabel}` : ""}`}
+                      aria-haspopup="dialog"
+                      aria-expanded={modelPickerOpen}
+                      disabled={!selectedProvider && !onManageProviders}
+                      onClick={selectedProvider ? toggleMediaModelPicker : onManageProviders}
+                    >
+                      <span className={`dot ${selectedModelAvailable ? "dot-green" : "dot-yellow"}`} />
+                      <span className="chip-label">{modelsLoading ? `Loading ${kind} models...` : selectedModelLabel || `Choose a ${kind} model`}</span>
+                      <ChevronDown size={12} className="chip-chev" />
+                    </button>
+                  </div>
+                  <div className="control-inline-slot">
+                    <InlineMediaControls
+                      providerName={selectedProvider?.name || "Media"}
+                      model={model}
+                      kind={kind}
+                      supportedKinds={["image", "video", "music"]}
+                      schema={modelSchema}
+                      schemaLoading={schemaLoading}
+                      parameterValues={parameterValues}
+                      advanced={advanced}
+                      error={error}
+                      onKindChange={(nextKind) => {
+                        setKind(nextKind);
+                        setModel("");
+                        setModelSchema(null);
+                      }}
+                      onParameterChange={updateParameter}
+                      onAdvancedChange={updateAdvanced}
                     />
-                    Favorites
-                  </label>
+                  </div>
                 </div>
-              )}
-              {metadataProvider ? (
-                <Select
-                  value={model}
-                  testId="media-model-select"
-                  placeholder={modelsLoading ? `Loading ${kind} models...` : `Choose a ${kind} model...`}
-                  options={visibleModelOptions.map((item) => ({
-                    label: `${favoriteModelIds.includes(item.id) ? "* " : ""}${item.name ? `${item.name} (${item.id})` : item.id}`,
-                    value: item.id,
-                  }))}
-                  onChange={(id) => applyModel(id)}
-                />
-              ) : (
-                <input
-                  className="css-input"
-                  data-testid="media-model-input"
-                  value={model}
-                  placeholder={modelPlaceholder(selectedProvider)}
-                  onChange={(e) => applyModel(e.target.value)}
-                />
-              )}
-            </label>
+              </div>
 
-            <label className="field">
-              <span>Prompt</span>
-              <textarea
-                className="css-input media-prompt"
-                data-testid="media-prompt-input"
-                value={prompt}
-                placeholder={kind === "music" ? "Warm instrumental synthwave with a steady pulse..." : "Product photo on a clean workbench, natural side light..."}
-                onChange={(e) => setPrompt(e.target.value)}
-              />
-            </label>
+              <div className="composer comfortable media-composer-box">
+                <div className="composer-input-wrap">
+                  <textarea
+                    className="composer-input media-composer-prompt"
+                    data-testid="media-prompt-input"
+                    value={prompt}
+                    rows={3}
+                    aria-label="Media prompt"
+                    placeholder={kind === "music" ? "Warm instrumental synthwave with a steady pulse..." : "Product photo on a clean workbench, natural side light..."}
+                    onChange={(e) => setPrompt(e.target.value)}
+                  />
+                </div>
+                <div className="composer-bar media-composer-bar">
+                  <div className="composer-tools" />
+                  <div className="composer-send media-composer-send">
+                  <div className="media-privacy" data-testid="media-privacy">
+                    Privacy <strong>{privacyMode}</strong>
+                    <span>{privacyMode === "block" ? "PII blocks request" : privacyMode === "redact" ? "PII removed before upload" : "Prompt sent unchanged"}</span>
+                  </div>
+                  <kbd className="media-generate-shortcut">Ctrl/Cmd + Enter</kbd>
+                  <button
+                    className="send-btn media-composer-send-btn"
+                    data-testid="media-generate"
+                    type="button"
+                    title={`${busy ? "Generating" : `Generate ${kind}`} (Ctrl/Cmd + Enter)`}
+                    aria-label={busy ? `Generating ${kind}` : `Generate ${kind}`}
+                    disabled={busy || !selectedProviderAvailable || !selectedModelAvailable}
+                    onClick={() => void submit()}
+                  >
+                    <ArrowUp size={17} />
+                  </button>
+                  </div>
+                </div>
+              </div>
+            </ComposerSurface>
+          </section>
 
-            {metadataProvider && (
-              <div className="media-parameter-controls" data-testid="media-parameter-controls">
-                {schemaLoading ? (
-                  <span className="sheet-hint">Loading model parameters...</span>
+          <section className={`media-workspace${libraryOpen ? " library-open" : ""}`} aria-label="Generated media and library">
+            <div className="media-stage" data-testid="media-stage">
+              <div className="media-stage-head">
+                <div>
+                  <span className="media-eyebrow">Selected output</span>
+                  <strong>{stageModel || "No generation selected"}</strong>
+                </div>
+                <div className="media-stage-head-actions">
+                  {stageStatus && <span className={`media-status ${stageStatus}`} role="status" aria-live="polite">{stageStatus}</span>}
+                  <button
+                    className={`btn-ghost media-library-toggle${libraryOpen ? " active" : ""}`}
+                    type="button"
+                    aria-label={`${libraryOpen ? "Close" : "Open"} local library`}
+                    aria-controls="media-library-sidebar"
+                    aria-expanded={libraryOpen}
+                    onClick={() => {
+                      libraryVisibilityInitialized.current = true;
+                      setLibraryOpen((open) => !open);
+                    }}
+                  >
+                    <Sidebar size={14} />
+                    Library{libraryItems.length ? ` ${libraryItems.length}` : ""}
+                  </button>
+                </div>
+              </div>
+              <div className={`media-stage-preview${stageMedia ? " has-media" : ""}`}>
+                {stageMedia ? (
+                  <GeneratedMedia
+                    item={stageMedia}
+                    alt={`Generated ${stageKind} from ${stageModel}`}
+                    onOpenExternal={(url) => void openExternalUrl(url)}
+                  />
                 ) : (
-                  modelSchema?.controls.map((control) => (
-                    <label className="field" key={control.key}>
-                      <span title={control.description}>{control.label}</span>
-                      {control.kind === "select" ? (
-                        <select
-                          className="css-input"
-                          data-testid={`media-param-${control.key}`}
-                          value={controlValue(parameterValues[control.key])}
-                          onChange={(e) => updateParameter(control, e.target.value)}
-                        >
-                          {(control.options ?? []).map((option) => (
-                            <option key={String(option.value)} value={String(option.value)}>
-                              {option.label}
-                            </option>
-                          ))}
-                        </select>
-                      ) : control.kind === "checkbox" ? (
-                        <input
-                          className="media-checkbox-input"
-                          data-testid={`media-param-${control.key}`}
-                          type="checkbox"
-                          checked={Boolean(parameterValues[control.key])}
-                          onChange={(e) => updateParameter(control, e.target.checked)}
-                        />
-                      ) : control.kind === "array" ? (
-                        <textarea
-                          className="css-input"
-                          data-testid={`media-param-${control.key}`}
-                          placeholder={control.placeholder}
-                          value={controlValue(parameterValues[control.key])}
-                          onChange={(e) => updateParameter(control, e.target.value)}
-                        />
-                      ) : control.kind === "json" ? (
-                        <textarea
-                          className="css-input"
-                          data-testid={`media-param-${control.key}`}
-                          placeholder={control.placeholder}
-                          value={controlValue(parameterValues[control.key])}
-                          onChange={(e) => updateParameter(control, e.target.value)}
-                        />
-                      ) : (
-                        <input
-                          className="css-input"
-                          data-testid={`media-param-${control.key}`}
-                          type={control.kind === "url" ? "url" : control.kind === "text" ? "text" : "number"}
-                          placeholder={control.placeholder}
-                          min={control.min}
-                          max={control.max}
-                          step={control.step}
-                          value={controlValue(parameterValues[control.key])}
-                          onChange={(e) => updateParameter(control, e.target.value)}
-                        />
-                      )}
-                    </label>
-                  ))
+                  <div className="media-empty">
+                    <Image size={28} />
+                    <strong>{stageEmptyTitle}</strong>
+                    <span>{stageEmptyDetail}</span>
+                  </div>
                 )}
               </div>
-            )}
+              {selectedLibraryItem && (
+                <div className="media-stage-meta">
+                  <p>{selectedLibraryItem.prompt}</p>
+                  <div className="media-stage-actions">
+                    <button className="btn-ghost" type="button" onClick={() => reuseLibraryItem(selectedLibraryItem)}>Use settings</button>
+                    {(selectedLibraryItem.save_state === "running" || selectedLibraryItem.save_state === "failed") && (
+                      <button className="btn-ghost" type="button" disabled={libraryLoading} onClick={() => void refreshSelected()}>
+                        <Refresh size={13} /> Refresh
+                      </button>
+                    )}
+                    {selectedLibraryItem.media[0]?.local_path && (
+                      <button className="btn-ghost" type="button" onClick={() => void revealSelected()}>
+                        <FolderOpen size={13} /> Reveal
+                      </button>
+                    )}
+                    <button className="btn-ghost danger" type="button" disabled={libraryLoading} onClick={() => void deleteSelected()}>
+                      {confirmDeleteId === selectedLibraryItem.id ? <Check size={13} /> : <Trash size={13} />}
+                      {confirmDeleteId === selectedLibraryItem.id ? "Confirm delete" : "Delete"}
+                    </button>
+                  </div>
+                  {selectedLibraryItem.error && <div className="artifact-error" role="alert">{selectedLibraryItem.error}</div>}
+                </div>
+              )}
+            </div>
 
-            <label className="field">
-              <span>Advanced input <em>JSON object</em></span>
-              <textarea
-                className="css-input media-advanced"
-                value={advanced}
-                spellCheck={false}
-                onChange={(e) => updateAdvanced(e.target.value)}
-              />
-            </label>
+            {libraryOpen && <aside className="media-library" id="media-library-sidebar" aria-label="Local library">
+              <div className="media-library-head">
+                <div>
+                  <span className="media-eyebrow">Local library</span>
+                  <strong>{libraryItems.length ? `${libraryItems.length} shown` : "Generated media"}</strong>
+                </div>
+                <div className="media-library-search">
+                  <Search size={13} aria-hidden="true" />
+                  <input value={libraryQuery} aria-label="Search media library" placeholder="Search prompts or models..." onChange={(e) => setLibraryQuery(e.target.value)} />
+                </div>
+              </div>
+              {showLibraryFilters && (
+                <div className="media-library-filters">
+                  <div className="media-filter-tabs" aria-label="Filter library by media type">
+                    {(["", "image", "video", "music"] as const).map((value) => (
+                      <button key={value || "all"} type="button" className={libraryKind === value ? "active" : ""} aria-pressed={libraryKind === value} onClick={() => setLibraryKind(value)}>
+                        {value || "All"}
+                      </button>
+                    ))}
+                  </div>
+                  <Select
+                    value={libraryProvider}
+                    placeholder="All providers"
+                    options={[{ label: "All providers", value: "" }, ...available.map((provider) => ({ label: provider.name, value: provider.id }))]}
+                    onChange={setLibraryProvider}
+                  />
+                  <Select
+                    value={libraryStatus}
+                    placeholder="Any status"
+                    options={[
+                      { label: "Any status", value: "" },
+                      { label: "Ready", value: "ready" },
+                      { label: "Running", value: "running" },
+                      { label: "Saving", value: "saving" },
+                      { label: "Failed", value: "failed" },
+                    ]}
+                    onChange={(value) => setLibraryStatus(value as MediaLibraryStatus | "")}
+                  />
+                </div>
+              )}
 
-            <div className="media-actions">
-              {available.length === 0 && onManageProviders && (
-                <button className="btn-ghost" type="button" onClick={onManageProviders}>
-                  Providers
+              <div className="media-library-grid" aria-busy={libraryLoading}>
+                {libraryItems.map((item) => (
+                  <article
+                    className={`media-library-card${item.id === selectedLibraryItem?.id ? " active" : ""}`}
+                    data-testid="media-library-item"
+                    aria-current={item.id === selectedLibraryItem?.id ? "true" : undefined}
+                    key={item.id}
+                  >
+                    <div className="media-library-thumb">
+                      {item.media[0] && item.kind !== "music" ? (
+                        <GeneratedMedia item={item.media[0]} alt={`Select generated ${item.kind} from ${item.model}`} onActivate={() => setSelectedLibraryId(item.id)} />
+                      ) : (
+                        <button type="button" onClick={() => setSelectedLibraryId(item.id)} aria-label={`Select ${item.kind} from ${item.model}`}>
+                          <Image size={20} />
+                        </button>
+                      )}
+                      <span className={`media-status ${item.save_state}`}>{item.save_state}</span>
+                    </div>
+                    <button className="media-library-card-body" type="button" onClick={() => setSelectedLibraryId(item.id)}>
+                      <strong>{item.prompt}</strong>
+                      <span>{item.provider} - {item.model}</span>
+                    </button>
+                  </article>
+                ))}
+                {!libraryItems.length && libraryLoading && (
+                  <div className="media-library-empty" role="status">Loading local library...</div>
+                )}
+                {!libraryItems.length && !libraryLoading && (
+                  <div className="media-library-empty">
+                    <Image size={20} />
+                    <span>{libraryQuery || libraryKind || libraryProvider || libraryStatus ? "No media matches these filters." : "Completed chat and studio generations will be saved here."}</span>
+                  </div>
+                )}
+              </div>
+              {libraryCursor && (
+                <button className="btn-ghost media-load-more" type="button" disabled={libraryLoading} onClick={() => void loadLibrary(libraryCursor, true)}>
+                  {libraryLoading ? "Loading..." : "Load more"}
                 </button>
               )}
-              <button className="btn-accent" data-testid="media-generate" type="button" disabled={busy} onClick={() => void submit()}>
-                {busy ? "Generating..." : "Generate"}
-              </button>
-            </div>
-
-            <div className="media-privacy" data-testid="media-privacy">
-              Remote media prompts use the active privacy gate. Redact replaces detected PII before upload; Block refuses the request.
-            </div>
-            {error && <div className="artifact-error">{error}</div>}
-          </section>
-
-          <section className="media-results">
-            {results.length === 0 ? (
-              <div className="media-empty">
-                <Image size={24} />
-                <span>No media runs yet.</span>
-              </div>
-            ) : (
-              results.map((result) => {
-                return (
-                  <article className={`media-result ${result.kind === "music" ? "music" : ""}`} data-testid="media-result" key={`${result.provider_id}-${result.id}-${result.status}`}>
-                    <div className="media-result-preview" data-testid="media-result-preview">
-                      <GeneratedMedia
-                        item={result.media[0]}
-                        alt={`Generated ${result.kind} from ${result.model}`}
-                        onOpenExternal={(url) => void openExternalUrl(url)}
-                      />
-                    </div>
-                    <div className="media-result-body">
-                      <strong>{result.model}</strong>
-                      <span>
-                        {result.provider} - {result.status}
-                        {result.privacy.redacted ? " - redacted" : ""}
-                      </span>
-                    </div>
-                  </article>
-                );
-              })
-            )}
+            </aside>}
           </section>
         </div>
-      </SheetDialog>
+        {modelPickerOpen && modelPickerStyle && createPortal(
+          <div
+            ref={modelPickerPopoverRef}
+            className="media-model-picker-popover"
+            data-native-preview-blocker="true"
+            style={modelPickerStyle}
+          >
+            <ModelPicker
+              models={mediaPickerModels}
+              model={model}
+              onModel={(selection) => applyPickerModel(selection.model)}
+              onClose={() => setModelPickerOpen(false)}
+              showManagementActions={false}
+              favoriteIds={favoriteModelIds}
+              favoritesOnlyValue={favoritesOnly}
+              onToggleFavorite={toggleModelFavorite}
+              onFavoritesOnlyChange={setFavoritesOnly}
+              searchPlaceholder={`Search ${kind === "music" ? "audio" : kind} models...`}
+              emptyMessage={`No ${kind === "music" ? "audio" : kind} models available.`}
+            />
+          </div>,
+          document.body,
+        )}
+        <button
+          className="media-sheet-resize-handle"
+          data-testid="media-studio-resize-handle"
+          type="button"
+          aria-label="Resize media studio"
+          title="Drag to resize. Use arrow keys for precise sizing; Home or double-click resets."
+          onPointerDown={startStudioResize}
+          onKeyDown={resizeStudioWithKeyboard}
+          onDoubleClick={resetStudioSize}
+        >
+          <svg
+            className="media-sheet-resize-glyph"
+            width="15"
+            height="15"
+            viewBox="0 0 16 16"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.6"
+            strokeLinecap="round"
+            aria-hidden="true"
+          >
+            <path d="M4 13 13 4M8 13l5-5M12 13l1-1" />
+          </svg>
+        </button>
+      </div>
+    </SheetDialog>
   );
 }
 

@@ -10,6 +10,7 @@ mod codex_bridge;
 pub mod companion;
 mod error;
 pub mod mcp_bridge;
+pub mod media_library;
 pub mod preview_runtime;
 pub mod privacy;
 pub mod providers;
@@ -96,6 +97,16 @@ pub fn build_router(state: AppState) -> Router {
         .route("/media/status", get(routes::media_status))
         .route("/media/content", get(routes::media_content))
         .route("/media/generate", post(routes::media_generate))
+        .route("/media/library", get(routes::media_library_list))
+        .route(
+            "/media/library/{id}/refresh",
+            post(routes::media_library_refresh),
+        )
+        .route(
+            "/media/library/{id}/content/{index}",
+            get(routes::media_library_content),
+        )
+        .route("/media/library/{id}", delete(routes::media_library_delete))
         // Host working folder (drives the filesystem/shell tools)
         .route(
             "/workspace",

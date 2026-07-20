@@ -2859,6 +2859,8 @@ export interface MediaGenerationResult {
   output?: unknown;
   media: MediaResultItem[];
   urls: Record<string, string>;
+  library_id?: string | null;
+  save_state?: MediaLibraryStatus | null;
   privacy: {
     mode: PrivacyMode;
     redacted: boolean;
@@ -2866,6 +2868,54 @@ export interface MediaGenerationResult {
     kinds: string;
   };
   raw?: unknown;
+}
+
+export type MediaLibraryStatus = "running" | "saving" | "ready" | "failed";
+
+export interface MediaLibraryMediaItem extends MediaResultItem {
+  source_url: string;
+  file_name?: string | null;
+  local_path?: string | null;
+  size_bytes?: number | null;
+}
+
+export interface MediaLibraryItem {
+  id: string;
+  provider_run_id: string;
+  created_at_ms: number;
+  updated_at_ms: number;
+  provider_id: string;
+  provider: string;
+  provider_kind: ProviderKind;
+  kind: MediaKind;
+  model: string;
+  prompt: string;
+  input: Record<string, unknown>;
+  status: string;
+  save_state: MediaLibraryStatus;
+  error?: string | null;
+  privacy: {
+    mode: PrivacyMode;
+    redacted: boolean;
+    detections?: number;
+    kinds?: string;
+  };
+  urls: Record<string, string>;
+  media: MediaLibraryMediaItem[];
+}
+
+export interface MediaLibraryPage {
+  items: MediaLibraryItem[];
+  next_cursor?: string | null;
+}
+
+export interface MediaLibraryListOptions {
+  query?: string;
+  kind?: MediaKind;
+  provider?: string;
+  status?: MediaLibraryStatus;
+  cursor?: string;
+  limit?: number;
 }
 
 export function isOpenRouterProvider(
@@ -2985,6 +3035,43 @@ export async function loadAuthenticatedMedia(
     );
   }
   return r.blob();
+}
+
+export async function listMediaLibrary(
+  options: MediaLibraryListOptions = {},
+): Promise<MediaLibraryPage> {
+  const url = new URL(`${BASE}/media/library`);
+  if (options.query) url.searchParams.set("query", options.query);
+  if (options.kind) url.searchParams.set("kind", options.kind);
+  if (options.provider) url.searchParams.set("provider", options.provider);
+  if (options.status) url.searchParams.set("status", options.status);
+  if (options.cursor) url.searchParams.set("cursor", options.cursor);
+  if (options.limit) url.searchParams.set("limit", String(options.limit));
+  const r = await authFetch(url);
+  if (!r.ok) {
+    throw new Error(await responseErrorMessage(r, `media library HTTP ${r.status}`));
+  }
+  return (await r.json()) as MediaLibraryPage;
+}
+
+export async function refreshMediaLibraryItem(id: string): Promise<MediaLibraryItem> {
+  const r = await authFetch(`${BASE}/media/library/${encodeURIComponent(id)}/refresh`, {
+    method: "POST",
+  });
+  if (!r.ok) {
+    throw new Error(await responseErrorMessage(r, `media library refresh HTTP ${r.status}`));
+  }
+  return (await r.json()) as MediaLibraryItem;
+}
+
+export async function deleteMediaLibraryItem(id: string): Promise<boolean> {
+  const r = await authFetch(`${BASE}/media/library/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+  if (!r.ok) {
+    throw new Error(await responseErrorMessage(r, `media library delete HTTP ${r.status}`));
+  }
+  return Boolean(((await r.json()) as { deleted?: boolean }).deleted);
 }
 
 /**
@@ -3203,6 +3290,14 @@ export interface PrivacyScanResult {
   detections: PrivacyDetection[];
   redacted: string;
   map: Record<string, string>;
+}
+
+export async function getPrivacyMode(): Promise<PrivacyMode> {
+  const r = await authFetch(`${BASE}/privacy/mode`);
+  if (!r.ok) {
+    throw new Error(await responseErrorMessage(r, `privacy mode HTTP ${r.status}`));
+  }
+  return ((await r.json()) as { mode: PrivacyMode }).mode;
 }
 
 /** Set the outbound privacy gate mode on the server (applies to remote sends). */

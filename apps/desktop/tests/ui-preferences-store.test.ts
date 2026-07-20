@@ -46,10 +46,14 @@ function persistedUiState(): Record<string, unknown> {
 
 const { DEFAULT_APP_SHORTCUTS, uiSizeShortcutDelta } = await import("../src/ui/shortcuts.js");
 const {
+  DEFAULT_MEDIA_STUDIO_HEIGHT,
+  DEFAULT_MEDIA_STUDIO_WIDTH,
   DEFAULT_SIDEBAR_WIDTH,
   DEFAULT_UI_SIZE,
   MAX_SIDEBAR_WIDTH,
   MAX_UI_SIZE,
+  MIN_MEDIA_STUDIO_HEIGHT,
+  MIN_MEDIA_STUDIO_WIDTH,
   MIN_SIDEBAR_WIDTH,
   MIN_UI_SIZE,
   UI_SIZE_STEP,
@@ -59,6 +63,8 @@ const {
 equal(useUiPreferences.getState().sidebarOpen, true, "sidebar should default open");
 equal(useUiPreferences.getState().sidebarWidth, DEFAULT_SIDEBAR_WIDTH, "sidebar should have a default width");
 equal(useUiPreferences.getState().previewPanelWidth, 420, "preview panel should have a default width");
+equal(useUiPreferences.getState().mediaStudioWidth, DEFAULT_MEDIA_STUDIO_WIDTH, "media studio should have a default width");
+equal(useUiPreferences.getState().mediaStudioHeight, DEFAULT_MEDIA_STUDIO_HEIGHT, "media studio should have a default height");
 equal(useUiPreferences.getState().uiSize, DEFAULT_UI_SIZE, "UI size should default to 100%");
 equal(useUiPreferences.getState().showAccountUsageInTitleBar, true, "title-bar account usage should default on");
 equal(useUiPreferences.getState().windowAlwaysOnTop, false, "window always-on-top should default off");
@@ -111,6 +117,16 @@ equal(persistedUiState().previewPanelWidth, 540, "preview panel width should be 
 
 useUiPreferences.getState().setPreviewPanelWidth(9999);
 equal(useUiPreferences.getState().previewPanelWidth, 9999, "preview panel width should not have a fixed cap");
+
+useUiPreferences.getState().setMediaStudioSize(980, 680);
+equal(useUiPreferences.getState().mediaStudioWidth, 980, "media studio width should update");
+equal(useUiPreferences.getState().mediaStudioHeight, 680, "media studio height should update");
+equal(persistedUiState().mediaStudioWidth, 980, "media studio width should be persisted");
+equal(persistedUiState().mediaStudioHeight, 680, "media studio height should be persisted");
+
+useUiPreferences.getState().setMediaStudioSize(1, 1);
+equal(useUiPreferences.getState().mediaStudioWidth, MIN_MEDIA_STUDIO_WIDTH, "media studio width should have a floor");
+equal(useUiPreferences.getState().mediaStudioHeight, MIN_MEDIA_STUDIO_HEIGHT, "media studio height should have a floor");
 
 useUiPreferences.getState().setUiSize(120);
 equal(useUiPreferences.getState().uiSize, 120, "UI size should update");
@@ -233,6 +249,8 @@ equal(useUiPreferences.getState().appShortcuts.focusComposer, DEFAULT_APP_SHORTC
 useUiPreferences.getState().resetLayoutWidths();
 equal(useUiPreferences.getState().sidebarWidth, DEFAULT_SIDEBAR_WIDTH, "reset should restore sidebar width");
 equal(useUiPreferences.getState().previewPanelWidth, 420, "reset should restore preview panel width");
+equal(useUiPreferences.getState().mediaStudioWidth, DEFAULT_MEDIA_STUDIO_WIDTH, "reset should restore media studio width");
+equal(useUiPreferences.getState().mediaStudioHeight, DEFAULT_MEDIA_STUDIO_HEIGHT, "reset should restore media studio height");
 
 useUiPreferences.setState({
   sidebarOpen: true,
@@ -266,12 +284,14 @@ useUiPreferences.setState({
 });
 localStorage.setItem(
   "milim.ui",
-  '{"state":{"sidebarOpen":false,"sidebarWidth":384,"previewPanelWidth":512,"uiSize":130,"windowAlwaysOnTop":true,"interfaceSounds":"loud","soundOnFinished":"yes","soundOnAttention":0,"soundOnInteractions":"sometimes","finishedSound":"error","attentionSound":"ready","composerSendShortcut":"modEnter","composerDensity":"compact","autoTitleChats":false,"aiThreadNames":true,"aiThreadNameModel":"persisted-title-model","newChatButtonAtBottom":true,"interfaceMode":"workbench","developerMode":true,"experimentalHashlinePatch":true,"chatLayoutStyle":"compact","messageWidth":"full","avatarStyle":"role","codeBlockTheme":"high-contrast","backgroundFit":"contain","backgroundTreatment":"blur","thinkingBlocksOpen":true,"gitPanelExpanded":true,"appShortcuts":{"newChat":"Mod+Shift+N","focusSearch":"Mod+Shift+N","focusComposer":"x","stopGeneration":"F2","toggleSidebar":"Mod+B","previousThread":"Mod+Tab"}},"version":0}',
+  '{"state":{"sidebarOpen":false,"sidebarWidth":384,"previewPanelWidth":512,"mediaStudioWidth":1040,"mediaStudioHeight":740,"uiSize":130,"windowAlwaysOnTop":true,"interfaceSounds":"loud","soundOnFinished":"yes","soundOnAttention":0,"soundOnInteractions":"sometimes","finishedSound":"error","attentionSound":"ready","composerSendShortcut":"modEnter","composerDensity":"compact","autoTitleChats":false,"aiThreadNames":true,"aiThreadNameModel":"persisted-title-model","newChatButtonAtBottom":true,"interfaceMode":"workbench","developerMode":true,"experimentalHashlinePatch":true,"chatLayoutStyle":"compact","messageWidth":"full","avatarStyle":"role","codeBlockTheme":"high-contrast","backgroundFit":"contain","backgroundTreatment":"blur","thinkingBlocksOpen":true,"gitPanelExpanded":true,"appShortcuts":{"newChat":"Mod+Shift+N","focusSearch":"Mod+Shift+N","focusComposer":"x","stopGeneration":"F2","toggleSidebar":"Mod+B","previousThread":"Mod+Tab"}},"version":0}',
 );
 await useUiPreferences.persist.rehydrate();
 equal(useUiPreferences.getState().sidebarOpen, false, "sidebar should rehydrate persisted closed state");
 equal(useUiPreferences.getState().sidebarWidth, 384, "sidebar should rehydrate persisted width");
 equal(useUiPreferences.getState().previewPanelWidth, 512, "preview panel should rehydrate persisted width");
+equal(useUiPreferences.getState().mediaStudioWidth, 1040, "media studio should rehydrate persisted width");
+equal(useUiPreferences.getState().mediaStudioHeight, 740, "media studio should rehydrate persisted height");
 equal(useUiPreferences.getState().uiSize, 130, "UI size should rehydrate persisted value");
 equal(useUiPreferences.getState().showAccountUsageInTitleBar, true, "missing title-bar account usage preference should keep its enabled default");
 equal(useUiPreferences.getState().windowAlwaysOnTop, true, "always-on-top should rehydrate");

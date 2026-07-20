@@ -24,12 +24,17 @@ use bytes::Bytes;
 use futures::{future::join_all, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use tokio::io::AsyncReadExt;
 
 use crate::auth::authorize;
 use crate::companion::{
     MobileCompanionBridge, MobilePairRequest, MobileRelayRequest, MobileThreadUpdateRequest,
 };
 use crate::error::ApiError;
+use crate::media_library::{
+    MediaDownloadSource, MediaLibraryItem, MediaLibraryMediaItem, MediaLibraryUpdate,
+    NewMediaLibraryItem,
+};
 use crate::preview_runtime::{
     PreviewAppPreflightRequest, PreviewAppStageRequest, PreviewAppStartRequest,
 };
@@ -6240,7 +6245,23 @@ pub(crate) struct MediaContentQuery {
     index: usize,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Default, Deserialize)]
+pub(crate) struct MediaLibraryQuery {
+    #[serde(default, alias = "q")]
+    query: String,
+    #[serde(default)]
+    kind: Option<String>,
+    #[serde(default, alias = "provider_id")]
+    provider: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    cursor: Option<String>,
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+#[derive(Clone, Debug, Serialize)]
 pub(crate) struct MediaItem {
     url: String,
     kind: String,
@@ -6533,32 +6554,7 @@ pub(crate) async fn media_status(
         .await
         .map_err(ApiError)?;
     let key = media_provider_key(&provider)?;
-    let upstream = match provider.kind {
-        crate::providers::ProviderKind::Replicate => {
-            call_replicate_media_status(&provider.base_url, &key, id).await?
-        }
-        crate::providers::ProviderKind::Fal => {
-            call_fal_media_status(
-                &provider.base_url,
-                &key,
-                id,
-                query.model.as_deref(),
-                query.response_url.as_deref(),
-                query.status_url.as_deref(),
-            )
-            .await?
-        }
-        crate::providers::ProviderKind::OpenAiCompatible
-            if is_openrouter_provider(&provider) && kind == "video" =>
-        {
-            call_openrouter_video_status(&provider.base_url, &key, id).await?
-        }
-        _ => {
-            return Err(ApiError(Error::InvalidRequest(
-                "selected provider does not expose media run status".to_string(),
-            )))
-        }
-    };
+    let upstream = fetch_media_status_upstream(&provider, &key, &query, kind).await?;
     let media = if is_openrouter_provider(&provider) && kind == "video" {
         openrouter_video_media_items(&provider.id, id, &upstream)
     } else {
@@ -6570,6 +6566,7 @@ pub(crate) async fn media_status(
         .and_then(Value::as_str)
         .unwrap_or("submitted")
         .to_string();
+    let library_item = update_media_library(&st, None, &provider, id, &status, &urls, &media);
     Ok(Json(json!({
         "id": id,
         "object": "media.status",
@@ -6582,9 +6579,44 @@ pub(crate) async fn media_status(
         "output": upstream.get("output").cloned().unwrap_or(Value::Null),
         "media": media,
         "urls": urls,
+        "library_id": library_item.as_ref().map(|item| item.id.as_str()),
+        "save_state": library_item.as_ref().map(|item| item.save_state.as_str()),
         "raw": upstream,
     }))
     .into_response())
+}
+
+async fn fetch_media_status_upstream(
+    provider: &crate::providers::Provider,
+    key: &str,
+    query: &MediaStatusQuery,
+    kind: &str,
+) -> Result<Value, ApiError> {
+    let id = query.id.trim();
+    match provider.kind {
+        crate::providers::ProviderKind::Replicate => {
+            call_replicate_media_status(&provider.base_url, key, id).await
+        }
+        crate::providers::ProviderKind::Fal => {
+            call_fal_media_status(
+                &provider.base_url,
+                key,
+                id,
+                query.model.as_deref(),
+                query.response_url.as_deref(),
+                query.status_url.as_deref(),
+            )
+            .await
+        }
+        crate::providers::ProviderKind::OpenAiCompatible
+            if is_openrouter_provider(provider) && kind == "video" =>
+        {
+            call_openrouter_video_status(&provider.base_url, key, id).await
+        }
+        _ => Err(ApiError(Error::InvalidRequest(
+            "selected provider does not expose media run status".to_string(),
+        ))),
+    }
 }
 
 /// `GET /media/content` - proxy authenticated OpenRouter video bytes without
@@ -6658,6 +6690,176 @@ pub(crate) async fn media_content(
     Ok(proxied)
 }
 
+/// `GET /media/library` - list durable locally saved media runs.
+pub(crate) async fn media_library_list(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    peer: Peer,
+    Query(query): Query<MediaLibraryQuery>,
+) -> Result<Response, ApiError> {
+    authorize(&st, &headers, peer_addr(peer))?;
+    let library = st
+        .media_library
+        .as_ref()
+        .ok_or_else(media_library_unavailable)?;
+    let limit = query.limit.unwrap_or(40).clamp(1, 100);
+    Ok(Json(library.list(
+        &query.query,
+        query.kind.as_deref().filter(|value| !value.is_empty()),
+        query.provider.as_deref().filter(|value| !value.is_empty()),
+        query.status.as_deref().filter(|value| !value.is_empty()),
+        query.cursor.as_deref().filter(|value| !value.is_empty()),
+        limit,
+    ))
+    .into_response())
+}
+
+/// `GET /media/library/{id}/content/{index}` - stream one authenticated local file.
+pub(crate) async fn media_library_content(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    peer: Peer,
+    Path((id, index)): Path<(String, usize)>,
+) -> Result<Response, ApiError> {
+    authorize(&st, &headers, peer_addr(peer))?;
+    let library = st
+        .media_library
+        .as_ref()
+        .ok_or_else(media_library_unavailable)?;
+    let (path, mime) = library.content(&id, index).map_err(ApiError)?;
+    let size = tokio::fs::metadata(&path).await.map_err(Error::from)?.len();
+    let stream = async_stream::stream! {
+        let mut file = match tokio::fs::File::open(path).await {
+            Ok(file) => file,
+            Err(error) => {
+                yield Err::<Bytes, std::io::Error>(error);
+                return;
+            }
+        };
+        let mut buffer = vec![0_u8; 64 * 1024];
+        loop {
+            let read = match file.read(&mut buffer).await {
+                Ok(read) => read,
+                Err(error) => {
+                    yield Err::<Bytes, std::io::Error>(error);
+                    return;
+                }
+            };
+            if read == 0 {
+                break;
+            }
+            yield Ok::<Bytes, std::io::Error>(Bytes::copy_from_slice(&buffer[..read]));
+        }
+    };
+    let mut response = Response::new(Body::from_stream(stream));
+    response.headers_mut().insert(
+        CONTENT_TYPE,
+        HeaderValue::from_str(&mime)
+            .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream")),
+    );
+    response.headers_mut().insert(
+        CACHE_CONTROL,
+        HeaderValue::from_static("private, max-age=31536000, immutable"),
+    );
+    if let Ok(value) = HeaderValue::from_str(&size.to_string()) {
+        response.headers_mut().insert(CONTENT_LENGTH, value);
+    }
+    Ok(response)
+}
+
+/// `DELETE /media/library/{id}` - permanently remove a local media run and files.
+pub(crate) async fn media_library_delete(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    peer: Peer,
+    Path(id): Path<String>,
+) -> Result<Response, ApiError> {
+    authorize(&st, &headers, peer_addr(peer))?;
+    let library = st
+        .media_library
+        .as_ref()
+        .ok_or_else(media_library_unavailable)?;
+    Ok(Json(json!({ "deleted": library.delete(&id).map_err(ApiError)? })).into_response())
+}
+
+/// `POST /media/library/{id}/refresh` - refresh a pending run or retry its local save.
+pub(crate) async fn media_library_refresh(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    peer: Peer,
+    Path(id): Path<String>,
+) -> Result<Response, ApiError> {
+    authorize(&st, &headers, peer_addr(peer))?;
+    let library = st
+        .media_library
+        .as_ref()
+        .ok_or_else(media_library_unavailable)?;
+    let item = library
+        .get(&id)
+        .ok_or_else(|| ApiError(Error::ModelNotFound(format!("media library item {id}"))))?;
+    if matches!(item.save_state.as_str(), "saving" | "ready") {
+        return Ok(Json(item).into_response());
+    }
+    let provider = select_media_provider(&st, Some(&item.provider_id), None)
+        .await
+        .map_err(ApiError)?;
+    let key = media_provider_key(&provider)?;
+    if item.save_state == "failed" && !item.media.is_empty() {
+        let updated = library
+            .update(
+                &id,
+                MediaLibraryUpdate {
+                    provider_run_id: item.provider_run_id.clone(),
+                    status: item.status.clone(),
+                    urls: item.urls.clone(),
+                    media: item.media.clone(),
+                },
+            )
+            .map_err(ApiError)?;
+        spawn_media_save(library.clone(), &provider, &key, &updated);
+        return Ok(Json(updated).into_response());
+    }
+    if item.provider_run_id.is_empty() {
+        return Ok(Json(item).into_response());
+    }
+    let query = MediaStatusQuery {
+        provider_id: item.provider_id.clone(),
+        id: item.provider_run_id.clone(),
+        model: Some(item.model.clone()),
+        response_url: item.urls.get("response").cloned(),
+        status_url: item.urls.get("status").cloned(),
+        kind: item.kind.clone(),
+    };
+    let upstream = fetch_media_status_upstream(&provider, &key, &query, &item.kind).await?;
+    let media = if is_openrouter_provider(&provider) && item.kind == "video" {
+        openrouter_video_media_items(&provider.id, &item.provider_run_id, &upstream)
+    } else {
+        media_items_from_result(&upstream, &item.kind)
+    };
+    let urls = media_urls_from_result(&provider.kind, &upstream);
+    let status = upstream
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("submitted");
+    let updated = update_media_library(
+        &st,
+        Some(&id),
+        &provider,
+        &item.provider_run_id,
+        status,
+        &urls,
+        &media,
+    )
+    .ok_or_else(media_library_unavailable)?;
+    Ok(Json(updated).into_response())
+}
+
+fn media_library_unavailable() -> ApiError {
+    ApiError(Error::InvalidRequest(
+        "media library is not enabled".to_string(),
+    ))
+}
+
 /// `POST /media/generate` - submit a prompt to an enabled remote media
 /// provider. The endpoint is intentionally provider-neutral at the UI boundary:
 /// callers pass a model id, a prompt, and optional model-specific input fields.
@@ -6674,8 +6876,8 @@ pub(crate) async fn media_generate(
             "media model is required".to_string(),
         )));
     }
-    let prompt = req.prompt.trim();
-    if prompt.is_empty() {
+    let original_prompt = req.prompt.trim();
+    if original_prompt.is_empty() {
         return Err(ApiError(Error::InvalidRequest(
             "media prompt is required".to_string(),
         )));
@@ -6697,33 +6899,59 @@ pub(crate) async fn media_generate(
             )))
         })?
         .to_string();
-    let (prompt, privacy) = media_prompt_for_remote(&st, prompt).map_err(ApiError)?;
+    let (prompt, privacy) = media_prompt_for_remote(&st, original_prompt).map_err(ApiError)?;
 
+    let original_input = Value::Object(req.input.clone());
     let mut input = req.input;
     input.insert("prompt".to_string(), Value::String(prompt));
 
-    let upstream = match provider.kind {
+    let library_item = st
+        .media_library
+        .as_ref()
+        .map(|library| {
+            library.create(NewMediaLibraryItem {
+                provider_id: provider.id.clone(),
+                provider: provider.name.clone(),
+                provider_kind: provider_kind_name(provider.kind).to_string(),
+                kind: kind.clone(),
+                model: model.to_string(),
+                prompt: original_prompt.to_string(),
+                input: original_input,
+                privacy: serde_json::to_value(&privacy).unwrap_or(Value::Null),
+            })
+        })
+        .transpose()
+        .map_err(ApiError)?;
+
+    let upstream_result = match provider.kind {
         crate::providers::ProviderKind::Replicate => {
-            call_replicate_media(&provider.base_url, &key, model, input).await?
+            call_replicate_media(&provider.base_url, &key, model, input).await
         }
         crate::providers::ProviderKind::Fal => {
-            call_fal_media(&provider.base_url, &key, model, input).await?
+            call_fal_media(&provider.base_url, &key, model, input).await
         }
         crate::providers::ProviderKind::OpenAiCompatible if is_openrouter_provider(&provider) => {
             match kind.as_str() {
                 "video" => {
-                    call_openrouter_video_media(&provider.base_url, &key, model, input).await?
+                    call_openrouter_video_media(&provider.base_url, &key, model, input).await
                 }
                 "music" => {
-                    call_openrouter_music_media(&provider.base_url, &key, model, input).await?
+                    call_openrouter_music_media(&provider.base_url, &key, model, input).await
                 }
-                _ => call_openrouter_image_media(&provider.base_url, &key, model, input).await?,
+                _ => call_openrouter_image_media(&provider.base_url, &key, model, input).await,
             }
         }
-        _ => {
-            return Err(ApiError(Error::InvalidRequest(
-                "selected provider is not a media provider".to_string(),
-            )))
+        _ => Err(ApiError(Error::InvalidRequest(
+            "selected provider is not a media provider".to_string(),
+        ))),
+    };
+    let upstream = match upstream_result {
+        Ok(upstream) => upstream,
+        Err(error) => {
+            if let (Some(library), Some(item)) = (&st.media_library, &library_item) {
+                let _ = library.fail(&item.id, error.0.to_string());
+            }
+            return Err(error);
         }
     };
     let media = media_items_from_result(&upstream, &kind);
@@ -6743,6 +6971,16 @@ pub(crate) async fn media_generate(
             "submitted"
         })
         .to_string();
+    let library_item = update_media_library(
+        &st,
+        library_item.as_ref().map(|item| item.id.as_str()),
+        &provider,
+        &id,
+        &status,
+        &urls,
+        &media,
+    )
+    .or(library_item);
 
     Ok(Json(json!({
         "id": id,
@@ -6756,10 +6994,123 @@ pub(crate) async fn media_generate(
         "output": upstream.get("output").cloned().unwrap_or(Value::Null),
         "media": media,
         "urls": urls,
+        "library_id": library_item.as_ref().map(|item| item.id.as_str()),
+        "save_state": library_item.as_ref().map(|item| item.save_state.as_str()),
         "privacy": privacy,
         "raw": upstream,
     }))
     .into_response())
+}
+
+fn provider_kind_name(kind: crate::providers::ProviderKind) -> &'static str {
+    match kind {
+        crate::providers::ProviderKind::OpenAiCompatible => "openai_compatible",
+        crate::providers::ProviderKind::Anthropic => "anthropic",
+        crate::providers::ProviderKind::Gemini => "gemini",
+        crate::providers::ProviderKind::Replicate => "replicate",
+        crate::providers::ProviderKind::Fal => "fal",
+    }
+}
+
+fn update_media_library(
+    st: &AppState,
+    library_id: Option<&str>,
+    provider: &crate::providers::Provider,
+    provider_run_id: &str,
+    status: &str,
+    urls: &Value,
+    media: &[MediaItem],
+) -> Option<MediaLibraryItem> {
+    let library = st.media_library.as_ref()?;
+    let id = library_id.map(str::to_string).or_else(|| {
+        library
+            .find_by_run(&provider.id, provider_run_id)
+            .map(|item| item.id)
+    })?;
+    let already_saving_or_ready = library
+        .get(&id)
+        .is_some_and(|item| matches!(item.save_state.as_str(), "saving" | "ready"));
+    let item = library
+        .update(
+            &id,
+            MediaLibraryUpdate {
+                provider_run_id: provider_run_id.to_string(),
+                status: status.to_string(),
+                urls: media_urls_map(urls),
+                media: media
+                    .iter()
+                    .map(|item| MediaLibraryMediaItem {
+                        url: item.url.clone(),
+                        source_url: item.url.clone(),
+                        kind: item.kind.clone(),
+                        mime: item.mime.clone(),
+                        requires_auth: item.requires_auth,
+                        file_name: None,
+                        local_path: None,
+                        size_bytes: None,
+                    })
+                    .collect(),
+            },
+        )
+        .ok()?;
+    if !already_saving_or_ready && !item.media.is_empty() {
+        if let Ok(key) = media_provider_key(provider) {
+            spawn_media_save(library.clone(), provider, &key, &item);
+        }
+    }
+    Some(item)
+}
+
+fn media_urls_map(value: &Value) -> BTreeMap<String, String> {
+    value
+        .as_object()
+        .map(|map| {
+            map.iter()
+                .filter_map(|(key, value)| {
+                    value.as_str().map(|value| (key.clone(), value.to_string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn spawn_media_save(
+    library: Arc<crate::media_library::MediaLibrary>,
+    provider: &crate::providers::Provider,
+    key: &str,
+    item: &MediaLibraryItem,
+) {
+    let sources = item
+        .media
+        .iter()
+        .enumerate()
+        .map(|(index, media)| {
+            let authenticated = media.requires_auth && is_openrouter_provider(provider);
+            MediaDownloadSource {
+                url: if authenticated {
+                    format!(
+                        "{}/videos/{}/content?index={index}",
+                        provider.base_url.trim_end_matches('/'),
+                        item.provider_run_id
+                    )
+                } else {
+                    media.source_url.clone()
+                },
+                kind: media.kind.clone(),
+                mime: media.mime.clone(),
+                authorization: authenticated.then(|| format!("Bearer {key}")),
+            }
+        })
+        .collect::<Vec<_>>();
+    if sources.is_empty() {
+        return;
+    }
+    let id = item.id.clone();
+    tokio::spawn(async move {
+        if let Err(error) = library.save(&id, sources).await {
+            tracing::warn!(media_library_id = %id, "failed to save generated media: {error}");
+        }
+    });
 }
 
 async fn select_media_provider(

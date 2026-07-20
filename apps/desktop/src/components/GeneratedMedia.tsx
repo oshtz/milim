@@ -14,10 +14,12 @@ export function GeneratedMedia({
   item,
   alt,
   onOpenExternal,
+  onActivate,
 }: {
   item?: MediaResultItem | null;
   alt: string;
   onOpenExternal?: (url: string) => void;
+  onActivate?: () => void;
 }) {
   const [previewOpen, setPreviewOpen] = useState(false);
   const [source, setSource] = useState(item?.requires_auth ? "" : item?.url ?? "");
@@ -72,7 +74,7 @@ export function GeneratedMedia({
         className="generated-media-thumbnail"
         data-testid={`generated-media-${video ? "video" : "image"}`}
         type="button"
-        onClick={() => setPreviewOpen(true)}
+        onClick={() => onActivate ? onActivate() : setPreviewOpen(true)}
         disabled={!source}
         aria-label={`Preview ${alt}`}
       >

@@ -96,6 +96,9 @@ export const Cube = (p: P) => (
 export const Sparkles = (p: P) => (
   <Svg {...p}><path d="M12 4l1.4 3.6L17 9l-3.6 1.4L12 14l-1.4-3.6L7 9l3.6-1.4ZM19 14l.7 1.8L21.5 16l-1.8.7L19 18.5l-.7-1.8L16.5 16l1.8-.5Z" /></Svg>
 );
+export const Star = (p: P) => (
+  <Svg {...p}><path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2-5.6-3-5.6 3 1.1-6.2L3 9.6l6.2-.9Z" /></Svg>
+);
 export const Image = (p: P) => (
   <Svg {...p}><rect x="3" y="5" width="18" height="14" rx="2" /><circle cx="8.5" cy="10" r="1.5" /><path d="m21 15-4.5-4.5L9 18" /></Svg>
 );

@@ -43,6 +43,8 @@ interface UiPreferencesState {
   sidebarOpen: boolean;
   sidebarWidth: number;
   previewPanelWidth: number;
+  mediaStudioWidth: number;
+  mediaStudioHeight: number;
   uiSize: number;
   showAccountUsageInTitleBar: boolean;
   windowAlwaysOnTop: boolean;
@@ -74,6 +76,7 @@ interface UiPreferencesState {
   setSidebarOpen: (sidebarOpen: boolean) => void;
   setSidebarWidth: (sidebarWidth: number) => void;
   setPreviewPanelWidth: (previewPanelWidth: number) => void;
+  setMediaStudioSize: (width: number, height: number) => void;
   setUiSize: (uiSize: number) => void;
   setShowAccountUsageInTitleBar: (showAccountUsageInTitleBar: boolean) => void;
   setWindowAlwaysOnTop: (windowAlwaysOnTop: boolean) => void;
@@ -113,6 +116,12 @@ export const MIN_SIDEBAR_WIDTH = 220;
 export const MAX_SIDEBAR_WIDTH = 420;
 export const DEFAULT_PREVIEW_PANEL_WIDTH = 420;
 const MIN_PREVIEW_PANEL_WIDTH = 280;
+export const DEFAULT_MEDIA_STUDIO_WIDTH = 1120;
+export const DEFAULT_MEDIA_STUDIO_HEIGHT = 820;
+export const MIN_MEDIA_STUDIO_WIDTH = 560;
+export const MIN_MEDIA_STUDIO_HEIGHT = 480;
+const MAX_MEDIA_STUDIO_WIDTH = 2400;
+const MAX_MEDIA_STUDIO_HEIGHT = 1600;
 export const DEFAULT_UI_SIZE = 100;
 export const MIN_UI_SIZE = 80;
 export const MAX_UI_SIZE = 140;
@@ -126,6 +135,13 @@ export function normalizeSidebarWidth(width: number): number {
 function normalizePreviewPanelWidth(width: number): number {
   if (!Number.isFinite(width)) return DEFAULT_PREVIEW_PANEL_WIDTH;
   return Math.round(Math.max(width, MIN_PREVIEW_PANEL_WIDTH));
+}
+
+export function normalizeMediaStudioSize(width: number, height: number): { width: number; height: number } {
+  return {
+    width: Math.round(Math.min(Math.max(Number.isFinite(width) ? width : DEFAULT_MEDIA_STUDIO_WIDTH, MIN_MEDIA_STUDIO_WIDTH), MAX_MEDIA_STUDIO_WIDTH)),
+    height: Math.round(Math.min(Math.max(Number.isFinite(height) ? height : DEFAULT_MEDIA_STUDIO_HEIGHT, MIN_MEDIA_STUDIO_HEIGHT), MAX_MEDIA_STUDIO_HEIGHT)),
+  };
 }
 
 export function normalizeUiSize(size: number): number {
@@ -193,6 +209,8 @@ export const useUiPreferences = create<UiPreferencesState>()(
       sidebarOpen: true,
       sidebarWidth: DEFAULT_SIDEBAR_WIDTH,
       previewPanelWidth: DEFAULT_PREVIEW_PANEL_WIDTH,
+      mediaStudioWidth: DEFAULT_MEDIA_STUDIO_WIDTH,
+      mediaStudioHeight: DEFAULT_MEDIA_STUDIO_HEIGHT,
       uiSize: DEFAULT_UI_SIZE,
       showAccountUsageInTitleBar: true,
       windowAlwaysOnTop: false,
@@ -224,6 +242,10 @@ export const useUiPreferences = create<UiPreferencesState>()(
       setSidebarOpen: (sidebarOpen) => set({ sidebarOpen }),
       setSidebarWidth: (sidebarWidth) => set({ sidebarWidth: normalizeSidebarWidth(sidebarWidth) }),
       setPreviewPanelWidth: (previewPanelWidth) => set({ previewPanelWidth: normalizePreviewPanelWidth(previewPanelWidth) }),
+      setMediaStudioSize: (width, height) => {
+        const size = normalizeMediaStudioSize(width, height);
+        set({ mediaStudioWidth: size.width, mediaStudioHeight: size.height });
+      },
       setUiSize: (uiSize) => set({ uiSize: normalizeUiSize(uiSize) }),
       setShowAccountUsageInTitleBar: (showAccountUsageInTitleBar) => set({ showAccountUsageInTitleBar }),
       setWindowAlwaysOnTop: (windowAlwaysOnTop) => {
@@ -297,6 +319,8 @@ export const useUiPreferences = create<UiPreferencesState>()(
         set({
           sidebarWidth: DEFAULT_SIDEBAR_WIDTH,
           previewPanelWidth: DEFAULT_PREVIEW_PANEL_WIDTH,
+          mediaStudioWidth: DEFAULT_MEDIA_STUDIO_WIDTH,
+          mediaStudioHeight: DEFAULT_MEDIA_STUDIO_HEIGHT,
         }),
       toggleSidebar: () => set((state) => ({ sidebarOpen: !state.sidebarOpen })),
     }),
@@ -315,6 +339,14 @@ export const useUiPreferences = create<UiPreferencesState>()(
           sidebarOpen: typeof saved?.sidebarOpen === "boolean" ? saved.sidebarOpen : current.sidebarOpen,
           sidebarWidth: normalizeSidebarWidth(saved?.sidebarWidth ?? current.sidebarWidth),
           previewPanelWidth: normalizePreviewPanelWidth(saved?.previewPanelWidth ?? current.previewPanelWidth),
+          mediaStudioWidth: normalizeMediaStudioSize(
+            saved?.mediaStudioWidth ?? current.mediaStudioWidth,
+            saved?.mediaStudioHeight ?? current.mediaStudioHeight,
+          ).width,
+          mediaStudioHeight: normalizeMediaStudioSize(
+            saved?.mediaStudioWidth ?? current.mediaStudioWidth,
+            saved?.mediaStudioHeight ?? current.mediaStudioHeight,
+          ).height,
           uiSize: normalizeUiSize(saved?.uiSize ?? current.uiSize),
           showAccountUsageInTitleBar: typeof saved?.showAccountUsageInTitleBar === "boolean" ? saved.showAccountUsageInTitleBar : current.showAccountUsageInTitleBar,
           windowAlwaysOnTop: typeof saved?.windowAlwaysOnTop === "boolean" ? saved.windowAlwaysOnTop : current.windowAlwaysOnTop,
@@ -354,6 +386,8 @@ export const useUiPreferences = create<UiPreferencesState>()(
         sidebarOpen: state.sidebarOpen,
         sidebarWidth: normalizeSidebarWidth(state.sidebarWidth),
         previewPanelWidth: normalizePreviewPanelWidth(state.previewPanelWidth),
+        mediaStudioWidth: normalizeMediaStudioSize(state.mediaStudioWidth, state.mediaStudioHeight).width,
+        mediaStudioHeight: normalizeMediaStudioSize(state.mediaStudioWidth, state.mediaStudioHeight).height,
         uiSize: normalizeUiSize(state.uiSize),
         showAccountUsageInTitleBar: state.showAccountUsageInTitleBar,
         windowAlwaysOnTop: state.windowAlwaysOnTop,

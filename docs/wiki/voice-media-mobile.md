@@ -6,7 +6,7 @@ title: Media and mobile
 summary: Media generation and the mobile companion.
 group: Local data
 order: 80
-updated: 2026-07-14
+updated: 2026-07-20
 ---
 
 These optional extensions share the same desktop session. Media routes generate images, videos, and prompt-to-music results, and the mobile companion mirrors desktop threads while sending phone prompts through the desktop session. Voice input, dictation, transcription, TTS, audio remix/upload, and voice-chat routes are not part of Milim.
@@ -33,7 +33,13 @@ curl "http://127.0.0.1:7377/media/generate" \
 
 Media prompts are remote-provider traffic. They pass through the privacy gate in Redact and Block modes before leaving the machine.
 
-The desktop media manager and inline model lane expose Image, Video, and Music tabs. Generated images and videos open in a dark, window-filling in-app preview from both the media manager and chat transcript; generated music uses native inline audio controls. OpenRouter video downloads pass through authenticated `GET /media/content`. OpenRouter image is live-verified, while credentialed OpenRouter video/music and fal/Replicate music smoke verification remains separate from mocked adapter coverage.
+The inline model lane remains the conversational, iterative generation surface. The standalone Media Studio is an additional quick-generation surface with Image, Video, and Music controls in the shared composer surface, a large selected-output stage, and a collapsible searchable library sidebar. Generated images and videos open in the existing window-filling preview from both the studio and chat transcript; generated music uses native inline audio controls.
+
+Every validated generation submitted through `POST /media/generate`, whether started in chat or the studio, receives a library record before the provider request. The durable index is stored at `~/.milim/media/index.json`, and successfully downloaded outputs live under UUID-named directories at `~/.milim/media/files/<library-id>/`. There is no automatic retention policy. **Delete** uses a two-step confirmation and permanently removes the item and its local files.
+
+Library states are `running`, `saving`, `ready`, and `failed`. Pending provider runs continue through normal client polling while Milim is open and are refreshed when the studio is reopened. If a bounded or validated local download fails, the remote preview remains available; **Refresh** retries the save. Downloads accept allowlisted image, video, and audio MIME types, reject private or local HTTP destinations and unsafe redirects, use temporary `.part` files, and atomically move completed files into place. OpenRouter video content is fetched through its credentialed provider path and is served back to the desktop only through authenticated library content routes.
+
+The original prompt and normalized request settings stay local in the library so **Use settings** can restore a run. The privacy gate is still applied before remote traffic: Block prevents record creation and provider submission when PII is detected, Redact sends the redacted prompt while retaining the original only in the local record, and Off sends the prompt unchanged. OpenRouter image is live-verified, while credentialed OpenRouter video/music and fal/Replicate music smoke verification remains separate from mocked adapter coverage.
 
 ## Mobile companion
 

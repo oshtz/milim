@@ -213,6 +213,10 @@ async fn serve(port: Option<u16>, expose: bool) -> anyhow::Result<()> {
         .with_mobile_companion(Arc::new(
             milim_server::companion::MobileCompanionBridge::default(),
         ));
+    match milim_server::media_library::MediaLibrary::open(paths.root().join("media")) {
+        Ok(library) => state = state.with_media_library(library),
+        Err(e) => tracing::warn!("media library disabled: {e}"),
+    }
     state = configure_auth(state, paths.root(), &auth_config)?;
 
     // Enable memory/RAG if its database can be opened.

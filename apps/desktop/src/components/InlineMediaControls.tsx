@@ -1,6 +1,6 @@
 import type { MediaKind, MediaModelSchema, MediaSchemaControl } from "../api";
 import { controlValue } from "../lib/media";
-import { Image } from "./icons";
+import { Image, Sparkles, Volume2 } from "./icons";
 import { Select } from "./ui";
 
 export function InlineMediaControls({
@@ -13,6 +13,7 @@ export function InlineMediaControls({
   parameterValues,
   advanced,
   error,
+  popover = false,
   onKindChange,
   onParameterChange,
   onAdvancedChange,
@@ -26,35 +27,35 @@ export function InlineMediaControls({
   parameterValues: Record<string, unknown>;
   advanced: string;
   error?: string | null;
+  popover?: boolean;
   onKindChange: (kind: MediaKind) => void;
   onParameterChange: (control: MediaSchemaControl, value: string | boolean) => void;
   onAdvancedChange: (value: string) => void;
 }) {
   const visibleKinds = supportedKinds.length ? supportedKinds : [kind];
   const activeKind = visibleKinds.includes(kind) ? kind : visibleKinds[0];
+  const kindOptions = visibleKinds.map((item) => ({
+    value: item,
+    label: item === "music" ? "Audio" : item[0].toUpperCase() + item.slice(1),
+    leading: item === "music"
+      ? <Volume2 size={13} />
+      : item === "video"
+        ? <Sparkles size={13} />
+        : <Image size={13} />,
+  }));
+  const activeKindOption = kindOptions.find((option) => option.value === activeKind) ?? kindOptions[0];
 
-  return (
-    <div className="inline-media" data-testid="inline-media-generator" title={`${providerName} / ${model}`}>
+  const controls = (
+    <>
       <div className="inline-media-row">
-        <div className="inline-media-head" title={`${providerName} / ${model}`}>
-          <span className="inline-media-icon" aria-hidden="true"><Image size={14} /></span>
-          <span className="inline-media-title">Media</span>
+        <div className="inline-media-kind" title={`Media type · ${providerName} / ${model}`}>
+          <Select
+            value={activeKind}
+            options={kindOptions}
+            testId="inline-media-kind-select"
+            onChange={(value) => onKindChange(value as MediaKind)}
+          />
         </div>
-        {visibleKinds.length > 1 && (
-          <div className="inline-media-tabs" data-testid="inline-media-kind-tabs">
-            {visibleKinds.map((item) => (
-              <button
-                key={item}
-                type="button"
-                className={activeKind === item ? "active" : ""}
-                onClick={() => onKindChange(item)}
-                aria-pressed={activeKind === item}
-              >
-                {item}
-              </button>
-            ))}
-          </div>
-        )}
 
         <div className="inline-media-parameter-controls" data-testid="inline-media-parameter-controls">
           {schemaLoading ? (
@@ -123,6 +124,28 @@ export function InlineMediaControls({
       </div>
 
       {error && <div className="artifact-error" data-testid="inline-media-error">{error}</div>}
+    </>
+  );
+
+  return (
+    <div className={`inline-media${popover ? " popover" : ""}`} data-testid="inline-media-generator" title={`${providerName} / ${model}`}>
+      {popover ? (
+        <details className="inline-media-disclosure">
+          <summary
+            className="chip inline-media-summary"
+            data-testid="inline-media-settings-summary"
+            aria-label={`${activeKindOption.label} settings${error ? ", error" : ""}`}
+            title={error || `${activeKindOption.label} settings`}
+          >
+            {activeKindOption.leading}
+            <span className="chip-label">{activeKindOption.label} settings</span>
+            {error && <span className="dot dot-red" aria-hidden="true" />}
+          </summary>
+          <div className="inline-media-popover" role="group" aria-label={`${activeKindOption.label} generation settings`}>
+            {controls}
+          </div>
+        </details>
+      ) : controls}
     </div>
   );
 }

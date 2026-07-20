@@ -2972,6 +2972,101 @@ async fn media_status_fal_fetches_result_url_and_extracts_images() {
 }
 
 #[tokio::test]
+async fn media_library_endpoints_list_serve_and_delete_saved_content() {
+    use milim_server::media_library::{
+        MediaDownloadSource, MediaLibrary, MediaLibraryMediaItem, MediaLibraryUpdate,
+        NewMediaLibraryItem,
+    };
+
+    let root = unique_temp_path("milim-media-library-http");
+    let library = MediaLibrary::open(root.clone()).unwrap();
+    let item = library
+        .create(NewMediaLibraryItem {
+            provider_id: "provider-1".to_string(),
+            provider: "Provider One".to_string(),
+            provider_kind: "replicate".to_string(),
+            kind: "image".to_string(),
+            model: "owner/model".to_string(),
+            prompt: "A blue chair".to_string(),
+            input: json!({"aspect_ratio":"1:1"}),
+            privacy: json!({"mode":"off","redacted":false}),
+        })
+        .unwrap();
+    let data_url = "data:image/png;base64,iVBORw0KGgo=";
+    library
+        .update(
+            &item.id,
+            MediaLibraryUpdate {
+                provider_run_id: "run-1".to_string(),
+                status: "completed".to_string(),
+                urls: Default::default(),
+                media: vec![MediaLibraryMediaItem {
+                    url: data_url.to_string(),
+                    source_url: data_url.to_string(),
+                    kind: "image".to_string(),
+                    mime: Some("image/png".to_string()),
+                    requires_auth: false,
+                    file_name: None,
+                    local_path: None,
+                    size_bytes: None,
+                }],
+            },
+        )
+        .unwrap();
+    library
+        .save(
+            &item.id,
+            vec![MediaDownloadSource {
+                url: data_url.to_string(),
+                kind: "image".to_string(),
+                mime: Some("image/png".to_string()),
+                authorization: None,
+            }],
+        )
+        .await
+        .unwrap();
+
+    let base = spawn(test_state().with_media_library(library)).await;
+    let client = reqwest::Client::new();
+    let page: Value = client
+        .get(format!(
+            "{base}/media/library?query=chair&status=ready&limit=1"
+        ))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(page["items"][0]["id"], item.id);
+    assert_eq!(page["items"][0]["save_state"], "ready");
+
+    let content = client
+        .get(format!("{base}/media/library/{}/content/0", item.id))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(content.status(), reqwest::StatusCode::OK);
+    assert_eq!(content.headers()["content-type"], "image/png");
+    assert_eq!(
+        content.bytes().await.unwrap().as_ref(),
+        b"\x89PNG\r\n\x1a\n"
+    );
+
+    let deleted: Value = client
+        .delete(format!("{base}/media/library/{}", item.id))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(deleted["deleted"], true);
+    assert!(!root.join("files").join(&item.id).exists());
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
 async fn media_real_fal_flux_schnell_smoke_when_env_configured() {
     if std::env::var("MILIM_REAL_MEDIA_SMOKE").ok().as_deref() != Some("1") {
         return;

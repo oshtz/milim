@@ -3117,6 +3117,10 @@ fn build_state(
         .with_mobile_companion(mobile_companion)
         .with_api_keys([api_key])
         .with_loopback_trust(false);
+    match milim_server::media_library::MediaLibrary::open(paths.root().join("media")) {
+        Ok(library) => state = state.with_media_library(library),
+        Err(e) => tracing::warn!("media library unavailable: {e}"),
+    }
     if let Some(registry) = &registry {
         state = state.with_providers(registry.clone());
     }

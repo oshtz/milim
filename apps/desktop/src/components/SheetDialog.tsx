@@ -1,4 +1,4 @@
-import { useEffect, useRef, type KeyboardEvent, type ReactNode } from "react";
+import { useEffect, useRef, type CSSProperties, type KeyboardEvent, type ReactNode } from "react";
 
 const FOCUSABLE_SELECTOR = [
   "a[href]",
@@ -14,6 +14,7 @@ export function SheetDialog({
   className = "sheet",
   overlayClassName = "sheet-overlay",
   testId,
+  style,
   children,
   onClose,
 }: {
@@ -21,6 +22,7 @@ export function SheetDialog({
   className?: string;
   overlayClassName?: string;
   testId?: string;
+  style?: CSSProperties;
   children: ReactNode;
   onClose: () => void;
 }) {
@@ -87,6 +89,7 @@ export function SheetDialog({
         aria-modal="true"
         aria-label={title}
         tabIndex={-1}
+        style={style}
         onKeyDown={onKeyDown}
       >
         {children}
