@@ -697,6 +697,11 @@ body.sidebar-pointer-dragging .session-section-title {
   filter: brightness(1.08);
   box-shadow: 0 8px 22px color-mix(in srgb, var(--accent) 14%, transparent);
 }
+.app-error-reload.secondary {
+  border-color: var(--border-primary, #323237);
+  background: transparent;
+  color: var(--secondary-text, #a0a0a8);
+}
 .app-error-reload:focus-visible,
 .app-error-details summary:focus-visible {
   outline: 2px solid var(--focus-border, #55555e);
@@ -12542,6 +12547,14 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
   overflow-y: auto;
   padding: 4px;
 }
+.command-palette-group {
+  padding: 6px 8px 3px;
+  color: var(--tertiary-text);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
 /* Occasional surfaces retain a short, origin-aware entry. Frequent keyboard
    surfaces (search, model/composer menus, and context menus) stay instant. */
 :is(
@@ -12601,6 +12614,10 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
+}
+.chat-search-result.command {
+  min-height: 38px;
+  align-items: center;
 }
 .chat-search-result-title {
   min-width: 0;

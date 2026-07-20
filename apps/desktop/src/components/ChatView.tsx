@@ -47,6 +47,7 @@ import {
   listWorkerRuns,
   MAX_ATTACHMENT_BYTES,
   openArtifactLocation,
+  openDiagnosticsFolder,
   openExternalUrl,
   pickAttachmentFiles,
   pollMobileCompanionEvents,
@@ -340,7 +341,7 @@ import { GeneratedMedia } from "./GeneratedMedia";
 import { WorkersInspector, WorkersSummary } from "./WorkersInspector";
 import { AssistantMessage } from "./AssistantMessage";
 import { ArtifactList } from "./ArtifactList";
-import { ChatSearchPopover } from "./ChatSearchPopover";
+import { CommandPalette, type RuntimeCommand } from "./ChatSearchPopover";
 import { useContextMenu, type ContextMenuItem } from "./ContextMenu";
 import { GitWorkspacePanel } from "./GitPanel";
 import { PreviewPanel } from "./PreviewPanel";
@@ -3071,6 +3072,7 @@ function mediaPromptWithHistory(
 export function ChatView({
   onManageAgents,
   onOpenSchedules,
+  onOpenSettings,
   composerDraft,
   gitPanelRequest = 0,
   mcpManagerRequest = 0,
@@ -3079,6 +3081,7 @@ export function ChatView({
 }: {
   onManageAgents: () => void;
   onOpenSchedules: () => void;
+  onOpenSettings: () => void;
   composerDraft?: { id: number; text: string } | null;
   gitPanelRequest?: number;
   mcpManagerRequest?: number;
@@ -7977,6 +7980,66 @@ export function ChatView({
     }, 2000);
   }
 
+  const paletteCommands: RuntimeCommand[] = [
+    {
+      id: "chat.new",
+      label: "New chat",
+      keywords: ["thread", "conversation"],
+      shortcut: shortcutLabel(appShortcuts.newChat),
+      run: startShortcutNewChat,
+    },
+    {
+      id: "composer.focus",
+      label: "Focus composer",
+      keywords: ["prompt", "input"],
+      shortcut: shortcutLabel(appShortcuts.focusComposer),
+      run: focusComposer,
+    },
+    {
+      id: "sidebar.toggle",
+      label: sidebarOpen ? "Hide sidebar" : "Show sidebar",
+      keywords: ["toggle", "navigation"],
+      shortcut: shortcutLabel(appShortcuts.toggleSidebar),
+      run: toggleSidebar,
+    },
+    {
+      id: "thread.previous",
+      label: "Previous thread",
+      keywords: ["chat", "recent", "switch"],
+      shortcut: shortcutLabel(appShortcuts.previousThread),
+      available: sessionSummaries.length > 1,
+      run: switchToPreviousThread,
+    },
+    {
+      id: "generation.stop",
+      label: "Stop generation",
+      keywords: ["cancel", "abort"],
+      shortcut: shortcutLabel(appShortcuts.stopGeneration),
+      available: busy,
+      run: stop,
+    },
+    {
+      id: "settings.open",
+      label: "Open settings",
+      keywords: ["preferences", "configuration"],
+      run: onOpenSettings,
+    },
+    {
+      id: "diagnostics.open",
+      label: "Open diagnostics",
+      keywords: ["logs", "recovery", "debug"],
+      available: inTauri,
+      run: () => {
+        void openDiagnosticsFolder().catch((error) =>
+          setChatNotice({
+            tone: "error",
+            message: error instanceof Error ? error.message : String(error),
+          }),
+        );
+      },
+    },
+  ];
+
   function shortcutTargetBlocked(target: EventTarget | null): boolean {
     if (!(target instanceof HTMLElement)) return false;
     return Boolean(
@@ -9125,9 +9188,10 @@ export function ChatView({
       </div>
 
       {chatSearchOpen && (
-        <ChatSearchPopover
+        <CommandPalette
           projects={projects}
           activeId={activeId}
+          commands={paletteCommands}
           onSelect={switchToSession}
           onClose={() => setChatSearchOpen(false)}
         />

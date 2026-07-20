@@ -10,6 +10,7 @@
 
 #[cfg(feature = "computer-use")]
 mod computer_tools;
+mod diagnostics;
 mod host_tools;
 mod preview_tools;
 mod preview_webview;
@@ -54,6 +55,23 @@ fn health() -> String {
     "ok".to_string()
 }
 
+#[tauri::command]
+fn record_frontend_error(message: String, detail: Option<String>) {
+    diagnostics::record_frontend_error(&message, detail.as_deref());
+}
+
+#[tauri::command]
+fn diagnostics_path() -> std::result::Result<String, String> {
+    let path = diagnostics::log_dir();
+    fs::create_dir_all(&path).map_err(|error| error.to_string())?;
+    Ok(path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn restart_app(app: tauri::AppHandle) {
+    restart_after_preview_cleanup(app);
+}
+
 struct DesktopApiToken(String);
 
 struct DesktopApiBaseUrl(String);
@@ -78,6 +96,7 @@ const TRAY_OPEN_ID: &str = "open";
 const TRAY_QUIT_ID: &str = "quit";
 const FLUSH_USER_STATE_EVENT: &str = "milim://flush-user-state";
 const FLUSH_USER_STATE_AND_EXIT_EVENT: &str = "milim://flush-user-state-and-exit";
+const RUNTIME_FAILED_EVENT: &str = "milim://runtime-failed";
 const MAX_ATTACHMENT_BYTES: u64 = 128 * 1024;
 const MAX_ATTACHMENT_IMAGE_PREVIEW_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_ARTIFACT_PREVIEW_BYTES: usize = 256 * 1024;
@@ -3072,7 +3091,7 @@ fn build_state(
         match milim_server::providers::ProviderRegistry::open(paths.root(), local.clone()) {
             Ok(registry) => Some(Arc::new(registry)),
             Err(e) => {
-                eprintln!("provider registry unavailable: {e}");
+                tracing::warn!("provider registry unavailable: {e}");
                 None
             }
         };
@@ -3111,7 +3130,7 @@ fn build_state(
     let agents_db = paths.root().join("agents.db");
     match milim_storage::Database::open(&agents_db).and_then(milim_agents::AgentStore::new) {
         Ok(agent_store) => state = state.with_agents(agent_store),
-        Err(e) => eprintln!("agent store unavailable: {e}"),
+        Err(e) => tracing::warn!("agent store unavailable: {e}"),
     }
 
     // Persisted child-thread supervisor used by parent agent runs.
@@ -3120,7 +3139,7 @@ fn build_state(
         Ok(thread_store) => {
             state = state.with_threads(milim_server::threads::ThreadSupervisor::new(thread_store))
         }
-        Err(e) => eprintln!("child threads unavailable: {e}"),
+        Err(e) => tracing::warn!("child threads unavailable: {e}"),
     }
 
     // Persisted SKILL.md instructions used by both simple chat and workbench.
@@ -3128,11 +3147,11 @@ fn build_state(
     match milim_storage::Database::open(&skills_db).and_then(milim_skills::SkillStore::new) {
         Ok(skill_store) => {
             if let Err(e) = skill_store.import_global_skills() {
-                eprintln!("global skills import failed: {e}");
+                tracing::warn!("global skills import failed: {e}");
             }
             state = state.with_skills(skill_store)
         }
-        Err(e) => eprintln!("skills unavailable: {e}"),
+        Err(e) => tracing::warn!("skills unavailable: {e}"),
     }
 
     // Embedding memory/RAG store (best-effort; embeds through the active router).
@@ -3146,7 +3165,7 @@ fn build_state(
     .and_then(|db| milim_memory::MemoryStore::new(db, service.clone()))
     {
         Ok(memory) => state = state.with_memory(memory),
-        Err(e) => eprintln!("memory store unavailable: {e}"),
+        Err(e) => tracing::warn!("memory store unavailable: {e}"),
     }
 
     // Persisted cron schedules, shared by the Schedules sheet and the agent
@@ -3156,7 +3175,7 @@ fn build_state(
         .and_then(milim_automation::ScheduleStore::new)
     {
         Ok(schedule_store) => state = state.with_schedules(schedule_store),
-        Err(e) => eprintln!("schedules unavailable: {e}"),
+        Err(e) => tracing::warn!("schedules unavailable: {e}"),
     }
 
     (state, addr, mcp, registry)
@@ -3168,7 +3187,7 @@ fn bind_desktop_server_listener(
     let listener = match TcpListener::bind(preferred_addr) {
         Ok(listener) => listener,
         Err(e) if preferred_addr.port() != 0 => {
-            eprintln!(
+            tracing::warn!(
                 "embedded milim server could not bind {preferred_addr}: {e}; falling back to a free loopback port"
             );
             TcpListener::bind(SocketAddr::new(preferred_addr.ip(), 0))?
@@ -3264,9 +3283,19 @@ fn exit_after_preview_cleanup<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
     let preview_runtime = app.state::<DesktopPreviewRuntime>().0.clone();
     tauri::async_runtime::spawn(async move {
         if let Err(error) = preview_runtime.stop_all().await {
-            eprintln!("failed to stop preview apps during desktop shutdown: {error}");
+            tracing::warn!("failed to stop preview apps during desktop shutdown: {error}");
         }
         app.exit(0);
+    });
+}
+
+fn restart_after_preview_cleanup<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
+    let preview_runtime = app.state::<DesktopPreviewRuntime>().0.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) = preview_runtime.stop_all().await {
+            tracing::warn!("failed to stop preview apps before desktop restart: {error}");
+        }
+        app.restart();
     });
 }
 
@@ -3314,6 +3343,9 @@ fn setup_tray<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<()>
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    if let Err(error) = diagnostics::init() {
+        eprintln!("desktop diagnostics unavailable: {error}");
+    }
     let api_key = milim_server::gen_id("desktop");
     let preview_tools_state = Arc::new(preview_tools::PreviewToolState::default());
     let (state, preferred_addr, mcp, providers) =
@@ -3361,14 +3393,19 @@ pub fn run() {
                 });
             }
             // Run the HTTP server on Tauri's async runtime for the app's lifetime.
+            let server_app = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 match tokio::net::TcpListener::from_std(server_listener) {
                     Ok(listener) => {
                         if let Err(e) = milim_server::serve_listener(state, listener).await {
-                            eprintln!("embedded milim server error: {e}");
+                            tracing::error!("embedded milim server error: {e}");
+                            let _ = server_app.emit(RUNTIME_FAILED_EVENT, ());
                         }
                     }
-                    Err(e) => eprintln!("embedded milim server listener error: {e}"),
+                    Err(e) => {
+                        tracing::error!("embedded milim server listener error: {e}");
+                        let _ = server_app.emit(RUNTIME_FAILED_EVENT, ());
+                    }
                 }
             });
             // Separate phone-facing server. Tailscale Serve targets this, not the full API.
@@ -3379,10 +3416,10 @@ pub fn run() {
                             milim_server::serve_mobile_companion_listener(mobile_state, listener)
                                 .await
                         {
-                            eprintln!("embedded mobile relay server error: {e}");
+                            tracing::warn!("embedded mobile relay server error: {e}");
                         }
                     }
-                    Err(e) => eprintln!("embedded mobile relay listener error: {e}"),
+                    Err(e) => tracing::warn!("embedded mobile relay listener error: {e}"),
                 }
             });
             if let Some(companion) = mobile_startup_companion {
@@ -3396,12 +3433,14 @@ pub fn run() {
                             Ok(status) if status.serve_configured => {}
                             Ok(status) => {
                                 if let Some(message) = status.message {
-                                    eprintln!(
+                                    tracing::warn!(
                                         "mobile relay Tailscale startup unavailable: {message}"
                                     );
                                 }
                             }
-                            Err(e) => eprintln!("mobile relay Tailscale startup task failed: {e}"),
+                            Err(e) => {
+                                tracing::warn!("mobile relay Tailscale startup task failed: {e}")
+                            }
                         }
                     }
                 });
@@ -3419,6 +3458,9 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             health,
+            record_frontend_error,
+            diagnostics_path,
+            restart_app,
             api_base_url,
             api_token,
             refresh_provider_models,

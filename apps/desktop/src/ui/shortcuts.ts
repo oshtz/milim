@@ -12,7 +12,7 @@ export const APP_SHORTCUT_ACTIONS: AppShortcutAction[] = [
 
 export const APP_SHORTCUT_LABELS: Record<AppShortcutAction, string> = {
   newChat: "New chat",
-  focusSearch: "Search chats",
+  focusSearch: "Command palette",
   focusComposer: "Focus composer",
   stopGeneration: "Stop generation",
   toggleSidebar: "Toggle sidebar",

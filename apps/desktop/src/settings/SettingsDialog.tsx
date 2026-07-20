@@ -1,6 +1,7 @@
 import { type KeyboardEvent, useEffect, useMemo, useState } from "react";
 import {
   listModelsDetailed,
+  openDiagnosticsFolder,
   type ModelInfo,
 } from "../api";
 import { isThreadNamingModel } from "../lib/threadTitles";
@@ -49,7 +50,7 @@ import {
   type ComposerDensity,
   type ComposerSendShortcut,
 } from "../ui/store";
-import { Archive, Check, Code, Download, Gear, GitLogo, Pencil, PlusSquare, Refresh, Search, Sidebar, Smartphone, Sun, Trash, X } from "../components/icons";
+import { Archive, Check, Code, Download, FolderOpen, Gear, GitLogo, Pencil, PlusSquare, Refresh, Search, Sidebar, Smartphone, Sun, Trash, X } from "../components/icons";
 import { MobileCompanionSettings } from "../components/MobileCompanionSettings";
 import { SheetDialog } from "../components/SheetDialog";
 import { ThemeEditor } from "../components/ThemeEditor";
@@ -249,6 +250,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
   const [threadNameModels, setThreadNameModels] = useState<ModelInfo[]>([]);
   const [recordingShortcut, setRecordingShortcut] = useState<ShortcutRecordingTarget | null>(null);
   const [shortcutError, setShortcutError] = useState<string | null>(null);
+  const [diagnosticsError, setDiagnosticsError] = useState<string | null>(null);
   const archivedSessions = useMemo(
     () => sessions.filter((session) => session.archivedAt).slice().sort((a, b) => (b.archivedAt ?? 0) - (a.archivedAt ?? 0)),
     [sessions],
@@ -410,6 +412,15 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
 
   async function installUpdateFromSettings() {
     await installAppUpdate();
+  }
+
+  async function openLogsFromSettings() {
+    setDiagnosticsError(null);
+    try {
+      await openDiagnosticsFolder();
+    } catch (error) {
+      setDiagnosticsError(error instanceof Error ? error.message : String(error));
+    }
   }
 
   function recordAppShortcut(target: ShortcutRecordingTarget, event: globalThis.KeyboardEvent) {
@@ -1105,6 +1116,20 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
                   <p>{updateInfo.notes}</p>
                 </details>
               ) : null}
+            </SettingsBlock>
+
+            <SettingsBlock title="Diagnostics" data-setting-id="about-diagnostics" className={settingHighlightClass("about-diagnostics").trim()}>
+              <div className="settings-action-row">
+                <div>
+                  <strong>Local logs</strong>
+                  <span>Milim keeps two bounded log files on this device. Logs are never uploaded automatically.</span>
+                </div>
+                <button className="btn-ghost" type="button" data-testid="open-diagnostics" onClick={() => void openLogsFromSettings()}>
+                  <FolderOpen size={13} />
+                  Open logs
+                </button>
+              </div>
+              {diagnosticsError && <p className="sheet-hint error" role="alert">{diagnosticsError}</p>}
             </SettingsBlock>
           </SettingsPanel>
         </section>

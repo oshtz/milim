@@ -12,11 +12,18 @@ import {
   type ReactNode,
 } from "react";
 import { useAgents } from "./agents/store";
-import { deleteThreadTree, listModelsDetailed, loadStartupModels } from "./api";
+import {
+  deleteThreadTree,
+  listModelsDetailed,
+  loadStartupModels,
+  openDiagnosticsFolder,
+  recordFrontendError,
+  restartDesktopApp,
+} from "./api";
 import { AutoUpdater } from "./components/AutoUpdater";
 import { ChatView } from "./components/ChatView";
 import { ContextMenuProvider, useContextMenu } from "./components/ContextMenu";
-import { Gear, Pencil, Plus, Refresh, Sidebar as SidebarIcon, X } from "./components/icons";
+import { FolderOpen, Gear, Pencil, Plus, Refresh, Sidebar as SidebarIcon, X } from "./components/icons";
 import { Logo } from "./components/Logo";
 import { ResizeHandles } from "./components/ResizeHandles";
 import { Sidebar } from "./components/Sidebar";
@@ -28,6 +35,7 @@ import {
 } from "./onboarding/store";
 import {
   importLegacyLocalStorageOnce,
+  flushDeferredUserStateWrites,
   installUserStateFlushHandlers,
 } from "./persistence/userStateStorage.js";
 import {
@@ -179,6 +187,86 @@ function AppNoticeHost() {
   );
 }
 
+function AppRecoveryScreen({
+  title,
+  description,
+  detail,
+}: {
+  title: string;
+  description: string;
+  detail: string;
+}) {
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  function restart() {
+    setActionError(null);
+    void flushDeferredUserStateWrites()
+      .catch((error) =>
+        recordFrontendError(
+          "Failed to flush user state before restart",
+          error instanceof Error ? error.stack || error.message : undefined,
+        ),
+      )
+      .finally(() => restartDesktopApp())
+      .catch((error) =>
+        setActionError(error instanceof Error ? error.message : String(error)),
+      );
+  }
+
+  function openLogs() {
+    setActionError(null);
+    void openDiagnosticsFolder().catch((error) =>
+      setActionError(error instanceof Error ? error.message : String(error)),
+    );
+  }
+
+  const { backgroundFit, backgroundTreatment } = useUiPreferences.getState();
+  return (
+    <div className={`app app-error-state bg-fit-${backgroundFit} bg-treatment-${backgroundTreatment}`}>
+      <div className="bg-layer" aria-hidden="true" />
+      <div className="app-error-backdrop" aria-hidden="true" />
+      <main className="app-error-layout" aria-labelledby="app-error-title">
+        <header className="app-error-brand">
+          <Logo height={26} />
+          <span aria-hidden="true" />
+          <p>Recovery</p>
+        </header>
+
+        <div className="app-error-body">
+          <section className="app-error-copy">
+            <div role="alert">
+              <p className="app-error-kicker">
+                <span aria-hidden="true" />
+                Runtime interrupted
+              </p>
+              <h1 id="app-error-title">{title}</h1>
+              <p className="app-error-description">{description}</p>
+            </div>
+
+            <div className="app-error-actions">
+              <button className="app-error-reload" type="button" onClick={restart}>
+                <Refresh size={15} aria-hidden="true" />
+                Restart Milim
+              </button>
+              <button className="app-error-reload secondary" type="button" onClick={openLogs}>
+                <FolderOpen size={15} aria-hidden="true" />
+                Open logs
+              </button>
+              <span>Saved work stays on this device</span>
+            </div>
+            {actionError && <p className="sheet-hint error" role="alert">{actionError}</p>}
+
+            <details className="app-error-details">
+              <summary>Technical details</summary>
+              <code>{detail}</code>
+            </details>
+          </section>
+        </div>
+      </main>
+    </div>
+  );
+}
+
 class AppErrorBoundary extends Component<
   { children: ReactNode },
   { error: Error | null }
@@ -191,61 +279,17 @@ class AppErrorBoundary extends Component<
 
   componentDidCatch(error: Error, info: ErrorInfo) {
     console.error("Milim UI error", error, info);
+    void recordFrontendError(error.message, [error.stack, info.componentStack].filter(Boolean).join("\n")).catch(() => {});
   }
 
   render() {
     if (!this.state.error) return this.props.children;
-    const { backgroundFit, backgroundTreatment } = useUiPreferences.getState();
     return (
-      <div className={`app app-error-state bg-fit-${backgroundFit} bg-treatment-${backgroundTreatment}`}>
-        <div className="bg-layer" aria-hidden="true" />
-        <div className="app-error-backdrop" aria-hidden="true" />
-        <main
-          className="app-error-layout"
-          aria-labelledby="app-error-title"
-        >
-          <header className="app-error-brand">
-            <Logo height={26} />
-            <span aria-hidden="true" />
-            <p>Recovery</p>
-          </header>
-
-          <div className="app-error-body">
-            <section className="app-error-copy">
-              <div role="alert">
-                <p className="app-error-kicker">
-                  <span aria-hidden="true" />
-                  Interface interrupted
-                </p>
-                <h1 id="app-error-title">Milim needs a quick reload.</h1>
-                <p className="app-error-description">
-                  The interface stopped unexpectedly. Reload to return to your
-                  workspace. Your saved chats and settings will stay put.
-                </p>
-              </div>
-
-              <div className="app-error-actions">
-                <button
-                  className="app-error-reload"
-                  type="button"
-                  onClick={() => window.location.reload()}
-                >
-                  <Refresh size={15} aria-hidden="true" />
-                  Reload Milim
-                </button>
-                <span>Saved work stays on this device</span>
-              </div>
-
-              <details className="app-error-details">
-                <summary>Technical details</summary>
-                <code>
-                  {this.state.error.message || "Unknown render error."}
-                </code>
-              </details>
-            </section>
-          </div>
-        </main>
-      </div>
+      <AppRecoveryScreen
+        title="Milim needs a quick restart."
+        description="The interface stopped unexpectedly. Restart to return to your workspace. Your saved chats and settings will stay put."
+        detail={this.state.error.message || "Unknown render error."}
+      />
     );
   }
 }
@@ -308,6 +352,7 @@ function AppContent() {
   }, []);
 
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [runtimeFailed, setRuntimeFailed] = useState(false);
   const [agentsOpen, setAgentsOpen] = useState(false);
   const [skillsOpen, setSkillsOpen] = useState(false);
   const [skillsRevision, setSkillsRevision] = useState(0);
@@ -393,6 +438,28 @@ function AppContent() {
     }
   }, [uiSize]);
 
+  useEffect(() => {
+    if (!inTauri) return;
+    let dispose: (() => void) | undefined;
+    void import("@tauri-apps/api/event")
+      .then(({ listen }) => listen("milim://runtime-failed", () => setRuntimeFailed(true)))
+      .then((unlisten) => {
+        dispose = unlisten;
+      })
+      .catch(() => {});
+    return () => dispose?.();
+  }, []);
+
+  if (runtimeFailed) {
+    return (
+      <AppRecoveryScreen
+        title="Milim's local service stopped."
+        description="Restart Milim to restore the local service. Saved chats and settings will stay put."
+        detail="The embedded milim server exited unexpectedly."
+      />
+    );
+  }
+
   return (
     <div className={appClassName} onContextMenu={openAppContextMenu}>
       <div className="bg-layer" />
@@ -413,6 +480,7 @@ function AppContent() {
           <ChatView
             onManageAgents={() => setAgentsOpen(true)}
             onOpenSchedules={() => setSchedulesOpen(true)}
+            onOpenSettings={() => setSettingsOpen(true)}
             composerDraft={composerDraft}
             gitPanelRequest={gitPanelRequest}
             mcpManagerRequest={mcpManagerRequest}

@@ -17,6 +17,7 @@ const microUiOnly = process.argv.includes("--micro-ui-only");
 const workersOnly = process.argv.includes("--workers-only");
 const mcpAppsOnly = process.argv.includes("--mcp-apps-only");
 const sidebarMotionOnly = process.argv.includes("--sidebar-motion-only");
+const commandPaletteOnly = process.argv.includes("--command-palette-only");
 const mcpAppKinds = ["chart", "diagram", "form", "dashboard", "viewer"];
 const screenshots = {
   avatars: join(tmpdir(), "milim-tauri-webview-agent-avatars.png"),
@@ -105,6 +106,14 @@ try {
     const errors = collectErrors(session.page);
     await runWorkersInspectorCheck(session.page, milimHome);
     consoleErrors.push(...errors.filter((message) => !message.includes("/worker-runs/e2e-workers-run/events")));
+  } else if (commandPaletteOnly) {
+    const errors = collectErrors(session.page);
+    await session.page.getByTestId("chat-shell").waitFor();
+    await dismissOnboardingIfPresent(session.page);
+    await seedChatSearchFixture(session.page);
+    await runCommandPaletteCheck(session.page);
+    await runRestartCheck(session);
+    consoleErrors.push(...errors.filter((message) => !message.includes("/codex/models")));
   } else if (zoomOnly || microUiOnly) {
     const errors = collectErrors(session.page);
     await session.page.getByTestId("chat-shell").waitFor();
@@ -1697,21 +1706,39 @@ async function runAppShortcutCheck(page) {
   await page.keyboard.press("Control+B");
   await page.getByTestId("sidebar-search").waitFor();
 
+  await runCommandPaletteCheck(page);
+
+  await page.keyboard.press("Control+L");
+  await expectFocusedTestId(page, "composer-input");
+  await page.keyboard.press("Control+N");
+  await expectFocusedTestId(page, "composer-input");
+  const value = await page.getByTestId("composer-input").inputValue();
+  if (value !== "") throw new Error(`Expected Ctrl+N to clear composer, got "${value}".`);
+}
+
+async function runCommandPaletteCheck(page) {
   await page.keyboard.press("Control+K");
-  await page.getByTestId("chat-search-input").waitFor();
+  await page.getByTestId("command-palette-input").waitFor();
   const searchMotion = await page.locator(".chat-search-overlay").evaluate((element) => {
     const style = getComputedStyle(element);
     return { animationName: style.animationName, transitionProperty: style.transitionProperty };
   });
   if (searchMotion.animationName !== "none" || /opacity|transform|scale|translate/.test(searchMotion.transitionProperty)) {
-    throw new Error(`Keyboard chat search should open instantly: ${JSON.stringify(searchMotion)}.`);
+    throw new Error(`Keyboard command palette should open instantly: ${JSON.stringify(searchMotion)}.`);
   }
-  await expectFocusedTestId(page, "chat-search-input");
-  await page.getByTestId("chat-search-input").fill("volcano ledger");
-  await page.getByTestId("chat-search-result").filter({ hasText: "Older Search Fixture" }).waitFor();
+  await expectFocusedTestId(page, "command-palette-input");
+  await page.getByTestId("command-palette-input").fill("open settings");
+  await page.getByTestId("command-palette-command").filter({ hasText: "Open settings" }).waitFor();
+  await page.keyboard.press("Enter");
+  await page.getByTestId("settings-dialog").waitFor();
+  await closeSettings(page);
+
+  await page.keyboard.press("Control+K");
+  await page.getByTestId("command-palette-input").fill("volcano ledger");
+  await page.getByTestId("command-palette-chat").filter({ hasText: "Older Search Fixture" }).waitFor();
   await page.keyboard.press("Enter");
   await page.getByTestId("user-message").filter({ hasText: "volcano ledger phrase" }).waitFor();
-  if (await page.getByTestId("chat-search-input").isVisible().catch(() => false)) {
+  if (await page.getByTestId("command-palette-input").isVisible().catch(() => false)) {
     await closeChatSearch(page);
   }
   await page.keyboard.press("Control+Tab");
@@ -1719,14 +1746,48 @@ async function runAppShortcutCheck(page) {
   await page.keyboard.press("Control+Tab");
   await page.getByTestId("user-message").filter({ hasText: "volcano ledger phrase" }).waitFor();
   await page.keyboard.press("Control+K");
-  await page.getByTestId("chat-search-input").waitFor();
+  await page.getByTestId("command-palette-input").waitFor();
   await closeChatSearch(page);
-  await page.keyboard.press("Control+L");
-  await expectFocusedTestId(page, "composer-input");
-  await page.keyboard.press("Control+N");
-  await expectFocusedTestId(page, "composer-input");
-  const value = await page.getByTestId("composer-input").inputValue();
-  if (value !== "") throw new Error(`Expected Ctrl+N to clear composer, got "${value}".`);
+
+  const diagnosticsMarker = `tauri-diagnostics-${Date.now()}`;
+  const diagnosticsDir = await page.evaluate(async (marker) => {
+    const invoke = window.__TAURI_INTERNALS__.invoke;
+    await invoke("record_frontend_error", { message: marker });
+    return await invoke("diagnostics_path");
+  }, diagnosticsMarker);
+  await waitForFileText(join(diagnosticsDir, "desktop.log"), diagnosticsMarker);
+}
+
+async function runRestartCheck(session) {
+  await session.page.evaluate(async () => {
+    await window.__TAURI_INTERNALS__.invoke("restart_app");
+  }).catch(() => {});
+  await waitForExit(session.child, 20_000);
+  await session.browser?.close().catch(() => {});
+  session.browser = null;
+  session.page = null;
+
+  const started = Date.now();
+  let lastError;
+  while (Date.now() - started < 20_000) {
+    let browser;
+    try {
+      browser = await chromium.connectOverCDP(cdpUrl);
+      const context = browser.contexts()[0] ?? await browser.newContext();
+      const page = await firstPage(context);
+      page.setDefaultTimeout(10_000);
+      await page.getByTestId("chat-shell").waitFor({ timeout: 2_000 });
+      session.browser = browser;
+      session.page = page;
+      session.restarted = true;
+      return;
+    } catch (error) {
+      lastError = error;
+      await browser?.close().catch(() => {});
+      await delay(250);
+    }
+  }
+  throw new Error(`Restarted Tauri app did not return through CDP: ${lastError?.message || "unknown error"}`);
 }
 
 async function runUiZoomShortcutCheck(page) {
@@ -1826,8 +1887,8 @@ async function runMicroUiCheck(page) {
   await seedChatSearchFixture(page, true);
   await dismissOnboardingIfPresent(page);
   await page.keyboard.press("Control+K");
-  await page.getByTestId("chat-search-input").fill("volcano ledger");
-  await page.getByTestId("chat-search-result").filter({ hasText: "Older Search Fixture" }).click();
+  await page.getByTestId("command-palette-input").fill("volcano ledger");
+  await page.getByTestId("command-palette-chat").filter({ hasText: "Older Search Fixture" }).click();
 
   const message = page.getByTestId("user-message").last();
   await message.hover();
@@ -2264,10 +2325,10 @@ async function assertPointerReorderFollowsSource(page, {
 
 async function closeChatSearch(page) {
   await page.keyboard.press("Escape");
-  if (await page.getByTestId("chat-search-input").isVisible().catch(() => false)) {
-    await page.getByLabel("Close search").click();
+  if (await page.getByTestId("command-palette-input").isVisible().catch(() => false)) {
+    await page.getByLabel("Close command palette").click();
   }
-  await page.getByTestId("chat-search-input").waitFor({ state: "hidden" });
+  await page.getByTestId("command-palette-input").waitFor({ state: "hidden" });
 }
 
 async function seedChatSearchFixture(page, withQueuedMessages = false) {
@@ -2666,6 +2727,11 @@ async function closeSession(session) {
   await session.browser?.close().catch(() => {});
   session.browser = null;
   session.page = null;
+  if (session.restarted) {
+    await ensureNoWorkspaceMilimProcesses();
+    await waitForPortClosed(cdpPort, 10_000);
+    return;
+  }
   if (session.child.exitCode == null) {
     const killResult = killTree(session.child.pid);
     await waitForExit(session.child, 10_000).catch((err) => {

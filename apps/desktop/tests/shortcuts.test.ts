@@ -1,4 +1,5 @@
 import {
+  APP_SHORTCUT_LABELS,
   DEFAULT_APP_SHORTCUTS,
   globalAcceleratorToShortcut,
   normalizeAppShortcuts,
@@ -86,5 +87,6 @@ equal(normalized.stopGeneration, "F2", "valid bare F-key should survive");
 equal(normalized.previousThread, "Ctrl+Tab", "old previous thread default should migrate to Ctrl+Tab");
 equal(shortcutConflict(DEFAULT_APP_SHORTCUTS, "newChat", "Mod+K"), "focusSearch", "conflict lookup should name the existing action");
 equal(shortcutConflict(DEFAULT_APP_SHORTCUTS, "newChat", "Ctrl+Tab"), "previousThread", "conflict lookup should find thread shortcut");
+equal(APP_SHORTCUT_LABELS.focusSearch, "Command palette", "persisted focusSearch action should label the palette");
 
 export {};

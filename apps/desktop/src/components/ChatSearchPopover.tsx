@@ -1,18 +1,28 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { wireMessageContent } from "../api";
 import { searchChatSessions, type SearchableChatSession } from "../lib/chatSearch";
+import {
+  filterCommandPaletteItems,
+  type CommandPaletteItem,
+} from "../lib/commandPalette";
 import { sessionRecencyLabel } from "../lib/sessionRecency";
 import { useSessions, type Project } from "../sessions/store";
 import { Search, X } from "./icons";
 
-export function ChatSearchPopover({
+export interface RuntimeCommand extends CommandPaletteItem {
+  run: () => void;
+}
+
+export function CommandPalette({
   projects,
   activeId,
+  commands,
   onSelect,
   onClose,
 }: {
   projects: Project[];
   activeId: string;
+  commands: RuntimeCommand[];
   onSelect: (id: string) => void;
   onClose: () => void;
 }) {
@@ -34,12 +44,16 @@ export function ChatSearchPopover({
     })),
     [sessions],
   );
-  const results = useMemo(
+  const commandResults = useMemo(
+    () => filterCommandPaletteItems(commands, query),
+    [commands, query],
+  );
+  const chatResults = useMemo(
     () => searchChatSessions(searchableSessions, projects, query),
     [projects, query, searchableSessions],
   );
-  const activeIndex = results.length ? Math.min(selectedIndex, results.length - 1) : 0;
-  const selected = results[activeIndex] ?? null;
+  const resultCount = commandResults.length + chatResults.length;
+  const activeIndex = resultCount ? Math.min(selectedIndex, resultCount - 1) : 0;
 
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => inputRef.current?.focus());
@@ -51,8 +65,15 @@ export function ChatSearchPopover({
   }, [query]);
 
   function openSelected() {
-    if (!selected) return;
-    onSelect(selected.sessionId);
+    const command = commandResults[activeIndex];
+    if (command) {
+      onClose();
+      command.run();
+      return;
+    }
+    const chat = chatResults[activeIndex - commandResults.length];
+    if (!chat) return;
+    onSelect(chat.sessionId);
     onClose();
   }
 
@@ -65,12 +86,12 @@ export function ChatSearchPopover({
     }
     if (event.key === "ArrowDown") {
       event.preventDefault();
-      setSelectedIndex((current) => results.length ? (current + 1) % results.length : 0);
+      setSelectedIndex((current) => resultCount ? (current + 1) % resultCount : 0);
       return;
     }
     if (event.key === "ArrowUp") {
       event.preventDefault();
-      setSelectedIndex((current) => results.length ? (current - 1 + results.length) % results.length : 0);
+      setSelectedIndex((current) => resultCount ? (current - 1 + resultCount) % resultCount : 0);
       return;
     }
     if (event.key === "Enter") {
@@ -80,50 +101,74 @@ export function ChatSearchPopover({
   }
 
   return (
-    <div className="chat-search-overlay" data-native-preview-blocker="true" role="dialog" aria-modal="true" aria-label="Search chats" onKeyDown={handleKeyDown}>
+    <div className="chat-search-overlay" data-native-preview-blocker="true" role="dialog" aria-modal="true" aria-label="Command palette" onKeyDown={handleKeyDown}>
       <div className="chat-search-popover">
         <div className="chat-search-head">
           <Search size={15} />
           <input
             ref={inputRef}
-            data-testid="chat-search-input"
+            data-testid="command-palette-input"
             value={query}
             onChange={(event) => setQuery(event.currentTarget.value)}
-            placeholder="Search chats"
-            aria-label="Search chats"
+            placeholder="Search commands and chats"
+            aria-label="Search commands and chats"
           />
-          <button className="chat-search-close" type="button" aria-label="Close search" onClick={onClose}>
+          <button className="chat-search-close" type="button" aria-label="Close command palette" onClick={onClose}>
             <X size={14} />
           </button>
         </div>
 
-        <div className="chat-search-list" data-testid="chat-search-results" role="listbox" aria-label="Chat search results">
-          {results.length === 0 ? (
-            <div className="chat-search-empty">{query.trim() ? "No chats found" : "No recent chats"}</div>
+        <div className="chat-search-list" data-testid="command-palette-results" role="listbox" aria-label="Command palette results">
+          {resultCount === 0 ? (
+            <div className="chat-search-empty">No commands or chats found</div>
           ) : (
-            results.map((result, index) => {
-              const active = index === activeIndex;
-              const metadata = [sessionRecencyLabel(result.updatedAt), result.metadata].filter(Boolean).join(" | ");
-              return (
+            <>
+              {commandResults.length > 0 && <div className="command-palette-group">Commands</div>}
+              {commandResults.map((command, index) => (
                 <button
-                  key={result.sessionId}
-                  className={"chat-search-result" + (active ? " active" : "") + (result.sessionId === activeId ? " current" : "")}
+                  key={command.id}
+                  className={"chat-search-result command" + (index === activeIndex ? " active" : "")}
                   type="button"
                   role="option"
-                  aria-selected={active}
-                  data-testid="chat-search-result"
+                  aria-selected={index === activeIndex}
+                  data-testid="command-palette-command"
                   onMouseEnter={() => setSelectedIndex(index)}
                   onClick={() => {
-                    onSelect(result.sessionId);
                     onClose();
+                    command.run();
                   }}
                 >
-                  <span className="chat-search-result-title">{result.title}</span>
-                  <span className="chat-search-result-meta">{metadata}</span>
-                  <span className="chat-search-result-snippet">{result.snippet}</span>
+                  <span className="chat-search-result-title">{command.label}</span>
+                  {command.shortcut && <span className="chat-search-result-meta">{command.shortcut}</span>}
                 </button>
-              );
-            })
+              ))}
+
+              {chatResults.length > 0 && <div className="command-palette-group">Chats</div>}
+              {chatResults.map((result, index) => {
+                const combinedIndex = commandResults.length + index;
+                const active = combinedIndex === activeIndex;
+                const metadata = [sessionRecencyLabel(result.updatedAt), result.metadata].filter(Boolean).join(" | ");
+                return (
+                  <button
+                    key={result.sessionId}
+                    className={"chat-search-result" + (active ? " active" : "") + (result.sessionId === activeId ? " current" : "")}
+                    type="button"
+                    role="option"
+                    aria-selected={active}
+                    data-testid="command-palette-chat"
+                    onMouseEnter={() => setSelectedIndex(combinedIndex)}
+                    onClick={() => {
+                      onSelect(result.sessionId);
+                      onClose();
+                    }}
+                  >
+                    <span className="chat-search-result-title">{result.title}</span>
+                    <span className="chat-search-result-meta">{metadata}</span>
+                    <span className="chat-search-result-snippet">{result.snippet}</span>
+                  </button>
+                );
+              })}
+            </>
           )}
         </div>
       </div>

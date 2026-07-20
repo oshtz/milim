@@ -557,6 +557,32 @@ export async function openArtifactLocation(
   await invoke("open_artifact_location", { path, target });
 }
 
+export async function recordFrontendError(
+  message: string,
+  detail?: string,
+): Promise<void> {
+  if (!inTauri) return;
+  await invoke("record_frontend_error", { message, detail });
+}
+
+export async function diagnosticsPath(): Promise<string> {
+  if (!inTauri)
+    throw new Error("Desktop diagnostics are only available in the desktop app.");
+  return await invoke<string>("diagnostics_path");
+}
+
+export async function openDiagnosticsFolder(): Promise<void> {
+  await openArtifactLocation(await diagnosticsPath(), "folder");
+}
+
+export async function restartDesktopApp(): Promise<void> {
+  if (!inTauri) {
+    window.location.reload();
+    return;
+  }
+  await invoke("restart_app");
+}
+
 export async function listWorkspaceLaunchers(
   workspace: string,
 ): Promise<WorkspaceLauncher[]> {

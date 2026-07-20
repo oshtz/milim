@@ -22,6 +22,7 @@ export const SETTINGS_SEARCH_ENTRIES: SettingSearchEntry[] = [
   { id: "system-shortcuts", label: "Keyboard shortcuts", section: "system", aliases: ["hotkey", "command", "reset"] },
   { id: "about-version", label: "Version", section: "about", aliases: ["current", "latest"] },
   { id: "about-updates", label: "Updates", section: "about", aliases: ["github release", "download", "restart"] },
+  { id: "about-diagnostics", label: "Diagnostics", section: "about", aliases: ["logs", "recovery", "debug"] },
   { id: "developer-mode", label: "Developer mode", section: "developer", aliases: ["debug", "experimental", "onboarding"] },
 ];
 

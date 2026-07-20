@@ -306,7 +306,10 @@ impl MobileCompanionBridge {
         let inner = match MobileCompanionInner::load_persisted(&path) {
             Ok(inner) => inner,
             Err(err) => {
-                eprintln!("mobile companion persistence unavailable: {err}");
+                tracing::warn!(
+                    target: "milim_desktop::server",
+                    "mobile companion persistence unavailable: {err}"
+                );
                 MobileCompanionInner::default()
             }
         };
@@ -553,7 +556,10 @@ impl MobileCompanionBridge {
             return;
         };
         if let Err(err) = write_mobile_companion_persistence(path, &inner.persisted()) {
-            eprintln!("mobile companion persistence write failed: {err}");
+            tracing::warn!(
+                target: "milim_desktop::server",
+                "mobile companion persistence write failed: {err}"
+            );
         }
     }
 }

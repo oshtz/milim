@@ -6,10 +6,12 @@ title: Troubleshooting
 summary: Fix missing models, setup errors, workspace tool refusal, sandbox failures, privacy blocks, MCP disconnects, computer use, and busy ports.
 group: Reference
 order: 120
-updated: 2026-07-01
+updated: 2026-07-20
 ---
 
 Start with the current base URL and selected model. Most local issues are either a missing provider, a workspace folder that was never selected, or an optional runtime that is not running yet.
+
+Desktop diagnostics are local-only under `<MILIM_HOME>/logs` (normally `~/.milim/logs`). Milim retains `desktop.log` and one 5 MiB previous log, never uploads them automatically, and exposes the folder from **Settings → About → Diagnostics** and the recovery screen.
 
 ## Diagnostic order
 
@@ -38,6 +40,7 @@ Start with the current base URL and selected model. Most local issues are either
 | MCP tools disappeared | Check `/mcp/servers` or the MCP Servers sheet. Imported servers stay disabled and secret-looking env values become required placeholders; fill them and use Test connection before enabling. |
 | Privacy block error | The server detected PII before a remote send. Use Redact, Off, or a local runtime. |
 | Desktop port is busy | The embedded server falls back to a free loopback port and the UI asks Tauri for the actual API base URL. |
+| Desktop recovery screen appears | Open the local logs for the recorded failure, then restart Milim from the same screen. Saved chats and settings remain on device. |
 
 ## Next reading path
 
