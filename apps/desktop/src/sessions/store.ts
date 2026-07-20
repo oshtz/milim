@@ -164,6 +164,8 @@ export interface Session {
   };
   pendingHotSwap?: PendingHotSwap;
   retryWorkspace?: RetryWorkspace;
+  /** Approved Worker Runs that still need to return results to this thread. */
+  pendingWorkerRunIds?: string[];
   parentId?: string;
   worker?: {
     status: ChildThreadStatus;
@@ -1145,6 +1147,15 @@ function normalizeSessionArtifacts(session: Session): Session {
     accountRuntime: normalizeAccountRuntime(session.accountRuntime),
     pendingHotSwap: normalizePendingHotSwap(session.pendingHotSwap),
     retryWorkspace: normalizeRetryWorkspace(session.retryWorkspace),
+    pendingWorkerRunIds: Array.isArray(session.pendingWorkerRunIds)
+      ? Array.from(
+          new Set(
+            session.pendingWorkerRunIds.filter(
+              (id) => typeof id === "string" && id.trim(),
+            ),
+          ),
+        )
+      : undefined,
     settings: normalizeSettings(session.settings, { pauseRunningGoal: true }),
     messages: messages.map((message) =>
       normalizeMessageArtifacts(normalizeStaleToolApprovals(normalizePersistedStreamParts(message))),
@@ -1643,6 +1654,7 @@ interface SessionState {
   updateChildThread: (thread: ChildThreadInfo, events?: ThreadEvent[]) => void;
   upsertWorkerRun: (record: WorkerRunRecord) => void;
   removeWorkerRun: (runId: string) => void;
+  setWorkerRunPending: (sessionId: string, runId: string, pending: boolean) => void;
   setWorkerRunEvent: (runId: string, event: ThreadEvent) => void;
   markArtifactSaved: (
     id: string,
@@ -2825,6 +2837,21 @@ export const useSessions = create<SessionState>()(
                   : message,
               ),
             })),
+          })),
+
+        setWorkerRunPending: (sessionId, runId, pending) =>
+          set((st) => ({
+            sessions: st.sessions.map((session) => {
+              if (session.id !== sessionId) return session;
+              const ids = new Set(session.pendingWorkerRunIds ?? []);
+              if (pending) ids.add(runId);
+              else ids.delete(runId);
+              return {
+                ...session,
+                pendingWorkerRunIds: ids.size ? Array.from(ids) : undefined,
+                updatedAt: Date.now(),
+              };
+            }),
           })),
 
         setWorkerRunEvent: (runId, event) =>

@@ -29,6 +29,7 @@ import {
   getCodexAccount,
   getMobileCompanionStatus,
   getWorkspaceGitStatus,
+  getWorkerRun,
   getWorkerDiff,
   getMediaModelSchema,
   getMediaStatus,
@@ -161,6 +162,10 @@ import {
   type ArtifactRevisionGroup,
 } from "../lib/artifactRevisions";
 import { hiddenArtifactIdsForMessage } from "../lib/artifactVisibility";
+import {
+  workerRunReadyForSynthesis,
+  workerRunSynthesisId,
+} from "../lib/workerRuns";
 import {
   assertValidImageAttachment,
   readBrowserAttachmentDataUrl,
@@ -428,6 +433,7 @@ function workerRunSynthesisMessage(record: WorkerRunRecord): ChatMessage {
   });
   return {
     role: "system",
+    workerRunId: record.run.id,
     content: [
       `Worker Run ${record.run.id} finished with status ${record.run.status}.`,
       allFailed
@@ -1482,25 +1488,28 @@ function virtualMessageWindow(
   scrollTop: number,
   viewportHeight: number,
 ): VirtualMessageWindow {
-  if (messages.length <= MESSAGE_VIRTUALIZE_AFTER) {
+  const visible = messages.flatMap((message, index) =>
+    workerRunSynthesisId(message) ? [] : [{ index, message, top: 0 }],
+  );
+  if (visible.length <= MESSAGE_VIRTUALIZE_AFTER) {
     return {
       virtualized: false,
       totalHeight: 0,
-      items: messages.map((message, index) => ({ index, message, top: 0 })),
+      items: visible,
     };
   }
-  const offsets = new Array<number>(messages.length + 1);
+  const offsets = new Array<number>(visible.length + 1);
   offsets[0] = 0;
-  for (let i = 0; i < messages.length; i += 1) {
+  for (let i = 0; i < visible.length; i += 1) {
     offsets[i + 1] =
-      offsets[i] + (heights[i] || MESSAGE_ESTIMATED_HEIGHT);
+      offsets[i] + (heights[visible[i].index] || MESSAGE_ESTIMATED_HEIGHT);
   }
   const start = virtualIndexAt(
     offsets,
     Math.max(0, scrollTop - MESSAGE_VIRTUAL_OVERSCAN_PX),
   );
   const end = Math.min(
-    messages.length - 1,
+    visible.length - 1,
     virtualIndexAt(
       offsets,
       scrollTop + viewportHeight + MESSAGE_VIRTUAL_OVERSCAN_PX,
@@ -1508,12 +1517,12 @@ function virtualMessageWindow(
   );
   const items: VirtualMessageItem[] = [];
   for (let index = start; index <= end; index += 1) {
-    items.push({ index, message: messages[index], top: offsets[index] });
+    items.push({ ...visible[index], top: offsets[index] });
   }
   return {
     virtualized: true,
     items,
-    totalHeight: offsets[messages.length],
+    totalHeight: offsets[visible.length],
   };
 }
 
@@ -3518,6 +3527,8 @@ export function ChatView({
     new Map(),
   );
   const approvedWorkerRunsRef = useRef<Set<string>>(new Set());
+  const resumingWorkerRunsRef = useRef<Set<string>>(new Set());
+  const workerRunReconcileRetriesRef = useRef<Map<string, number>>(new Map());
   const childThreadLiveIdsRef = useRef<Map<string, Set<string>>>(new Map());
   const childThreadEventsRef = useRef<Map<string, ThreadEvent[]>>(new Map());
   const previewResizeStartRef = useRef<{
@@ -3693,6 +3704,7 @@ export function ChatView({
   function applyPushedChildThreadEvent(parentId: string, ev: AgentEvent) {
     const thread = ev.thread;
     if (!thread || thread.parent_id !== parentId) return;
+    if (thread.run_id?.trim()) return;
     const live =
       childThreadLiveIdsRef.current.get(parentId) ?? new Set<string>();
     childThreadLiveIdsRef.current.set(parentId, live);
@@ -3761,40 +3773,87 @@ export function ChatView({
       };
       store.upsertWorkerRun(record);
       const merged = useSessions.getState().workerRuns.find((item) => item.run.id === run.id);
-      if (merged) maybeResumeAfterWorkerRun(merged);
+      if (merged) void maybeResumeAfterWorkerRun(merged);
     }
     if (event.event?.id && (run?.id || event.run_id))
       store.setWorkerRunEvent(run?.id ?? event.run_id!, event.event);
   }
 
-  function maybeResumeAfterWorkerRun(record: WorkerRunRecord) {
-    if (
-      !approvedWorkerRunsRef.current.has(record.run.id) ||
-      !["done", "partial", "stopped", "error"].includes(record.run.status)
-    ) return;
-    approvedWorkerRunsRef.current.delete(record.run.id);
-    workerRunEventControllersRef.current.get(record.run.id)?.abort();
+  async function maybeResumeAfterWorkerRun(record: WorkerRunRecord) {
+    const store = useSessions.getState();
     const sessionId = record.run.parent_thread_id;
-    const nextMessages = [...sessionMessages(sessionId), workerRunSynthesisMessage(record)];
-    setMessages(sessionId, nextMessages, { autoTitle: false });
-    const settings = useSessions.getState().getSettings(sessionId);
-    if (settings.goal.status === "waiting_for_worker_approval") {
-      const runningGoal = updateGoalState(sessionId, {
-        status: "running",
-        lastReason: "Worker results joined. Goal resumed.",
+    const session = store.sessions.find((item) => item.id === sessionId);
+    const pending =
+      approvedWorkerRunsRef.current.has(record.run.id) ||
+      session?.pendingWorkerRunIds?.includes(record.run.id);
+    if (
+      !pending ||
+      !["done", "partial", "stopped", "error"].includes(record.run.status) ||
+      resumingWorkerRunsRef.current.has(record.run.id)
+    ) return;
+
+    resumingWorkerRunsRef.current.add(record.run.id);
+    try {
+      const canonical = await getWorkerRun(record.run.id);
+      store.upsertWorkerRun(canonical);
+      if (!workerRunReadyForSynthesis(canonical)) {
+        retryWorkerRunReconciliation(canonical);
+        return;
+      }
+      workerRunReconcileRetriesRef.current.delete(canonical.run.id);
+
+      const currentMessages = sessionMessages(sessionId);
+      const alreadySynthesized = currentMessages.some(
+        (message) => workerRunSynthesisId(message) === canonical.run.id,
+      );
+
+      approvedWorkerRunsRef.current.delete(canonical.run.id);
+      workerRunEventControllersRef.current.get(canonical.run.id)?.abort();
+      const nextMessages = alreadySynthesized
+        ? currentMessages
+        : [...currentMessages, workerRunSynthesisMessage(canonical)];
+      if (!alreadySynthesized)
+        setMessages(sessionId, nextMessages, { autoTitle: false });
+      const settings = store.getSettings(sessionId);
+      if (settings.goal.status === "waiting_for_worker_approval") {
+        const runningGoal = updateGoalState(sessionId, {
+          status: "running",
+          lastReason: "Worker results joined. Goal resumed.",
+        });
+        goalLoopRef.current = { sessionId, stopped: false };
+        void runGoalLoop(sessionId, settings.model, runningGoal, true);
+        store.setWorkerRunPending(sessionId, canonical.run.id, false);
+        return;
+      }
+      const resumed = runTurn(
+        nextMessages,
+        settings.model,
+        { delegationPolicyOverride: "off" },
+        sessionId,
+      );
+      store.setWorkerRunPending(sessionId, canonical.run.id, false);
+      void resumed.then((result) => {
+        if (result.status === "done")
+          void drainQueuedMessages(sessionId, settings.model);
       });
-      goalLoopRef.current = { sessionId, stopped: false };
-      void runGoalLoop(sessionId, settings.model, runningGoal, true);
-      return;
+    } catch (error) {
+      console.warn("worker run reconciliation failed", error);
+      retryWorkerRunReconciliation(record);
+    } finally {
+      resumingWorkerRunsRef.current.delete(record.run.id);
     }
-    void runTurn(
-      nextMessages,
-      settings.model,
-      { delegationPolicyOverride: "off" },
-      sessionId,
-    ).then((result) => {
-      if (result.status === "done") void drainQueuedMessages(sessionId, settings.model);
-    });
+  }
+
+  function retryWorkerRunReconciliation(record: WorkerRunRecord) {
+    const attempts = workerRunReconcileRetriesRef.current.get(record.run.id) ?? 0;
+    if (attempts >= 3) return;
+    workerRunReconcileRetriesRef.current.set(record.run.id, attempts + 1);
+    window.setTimeout(() => {
+      const latest = useSessions
+        .getState()
+        .workerRuns.find((item) => item.run.id === record.run.id);
+      void maybeResumeAfterWorkerRun(latest ?? record);
+    }, 500 * 2 ** attempts);
   }
 
   function startWorkerRunEvents(record: WorkerRunRecord) {
@@ -3825,8 +3884,16 @@ export function ChatView({
       .then((records) => {
         if (cancelled) return;
         const store = useSessions.getState();
+        const pending = new Set(
+          store.sessions.find((session) => session.id === activeId)
+            ?.pendingWorkerRunIds ?? [],
+        );
         for (const record of records) {
           store.upsertWorkerRun(record);
+          if (pending.has(record.run.id)) {
+            approvedWorkerRunsRef.current.add(record.run.id);
+            void maybeResumeAfterWorkerRun(record);
+          }
           startWorkerRunEvents(record);
         }
       })
@@ -4342,14 +4409,20 @@ export function ChatView({
 
   async function approveWorkerRun(runId: string) {
     setWorkerActionBusy(true);
+    const store = useSessions.getState();
+    const pendingRun = store.workerRuns.find((item) => item.run.id === runId);
     approvedWorkerRunsRef.current.add(runId);
+    if (pendingRun)
+      store.setWorkerRunPending(pendingRun.run.parent_thread_id, runId, true);
     try {
       const record = await startWorkerRun(runId);
-      useSessions.getState().upsertWorkerRun(record);
-      maybeResumeAfterWorkerRun(record);
+      store.upsertWorkerRun(record);
+      void maybeResumeAfterWorkerRun(record);
       startWorkerRunEvents(record);
     } catch (error) {
       approvedWorkerRunsRef.current.delete(runId);
+      if (pendingRun)
+        store.setWorkerRunPending(pendingRun.run.parent_thread_id, runId, false);
       setChatNotice({
         tone: "error",
         message: error instanceof Error ? error.message : String(error),
@@ -4362,8 +4435,12 @@ export function ChatView({
   async function stopActiveWorkerRun(runId: string) {
     setWorkerActionBusy(true);
     try {
+      const store = useSessions.getState();
+      const record = store.workerRuns.find((item) => item.run.id === runId);
       approvedWorkerRunsRef.current.delete(runId);
-      useSessions.getState().upsertWorkerRun(await stopWorkerRun(runId));
+      if (record)
+        store.setWorkerRunPending(record.run.parent_thread_id, runId, false);
+      store.upsertWorkerRun(await stopWorkerRun(runId));
     } catch (error) {
       setChatNotice({
         tone: "error",
@@ -4389,8 +4466,11 @@ export function ChatView({
     try {
       const record = await retryWorkerTask(runId, taskId, model);
       approvedWorkerRunsRef.current.add(record.run.id);
+      useSessions
+        .getState()
+        .setWorkerRunPending(record.run.parent_thread_id, record.run.id, true);
       useSessions.getState().upsertWorkerRun(record);
-      maybeResumeAfterWorkerRun(record);
+      void maybeResumeAfterWorkerRun(record);
       startWorkerRunEvents(record);
     } catch (error) {
       setChatNotice({
@@ -4405,11 +4485,15 @@ export function ChatView({
   async function deleteFinishedWorkerRun(runId: string) {
     setWorkerActionBusy(true);
     try {
+      const store = useSessions.getState();
+      const record = store.workerRuns.find((item) => item.run.id === runId);
       await deleteWorkerRun(runId);
       approvedWorkerRunsRef.current.delete(runId);
       workerRunEventControllersRef.current.get(runId)?.abort();
       workerRunEventControllersRef.current.delete(runId);
-      useSessions.getState().removeWorkerRun(runId);
+      if (record)
+        store.setWorkerRunPending(record.run.parent_thread_id, runId, false);
+      store.removeWorkerRun(runId);
       setWorkerFocusRunId("");
     } catch (error) {
       setChatNotice({
@@ -4425,8 +4509,12 @@ export function ChatView({
     if (busy) return;
     setWorkerActionBusy(true);
     try {
+      const store = useSessions.getState();
+      const record = store.workerRuns.find((item) => item.run.id === runId);
       approvedWorkerRunsRef.current.delete(runId);
-      useSessions.getState().upsertWorkerRun(await stopWorkerRun(runId));
+      if (record)
+        store.setWorkerRunPending(record.run.parent_thread_id, runId, false);
+      store.upsertWorkerRun(await stopWorkerRun(runId));
       const conversation = regenerateTurnConversation(messages);
       if (conversation)
         await runTurnAndDrain(conversation, undefined, {
@@ -7678,9 +7766,9 @@ export function ChatView({
       );
     if (workerRun) {
       approvedWorkerRunsRef.current.delete(workerRun.run.id);
-      useSessions
-        .getState()
-        .upsertWorkerRun(await stopWorkerRun(workerRun.run.id));
+      const store = useSessions.getState();
+      store.setWorkerRunPending(sessionId, workerRun.run.id, false);
+      store.upsertWorkerRun(await stopWorkerRun(workerRun.run.id));
     }
     const session = useSessions
       .getState()

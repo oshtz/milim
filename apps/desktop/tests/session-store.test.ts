@@ -257,6 +257,26 @@ assert(
   !localStorage.getItem("milim.sessions")?.includes("unreadSessionIds"),
   "runtime unread state should not persist in session storage",
 );
+useSessions.getState().setWorkerRunPending(first, "worker-run-1", true);
+deepEqual(
+  useSessions
+    .getState()
+    .sessions.find((session) => session.id === first)?.pendingWorkerRunIds,
+  ["worker-run-1"],
+  "approved Worker Runs should remain pending on their parent thread",
+);
+assert(
+  localStorage.getItem("milim.sessions")?.includes("worker-run-1"),
+  "pending Worker Run joins should survive reload",
+);
+useSessions.getState().setWorkerRunPending(first, "worker-run-1", false);
+equal(
+  useSessions
+    .getState()
+    .sessions.find((session) => session.id === first)?.pendingWorkerRunIds,
+  undefined,
+  "completed Worker Run joins should clear their persisted marker",
+);
 const firstUpdatedBeforePreviewRuntime = useSessions
   .getState()
   .sessions.find((session) => session.id === first)?.updatedAt;
