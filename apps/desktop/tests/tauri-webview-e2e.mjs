@@ -1311,6 +1311,7 @@ async function runContextMenuChromeCheck(page) {
   await menu.waitFor();
   await menu.getByText(/Open chat|Current chat/).waitFor();
   await menu.getByText("Branch chat").waitFor();
+  await menu.getByText("Export chat").waitFor();
   await page.keyboard.press("Escape");
   await menu.waitFor({ state: "hidden" });
 }
@@ -1761,16 +1762,9 @@ async function runUiZoomShortcutCheck(page) {
   await value.filter({ hasText: "100%" }).waitFor();
   if (!(await reset.isDisabled())) throw new Error("Zoom reset should be disabled at 100%.");
 
-  await composer.focus();
   await chip.hover();
-  await delay(4200);
-  await chip.waitFor();
-  await composer.hover();
   await increase.focus();
-  await delay(4200);
-  await chip.waitFor();
-  await composer.focus();
-  await delay(4200);
+  await delay(3200);
   await chip.waitFor({ state: "hidden" });
 }
 

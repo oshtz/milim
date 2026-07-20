@@ -9,6 +9,9 @@ function equal<T>(actual: T, expected: T, message: string): void {
 const messages = [{ role: "user", content: "fix the flaky release manifest verifier" }];
 
 equal(deriveThreadTitle(messages), "fix the flaky release manifest verifier", "heuristic title should use the first user message");
+const longPrompt = "a".repeat(200);
+equal(deriveThreadTitle([{ role: "user", content: longPrompt }]), `${"a".repeat(160)}...`, "heuristic title should preserve substantially more of long prompts");
+equal(shouldReplaceThreadTitle(`${"a".repeat(42)}...`, [{ role: "user", content: longPrompt }]), true, "legacy clipped auto-titles should remain replaceable");
 equal(sanitizeAiThreadTitle('Title: "Release Manifest Fix."'), "Release Manifest Fix", "AI title should strip prefix, quotes, and punctuation");
 equal(sanitizeAiThreadTitle("- Title: `Release-manifest fix.`"), "Release manifest fix", "AI title should strip list markers and separator punctuation");
 equal(sanitizeAiThreadTitle("Search & replace / QA"), "Search replace QA", "AI title should treat separators as spaces");

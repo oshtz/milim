@@ -243,7 +243,7 @@ try {
         rows: [row(dirty, "workspace"), ...withActivity.rows.filter((item) => item.kind !== "workspace"), row(active, "goal")],
         sources: Array.from({ length: 7 }, (_, index) => ({
           kind: "attachment" as const,
-          label: `source-${index + 1}`,
+          label: index === 0 ? "C:\\workspace\\source-1.txt" : `source-${index + 1}`,
           attachment: {
             id: `source-${index + 1}`,
             name: `source-${index + 1}`,
@@ -270,6 +270,8 @@ try {
   assert.match(groupedMarkup, /class="git-diff-stat-add">\+23<\/span> <span class="git-diff-stat-delete">-4<\/span>/);
   assert.match(groupedMarkup, /class="quick-summary-more"[^>]*aria-expanded="false"/);
   assert.match(groupedMarkup, /class="quick-summary-row quick-summary-source-row"[^>]*type="button"/);
+  assert.match(groupedMarkup, />source-1\.txt<\/strong>/);
+  assert.doesNotMatch(groupedMarkup, /<small>attachment<\/small>/);
   assert.match(groupedMarkup, />2 more<\/button>/);
   assert.match(groupedMarkup, /source-5/);
   assert.doesNotMatch(groupedMarkup, /source-6/);

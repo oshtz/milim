@@ -7,8 +7,10 @@ import {
   codexLimitsFromRateLimitPayload,
   formatCompactProviderLimits,
   formatProviderLimits,
+  formatThreadMetricsBreakdown,
   latestProviderLimits,
 } from "../lib/usageMetrics";
+import { deriveThreadTitle, shouldReplaceThreadTitle } from "../lib/threadTitles";
 import { readUserStateKey } from "../persistence/userStateStorage.js";
 import { useSessions } from "../sessions/store";
 import { uiSizeShortcutDelta } from "../ui/shortcuts";
@@ -27,7 +29,7 @@ import { WindowControls } from "./WindowControls";
 
 const inTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 const PINNED_KEY = "milim.window.alwaysOnTop";
-const ZOOM_CHIP_IDLE_MS = 4000;
+const ZOOM_CHIP_IDLE_MS = 3000;
 const INTERACTIVE_TITLEBAR_SELECTOR = [
   "a",
   "button",
@@ -45,8 +47,6 @@ export function TopBar() {
   const [zoomChipVisible, setZoomChipVisible] = useState(false);
   const [codexLimits, setCodexLimits] = useState<ReturnType<typeof latestProviderLimits>>([]);
   const zoomChipTimerRef = useRef<number | null>(null);
-  const zoomChipHoveredRef = useRef(false);
-  const zoomChipFocusedRef = useRef(false);
   const pinned = useUiPreferences((s) => s.windowAlwaysOnTop);
   const setPinned = useUiPreferences((s) => s.setWindowAlwaysOnTop);
   const uiSize = useUiPreferences((s) => s.uiSize);
@@ -59,7 +59,12 @@ export function TopBar() {
   const downloadNow = useUpdateStore((s) => s.downloadNow);
   const installNow = useUpdateStore((s) => s.installNow);
   const activeSession = useSessions((s) => s.sessions.find((session) => session.id === s.activeId));
-  const threadTitle = activeSession?.title?.trim() || "New chat";
+  const messages = activeSession?.messages ?? [];
+  const storedThreadTitle = activeSession?.title?.trim() || "New chat";
+  const threadTitle = shouldReplaceThreadTitle(storedThreadTitle, messages)
+    ? deriveThreadTitle(messages)
+    : storedThreadTitle;
+  const threadMetrics = formatThreadMetricsBreakdown(messages);
   const model = activeSession?.settings?.model?.trim() ?? "";
   const activeModelIsCodex = isCodexModel(model);
   const activeModelIsClaude = isClaudeModel(model);
@@ -156,7 +161,6 @@ export function TopBar() {
 
   function scheduleZoomChipDismissal() {
     clearZoomChipTimer();
-    if (zoomChipHoveredRef.current || zoomChipFocusedRef.current) return;
     zoomChipTimerRef.current = window.setTimeout(() => {
       setZoomChipVisible(false);
       zoomChipTimerRef.current = null;
@@ -215,6 +219,17 @@ export function TopBar() {
         <span className="topbar-thread" title={threadTitle} data-tauri-drag-region>
           {threadTitle}
         </span>
+        {threadMetrics.label && (
+          <span
+            className="topbar-usage"
+            data-testid="thread-usage"
+            title={threadMetrics.title ?? undefined}
+            aria-label={`Cumulative thread usage: ${threadMetrics.label}`}
+            data-tauri-drag-region
+          >
+            {threadMetrics.label}
+          </span>
+        )}
         {providerLimitText && (
           <span
             className="topbar-account-usage"
@@ -249,23 +264,6 @@ export function TopBar() {
             aria-label="UI zoom controls"
             data-testid="ui-zoom-chip"
             data-window-drag-ignore
-            onPointerEnter={() => {
-              zoomChipHoveredRef.current = true;
-              clearZoomChipTimer();
-            }}
-            onPointerLeave={() => {
-              zoomChipHoveredRef.current = false;
-              scheduleZoomChipDismissal();
-            }}
-            onFocusCapture={() => {
-              zoomChipFocusedRef.current = true;
-              clearZoomChipTimer();
-            }}
-            onBlurCapture={(event) => {
-              if (event.relatedTarget instanceof Node && event.currentTarget.contains(event.relatedTarget)) return;
-              zoomChipFocusedRef.current = false;
-              scheduleZoomChipDismissal();
-            }}
           >
             <span className="topbar-zoom-value" data-testid="ui-zoom-value" aria-live="polite">
               {uiSize}%

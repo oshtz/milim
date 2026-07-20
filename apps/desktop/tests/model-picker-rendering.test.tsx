@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { createServer } from "vite";
 import type { ModelInfo, ProviderInfo, ReasoningEffort } from "../src/api.js";
+import { DEFAULT_GOAL_SETTINGS } from "../src/lib/goals.js";
 
 type ModelPickerProps = {
   models: ModelInfo[];
@@ -111,6 +112,41 @@ try {
   assert(!markup.includes(">Models<") && !markup.includes(">Presets<"), "Picker should not render redundant model or preset views");
   assert(markup.includes('aria-label="Collapse OpenAI models"'), "Provider headers should render accessible collapse controls");
   assert(markup.includes('aria-expanded="true"'), "Provider headers should expose their expanded state");
+
+  const { ControlBar } = (await server.ssrLoadModule(
+    "/src/components/ControlBar.tsx",
+  )) as {
+    ControlBar: ComponentType<Record<string, unknown>>;
+  };
+  const controlBarMarkup = renderToStaticMarkup(
+    createElement(ControlBar, {
+      models,
+      model: "gpt-5-render",
+      providers,
+      onModel: () => {},
+      sandbox: false,
+      onToggleSandbox: () => {},
+      computerUse: false,
+      onToggleComputer: () => {},
+      memory: true,
+      onToggleMemory: () => {},
+      planMode: false,
+      onTogglePlanMode: () => {},
+      privacy: "off",
+      onPrivacy: () => {},
+      toolApproval: "guarded",
+      onToolApproval: () => {},
+      onManageProviders: () => {},
+      onManageMcp: () => {},
+      onManageMemory: () => {},
+      goal: DEFAULT_GOAL_SETTINGS,
+      goalMode: true,
+      onToggleGoalMode: () => {},
+      onOpenGoal: () => {},
+    }),
+  );
+  assert(controlBarMarkup.includes('data-testid="goal-mode-chip"'), "Goal mode should show its pill before a goal starts");
+  assert(controlBarMarkup.includes(">Ready<"), "The pre-send Goal pill should communicate that it is ready");
 
   const { BatonMenu, HotSwapPreflightSheet } = (await server.ssrLoadModule(
     "/src/components/HotSwapDialogs.tsx",

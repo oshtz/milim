@@ -287,6 +287,13 @@ if (
 }
 
 if (
+  styles.includes(".session-section-title:focus-within .section-actions-inline") ||
+  !styles.includes(".section-actions-inline:focus-within")
+) {
+  throw new Error("Project actions should stay visible for their own keyboard focus, not a clicked section toggle");
+}
+
+if (
   !chatView.includes("messages.length === 0) focusComposer();") ||
   !chatView.includes('case "clear":')
 ) {

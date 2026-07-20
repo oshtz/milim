@@ -30,3 +30,7 @@ export function skillTagCompletion(prefix: "/" | "@", skillName: string): string
 export function mcpToolTagCompletion(toolName: string): string {
   return `/${toolName} `;
 }
+
+export function composerCommandRunsOnSelection(commandId: string): boolean {
+  return commandId === "plan" || commandId === "goal";
+}

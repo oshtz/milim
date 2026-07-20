@@ -1,7 +1,7 @@
 import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 import { type Agent, type ChatAttachment, type MediaKind, type SkillInfo, type ToolInfo } from "../api";
 import type { WorkspaceFileSuggestion } from "../api";
-import { composerAutocompleteTriggerAt, mcpToolTagCompletion, replaceComposerAutocompleteTrigger, skillTagCompletion } from "../lib/composerAutocomplete";
+import { composerAutocompleteTriggerAt, composerCommandRunsOnSelection, mcpToolTagCompletion, replaceComposerAutocompleteTrigger, skillTagCompletion } from "../lib/composerAutocomplete";
 import { canNavigateComposerHistory, moveComposerHistory, type ComposerHistoryDirection } from "../lib/composerHistory";
 import { composerTokenParts, composerTokensForText } from "../lib/composerTokens";
 import { shortcutLabel, shortcutMatchesEvent } from "../ui/shortcuts";
@@ -24,7 +24,7 @@ type SlashCommand = {
 
 const SLASH_COMMANDS: SlashCommand[] = [
   { id: "plan", label: "Plan mode", hint: "Toggle read-only planning", group: "Commands", placeholder: "/plan build feature X" },
-  { id: "goal", label: "Goal", hint: "Open the goal panel, or run with text", group: "Commands", placeholder: "/goal build feature X" },
+  { id: "goal", label: "Goal", hint: "Make the next prompt an autonomous goal", group: "Commands", placeholder: "/goal build feature X" },
   { id: "model", label: "Model", hint: "Set the thread model", group: "Settings", placeholder: "/model llama3.2" },
   { id: "folder", label: "Folder", hint: "Set or pick a working folder", group: "Settings", placeholder: "/folder C:\\project" },
   { id: "sandbox", label: "Sandbox on", hint: "Enable Docker sandbox tools", group: "Settings" },
@@ -388,6 +388,23 @@ export function Composer({
     });
   }
 
+  function activateSuggestedCommand(commandId: string) {
+    if (!onSlashCommand(commandId, "")) return;
+    const trigger = activeTrigger;
+    const next = trigger
+      ? replaceComposerAutocompleteTrigger(value, trigger, "")
+      : value;
+    const nextCursor = trigger?.start ?? cursor;
+    setSlashDismissedValue(next);
+    onChange(next);
+    setSlashOpen(false);
+    window.requestAnimationFrame(() => {
+      ref.current?.focus();
+      ref.current?.setSelectionRange(nextCursor, nextCursor);
+      setCursor(nextCursor);
+    });
+  }
+
   async function completeSuggestion(item: Suggestion) {
     if (item.kind === "action") {
       setSlashOpen(false);
@@ -407,6 +424,10 @@ export function Composer({
     }
     if (item.kind === "mcp") {
       insertCompletion(mcpToolTagCompletion(item.tool.name));
+      return;
+    }
+    if (composerCommandRunsOnSelection(item.command.id)) {
+      activateSuggestedCommand(item.command.id);
       return;
     }
     insertCompletion(`/${item.command.id} `);
@@ -697,7 +718,11 @@ export function Composer({
                     type="button"
                     className={"slash-item" + (index === slashFocusIndex ? " active" : "")}
                     data-testid={`slash-command-${item.command.id}`}
-                    onClick={() => activeTrigger ? void completeSuggestion(item) : runSlash(item.command.id, "")}
+                    onClick={() =>
+                      activeTrigger || composerCommandRunsOnSelection(item.command.id)
+                        ? void completeSuggestion(item)
+                        : runSlash(item.command.id, "")
+                    }
                   >
                     <span className="slash-name">/{item.command.id}</span>
                     <span className="slash-label">{item.command.label}</span>

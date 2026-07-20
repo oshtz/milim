@@ -87,6 +87,8 @@ export function ControlBar({
   onManageMcp,
   onManageMemory,
   goal,
+  goalMode,
+  onToggleGoalMode,
   onOpenGoal,
   activeRun,
   inlineControls,
@@ -112,6 +114,8 @@ export function ControlBar({
   onManageMcp: () => void;
   onManageMemory: () => void;
   goal: GoalSettings;
+  goalMode?: boolean;
+  onToggleGoalMode?: () => void;
   onOpenGoal: () => void;
   activeRun?: RunTrace | null;
   inlineControls?: ReactNode;
@@ -137,8 +141,10 @@ export function ControlBar({
   }, [menu]);
 
   const contextAccessibleLabel = `Session controls, Sandbox ${sandbox ? "on" : "off"}, Computer ${computerUse ? "on" : "off"}, Memory ${memory ? "on" : "off"}, Privacy ${PRIVACY_LABEL[privacy]}, Tool approval ${TOOL_APPROVAL_LABEL[toolApproval]}`;
-  const showGoalChip = goalChipVisible(goal);
-  const goalDetail = goal.status[0].toUpperCase() + goal.status.slice(1);
+  const showGoalChip = Boolean(goalMode) || goalChipVisible(goal);
+  const goalDetail = goalMode
+    ? "Ready"
+    : goal.status[0].toUpperCase() + goal.status.slice(1);
   const activeModel = models.find((item) => item.id === model);
   const activeModelLabel = activeModel ? modelDisplayName(activeModel) : model;
   const activeModelProfile = modelDevProfile(activeModel, model, {
@@ -202,10 +208,18 @@ export function ControlBar({
           <button
             type="button"
             className="chip chip-on"
-            data-testid="goal-panel-trigger"
-            onClick={onOpenGoal}
-            title="Goal"
-            aria-label={`Goal, ${goalDetail}`}
+            data-testid={goalMode ? "goal-mode-chip" : "goal-panel-trigger"}
+            onClick={goalMode ? onToggleGoalMode : onOpenGoal}
+            title={
+              goalMode
+                ? "Goal mode is active. Your next prompt becomes the goal. Click to turn it off."
+                : "Goal"
+            }
+            aria-label={
+              goalMode
+                ? "Goal mode active, next prompt becomes the goal"
+                : `Goal, ${goalDetail}`
+            }
           >
             <Pin size={13} />
             <span className="chip-label">Goal</span>

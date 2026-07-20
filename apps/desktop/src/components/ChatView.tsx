@@ -3145,6 +3145,9 @@ export function ChatView({
   const [chatNotice, setChatNotice] = useState<ChatNotice | null>(null);
   const [goalPanelOpen, setGoalPanelOpen] = useState(false);
   const [goalPrefill, setGoalPrefill] = useState<string | null>(null);
+  const [goalComposerSessions, setGoalComposerSessions] = useState<
+    Record<string, boolean>
+  >({});
   const [chatSearchOpen, setChatSearchOpen] = useState(false);
   const [batonRequest, setBatonRequest] = useState<BatonRequest | null>(null);
   const [hotSwapPreflight, setHotSwapPreflight] =
@@ -3300,6 +3303,7 @@ export function ChatView({
     planMode,
     goal,
   } = threadSettings;
+  const goalComposerMode = Boolean(goalComposerSessions[activeId]);
   const activePreviewRuntimeKey = previewRuntimeKeyForThread(activeId, folder);
   const activePreviewAppStatus =
     previewAppStatus?.thread_id === activePreviewRuntimeKey &&
@@ -4204,12 +4208,51 @@ export function ChatView({
   }, [privacy]);
 
   function setPlanModeActive(active: boolean): boolean {
+    if (active) {
+      setGoalComposerSessions((current) => {
+        if (!current[activeId]) return current;
+        const next = { ...current };
+        delete next[activeId];
+        return next;
+      });
+    }
     updateThreadSettings(activeId, { planMode: active });
     setChatNotice(
       active
         ? {
             tone: "info",
             message: "Plan Mode on. Tools are limited to read-only inspection.",
+          }
+        : null,
+    );
+    return true;
+  }
+
+  function setGoalComposerModeActive(active: boolean): boolean {
+    if (
+      active &&
+      (goal.status === "running" ||
+        goal.status === "waiting_for_worker_approval")
+    ) {
+      setChatNotice({
+        tone: "info",
+        message: "A goal is already active. Open its Goal pill to review or pause it.",
+      });
+      return true;
+    }
+    setGoalComposerSessions((current) => {
+      if (Boolean(current[activeId]) === active) return current;
+      const next = { ...current };
+      if (active) next[activeId] = true;
+      else delete next[activeId];
+      return next;
+    });
+    if (active) updateThreadSettings(activeId, { planMode: false });
+    setChatNotice(
+      active
+        ? {
+            tone: "info",
+            message: "Goal mode on. Your next prompt becomes the goal objective.",
           }
         : null,
     );
@@ -6320,18 +6363,21 @@ export function ChatView({
     }
   }
 
-  function startGoalRun(draft?: GoalPanelDraft) {
+  function startGoalRun(
+    draft?: GoalPanelDraft,
+    initialAttachments: ChatAttachment[] = [],
+  ): boolean {
     if (activeMediaTarget) {
       setChatNotice({
         tone: "error",
         message: "Switch back to chat before running a goal.",
       });
-      return;
+      return false;
     }
     const selectedModel = requireChatModel();
-    if (!selectedModel) return;
+    if (!selectedModel) return false;
     const sessionId = activeId;
-    if (goalLoopRef.current && !goalLoopRef.current.stopped) return;
+    if (goalLoopRef.current && !goalLoopRef.current.stopped) return false;
     const savedGoal = draft
       ? saveGoalDraft(draft, sessionId)
       : sessionGoal(sessionId);
@@ -6341,9 +6387,20 @@ export function ChatView({
         tone: "info",
         message: "Add a goal objective before running.",
       });
-      return;
+      return false;
+    }
+    if (initialAttachments.length > 0) {
+      setMessages(
+        sessionId,
+        appendUserTurn(
+          sessionMessages(sessionId),
+          savedGoal.objective,
+          initialAttachments,
+        ),
+      );
     }
     startApprovedGoalRun(sessionId, selectedModel);
+    return true;
   }
 
   async function handleSaveArtifact(
@@ -6766,6 +6823,7 @@ export function ChatView({
       }
       case "goal":
         if (arg) {
+          setGoalComposerModeActive(false);
           startGoalRun({
             objective: arg,
             successCriteria: "",
@@ -6773,7 +6831,7 @@ export function ChatView({
             developerMaxTurns: null,
           });
         } else {
-          openGoalPanel(null);
+          setGoalComposerModeActive(true);
         }
         return true;
       case "model": {
@@ -7646,6 +7704,13 @@ export function ChatView({
       return;
     }
     if (busy) {
+      if (goalComposerMode) {
+        setChatNotice({
+          tone: "info",
+          message: "Wait for the current reply to finish before starting a goal.",
+        });
+        return;
+      }
       if (activeMediaTarget) {
         setChatNotice({
           tone: "error",
@@ -7676,6 +7741,29 @@ export function ChatView({
         return;
       }
       void sendMediaPrompt(text, activeMediaTarget);
+      return;
+    }
+    if (goalComposerMode) {
+      if (!text) return;
+      if (
+        startGoalRun(
+          {
+            objective: text,
+            successCriteria: "",
+            constraints: "",
+            developerMaxTurns: null,
+          },
+          pendingAttachments,
+        )
+      ) {
+        setInput("");
+        setPendingAttachments([]);
+        setGoalComposerSessions((current) => {
+          const next = { ...current };
+          delete next[activeId];
+          return next;
+        });
+      }
       return;
     }
     const selectedModel = requireChatModel();
@@ -8756,6 +8844,8 @@ export function ChatView({
                   setMemoryOpen(true);
                 }}
                 goal={goal}
+                goalMode={goalComposerMode}
+                onToggleGoalMode={() => setGoalComposerModeActive(false)}
                 onOpenGoal={() => openGoalPanel()}
                 activeRun={activeRun}
                 inlineControls={

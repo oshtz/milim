@@ -1,4 +1,4 @@
-import { composerAutocompleteTriggerAt, mcpToolTagCompletion, replaceComposerAutocompleteTrigger, skillTagCompletion } from "../src/lib/composerAutocomplete.js";
+import { composerAutocompleteTriggerAt, composerCommandRunsOnSelection, mcpToolTagCompletion, replaceComposerAutocompleteTrigger, skillTagCompletion } from "../src/lib/composerAutocomplete.js";
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -35,3 +35,6 @@ equal(replaceComposerAutocompleteTrigger(slashMcp, mcp, mcpToolTagCompletion("gi
 
 equal(composerAutocompleteTriggerAt("email ada@example.com", "email ada@example.com".length), null, "email should not trigger mention");
 equal(composerAutocompleteTriggerAt("run/path", "run/path".length), null, "slash inside a token should not trigger commands");
+equal(composerCommandRunsOnSelection("plan"), true, "plan should activate as soon as it is selected");
+equal(composerCommandRunsOnSelection("goal"), true, "goal should activate as soon as it is selected");
+equal(composerCommandRunsOnSelection("model"), false, "argument-taking settings should remain in the composer");

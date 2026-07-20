@@ -8,7 +8,26 @@ import type {
   QuickSummarySource,
 } from "../lib/quickSummary";
 import { codexLimitsFromRateLimitPayload, formatProviderLimits } from "../lib/usageMetrics";
-import { ChevronDown, FileText, Folder, Globe, Paperclip, Sparkles, Terminal, X } from "./icons";
+import {
+  Archive,
+  Bolt,
+  Check,
+  ChevronDown,
+  Copy,
+  Cube,
+  FileText,
+  Folder,
+  Gear,
+  GitBranch,
+  Globe,
+  Lightbulb,
+  Paperclip,
+  Shield,
+  Sliders,
+  Sparkles,
+  Terminal,
+  X,
+} from "./icons";
 
 const SOURCE_LIMIT = 5;
 
@@ -32,6 +51,37 @@ function rowIcon(row: QuickSummaryRow): ReactNode {
       return <Sparkles size={13} />;
     case "activity":
       return <Terminal size={13} />;
+    case "goal":
+      return <Lightbulb size={13} />;
+    case "plan":
+      return <Check size={13} />;
+    case "privacy":
+      return <Shield size={13} />;
+    case "memory":
+      return <Archive size={13} />;
+    case "usage":
+      return <Bolt size={13} />;
+    case "limits":
+      return <Sliders size={13} />;
+    case "context":
+      switch (row.label.toLowerCase()) {
+        case "prompt estimate":
+          return <Cube size={13} />;
+        case "conversation":
+          return <Copy size={13} />;
+        case "repository rules":
+          return <GitBranch size={13} />;
+        case "skills":
+          return <Bolt size={13} />;
+        case "memory":
+          return <Archive size={13} />;
+        case "tool definitions":
+          return <Gear size={13} />;
+        case "context warnings":
+          return <Shield size={13} />;
+        default:
+          return <FileText size={13} />;
+      }
     default:
       return <FileText size={13} />;
   }
@@ -75,8 +125,7 @@ function SourceRow({ source, onClick }: { source: QuickSummarySource; onClick: (
     >
       <span className="quick-summary-row-icon" aria-hidden="true">{sourceIcon(source)}</span>
       <span className="quick-summary-row-copy">
-        <strong>{source.label}</strong>
-        <small>{source.kind}</small>
+        <strong>{source.label.split(/[\\/]/).filter(Boolean).pop() || source.label}</strong>
       </span>
     </button>
   );

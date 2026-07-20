@@ -314,7 +314,6 @@ export function Sidebar({
   const [editing, setEditing] = useState<string | null>(null);
   const [projectMenuOpen, setProjectMenuOpen] = useState(false);
   const [confirmArchiveId, setConfirmArchiveId] = useState<string | null>(null);
-  const [confirmArchiveProjectId, setConfirmArchiveProjectId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const projectMenuRef = useRef<HTMLDivElement>(null);
   const sidebarElementRef = useRef<HTMLElement>(null);
@@ -338,14 +337,11 @@ export function Sidebar({
   const [sectionVisibleLimits, setSectionVisibleLimits] = useState<Record<string, number>>(() => ({}));
 
   useEffect(() => {
-    if (!projectMenuOpen && !confirmArchiveId && !confirmArchiveProjectId) return;
+    if (!projectMenuOpen && !confirmArchiveId) return;
     const onDoc = (e: MouseEvent) => {
       const target = e.target;
       if (confirmArchiveId && target instanceof HTMLElement && !target.closest(".session-side-actions")) {
         setConfirmArchiveId(null);
-      }
-      if (confirmArchiveProjectId && target instanceof HTMLElement && !target.closest(".section-actions-inline")) {
-        setConfirmArchiveProjectId(null);
       }
       if (projectMenuRef.current && !projectMenuRef.current.contains(e.target as Node)) {
         setProjectMenuOpen(false);
@@ -353,7 +349,7 @@ export function Sidebar({
     };
     document.addEventListener("mousedown", onDoc);
     return () => document.removeEventListener("mousedown", onDoc);
-  }, [confirmArchiveId, confirmArchiveProjectId, projectMenuOpen]);
+  }, [confirmArchiveId, projectMenuOpen]);
 
   function openToolsAction(action: () => void) {
     action();
@@ -423,7 +419,6 @@ export function Sidebar({
     focusComposerSoon();
     setQuery("");
     setConfirmArchiveId(null);
-    setConfirmArchiveProjectId(null);
   }
 
   function createChatInSection(sectionId: string) {
@@ -433,7 +428,6 @@ export function Sidebar({
     focusComposerSoon();
     setQuery("");
     setConfirmArchiveId(null);
-    setConfirmArchiveProjectId(null);
   }
 
   function startScratchProject() {
@@ -498,15 +492,6 @@ export function Sidebar({
     link.remove();
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
     setConfirmArchiveId(null);
-  }
-
-  function archiveProjectSection(id: string) {
-    if (confirmArchiveProjectId !== id) {
-      setConfirmArchiveProjectId(id);
-      return;
-    }
-    archiveProject(id);
-    setConfirmArchiveProjectId(null);
   }
 
   function openSessionContextMenu(event: ReactMouseEvent, session: SidebarSessionLike, pinned: boolean) {
@@ -580,12 +565,11 @@ export function Sidebar({
       }] : []),
       ...(group.projectId && group.id !== SIDEBAR_CHATS_SECTION_ID ? [{
         id: "archive-project",
-        label: confirmArchiveProjectId === group.projectId ? "Confirm archive project" : "Archive project",
-        detail: confirmArchiveProjectId === group.projectId ? "Again" : undefined,
+        label: "Archive project",
         icon: <Archive size={13} />,
         danger: true,
         separatorBefore: true,
-        action: () => archiveProjectSection(group.projectId!),
+        action: () => archiveProject(group.projectId!),
       }] : []),
     ], group.label);
   }
@@ -694,7 +678,6 @@ export function Sidebar({
       captureTarget: event.currentTarget,
     };
     setConfirmArchiveId(null);
-    setConfirmArchiveProjectId(null);
     setSidebarDragOver(null);
     window.addEventListener("pointermove", moveSidebarPointerDrag, { passive: false });
     window.addEventListener("pointerup", endSidebarPointerDrag);
@@ -1090,17 +1073,6 @@ export function Sidebar({
                           <Plus size={12} />
                         </button>
                       )}
-                      {group.projectId && group.id !== SIDEBAR_CHATS_SECTION_ID && (
-                        <button
-                          className={"section-icon-btn danger" + (confirmArchiveProjectId === group.projectId ? " confirm" : "")}
-                          type="button"
-                          title={confirmArchiveProjectId === group.projectId ? "Click again to archive project" : "Archive project"}
-                          aria-label={confirmArchiveProjectId === group.projectId ? `Confirm archive ${group.label}` : `Archive ${group.label}`}
-                          onClick={() => archiveProjectSection(group.projectId!)}
-                        >
-                          <Archive size={12} />
-                        </button>
-                      )}
                     </div>
                   </div>
                   <div
@@ -1214,30 +1186,6 @@ export function Sidebar({
                                   <Pin size={12} />
                                 </button>
                               )}
-                              <button
-                                className="session-side-btn"
-                                type="button"
-                                aria-label={`Branch ${s.title}`}
-                                title="Branch chat"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  branchChat(s.id);
-                                }}
-                              >
-                                <GitBranch size={12} />
-                              </button>
-                              <button
-                                className="session-side-btn"
-                                type="button"
-                                aria-label={`Export ${s.title}`}
-                                title="Export chat"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  exportChat(s.id);
-                                }}
-                              >
-                                <Download size={12} />
-                              </button>
                               <button
                                 className={"session-side-btn danger" + (confirmArchiveId === s.id ? " confirm" : "")}
                                 type="button"
