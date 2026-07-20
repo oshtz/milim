@@ -4891,6 +4891,83 @@ async fn mcp_tools_list_and_call() {
 }
 
 #[tokio::test]
+async fn mcp_server_tools_follow_chat_approval_policy() {
+    let root = unique_temp_path("milim-mcp-server-tools-policy");
+    let hub = Arc::new(milim_mcp_client::McpHub::open(&root));
+    let state = AppState::new(Arc::new(ToolListingBackend), ServerConfiguration::default())
+        .with_tools(milim_tools::ToolRegistry::new())
+        .with_mcp(hub);
+    let base = spawn(state).await;
+    let client = reqwest::Client::new();
+
+    let catalog: Value = client
+        .get(format!("{base}/mcp/tools"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let effect = |name: &str| {
+        catalog["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == name)
+            .unwrap()["effect"]
+            .as_str()
+            .unwrap()
+    };
+    assert_eq!(effect("mcp_server_list"), "read_only");
+    assert_eq!(effect("mcp_server_test"), "command");
+    assert_eq!(effect("mcp_server_save"), "command");
+    assert_eq!(effect("mcp_server_delete"), "mutating");
+
+    let offered = |policy: &'static str, interactive: bool| {
+        let client = client.clone();
+        let base = base.clone();
+        async move {
+            client
+                .post(format!("{base}/agents/run"))
+                .json(&json!({
+                    "model": "tool-listing",
+                    "messages": [{ "role": "user", "content": "list tools" }],
+                    "tool_approval_policy": policy,
+                    "interactive_tool_approval": interactive
+                }))
+                .send()
+                .await
+                .unwrap()
+                .json::<Value>()
+                .await
+                .unwrap()["message"]["content"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        }
+    };
+
+    let guarded = offered("guarded", false).await;
+    assert!(guarded.contains("mcp_server_list"), "{guarded}");
+    assert!(!guarded.contains("mcp_server_save"), "{guarded}");
+    assert!(!guarded.contains("mcp_server_test"), "{guarded}");
+    assert!(!guarded.contains("mcp_server_delete"), "{guarded}");
+
+    for content in [offered("review", true).await, offered("open", false).await] {
+        for name in [
+            "mcp_server_list",
+            "mcp_server_test",
+            "mcp_server_save",
+            "mcp_server_delete",
+        ] {
+            assert!(content.contains(name), "missing {name}: {content}");
+        }
+    }
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[tokio::test]
 async fn mcp_apps_http_bridge_auth_validation_and_isolation() {
     if Command::new("node").arg("--version").output().is_err() {
         return;

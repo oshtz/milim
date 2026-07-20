@@ -3546,6 +3546,7 @@ fn account_runtime_images_for_remote(
 fn mcp_registry(st: &AppState) -> ToolRegistry {
     let mut reg = static_registry_for_run(st);
     if let Some(hub) = &st.mcp {
+        register_mcp_server_tools(&mut reg, hub.clone());
         for tool in hub.tools() {
             if let Err(error) = reg.try_register(tool) {
                 tracing::warn!("skipping colliding MCP tool: {error}");
@@ -8752,6 +8753,487 @@ pub(crate) async fn mcp_server_delete(
     Ok(Json(json!({ "deleted": hub.remove(&id).map_err(ApiError)? })).into_response())
 }
 
+fn register_mcp_server_tools(registry: &mut ToolRegistry, hub: Arc<milim_mcp_client::McpHub>) {
+    registry.register(Arc::new(McpServerListTool { hub: hub.clone() }));
+    registry.register(Arc::new(McpServerTestTool { hub: hub.clone() }));
+    registry.register(Arc::new(McpServerSaveTool { hub: hub.clone() }));
+    registry.register(Arc::new(McpServerDeleteTool { hub }));
+}
+
+struct McpServerListTool {
+    hub: Arc<milim_mcp_client::McpHub>,
+}
+
+struct McpServerTestTool {
+    hub: Arc<milim_mcp_client::McpHub>,
+}
+
+struct McpServerSaveTool {
+    hub: Arc<milim_mcp_client::McpHub>,
+}
+
+struct McpServerDeleteTool {
+    hub: Arc<milim_mcp_client::McpHub>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct McpServerToolEnv {
+    key: String,
+    value: String,
+    #[serde(default)]
+    required: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct McpServerToolSecretEnv {
+    key: String,
+    #[serde(default = "default_true")]
+    required: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct McpServerToolConfig {
+    #[serde(default)]
+    id: Option<String>,
+    name: String,
+    command: String,
+    #[serde(default)]
+    args: Vec<String>,
+    #[serde(default)]
+    cwd: Option<String>,
+    #[serde(default)]
+    env: Vec<McpServerToolEnv>,
+    #[serde(default)]
+    secret_env: Vec<McpServerToolSecretEnv>,
+    #[serde(default = "default_enabled")]
+    enabled: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct McpServerDeleteToolArgs {
+    id: String,
+}
+
+impl McpServerToolConfig {
+    fn into_config(
+        self,
+        hub: &milim_mcp_client::McpHub,
+        update_must_exist: bool,
+    ) -> milim_core::Result<milim_mcp_client::McpServerConfig> {
+        let id = self
+            .id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string);
+        if update_must_exist && id.as_deref().is_some_and(|id| hub.config(id).is_none()) {
+            return Err(Error::ModelNotFound(format!(
+                "mcp server {}",
+                id.as_deref().unwrap_or_default()
+            )));
+        }
+
+        let mut keys = HashSet::new();
+        let mut env = Vec::with_capacity(self.env.len() + self.secret_env.len());
+        for item in self.env {
+            let key = trim_required_tool_arg(item.key, "env[].key")?;
+            if milim_mcp_client::secret_env_key(&key) {
+                return Err(Error::InvalidRequest(format!(
+                    "environment variable {key} looks secret; declare it in secret_env without a value"
+                )));
+            }
+            if !keys.insert(key.clone()) {
+                return Err(Error::InvalidRequest(format!(
+                    "duplicate environment variable: {key}"
+                )));
+            }
+            env.push(milim_mcp_client::McpEnvVar {
+                key,
+                value: Some(item.value),
+                secret: false,
+                required: item.required,
+                has_value: false,
+            });
+        }
+        for item in self.secret_env {
+            let key = trim_required_tool_arg(item.key, "secret_env[].key")?;
+            if !keys.insert(key.clone()) {
+                return Err(Error::InvalidRequest(format!(
+                    "duplicate environment variable: {key}"
+                )));
+            }
+            env.push(milim_mcp_client::McpEnvVar {
+                key,
+                value: None,
+                secret: true,
+                required: item.required,
+                has_value: false,
+            });
+        }
+
+        Ok(milim_mcp_client::McpServerConfig {
+            id: id.unwrap_or_default(),
+            name: trim_required_tool_arg(self.name, "name")?,
+            command: trim_required_tool_arg(self.command, "command")?,
+            args: self.args,
+            cwd: self
+                .cwd
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToString::to_string),
+            env,
+            enabled: self.enabled,
+        })
+    }
+}
+
+fn mcp_server_config_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "id": { "type": "string", "description": "Existing server id. Omit to create or test a new server." },
+            "name": { "type": "string", "description": "Human-readable server name." },
+            "command": { "type": "string", "description": "Executable to run, such as npx, uvx, node, or an absolute executable path." },
+            "args": { "type": "array", "items": { "type": "string" }, "description": "Exact command arguments." },
+            "cwd": { "type": ["string", "null"], "description": "Optional working directory. Use the active workspace for a locally-authored server." },
+            "env": {
+                "type": "array",
+                "description": "Non-secret environment variables. Credential-looking keys are rejected.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "key": { "type": "string" },
+                        "value": { "type": "string" },
+                        "required": { "type": "boolean" }
+                    },
+                    "required": ["key", "value"],
+                    "additionalProperties": false
+                }
+            },
+            "secret_env": {
+                "type": "array",
+                "description": "Secret environment variable placeholders. Values must be entered later in Milim's encrypted MCP Manager.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "key": { "type": "string" },
+                        "required": { "type": "boolean", "description": "Defaults to true." }
+                    },
+                    "required": ["key"],
+                    "additionalProperties": false
+                }
+            },
+            "enabled": { "type": "boolean", "description": "Connect after saving. Defaults to true." }
+        },
+        "required": ["name", "command"],
+        "additionalProperties": false
+    })
+}
+
+#[async_trait]
+impl Tool for McpServerListTool {
+    fn name(&self) -> &str {
+        "mcp_server_list"
+    }
+
+    fn description(&self) -> &str {
+        "List Milim-managed MCP servers, connection status, capabilities, and sanitized environment metadata. Secret values are never returned."
+    }
+
+    fn input_schema(&self) -> Value {
+        json!({ "type": "object", "properties": {}, "additionalProperties": false })
+    }
+
+    fn effect(&self) -> ToolEffect {
+        ToolEffect::ReadOnly
+    }
+
+    async fn invoke(&self, _args: Value) -> milim_core::Result<Value> {
+        Ok(json!({ "ok": true, "servers": self.hub.list() }))
+    }
+}
+
+#[async_trait]
+impl Tool for McpServerTestTool {
+    fn name(&self) -> &str {
+        "mcp_server_test"
+    }
+
+    fn description(&self) -> &str {
+        "Launch and test an MCP server configuration without saving it. Use an existing id to reuse its encrypted secret placeholders. Requires command approval."
+    }
+
+    fn input_schema(&self) -> Value {
+        mcp_server_config_schema()
+    }
+
+    fn effect(&self) -> ToolEffect {
+        ToolEffect::Command
+    }
+
+    async fn invoke(&self, args: Value) -> milim_core::Result<Value> {
+        let args: McpServerToolConfig = serde_json::from_value(args).map_err(|error| {
+            Error::InvalidRequest(format!("invalid mcp_server_test arguments: {error}"))
+        })?;
+        Ok(json!(
+            self.hub
+                .test_config(args.into_config(&self.hub, false)?)
+                .await
+        ))
+    }
+}
+
+#[async_trait]
+impl Tool for McpServerSaveTool {
+    fn name(&self) -> &str {
+        "mcp_server_save"
+    }
+
+    fn description(&self) -> &str {
+        "Create or fully replace a Milim-managed MCP server. Omit id to create; list first and include id to update. Connected tools become callable on the next chat turn. Requires command approval."
+    }
+
+    fn input_schema(&self) -> Value {
+        mcp_server_config_schema()
+    }
+
+    fn effect(&self) -> ToolEffect {
+        ToolEffect::Command
+    }
+
+    async fn invoke(&self, args: Value) -> milim_core::Result<Value> {
+        let args: McpServerToolConfig = serde_json::from_value(args).map_err(|error| {
+            Error::InvalidRequest(format!("invalid mcp_server_save arguments: {error}"))
+        })?;
+        let saved = self.hub.upsert(args.into_config(&self.hub, true)?).await?;
+        let server = self
+            .hub
+            .list()
+            .into_iter()
+            .find(|server| server.id == saved.id)
+            .ok_or_else(|| Error::ModelNotFound(format!("mcp server {}", saved.id)))?;
+        let tools_available_next_turn = server.connected && server.tool_count > 0;
+        Ok(json!({
+            "ok": true,
+            "server": server,
+            "tools_available_next_turn": tools_available_next_turn
+        }))
+    }
+}
+
+#[async_trait]
+impl Tool for McpServerDeleteTool {
+    fn name(&self) -> &str {
+        "mcp_server_delete"
+    }
+
+    fn description(&self) -> &str {
+        "Disconnect and permanently remove a Milim-managed MCP server by id."
+    }
+
+    fn input_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": { "id": { "type": "string", "description": "Existing server id." } },
+            "required": ["id"],
+            "additionalProperties": false
+        })
+    }
+
+    fn effect(&self) -> ToolEffect {
+        ToolEffect::Mutating
+    }
+
+    async fn invoke(&self, args: Value) -> milim_core::Result<Value> {
+        let args: McpServerDeleteToolArgs = serde_json::from_value(args).map_err(|error| {
+            Error::InvalidRequest(format!("invalid mcp_server_delete arguments: {error}"))
+        })?;
+        let id = trim_required_tool_arg(args.id, "id")?;
+        if !self.hub.remove(&id)? {
+            return Err(Error::ModelNotFound(format!("mcp server {id}")));
+        }
+        Ok(json!({ "ok": true, "deleted": true, "id": id }))
+    }
+}
+
+#[cfg(test)]
+mod mcp_server_tool_tests {
+    use super::*;
+
+    fn hub() -> (PathBuf, Arc<milim_mcp_client::McpHub>) {
+        let root = std::env::temp_dir().join(format!(
+            "milim-mcp-chat-tools-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        (root.clone(), Arc::new(milim_mcp_client::McpHub::open(root)))
+    }
+
+    #[tokio::test]
+    async fn manages_servers_and_keeps_secret_values_hidden() {
+        let (root, hub) = hub();
+        let mut tools = ToolRegistry::new();
+        register_mcp_server_tools(&mut tools, hub.clone());
+
+        assert_eq!(tools.effect("mcp_server_list"), Some(ToolEffect::ReadOnly));
+        assert_eq!(tools.effect("mcp_server_test"), Some(ToolEffect::Command));
+        assert_eq!(tools.effect("mcp_server_save"), Some(ToolEffect::Command));
+        assert_eq!(
+            tools.effect("mcp_server_delete"),
+            Some(ToolEffect::Mutating)
+        );
+        assert!(tools.read_only().contains("mcp_server_list"));
+        assert!(!tools.read_only().contains("mcp_server_save"));
+
+        let created = tools
+            .call(
+                "mcp_server_save",
+                json!({
+                    "name": "Local fixture",
+                    "command": "missing-but-disabled",
+                    "env": [{ "key": "BASE_URL", "value": "https://example.com" }],
+                    "enabled": false
+                }),
+            )
+            .await
+            .unwrap();
+        let id = created["server"]["id"].as_str().unwrap().to_string();
+        assert_eq!(created["server"]["enabled"], false);
+        assert_eq!(created["tools_available_next_turn"], false);
+
+        let updated = tools
+            .call(
+                "mcp_server_save",
+                json!({
+                    "id": id,
+                    "name": "Renamed fixture",
+                    "command": "missing-but-disabled",
+                    "enabled": false
+                }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(updated["server"]["name"], "Renamed fixture");
+
+        tools
+            .call("mcp_server_delete", json!({ "id": id }))
+            .await
+            .unwrap();
+        assert!(hub.list().is_empty());
+
+        hub.upsert(milim_mcp_client::McpServerConfig {
+            id: "secret-server".into(),
+            name: "Secret fixture".into(),
+            command: "missing-but-disabled".into(),
+            args: Vec::new(),
+            cwd: None,
+            env: vec![milim_mcp_client::McpEnvVar {
+                key: "API_TOKEN".into(),
+                value: Some("encrypted-value".into()),
+                secret: true,
+                required: true,
+                has_value: false,
+            }],
+            enabled: false,
+        })
+        .await
+        .unwrap();
+        tools
+            .call(
+                "mcp_server_save",
+                json!({
+                    "id": "secret-server",
+                    "name": "Secret fixture updated",
+                    "command": "missing-but-disabled",
+                    "secret_env": [{ "key": "API_TOKEN" }],
+                    "enabled": false
+                }),
+            )
+            .await
+            .unwrap();
+        let listed = tools.call("mcp_server_list", json!({})).await.unwrap();
+        let secret = &listed["servers"][0]["env"][0];
+        assert_eq!(secret["key"], "API_TOKEN");
+        assert_eq!(secret["has_value"], true);
+        assert!(secret.get("value").is_none());
+
+        let rejected = tools
+            .call(
+                "mcp_server_save",
+                json!({
+                    "name": "Leaky fixture",
+                    "command": "missing-but-disabled",
+                    "env": [{ "key": "API_KEY", "value": "must-not-save" }],
+                    "enabled": false
+                }),
+            )
+            .await
+            .unwrap_err();
+        assert!(rejected.to_string().contains("declare it in secret_env"));
+
+        let missing_update = tools
+            .call(
+                "mcp_server_save",
+                json!({
+                    "id": "missing",
+                    "name": "Missing",
+                    "command": "missing-but-disabled",
+                    "enabled": false
+                }),
+            )
+            .await
+            .unwrap_err();
+        assert!(missing_update.to_string().contains("mcp server missing"));
+
+        drop(tools);
+        drop(hub);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn tests_drafts_without_saving_them() {
+        let (root, hub) = hub();
+        let mut tools = ToolRegistry::new();
+        register_mcp_server_tools(&mut tools, hub.clone());
+
+        let missing_env = tools
+            .call(
+                "mcp_server_test",
+                json!({
+                    "name": "Missing secret",
+                    "command": "unused",
+                    "secret_env": [{ "key": "API_TOKEN" }]
+                }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(missing_env["ok"], false);
+        assert_eq!(missing_env["missing_env"][0], "API_TOKEN");
+
+        let failed = tools
+            .call(
+                "mcp_server_test",
+                json!({
+                    "name": "Missing command",
+                    "command": "__milim_missing_mcp_command__"
+                }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(failed["ok"], false);
+        assert!(!failed["error"].as_str().unwrap().is_empty());
+        assert!(hub.list().is_empty());
+
+        drop(tools);
+        drop(hub);
+        let _ = std::fs::remove_dir_all(root);
+    }
+}
+
 // ----- Agents -----
 
 #[derive(Serialize)]
@@ -9022,6 +9504,7 @@ fn agent_base_registry_with_memory(
         );
     }
     if let Some(hub) = &st.mcp {
+        register_mcp_server_tools(&mut reg, hub.clone());
         for tool in hub.tools() {
             if let Err(error) = reg.try_register(tool) {
                 tracing::warn!("skipping colliding MCP tool: {error}");

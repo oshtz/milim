@@ -73,13 +73,23 @@ pub struct McpServerInfo {
     pub command: String,
     pub args: Vec<String>,
     pub cwd: Option<String>,
-    pub env: Vec<McpEnvVar>,
+    pub env: Vec<McpEnvVarInfo>,
     pub enabled: bool,
     pub connected: bool,
     pub tool_count: usize,
     pub capabilities: McpCapabilities,
     pub missing_env: Vec<String>,
     pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct McpEnvVarInfo {
+    pub key: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
+    pub secret: bool,
+    pub required: bool,
+    pub has_value: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -949,6 +959,25 @@ fn env_key(key: &str) -> String {
     key.trim().to_string()
 }
 
+pub fn secret_env_key(key: &str) -> bool {
+    let upper = key.to_ascii_uppercase();
+    [
+        "KEY",
+        "TOKEN",
+        "SECRET",
+        "PASSWORD",
+        "PASS",
+        "AUTH",
+        "CREDENTIAL",
+        "PRIVATE",
+        "BEARER",
+        "COOKIE",
+        "SESSION",
+    ]
+    .iter()
+    .any(|needle| upper.contains(needle))
+}
+
 fn normalized_env(mut env: Vec<McpEnvVar>) -> Vec<McpEnvVar> {
     env.drain(..)
         .filter_map(|mut item| {
@@ -1372,7 +1401,7 @@ impl McpHub {
             .collect()
     }
 
-    fn env_info(&self, cfg: &McpServerConfig) -> Vec<McpEnvVar> {
+    fn env_info(&self, cfg: &McpServerConfig) -> Vec<McpEnvVarInfo> {
         cfg.env
             .iter()
             .map(|item| {
@@ -1388,7 +1417,7 @@ impl McpHub {
                         .map(|value| !value.is_empty())
                         .unwrap_or(false)
                 };
-                McpEnvVar {
+                McpEnvVarInfo {
                     key,
                     value: if item.secret {
                         None

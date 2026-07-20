@@ -538,22 +538,7 @@ fn harness_env_candidate(key: &str, value: &str) -> HarnessMcpEnvCandidate {
 }
 
 fn secret_env_key(key: &str) -> bool {
-    let upper = key.to_ascii_uppercase();
-    [
-        "KEY",
-        "TOKEN",
-        "SECRET",
-        "PASSWORD",
-        "PASS",
-        "AUTH",
-        "CREDENTIAL",
-        "PRIVATE",
-        "BEARER",
-        "COOKIE",
-        "SESSION",
-    ]
-    .iter()
-    .any(|needle| upper.contains(needle))
+    milim_mcp_client::secret_env_key(key)
 }
 
 #[cfg(test)]
