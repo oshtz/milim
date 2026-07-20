@@ -19,10 +19,12 @@ type ContextMenuState = {
   point: ContextMenuPoint;
   items: ContextMenuItem[];
   label?: string;
+  trigger?: HTMLElement;
 };
 
 type ContextMenuApi = {
   openContextMenu: (event: MouseEvent, items: ContextMenuItem[], label?: string) => boolean;
+  openMenuAt: (point: ContextMenuPoint, items: ContextMenuItem[], label?: string, trigger?: HTMLElement) => boolean;
   closeContextMenu: () => void;
 };
 
@@ -33,30 +35,59 @@ export function ContextMenuProvider({ children }: { children: ReactNode }) {
   const [menu, setMenu] = useState<ContextMenuState | null>(null);
   const [position, setPosition] = useState<ContextMenuPoint | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
+  const focusFirstItemRef = useRef(false);
 
   const closeContextMenu = useCallback(() => setMenu(null), []);
+
+  const openMenuAt = useCallback((point: ContextMenuPoint, items: ContextMenuItem[], label?: string, trigger?: HTMLElement) => {
+    if (items.length === 0) return false;
+    focusFirstItemRef.current = Boolean(trigger);
+    setMenu({ point, items, label, trigger });
+    setPosition(clampContextMenuPosition(point, ESTIMATED_MENU_SIZE, { width: window.innerWidth, height: window.innerHeight }));
+    return true;
+  }, []);
 
   const openContextMenu = useCallback((event: MouseEvent, items: ContextMenuItem[], label?: string) => {
     if (event.defaultPrevented || shouldPreserveNativeContextMenu(event.target) || items.length === 0) return false;
     event.preventDefault();
     event.stopPropagation();
-    const point = { x: event.clientX, y: event.clientY };
-    setMenu({ point, items, label });
-    setPosition(clampContextMenuPosition(point, ESTIMATED_MENU_SIZE, { width: window.innerWidth, height: window.innerHeight }));
-    return true;
-  }, []);
+    return openMenuAt({ x: event.clientX, y: event.clientY }, items, label);
+  }, [openMenuAt]);
 
   useEffect(() => {
     if (!menu || !menuRef.current) return;
     const rect = menuRef.current.getBoundingClientRect();
     const next = clampContextMenuPosition(menu.point, { width: rect.width, height: rect.height }, { width: window.innerWidth, height: window.innerHeight });
     setPosition((current) => current && current.x === next.x && current.y === next.y ? current : next);
+    if (focusFirstItemRef.current) {
+      focusFirstItemRef.current = false;
+      menuRef.current.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
+    }
   }, [menu]);
 
   useEffect(() => {
     if (!menu) return;
+    const trigger = menu.trigger;
     function onKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") closeContextMenu();
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeContextMenu();
+        trigger?.focus();
+        return;
+      }
+      if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+      const items = Array.from(menuRef.current?.querySelectorAll<HTMLButtonElement>("button:not(:disabled)") ?? []);
+      if (!items.length) return;
+      event.preventDefault();
+      const current = items.indexOf(document.activeElement as HTMLButtonElement);
+      const next = event.key === "Home"
+        ? 0
+        : event.key === "End"
+          ? items.length - 1
+          : event.key === "ArrowDown"
+            ? (current + 1) % items.length
+            : (current <= 0 ? items.length : current) - 1;
+      items[next]?.focus();
     }
     function onPointerDown(event: PointerEvent) {
       if (menuRef.current && event.target instanceof Node && menuRef.current.contains(event.target)) return;
@@ -74,7 +105,7 @@ export function ContextMenuProvider({ children }: { children: ReactNode }) {
     };
   }, [closeContextMenu, menu]);
 
-  const api = useMemo(() => ({ openContextMenu, closeContextMenu }), [closeContextMenu, openContextMenu]);
+  const api = useMemo(() => ({ openContextMenu, openMenuAt, closeContextMenu }), [closeContextMenu, openContextMenu, openMenuAt]);
 
   return (
     <ContextMenuContext.Provider value={api}>

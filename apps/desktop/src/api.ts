@@ -583,6 +583,11 @@ export async function restartDesktopApp(): Promise<void> {
   await invoke("restart_app");
 }
 
+export async function requestDesktopQuit(): Promise<void> {
+  if (!inTauri) return;
+  await invoke("request_desktop_quit");
+}
+
 export async function listWorkspaceLaunchers(
   workspace: string,
 ): Promise<WorkspaceLauncher[]> {

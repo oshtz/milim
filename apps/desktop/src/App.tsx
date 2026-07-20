@@ -17,13 +17,15 @@ import {
   listModelsDetailed,
   loadStartupModels,
   openDiagnosticsFolder,
+  openExternalUrl,
   recordFrontendError,
+  requestDesktopQuit,
   restartDesktopApp,
 } from "./api";
 import { AutoUpdater } from "./components/AutoUpdater";
 import { ChatView } from "./components/ChatView";
-import { ContextMenuProvider, useContextMenu } from "./components/ContextMenu";
-import { FolderOpen, Gear, Pencil, Plus, Refresh, Sidebar as SidebarIcon, X } from "./components/icons";
+import { ContextMenuProvider, useContextMenu, type ContextMenuItem } from "./components/ContextMenu";
+import { FolderOpen, Gear, Globe, Pencil, Plus, Refresh, Sidebar as SidebarIcon, X } from "./components/icons";
 import { Logo } from "./components/Logo";
 import { ResizeHandles } from "./components/ResizeHandles";
 import { Sidebar } from "./components/Sidebar";
@@ -48,6 +50,7 @@ import {
   installInterfaceSoundClicks,
   setInterfaceSoundsEnabled,
 } from "./ui/sounds";
+import { shortcutLabel } from "./ui/shortcuts";
 import { useUiPreferences } from "./ui/store";
 
 const SettingsDialog = lazy(() =>
@@ -83,6 +86,8 @@ const OnboardingFlow = lazy(() =>
 
 const inTauri =
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+const DOCS_URL = "https://docs.milim.ai/";
+const APP_MENU_EVENT = "milim://menu-action";
 
 function OnboardingGate() {
   const status = useOnboarding((s) => s.status);
@@ -312,7 +317,7 @@ function AppContent() {
   // Subscribing here ensures the theme store initializes (and applies CSS vars)
   // before first paint.
   useTheme((s) => s.themeId);
-  const { openContextMenu } = useContextMenu();
+  const { openContextMenu, openMenuAt } = useContextMenu();
   const refreshAgents = useAgents((s) => s.refresh);
   const sessionIds = useSessions((s) =>
     s.sessions.map((session) => session.id).join("\0"),
@@ -370,6 +375,8 @@ function AppContent() {
   const [gitPanelRequest, setGitPanelRequest] = useState(0);
   const sidebarOpen = useUiPreferences((s) => s.sidebarOpen);
   const toggleSidebar = useUiPreferences((s) => s.toggleSidebar);
+  const appShortcuts = useUiPreferences((s) => s.appShortcuts);
+  const pushNotice = useUiPreferences((s) => s.pushNotice);
   const uiSize = useUiPreferences((s) => s.uiSize);
   const interfaceSounds = useUiPreferences((s) => s.interfaceSounds);
   const soundOnInteractions = useUiPreferences((s) => s.soundOnInteractions);
@@ -401,42 +408,95 @@ function AppContent() {
       ?.focus();
   }
 
-  function openAppContextMenu(event: MouseEvent<HTMLDivElement>) {
-    openContextMenu(
-      event,
-      [
+  function startNewChat() {
+    const { activeId, getSettings, newChat } = useSessions.getState();
+    newChat(getSettings(activeId));
+    focusComposer();
+  }
+
+  function reportAppActionError(action: string, error: unknown) {
+    pushNotice({
+      tone: "error",
+      message: `${action} failed: ${error instanceof Error ? error.message : String(error)}`,
+    });
+  }
+
+  function openDocumentation() {
+    void openExternalUrl(DOCS_URL).catch((error) => reportAppActionError("Opening documentation", error));
+  }
+
+  function openDiagnostics() {
+    void openDiagnosticsFolder().catch((error) => reportAppActionError("Opening diagnostics", error));
+  }
+
+  function quitMilim() {
+    void requestDesktopQuit().catch((error) => reportAppActionError("Quitting Milim", error));
+  }
+
+  function appMenuItems(): ContextMenuItem[] {
+    return [
+      {
+        id: "new-chat",
+        label: "New chat",
+        icon: <Plus size={13} />,
+        detail: shortcutLabel(appShortcuts.newChat),
+        action: startNewChat,
+      },
+      {
+        id: "focus-composer",
+        label: "Focus composer",
+        icon: <Pencil size={13} />,
+        detail: shortcutLabel(appShortcuts.focusComposer),
+        action: focusComposer,
+      },
+      {
+        id: "toggle-sidebar",
+        label: sidebarOpen ? "Hide sidebar" : "Show sidebar",
+        icon: <SidebarIcon size={13} />,
+        detail: shortcutLabel(appShortcuts.toggleSidebar),
+        separatorBefore: true,
+        action: toggleSidebar,
+      },
+      {
+        id: "settings",
+        label: "Settings",
+        icon: <Gear size={13} />,
+        action: () => setSettingsOpen(true),
+      },
+      {
+        id: "documentation",
+        label: "Documentation",
+        icon: <Globe size={13} />,
+        separatorBefore: true,
+        action: openDocumentation,
+      },
+      ...(inTauri ? [
         {
-          id: "new-chat",
-          label: "New chat",
-          icon: <Plus size={13} />,
-          action: () => {
-            const { activeId, getSettings, newChat } = useSessions.getState();
-            newChat(getSettings(activeId));
-            focusComposer();
-          },
+          id: "diagnostics",
+          label: "Open diagnostics",
+          icon: <FolderOpen size={13} />,
+          action: openDiagnostics,
         },
         {
-          id: "focus-composer",
-          label: "Focus composer",
-          icon: <Pencil size={13} />,
-          action: focusComposer,
-        },
-        {
-          id: "toggle-sidebar",
-          label: sidebarOpen ? "Hide sidebar" : "Show sidebar",
-          icon: <SidebarIcon size={13} />,
-          action: toggleSidebar,
-        },
-        {
-          id: "settings",
-          label: "Settings",
-          icon: <Gear size={13} />,
+          id: "quit",
+          label: "Quit Milim",
           separatorBefore: true,
-          action: () => setSettingsOpen(true),
+          action: quitMilim,
         },
-      ],
-      "App",
-    );
+      ] : []),
+    ];
+  }
+
+  function openAppContextMenu(event: MouseEvent<HTMLDivElement>) {
+    openContextMenu(event, appMenuItems(), "App");
+  }
+
+  function openAppMenu(event: MouseEvent<HTMLButtonElement>) {
+    event.preventDefault();
+    event.stopPropagation();
+    const trigger = event.currentTarget;
+    const rect = trigger.getBoundingClientRect();
+    openMenuAt({ x: rect.left, y: rect.bottom + 4 }, appMenuItems(), "Milim menu", trigger);
   }
 
   useEffect(() => {
@@ -455,6 +515,36 @@ function AppContent() {
     let dispose: (() => void) | undefined;
     void import("@tauri-apps/api/event")
       .then(({ listen }) => listen("milim://runtime-failed", () => setRuntimeFailed(true)))
+      .then((unlisten) => {
+        dispose = unlisten;
+      })
+      .catch(() => {});
+    return () => dispose?.();
+  }, []);
+
+  useEffect(() => {
+    if (!inTauri) return;
+    let dispose: (() => void) | undefined;
+    void import("@tauri-apps/api/event")
+      .then(({ listen }) => listen<string>(APP_MENU_EVENT, (event) => {
+        switch (event.payload) {
+          case "new-chat":
+            startNewChat();
+            break;
+          case "settings":
+            setSettingsOpen(true);
+            break;
+          case "toggle-sidebar":
+            useUiPreferences.getState().toggleSidebar();
+            break;
+          case "documentation":
+            openDocumentation();
+            break;
+          case "diagnostics":
+            openDiagnostics();
+            break;
+        }
+      }))
       .then((unlisten) => {
         dispose = unlisten;
       })
@@ -488,7 +578,7 @@ function AppContent() {
           onOpenGitPanel={() => setGitPanelRequest((value) => value + 1)}
         />
         <div className="content">
-          <TopBar />
+          <TopBar onOpenAppMenu={openAppMenu} />
           <ChatView
             onManageAgents={() => setAgentsOpen(true)}
             onOpenSchedules={() => setSchedulesOpen(true)}

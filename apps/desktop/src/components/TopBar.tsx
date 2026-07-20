@@ -40,7 +40,7 @@ const INTERACTIVE_TITLEBAR_SELECTOR = [
   "[data-window-drag-ignore]",
 ].join(",");
 
-export function TopBar() {
+export function TopBar({ onOpenAppMenu }: { onOpenAppMenu: (event: MouseEvent<HTMLButtonElement>) => void }) {
   const [pinnedReady, setPinnedReady] = useState(!inTauri);
   const [updateActionRunning, setUpdateActionRunning] = useState(false);
   const [confirmingUpdate, setConfirmingUpdate] = useState(false);
@@ -214,7 +214,17 @@ export function TopBar() {
   return (
     <header className="topbar" data-tauri-drag-region onMouseDown={startWindowDrag}>
       <div className="topbar-side topbar-left" aria-label="Current chat" data-tauri-drag-region>
-        <Logo height={18} className="topbar-logo" />
+        <button
+          type="button"
+          className="topbar-logo-button"
+          data-testid="app-menu-trigger"
+          title="Milim menu"
+          aria-label="Open Milim menu"
+          aria-haspopup="menu"
+          onClick={onOpenAppMenu}
+        >
+          <Logo height={18} className="topbar-logo" />
+        </button>
         <span className="topbar-divider" aria-hidden="true" data-tauri-drag-region />
         <span className="topbar-thread" title={threadTitle} data-tauri-drag-region>
           {threadTitle}

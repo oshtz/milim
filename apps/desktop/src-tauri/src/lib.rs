@@ -31,7 +31,9 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tauri::ipc::Channel;
-use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+use tauri::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
+#[cfg(target_os = "macos")]
+use tauri::menu::{MenuBuilder, SubmenuBuilder};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Manager, WindowEvent};
 use tauri_plugin_dialog::DialogExt;
@@ -89,6 +91,11 @@ fn quit_after_user_state_flush(app: tauri::AppHandle) {
     exit_after_preview_cleanup(app);
 }
 
+#[tauri::command]
+fn request_desktop_quit(app: tauri::AppHandle) {
+    request_user_state_flush_then_exit(&app);
+}
+
 const TAILSCALE_SERVE_PORT: u16 = 10000;
 const TAILSCALE_COMMAND_TIMEOUT_SECS: u64 = 12;
 const MAIN_WINDOW_LABEL: &str = "main";
@@ -97,6 +104,13 @@ const TRAY_QUIT_ID: &str = "quit";
 const FLUSH_USER_STATE_EVENT: &str = "milim://flush-user-state";
 const FLUSH_USER_STATE_AND_EXIT_EVENT: &str = "milim://flush-user-state-and-exit";
 const RUNTIME_FAILED_EVENT: &str = "milim://runtime-failed";
+const APP_MENU_EVENT: &str = "milim://menu-action";
+const APP_MENU_NEW_CHAT_ID: &str = "app.new-chat";
+const APP_MENU_SETTINGS_ID: &str = "app.settings";
+const APP_MENU_TOGGLE_SIDEBAR_ID: &str = "app.toggle-sidebar";
+const APP_MENU_DOCUMENTATION_ID: &str = "app.documentation";
+const APP_MENU_DIAGNOSTICS_ID: &str = "app.diagnostics";
+const APP_MENU_QUIT_ID: &str = "app.quit";
 const MAX_ATTACHMENT_BYTES: u64 = 128 * 1024;
 const MAX_ATTACHMENT_IMAGE_PREVIEW_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_ARTIFACT_PREVIEW_BYTES: usize = 256 * 1024;
@@ -3293,6 +3307,83 @@ fn request_user_state_flush_then_exit<R: tauri::Runtime>(app: &tauri::AppHandle<
     });
 }
 
+fn handle_app_menu_event<R: tauri::Runtime>(app: &tauri::AppHandle<R>, event: MenuEvent) {
+    let action = match event.id().as_ref() {
+        APP_MENU_NEW_CHAT_ID => "new-chat",
+        APP_MENU_SETTINGS_ID => "settings",
+        APP_MENU_TOGGLE_SIDEBAR_ID => "toggle-sidebar",
+        APP_MENU_DOCUMENTATION_ID => "documentation",
+        APP_MENU_DIAGNOSTICS_ID => "diagnostics",
+        APP_MENU_QUIT_ID => {
+            request_user_state_flush_then_exit(app);
+            return;
+        }
+        _ => return,
+    };
+    let _ = app.emit(APP_MENU_EVENT, action);
+}
+
+#[cfg(target_os = "macos")]
+fn setup_native_menu<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<()> {
+    let settings = MenuItem::with_id(app, APP_MENU_SETTINGS_ID, "Settings", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, APP_MENU_QUIT_ID, "Quit Milim", true, Some("Cmd+Q"))?;
+    let app_menu = SubmenuBuilder::new(app, "Milim")
+        .about(None)
+        .separator()
+        .item(&settings)
+        .separator()
+        .services()
+        .separator()
+        .hide()
+        .hide_others()
+        .show_all()
+        .separator()
+        .item(&quit)
+        .build()?;
+    let file_menu = SubmenuBuilder::new(app, "File")
+        .text(APP_MENU_NEW_CHAT_ID, "New Chat")
+        .build()?;
+    let edit_menu = SubmenuBuilder::new(app, "Edit")
+        .undo()
+        .redo()
+        .separator()
+        .cut()
+        .copy()
+        .paste()
+        .select_all()
+        .build()?;
+    let view_menu = SubmenuBuilder::new(app, "View")
+        .text(APP_MENU_TOGGLE_SIDEBAR_ID, "Show/Hide Sidebar")
+        .separator()
+        .fullscreen()
+        .build()?;
+    let window_menu = SubmenuBuilder::new(app, "Window")
+        .minimize()
+        .maximize_with_text("Zoom")
+        .build()?;
+    let help_menu = SubmenuBuilder::new(app, "Help")
+        .text(APP_MENU_DOCUMENTATION_ID, "Milim Documentation")
+        .text(APP_MENU_DIAGNOSTICS_ID, "Open Diagnostics")
+        .build()?;
+    let menu = MenuBuilder::new(app)
+        .items(&[
+            &app_menu,
+            &file_menu,
+            &edit_menu,
+            &view_menu,
+            &window_menu,
+            &help_menu,
+        ])
+        .build()?;
+    let _ = app.set_menu(menu)?;
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn setup_native_menu<R: tauri::Runtime>(_app: &tauri::AppHandle<R>) -> tauri::Result<()> {
+    Ok(())
+}
+
 fn setup_tray<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<()> {
     let open = MenuItem::with_id(app, TRAY_OPEN_ID, "Open milim", true, None::<&str>)?;
     let separator = PredefinedMenuItem::separator(app)?;
@@ -3364,7 +3455,9 @@ pub fn run() {
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .plugin(preview_webview::init())
         .on_page_load(preview_webview::handle_page_load)
+        .on_menu_event(handle_app_menu_event)
         .setup(move |app| {
+            setup_native_menu(app.handle())?;
             setup_tray(app.handle())?;
             preview_tools_state.set_app(app.handle().clone());
             // Connect any persisted MCP servers in the background (best-effort).
@@ -3446,6 +3539,7 @@ pub fn run() {
             record_frontend_error,
             diagnostics_path,
             restart_app,
+            request_desktop_quit,
             api_base_url,
             api_token,
             refresh_provider_models,

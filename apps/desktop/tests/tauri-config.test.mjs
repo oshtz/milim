@@ -319,6 +319,25 @@ for (const needle of [
   }
 }
 
+for (const needle of [
+  "setup_native_menu",
+  'SubmenuBuilder::new(app, "Milim")',
+  'SubmenuBuilder::new(app, "File")',
+  'SubmenuBuilder::new(app, "Edit")',
+  'SubmenuBuilder::new(app, "View")',
+  'SubmenuBuilder::new(app, "Window")',
+  'SubmenuBuilder::new(app, "Help")',
+  ".on_menu_event(handle_app_menu_event)",
+  'const APP_MENU_EVENT: &str = "milim://menu-action"',
+  "APP_MENU_QUIT_ID =>",
+  "request_user_state_flush_then_exit(app)",
+  "request_desktop_quit",
+]) {
+  if (!tauriLib.includes(needle)) {
+    throw new Error(`Native app menu support must include ${needle}`);
+  }
+}
+
 for (const permission of [
   "core:window:allow-close",
   "core:window:allow-create",
@@ -359,6 +378,8 @@ for (const needle of [
   "INTERACTIVE_TITLEBAR_SELECTOR",
   "data-tauri-drag-region",
   "onMouseDown={startWindowDrag}",
+  'data-testid="app-menu-trigger"',
+  'aria-haspopup="menu"',
   "aria-pressed={pinned}",
   "toggleAlwaysOnTop",
 ]) {

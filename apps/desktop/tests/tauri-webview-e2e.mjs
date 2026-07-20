@@ -18,6 +18,7 @@ const workersOnly = process.argv.includes("--workers-only");
 const mcpAppsOnly = process.argv.includes("--mcp-apps-only");
 const sidebarMotionOnly = process.argv.includes("--sidebar-motion-only");
 const commandPaletteOnly = process.argv.includes("--command-palette-only");
+const appMenuOnly = process.argv.includes("--app-menu-only");
 const mcpAppKinds = ["chart", "diagram", "form", "dashboard", "viewer"];
 const screenshots = {
   avatars: join(tmpdir(), "milim-tauri-webview-agent-avatars.png"),
@@ -106,6 +107,12 @@ try {
     const errors = collectErrors(session.page);
     await runWorkersInspectorCheck(session.page, milimHome);
     consoleErrors.push(...errors.filter((message) => !message.includes("/worker-runs/e2e-workers-run/events")));
+  } else if (appMenuOnly) {
+    const errors = collectErrors(session.page);
+    await session.page.getByTestId("chat-shell").waitFor();
+    await dismissOnboardingIfPresent(session.page);
+    await runAppMenuCheck(session.page);
+    consoleErrors.push(...errors.filter((message) => !message.includes("/codex/models")));
   } else if (commandPaletteOnly) {
     const errors = collectErrors(session.page);
     await session.page.getByTestId("chat-shell").waitFor();
@@ -199,6 +206,7 @@ async function runPersistenceAndChat(page, pid) {
   const errors = collectErrors(page);
   await page.getByTestId("chat-shell").waitFor();
   await dismissOnboardingIfPresent(page);
+  await runAppMenuCheck(page);
   await runNativePreviewOcclusionCheck(page, pid);
   await assertAgentOptions(page);
   await openSettings(page);
@@ -1625,6 +1633,37 @@ async function runWindowPinCheck(page) {
   await page.waitForFunction(() => document.querySelector('[data-testid="pin-window"]')?.getAttribute("aria-pressed") === "true");
   await pin.click();
   await page.waitForFunction(() => document.querySelector('[data-testid="pin-window"]')?.getAttribute("aria-pressed") === "false");
+}
+
+async function runAppMenuCheck(page) {
+  const trigger = page.getByTestId("app-menu-trigger");
+  const menu = page.getByRole("menu", { name: "Milim menu" });
+  await trigger.click();
+  await menu.waitFor();
+  await page.waitForFunction(() => document.activeElement?.textContent?.includes("New chat"));
+  await page.keyboard.press("End");
+  await page.waitForFunction(() => document.activeElement?.textContent?.includes("Quit Milim"));
+  await page.keyboard.press("Home");
+  await page.waitForFunction(() => document.activeElement?.textContent?.includes("New chat"));
+  await page.keyboard.press("ArrowUp");
+  await page.waitForFunction(() => document.activeElement?.textContent?.includes("Quit Milim"));
+  await page.keyboard.press("ArrowDown");
+  await page.waitForFunction(() => document.activeElement?.textContent?.includes("New chat"));
+  await page.keyboard.press("Escape");
+  await menu.waitFor({ state: "hidden" });
+  await expectFocusedTestId(page, "app-menu-trigger");
+
+  await trigger.click();
+  await menu.getByText("Hide sidebar").click();
+  await page.getByTestId("sidebar-search").waitFor({ state: "hidden" });
+  await trigger.click();
+  await menu.getByText("Show sidebar").click();
+  await page.getByTestId("sidebar-search").waitFor();
+
+  await trigger.click();
+  await menu.getByText("Settings", { exact: true }).click();
+  await page.getByTestId("settings-dialog").waitFor();
+  await closeSettings(page);
 }
 
 async function openAgents(page) {
