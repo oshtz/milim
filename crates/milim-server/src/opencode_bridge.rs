@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::convert::Infallible;
+#[cfg(windows)]
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
