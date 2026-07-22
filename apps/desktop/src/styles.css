@@ -5669,6 +5669,46 @@ html[data-dark="true"] .preview-control-cursor {
 }
 .stream-diff-stat.live {
   animation: stream-stat-pop var(--motion-standard) var(--motion-ease-out) both;
+.stream-approval-body {
+  display: grid;
+  flex: 1 0 100%;
+  gap: 8px;
+}
+.stream-approval-body p,
+.stream-approval-body small {
+  margin: 0;
+  color: var(--secondary-text);
+}
+.stream-approval-form {
+  display: grid;
+  gap: 8px;
+}
+.stream-approval-form label {
+  display: grid;
+  gap: 3px;
+  color: var(--secondary-text);
+}
+.stream-approval-form input,
+.stream-approval-form select {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 7px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+}
+.stream-approval-form .stream-approval-checkbox {
+  grid-template-columns: 1fr auto;
+  align-items: center;
+}
+.stream-approval-path {
+  overflow-wrap: anywhere;
+  color: var(--secondary-text);
+}
+.stream-approval-error {
+  color: var(--error) !important;
+}
 }
 .stream-event-running .stream-event-icon {
   color: var(--accent-light);

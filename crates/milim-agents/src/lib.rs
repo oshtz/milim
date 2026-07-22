@@ -67,7 +67,7 @@ impl Default for AgentRunConfig {
 
 #[derive(Debug)]
 pub struct ToolApprovalBroker {
-    pending: Mutex<HashMap<String, Option<tokio::sync::oneshot::Sender<bool>>>>,
+    pending: Mutex<HashMap<String, Option<tokio::sync::oneshot::Sender<ApprovalDecision>>>>,
     external: Mutex<HashMap<String, ExternalApprovalMeta>>,
     notices: tokio::sync::broadcast::Sender<ApprovalNotice>,
 }
@@ -99,9 +99,15 @@ pub enum ApprovalResolve {
     Missing,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct ApprovalDecision {
+    pub approved: bool,
+    pub response: Option<Value>,
+}
+
 pub struct PendingApproval {
     pub id: String,
-    receiver: tokio::sync::oneshot::Receiver<bool>,
+    receiver: tokio::sync::oneshot::Receiver<ApprovalDecision>,
     broker: Weak<ToolApprovalBroker>,
 }
 
@@ -123,11 +129,20 @@ impl ToolApprovalBroker {
     }
 
     pub fn resolve(&self, id: &str, approved: bool) -> ApprovalResolve {
+        self.resolve_with_response(id, approved, None)
+    }
+
+    pub fn resolve_with_response(
+        &self,
+        id: &str,
+        approved: bool,
+        response: Option<Value>,
+    ) -> ApprovalResolve {
         let mut pending = self.pending.lock().expect("tool approval broker poisoned");
         match pending.get_mut(id) {
             Some(sender @ Some(_)) => {
                 let sender = sender.take().expect("checked sender");
-                let _ = sender.send(approved);
+                let _ = sender.send(ApprovalDecision { approved, response });
                 if let Some(meta) = self
                     .external
                     .lock()
@@ -200,8 +215,11 @@ impl Default for ToolApprovalBroker {
 }
 
 impl PendingApproval {
-    pub async fn wait(&mut self) -> bool {
-        (&mut self.receiver).await.unwrap_or(false)
+    pub async fn wait(&mut self) -> ApprovalDecision {
+        (&mut self.receiver).await.unwrap_or(ApprovalDecision {
+            approved: false,
+            response: None,
+        })
     }
 }
 
@@ -576,7 +594,7 @@ pub fn run_agent_stream_with_config(
                             arguments: call.function.arguments.clone(),
                             effect,
                         };
-                        let approved = pending.wait().await;
+                        let approved = pending.wait().await.approved;
                         yield AgentEvent::ToolApprovalResolved {
                             approval_id: pending.id.clone(),
                             call_id: call.id.clone(),
@@ -1066,9 +1084,14 @@ mod tests {
         let broker = Arc::new(ToolApprovalBroker::default());
         let mut pending = broker.request();
         let id = pending.id.clone();
-        assert_eq!(broker.resolve(&id, true), ApprovalResolve::Resolved);
+        assert_eq!(
+            broker.resolve_with_response(&id, true, Some(json!({ "name": "Milim" }))),
+            ApprovalResolve::Resolved
+        );
         assert_eq!(broker.resolve(&id, true), ApprovalResolve::AlreadyResolved);
-        assert!(pending.wait().await);
+        let decision = pending.wait().await;
+        assert!(decision.approved);
+        assert_eq!(decision.response, Some(json!({ "name": "Milim" })));
         drop(pending);
 
         let abandoned = broker.request();
@@ -1102,7 +1125,7 @@ mod tests {
         );
         let resolved = notices.recv().await.unwrap();
         assert_eq!(resolved.decision, Some("deny"));
-        assert!(!pending.wait().await);
+        assert!(!pending.wait().await.approved);
     }
 
     #[tokio::test]

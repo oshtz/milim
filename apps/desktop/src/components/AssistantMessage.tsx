@@ -1,6 +1,7 @@
 import { lazy, memo, Suspense, useEffect, useRef, useState } from "react";
-import { resolveToolApproval, type ChatArtifact, type ChatStreamEventIcon, type ChatStreamPart, type ToolApprovalMode } from "../api";
+import { openExternalUrl, resolveToolApproval, type ChatArtifact, type ChatStreamEventIcon, type ChatStreamPart, type McpApprovalField, type ToolApprovalMode, type ToolApprovalRequest } from "../api";
 import { markPerfRender } from "../lib/perf";
+import { approvalResponse, initialApprovalValues, updateApprovalField } from "../lib/toolApproval";
 import {
   groupCompletedStreamActivity,
   liveWorkGroupSummary,
@@ -100,13 +101,27 @@ function StreamEvent({
 }) {
   const status = part.status ?? "done";
   const [resolving, setResolving] = useState(false);
+  const [formValues, setFormValues] = useState<Record<string, unknown>>(() =>
+    initialApprovalValues(part.approvalRequest),
+  );
+  const [approvalError, setApprovalError] = useState("");
   async function decide(decision: "approve" | "deny") {
     if (!part.approvalId || resolving) return;
+    if (decision === "approve" && part.approvalRequest?.kind === "mcp_unsupported") return;
+    const result = decision === "approve"
+      ? approvalResponse(part.approvalRequest, formValues)
+      : {};
+    if (result.error) {
+      setApprovalError(result.error);
+      return;
+    }
     setResolving(true);
+    setApprovalError("");
     try {
-      await resolveToolApproval(part.approvalId, decision);
-    } catch {
+      await resolveToolApproval(part.approvalId, decision, result.response);
+    } catch (error) {
       // The stream will surface expired or canceled approvals; keep the card actionable on transient failures.
+      setApprovalError(error instanceof Error ? error.message : "Approval failed.");
     } finally {
       setResolving(false);
     }
@@ -135,12 +150,29 @@ function StreamEvent({
           />
         )}
         {part.approvalId && part.approvalStatus === "pending" && (
-          <span className="stream-approval-actions">
-            <button type="button" disabled={resolving} onClick={() => void decide("approve")}>Approve</button>
-            <button type="button" disabled={resolving} onClick={() => void decide("deny")}>Deny</button>
-          </span>
+          <ApprovalRequestBody
+            request={part.approvalRequest}
+            values={formValues}
+            error={approvalError}
+            disabled={resolving}
+            onChange={(field, value) => {
+              setApprovalError("");
+              setFormValues((current) => ({
+                ...current,
+                [field.name]: updateApprovalField(field, value),
+              }));
+            }}
+            onApprove={() => void decide("approve")}
+            onDeny={() => void decide("deny")}
+            onOpenUrl={(url) => {
+              setApprovalError("");
+              void openExternalUrl(url).catch((error) => {
+                setApprovalError(error instanceof Error ? error.message : "Could not open URL.");
+              });
+            }}
+          />
         )}
-        {part.approvalId && part.detail && (
+        {part.approvalId && part.detail && (!part.approvalRequest || part.approvalRequest.kind === "command" || part.approvalRequest.kind === "file_change") && (
           <pre className="stream-approval-arguments">{part.detail}</pre>
         )}
       </div>
@@ -156,6 +188,106 @@ function StreamEvent({
         </Suspense>
       ) : null}
     </>
+  );
+}
+
+function ApprovalRequestBody({
+  request,
+  values,
+  error,
+  disabled,
+  onChange,
+  onApprove,
+  onDeny,
+  onOpenUrl,
+}: {
+  request?: ToolApprovalRequest;
+  values: Record<string, unknown>;
+  error: string;
+  disabled: boolean;
+  onChange: (field: McpApprovalField, value: string | boolean) => void;
+  onApprove: () => void;
+  onDeny: () => void;
+  onOpenUrl: (url: string) => void;
+}) {
+  const approveLabel = request?.kind === "permissions"
+    ? "Allow once"
+    : request?.kind === "mcp_form"
+      ? "Submit"
+      : request?.kind === "mcp_url"
+        ? "Continue"
+        : "Approve";
+  return (
+    <div className="stream-approval-body">
+      {request?.kind === "permissions" && (
+        <>
+          {request.reason && <p>{request.reason}</p>}
+          {request.cwd && <code className="stream-approval-path">{request.cwd}</code>}
+          <pre className="stream-approval-arguments">{JSON.stringify(request.permissions ?? {}, null, 2)}</pre>
+        </>
+      )}
+      {request?.kind === "mcp_form" && (
+        <div className="stream-approval-form">
+          <p>{request.message}</p>
+          {request.fields.map((field) => (
+            <label key={field.name} className={field.kind === "boolean" ? "stream-approval-checkbox" : undefined}>
+              <span>{field.label}{field.required ? " *" : ""}</span>
+              {field.description && <small>{field.description}</small>}
+              {field.kind === "boolean" ? (
+                <input
+                  type="checkbox"
+                  checked={values[field.name] === true}
+                  disabled={disabled}
+                  onChange={(event) => onChange(field, event.currentTarget.checked)}
+                />
+              ) : field.kind === "enum" ? (
+                <select
+                  value={String(field.options?.findIndex((option) => Object.is(option.value, values[field.name])) ?? -1)}
+                  disabled={disabled}
+                  onChange={(event) => onChange(field, event.currentTarget.value)}
+                >
+              <option value="-1">Select...</option>
+                  {field.options?.map((option, index) => <option key={index} value={index}>{option.label}</option>)}
+                </select>
+              ) : (
+                <input
+                  type={field.kind === "string" ? "text" : "number"}
+                  value={typeof values[field.name] === "string" || typeof values[field.name] === "number" ? String(values[field.name]) : ""}
+                  min={field.minimum}
+                  max={field.maximum}
+                  step={field.kind === "integer" ? 1 : field.kind === "number" ? "any" : undefined}
+                  minLength={field.min_length}
+                  maxLength={field.max_length}
+                  disabled={disabled}
+                  onChange={(event) => onChange(field, event.currentTarget.value)}
+                />
+              )}
+            </label>
+          ))}
+        </div>
+      )}
+      {request?.kind === "mcp_url" && (
+        <div className="stream-approval-url">
+          <p>{request.message}</p>
+          <button type="button" disabled={disabled} onClick={() => onOpenUrl(request.url)}>Open link</button>
+        </div>
+      )}
+      {request?.kind === "mcp_unsupported" && (
+        <div className="stream-approval-unsupported">
+          <p>{request.message}</p>
+          <small>{request.reason}</small>
+        </div>
+      )}
+      {error && <p className="stream-approval-error" role="alert">{error}</p>}
+      <span className="stream-approval-actions">
+        {request?.kind !== "mcp_unsupported" && (
+          <button type="button" disabled={disabled} onClick={onApprove}>{approveLabel}</button>
+        )}
+        <button type="button" disabled={disabled} onClick={onDeny}>
+          {request?.kind?.startsWith("mcp_") ? "Decline" : "Deny"}
+        </button>
+      </span>
+    </div>
   );
 }
 

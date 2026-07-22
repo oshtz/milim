@@ -3314,6 +3314,42 @@ pub(crate) async fn codex_models(
     Ok(Json(result).into_response())
 }
 
+#[derive(Debug, Deserialize)]
+pub(crate) struct CodexThreadsQuery {
+    cursor: Option<String>,
+    search: Option<String>,
+    #[serde(default)]
+    archived: bool,
+}
+
+/// `GET /codex/threads` - page through recoverable Codex app-server threads.
+pub(crate) async fn codex_threads(
+    State(st): State<AppState>,
+    Query(query): Query<CodexThreadsQuery>,
+    headers: HeaderMap,
+    peer: Peer,
+) -> Result<Response, ApiError> {
+    authorize(&st, &headers, peer_addr(peer))?;
+    let result = crate::codex_bridge::threads(query.cursor, query.search, query.archived)
+        .await
+        .map_err(ApiError)?;
+    Ok(Json(result).into_response())
+}
+
+/// `GET /codex/threads/{id}` - recover visible messages from one Codex thread.
+pub(crate) async fn codex_thread_recover(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    peer: Peer,
+) -> Result<Response, ApiError> {
+    authorize(&st, &headers, peer_addr(peer))?;
+    let result = crate::codex_bridge::recover_thread(&id)
+        .await
+        .map_err(ApiError)?;
+    Ok(Json(result).into_response())
+}
+
 /// `POST /codex/run` - run a Codex turn as a separate account runtime.
 pub(crate) async fn codex_run(
     State(st): State<AppState>,
@@ -3332,9 +3368,7 @@ pub(crate) async fn codex_run(
         account_runtime_prompt_for_remote(&st, &req.prompt, "Codex").map_err(ApiError)?;
     account_runtime_images_for_remote(&st, &req.images, "Codex").map_err(ApiError)?;
     req.prompt = prompt;
-    let approvals = req
-        .interactive_tool_approval
-        .then(|| st.tool_approvals.clone());
+    let approvals = Some(st.tool_approvals.clone());
     Ok(
         Sse::new(crate::codex_bridge::run_stream(req, redactions, approvals))
             .keep_alive(KeepAlive::default())
@@ -3465,7 +3499,7 @@ pub(crate) async fn claude_approval_mcp(
             let mut pending = st
                 .tool_approvals
                 .request_external(run_id, None, name, arguments, effect);
-            let approved = pending.wait().await;
+            let approved = pending.wait().await.approved;
             let payload = if approved {
                 json!({ "behavior": "allow", "updatedInput": input })
             } else {
@@ -9944,7 +9978,10 @@ pub(crate) async fn tool_approval_resolve(
             )))
         }
     };
-    match st.tool_approvals.resolve(&id, approved) {
+    match st
+        .tool_approvals
+        .resolve_with_response(&id, approved, req.response)
+    {
         milim_agents::ApprovalResolve::Resolved => Ok(StatusCode::NO_CONTENT.into_response()),
         milim_agents::ApprovalResolve::AlreadyResolved => Ok((
             StatusCode::CONFLICT,
@@ -10256,6 +10293,8 @@ fn worker_run_event_name(status: milim_agents::WorkerRunStatus) -> &'static str 
         milim_agents::WorkerRunStatus::Proposed => "proposed",
         milim_agents::WorkerRunStatus::Running => "started",
         milim_agents::WorkerRunStatus::Done | milim_agents::WorkerRunStatus::Partial => "done",
+    #[serde(default)]
+    response: Option<Value>,
         milim_agents::WorkerRunStatus::Stopped | milim_agents::WorkerRunStatus::Error => "error",
     }
 }

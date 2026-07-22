@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   deleteProvider,
   discoverLocalProviders,
@@ -6,19 +6,24 @@ import {
   getCodexAccount,
   isCliPathWarningMessage,
   isOpenRouterProvider,
+  listCodexThreads,
   listProviders,
   logoutCodex,
   openExternalUrl,
   PROVIDER_PRESETS,
+  recoverCodexThread,
   saveProvider,
   streamCodexDeviceLogin,
   type ClaudeStatusResponse,
   type CodexAccountResponse,
   type CodexLoginEvent,
+  type CodexThreadSummary,
   type ProviderDiscovery,
   type ProviderInfo,
   type ProviderKind,
 } from "../api";
+import { recoveredCodexSession, recoveredCodexSessionId } from "../lib/codexRecovery";
+import { useSessions } from "../sessions/store";
 import { Plus, Refresh, Search, X } from "./icons";
 import { SheetDialog } from "./SheetDialog";
 import { Select, Toggle } from "./ui";
@@ -173,6 +178,7 @@ export function ProvidersManager({ onClose }: { onClose: () => void }) {
     tone: StatusTone;
     message: string;
   } | null>(null);
+  const [recoveringCodex, setRecoveringCodex] = useState(false);
   const [claudeStatus, setClaudeStatus] = useState<ClaudeStatusResponse | null>(
     null,
   );
@@ -520,6 +526,14 @@ export function ProvidersManager({ onClose }: { onClose: () => void }) {
       items: providers.filter((provider) => providerGroup(provider) === label),
     }))
     .filter((group) => group.items.length > 0);
+  if (recoveringCodex) {
+    return (
+      <CodexRecoveryDialog
+        onClose={() => setRecoveringCodex(false)}
+        onOpenSession={onClose}
+      />
+    );
+  }
   return (
     <SheetDialog
       title="Providers"
@@ -663,21 +677,33 @@ export function ProvidersManager({ onClose }: { onClose: () => void }) {
                     </span>
                   </div>
                 </div>
-                <button
-                  className="btn-ghost"
-                  data-testid="codex-connect"
-                  type="button"
-                  onClick={() =>
-                    void (codexReady ? disconnectCodex() : connectCodex())
-                  }
-                  disabled={codexBusy}
-                >
-                  {codexBusy
-                    ? "Working..."
-                    : codexReady
-                      ? "Disconnect"
-                      : "Connect"}
-                </button>
+                <div className="provider-account-actions">
+                  {codexReady && (
+                    <button
+                      className="btn-ghost"
+                      data-testid="codex-recover-chats"
+                      type="button"
+                      onClick={() => setRecoveringCodex(true)}
+                    >
+                      Recover chats
+                    </button>
+                  )}
+                  <button
+                    className="btn-ghost"
+                    data-testid="codex-connect"
+                    type="button"
+                    onClick={() =>
+                      void (codexReady ? disconnectCodex() : connectCodex())
+                    }
+                    disabled={codexBusy}
+                  >
+                    {codexBusy
+                      ? "Working..."
+                      : codexReady
+                        ? "Disconnect"
+                        : "Connect"}
+                  </button>
+                </div>
               </div>
               <div
                 className={
@@ -1049,6 +1075,147 @@ export function ProvidersManager({ onClose }: { onClose: () => void }) {
           )}
         </main>
       </div>
+    </SheetDialog>
+  );
+}
+
+function CodexRecoveryDialog({
+  onClose,
+  onOpenSession,
+}: {
+  onClose: () => void;
+  onOpenSession: () => void;
+}) {
+  const sessions = useSessions((state) => state.sessions);
+  const requestId = useRef(0);
+  const [threads, setThreads] = useState<CodexThreadSummary[]>([]);
+  const [cursor, setCursor] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
+  const [archived, setArchived] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [recoveringId, setRecoveringId] = useState<string | null>(null);
+  const [error, setError] = useState("");
+
+  async function load(reset: boolean) {
+    const currentRequest = ++requestId.current;
+    setBusy(true);
+    setError("");
+    try {
+      const page = await listCodexThreads({
+        cursor: reset ? undefined : cursor ?? undefined,
+        search,
+        archived,
+      });
+      if (currentRequest !== requestId.current) return;
+      setThreads((current) => reset
+        ? page.data
+        : [...current, ...page.data.filter((thread) => !current.some((item) => item.id === thread.id))]);
+      setCursor(page.next_cursor ?? null);
+    } catch (error) {
+      if (currentRequest === requestId.current)
+        setError(error instanceof Error ? error.message : "Codex chat recovery failed.");
+    } finally {
+      if (currentRequest === requestId.current) setBusy(false);
+    }
+  }
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => void load(true), 250);
+    return () => window.clearTimeout(timer);
+  }, [search, archived]);
+
+  function openSession(id: string) {
+    useSessions.getState().switchTo(id);
+    onOpenSession();
+  }
+
+  async function recover(thread: CodexThreadSummary) {
+    const existing = recoveredCodexSessionId(useSessions.getState().sessions, thread.id);
+    if (existing) {
+      openSession(existing);
+      return;
+    }
+    setRecoveringId(thread.id);
+    setError("");
+    try {
+      const recovered = await recoverCodexThread(thread.id);
+      const store = useSessions.getState();
+      const sessionId = store.importSession(recoveredCodexSession(recovered));
+      if (!sessionId) throw new Error("Milim could not import the recovered chat.");
+      const imported = useSessions.getState().sessions.find((session) => session.id === sessionId);
+      const lastMessageId = imported?.messages[imported.messages.length - 1]?.id;
+      if (!lastMessageId) throw new Error("The recovered chat did not contain a sync cursor.");
+      useSessions.getState().setAccountRuntime(sessionId, {
+        codexThreadId: recovered.id,
+        codexLastSyncedMessageId: lastMessageId,
+      });
+      openSession(sessionId);
+    } catch (error) {
+      setError(error instanceof Error ? error.message : "Codex chat recovery failed.");
+    } finally {
+      setRecoveringId(null);
+    }
+  }
+
+  return (
+    <SheetDialog title="Recover Codex chats" className="sheet codex-recovery-sheet" onClose={onClose}>
+      <div className="sheet-header providers-header">
+        <div className="providers-title">
+          <h2>Recover Codex chats</h2>
+          <p className="sheet-sub">Import a transcript once, then choose a Codex model to continue its native thread.</p>
+        </div>
+        <button className="icon-btn sheet-close" type="button" onClick={onClose} aria-label="Close recovery">
+          <X size={16} />
+        </button>
+      </div>
+      <div className="codex-recovery-controls">
+        <label>
+          <Search size={13} aria-hidden="true" />
+          <input
+            type="search"
+            value={search}
+            onChange={(event) => setSearch(event.currentTarget.value)}
+            placeholder="Search Codex chats"
+            aria-label="Search Codex chats"
+          />
+        </label>
+        <div className="codex-recovery-tabs" role="group" aria-label="Codex chat archive filter">
+          <button type="button" className={!archived ? "active" : ""} onClick={() => setArchived(false)}>Active</button>
+          <button type="button" className={archived ? "active" : ""} onClick={() => setArchived(true)}>Archived</button>
+        </div>
+      </div>
+      {error && <p className="provider-note error" role="alert">{error}</p>}
+      <div className="codex-recovery-list" aria-busy={busy}>
+        {threads.map((thread) => {
+          const existing = recoveredCodexSessionId(sessions, thread.id);
+          return (
+            <div className="codex-recovery-row" key={thread.id}>
+              <div>
+                <strong>{thread.name?.trim() || thread.preview.trim() || "Untitled Codex chat"}</strong>
+                {thread.cwd && <code>{thread.cwd}</code>}
+                <span>{thread.updated_at_ms ? new Date(thread.updated_at_ms).toLocaleString() : thread.model_provider}</span>
+              </div>
+              <button
+                className="btn-ghost"
+                type="button"
+                disabled={recoveringId !== null}
+                onClick={() => {
+                  if (existing) openSession(existing);
+                  else void recover(thread);
+                }}
+              >
+                        {recoveringId === thread.id ? "Recovering..." : existing ? "Open" : "Recover"}
+              </button>
+            </div>
+          );
+        })}
+        {!busy && threads.length === 0 && <p className="providers-list-empty">No Codex chats found.</p>}
+      </div>
+      {cursor && (
+        <button className="btn-ghost codex-recovery-more" type="button" disabled={busy} onClick={() => void load(false)}>
+              {busy ? "Loading..." : "Load more"}
+        </button>
+      )}
     </SheetDialog>
   );
 }

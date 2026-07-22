@@ -19,6 +19,8 @@ Codex uses the installed Codex CLI app-server.
 | `POST /codex/logout` | Logs out through Codex app-server. |
 | `GET /codex/models` | Lists Codex models and forwards Codex model metadata to the picker. |
 | `GET /codex/rate-limits` | Reads Codex account rate-limit state. |
+| `GET /codex/threads` | Lists active or archived interactive Codex threads in cursor-based pages of 25, with optional `search`. |
+| `GET /codex/threads/{id}` | Reads one recoverable user/assistant transcript without changing or deleting the Codex thread. |
 | `POST /codex/run` | Starts or resumes a Codex app-server thread with Milim's selected tool approval and workspace sandbox policy. |
 
 `/codex/run` accepts `model`, `prompt`, optional `images`, optional `cwd`, optional `reasoning_effort`, optional `thread_id`, optional `persist_thread`, and Milim tool approval fields. A request is valid when the prompt is non-empty or at least one image is present. Each image is `{ "media_type": "image/png", "data": "<base64>" }`; PNG, JPEG, WebP, and GIF are accepted up to 2 MB each. Milim validates the bytes after the privacy check, writes only those bytes into a private temporary per-turn directory, sends Codex app-server `localImage` inputs, and deletes the directory when the turn ends. Caller-supplied filesystem paths are never accepted as image inputs.
@@ -34,6 +36,14 @@ Codex image-generation results are streamed back as:
 ```
 
 Milim renders those as generated image previews in chat. This covers Codex models that emit image-generation items when the installed Codex runtime exposes them.
+
+Normal Codex processes initialize against the stable app-server API. Milim starts one process per account operation or turn and safely declines interactive requests during non-interactive operations. During turns, command and file-change approvals keep their existing Review behavior; additional permission requests always show the exact requested profile and grant it for that turn only. Standard MCP form elicitation supports top-level string, number, integer, boolean, and scalar-enum fields, with validation in both desktop and Rust. HTTP(S) URL elicitation requires explicit Open link and Continue actions. Unsupported schemas, OpenAI-specific forms, and unsafe URL schemes are decline-only. Entered form values are sent through the one-shot approval response and are not stored in the transcript, run trace, or resolved event.
+
+Codex warnings, configuration warnings, model reroutes/verifications, and deprecation notices appear as nonterminal run events. Unknown server requests receive JSON-RPC method-not-found responses instead of blocking the app-server stream.
+
+The Providers screen exposes **Recover chats** after Codex is connected. Recovery pages through app-server history without a global cap, imports only visible user/assistant text, replaces media-only messages with an omission marker, and omits reasoning, tool records, and local file references. Milim attaches the original Codex thread id and the final imported message as its sync cursor, so the next Codex turn resumes without replaying the recovered transcript. The new Milim chat has current local timestamps and no selected model; choose a Codex model before continuing. An already-imported thread opens its existing Milim chat. Milim remains authoritative after this one-time import and does not continuously merge Codex history.
+
+Legacy histories use stable `thread/read`. When Codex explicitly reports paginated history, recovery alone starts a narrowly experimental process and pages `thread/turns/list`; normal account operations and turns remain stable-only.
 
 ## Installed Claude CLI
 

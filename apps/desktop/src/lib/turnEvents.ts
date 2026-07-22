@@ -6,6 +6,8 @@ import type {
   ChatStreamPart,
   ClaudeRunEvent,
   CodexRunEvent,
+  ToolApprovalRequest,
+  ToolApprovalRequestKind,
 } from "../api";
 
 type ChatStreamEventPart = Extract<ChatStreamPart, { kind: "event" }>;
@@ -281,21 +283,39 @@ export function statusPart(label: string, detail?: string, tone: "status" | "war
 }
 
 export function toolApprovalPart(
-  event: Pick<AgentEvent, "approval_id" | "name" | "arguments" | "decision">,
+  event: Pick<AgentEvent, "approval_id" | "name" | "arguments" | "decision"> & {
+    request_kind?: ToolApprovalRequestKind;
+    request?: Record<string, unknown>;
+  },
 ): ChatStreamEventPart {
   const resolved = event.decision != null;
+  const approvalRequest = !resolved && event.request_kind
+    ? ({ kind: event.request_kind, ...(event.request ?? {}) } as ToolApprovalRequest)
+    : undefined;
+  const requestLabel = approvalRequest?.kind === "permissions"
+    ? "Approve additional permissions"
+    : approvalRequest?.kind === "mcp_form"
+      ? "Provide MCP input"
+      : approvalRequest?.kind === "mcp_url"
+        ? "Continue MCP authorization"
+        : approvalRequest?.kind === "mcp_unsupported"
+          ? "Unsupported MCP request"
+          : `Approve ${event.name ?? "tool"}`;
   return {
     kind: "event",
     eventType: "status",
     label: resolved
       ? event.decision === "approve" ? "Tool approved" : "Tool denied"
-      : `Approve ${event.name ?? "tool"}`,
-    detail: event.arguments,
+      : requestLabel,
+    detail: approvalRequest && approvalRequest.kind !== "command" && approvalRequest.kind !== "file_change"
+      ? "message" in approvalRequest ? approvalRequest.message : "reason" in approvalRequest ? approvalRequest.reason ?? undefined : undefined
+      : event.arguments,
     icon: toolEventIcon(event.name),
     name: `approval:${event.approval_id}`,
     status: "done",
     approvalId: event.approval_id,
     approvalStatus: resolved ? (event.decision === "approve" ? "approved" : "denied") : "pending",
+    approvalRequest,
   };
 }
 

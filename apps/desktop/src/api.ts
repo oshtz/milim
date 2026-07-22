@@ -333,6 +333,7 @@ export interface RunTrace {
   workspace?: string;
   sourceSessionId?: string;
   iterations?: number;
+      approvalRequest?: ToolApprovalRequest;
   status: RunStatus;
   error?: string;
   context?: ContextSnapshot;
@@ -1702,6 +1703,31 @@ export async function getCodexAccount(
   signal?: AbortSignal,
 ): Promise<CodexAccountResponse> {
   const url = new URL(`${BASE}/codex/account`);
+export interface CodexThreadSummary {
+  id: string;
+  name?: string | null;
+  preview: string;
+  cwd?: string | null;
+  model_provider: string;
+  created_at_ms: number;
+  updated_at_ms: number;
+  archived: boolean;
+}
+
+export interface CodexThreadPage {
+  data: CodexThreadSummary[];
+  next_cursor?: string | null;
+}
+
+export interface CodexRecoveredThread {
+  id: string;
+  title: string;
+  cwd?: string | null;
+  created_at_ms: number;
+  updated_at_ms: number;
+  messages: Array<{ role: "user" | "assistant"; content: string }>;
+}
+
   if (refresh) url.searchParams.set("refresh", "true");
   return await parseJsonResponse<CodexAccountResponse>(
     await authFetch(url, signal ? { signal } : undefined),
@@ -1769,6 +1795,7 @@ export async function streamCodexDeviceLogin(
   signal?: AbortSignal,
   method: "chatgpt" | "chatgpt_device_code" = "chatgpt",
 ): Promise<void> {
+  | { type: "protocol_notice"; kind: string; message: string; detail?: string | null }
   const path =
     method === "chatgpt_device_code"
       ? "/codex/login/chatgpt-device"
@@ -1856,6 +1883,28 @@ async function streamJsonSse<T>(
   resp: Response,
   onEvent: (ev: T) => void,
 ): Promise<void> {
+export async function listCodexThreads(options: {
+  cursor?: string;
+  search?: string;
+  archived?: boolean;
+} = {}): Promise<CodexThreadPage> {
+  const url = new URL(`${BASE}/codex/threads`);
+  if (options.cursor) url.searchParams.set("cursor", options.cursor);
+  if (options.search?.trim()) url.searchParams.set("search", options.search.trim());
+  if (options.archived) url.searchParams.set("archived", "true");
+  return await parseJsonResponse<CodexThreadPage>(
+    await authFetch(url),
+    "Codex chat recovery failed",
+  );
+}
+
+export async function recoverCodexThread(id: string): Promise<CodexRecoveredThread> {
+  return await parseJsonResponse<CodexRecoveredThread>(
+    await authFetch(`${BASE}/codex/threads/${encodeURIComponent(id)}`),
+    "Codex chat recovery failed",
+  );
+}
+
   const reader = resp.body?.getReader();
   if (!reader) return;
   const decoder = new TextDecoder();
@@ -2804,6 +2853,8 @@ export interface MediaModelListOptions {
 
 export interface MediaSchemaControlOption {
   label: string;
+      request_kind?: ToolApprovalRequestKind;
+      request?: Record<string, unknown>;
   value: unknown;
 }
 
@@ -2812,6 +2863,36 @@ export interface MediaSchemaControl {
   label: string;
   kind: "select" | "number" | string;
   path: string[];
+export type ToolApprovalRequestKind =
+  | "command"
+  | "file_change"
+  | "permissions"
+  | "mcp_form"
+  | "mcp_url"
+  | "mcp_unsupported";
+
+export interface McpApprovalField {
+  name: string;
+  label: string;
+  description?: string | null;
+  kind: "string" | "number" | "integer" | "boolean" | "enum";
+  value_type?: "string" | "number" | "integer" | "boolean";
+  required: boolean;
+  default?: unknown;
+  minimum?: number;
+  maximum?: number;
+  min_length?: number;
+  max_length?: number;
+  options?: Array<{ value: string | number | boolean; label: string }>;
+}
+
+export type ToolApprovalRequest =
+  | { kind: "command" | "file_change" }
+  | { kind: "permissions"; reason?: string | null; cwd?: string | null; permissions?: unknown }
+  | { kind: "mcp_form"; server_name: string; message: string; fields: McpApprovalField[] }
+  | { kind: "mcp_url"; server_name: string; message: string; url: string }
+  | { kind: "mcp_unsupported"; server_name: string; message: string; reason: string };
+
   description?: string;
   options?: MediaSchemaControlOption[];
   default?: unknown;
@@ -3221,7 +3302,7 @@ export async function resolveToolApproval(
   const response = await authFetch(`${BASE}/tool-approvals/${encodeURIComponent(approvalId)}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ decision }),
+    body: JSON.stringify({ decision, ...(responseBody ? { response: responseBody } : {}) }),
   });
   if (!response.ok) throw new Error(await responseErrorMessage(response, "Tool approval failed"));
 }
@@ -3424,6 +3505,7 @@ export async function registerGraphMemory(
     const memoryModel =
       input.model && isUsableChatModel(input.model) ? input.model : "default";
     const r = await authFetch(`${BASE}/memory/register`, {
+  responseBody?: Record<string, unknown>,
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({

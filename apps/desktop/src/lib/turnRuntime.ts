@@ -612,6 +612,10 @@ export async function runModelChatTurn({
   prepareOutbound,
   beginAssistant,
   streamChat,
+      } else if (event.type === "protocol_notice") {
+        flush();
+        appendStreamEvent(statusPart(event.message, event.detail ?? undefined, "warning"));
+        snapshot?.();
   model,
   append,
   signal,

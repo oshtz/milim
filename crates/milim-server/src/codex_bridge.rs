@@ -1,6 +1,6 @@
 //! Thin bridge to the official `codex app-server` JSON-RPC surface.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::convert::Infallible;
 #[cfg(windows)]
 use std::env;
@@ -26,6 +26,7 @@ const CODEX_CLIENT_NAME: &str = "milim";
 const CODEX_CLIENT_TITLE: &str = "Milim";
 pub(crate) const MAX_ACCOUNT_IMAGE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_ACCOUNT_IMAGES: usize = 12;
+const CODEX_THREAD_PAGE_SIZE: u64 = 25;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub(crate) struct AccountImage {
@@ -132,6 +133,40 @@ pub(crate) struct CodexRunRequest {
     pub plan_mode: bool,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct CodexThreadSummary {
+    pub id: String,
+    pub name: Option<String>,
+    pub preview: String,
+    pub cwd: Option<String>,
+    pub model_provider: String,
+    pub created_at_ms: u64,
+    pub updated_at_ms: u64,
+    pub archived: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct CodexThreadPage {
+    pub data: Vec<CodexThreadSummary>,
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct CodexRecoveredMessage {
+    pub role: &'static str,
+    pub content: String,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct CodexRecoveredThread {
+    pub id: String,
+    pub title: String,
+    pub cwd: Option<String>,
+    pub created_at_ms: u64,
+    pub updated_at_ms: u64,
+    pub messages: Vec<CodexRecoveredMessage>,
+}
+
 struct CodexTurnImages {
     dir: PathBuf,
     paths: Vec<PathBuf>,
@@ -211,6 +246,9 @@ enum CodexStreamEvent {
         name: String,
         arguments: String,
         effect: &'static str,
+        request_kind: &'static str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        request: Option<Value>,
     },
     ToolApprovalResolved {
         approval_id: String,
@@ -246,6 +284,12 @@ enum CodexStreamEvent {
     },
     Warning {
         message: String,
+    },
+    ProtocolNotice {
+        kind: String,
+        message: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        detail: Option<String>,
     },
     Image {
         id: String,
@@ -373,6 +417,106 @@ pub(crate) async fn models() -> Result<Value> {
         Some(json!({ "includeHidden": false, "limit": 100 })),
     )
     .await
+}
+
+pub(crate) async fn threads(
+    cursor: Option<String>,
+    search: Option<String>,
+    archived: bool,
+) -> Result<CodexThreadPage> {
+    let mut proc = CodexProcess::start().await?;
+    let mut params = json!({
+        "limit": CODEX_THREAD_PAGE_SIZE,
+        "sortKey": "updated_at",
+        "sortDirection": "desc",
+        "archived": archived,
+    });
+    if let Some(cursor) = clean_optional(cursor.as_deref()) {
+        params["cursor"] = Value::String(cursor);
+    }
+    if let Some(search) = clean_optional(search.as_deref()) {
+        params["searchTerm"] = Value::String(search);
+    }
+    let result = proc.request("thread/list", Some(params)).await?;
+    let data = result
+        .get("data")
+        .and_then(Value::as_array)
+        .map(|threads| {
+            threads
+                .iter()
+                .filter_map(|thread| codex_thread_summary(thread, archived))
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(CodexThreadPage {
+        data,
+        next_cursor: extract_string(&result, &["nextCursor"]),
+    })
+}
+
+pub(crate) async fn recover_thread(thread_id: &str) -> Result<CodexRecoveredThread> {
+    let thread_id = thread_id.trim();
+    if thread_id.is_empty() {
+        return Err(Error::InvalidRequest(
+            "Codex thread id is required".to_string(),
+        ));
+    }
+    let mut proc = CodexProcess::start().await?;
+    let result = match proc
+        .request(
+            "thread/read",
+            Some(json!({ "threadId": thread_id, "includeTurns": true })),
+        )
+        .await
+    {
+        Ok(result) => result,
+        Err(error) if is_paginated_history_error(&error.to_string()) => {
+            let metadata = proc
+                .request(
+                    "thread/read",
+                    Some(json!({ "threadId": thread_id, "includeTurns": false })),
+                )
+                .await?;
+            let turns = experimental_thread_turns(thread_id).await?;
+            let mut thread = metadata.get("thread").cloned().ok_or_else(|| {
+                Error::Upstream("Codex did not return thread metadata".to_string())
+            })?;
+            thread["turns"] = Value::Array(turns);
+            json!({ "thread": thread })
+        }
+        Err(error) => return Err(error),
+    };
+    recovered_thread_from_result(&result)
+}
+
+async fn experimental_thread_turns(thread_id: &str) -> Result<Vec<Value>> {
+    let mut proc = CodexProcess::start_experimental().await?;
+    let mut cursor: Option<String> = None;
+    let mut turns = Vec::new();
+    loop {
+        let mut params = json!({
+            "threadId": thread_id,
+            "limit": 100,
+            "sortDirection": "asc",
+            "itemsView": "full",
+        });
+        if let Some(value) = cursor.take() {
+            params["cursor"] = Value::String(value);
+        }
+        let result = proc.request("thread/turns/list", Some(params)).await?;
+        turns.extend(
+            result
+                .get("data")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default(),
+        );
+        cursor = extract_string(&result, &["nextCursor"]);
+        if cursor.is_none() {
+            break;
+        }
+    }
+    Ok(turns)
 }
 
 pub(crate) async fn login_api_key(api_key: String) -> Result<Value> {
@@ -503,6 +647,22 @@ fn login_stream(
                     return;
                 }
             };
+            if let (Some(method), Some(id)) = (
+                msg.get("method").and_then(Value::as_str),
+                rpc_request_id(&msg),
+            ) {
+                let response = noninteractive_request_response(method);
+                let result = match response {
+                    Some(response) => proc.respond(id, response).await,
+                    None => proc.respond_error(id, -32601, "Method not found").await,
+                };
+                if let Err(error) = result {
+                    yield sse_event(&CodexLoginEvent::Error { message: error.to_string() });
+                    yield Ok(Event::default().data("[DONE]"));
+                    return;
+                }
+                continue;
+            }
             if msg.get("method").and_then(Value::as_str) != Some("account/login/completed") {
                 continue;
             }
@@ -690,7 +850,7 @@ fn run_stream_with_worker_events(
             let params = msg.get("params").unwrap_or(&Value::Null);
             match method {
                 "item/commandExecution/requestApproval" | "item/fileChange/requestApproval" => {
-                    if let Some(id) = response_id(&msg) {
+                    if let Some(id) = rpc_request_id(&msg) {
                         let interactive = account_runtime_policy(req.tool_approval_policy.as_deref()) == "review"
                             && req.interactive_tool_approval
                             && !req.tool_approval_grant;
@@ -715,8 +875,10 @@ fn run_stream_with_worker_events(
                                 name: name.to_string(),
                                 arguments,
                                 effect: if name == "command" { "command" } else { "mutating" },
+                                request_kind: name,
+                                request: None,
                             }, &worker_events);
-                            let approved = pending.wait().await;
+                            let approved = pending.wait().await.approved;
                             yield sse_event_with_worker(&CodexStreamEvent::ToolApprovalResolved {
                                 approval_id: pending.id.clone(),
                                 call_id,
@@ -735,6 +897,98 @@ fn run_stream_with_worker_events(
                             yield Ok(Event::default().data("[DONE]"));
                             return;
                         }
+                    }
+                }
+                "item/permissions/requestApproval" => {
+                    if let Some(id) = rpc_request_id(&msg) {
+                        let mut approved = false;
+                        let call_id = extract_string(params, &["itemId"]);
+                        if let Some(broker) = approval_broker.as_ref() {
+                            let mut pending = broker.request();
+                            yield sse_event_with_worker(&CodexStreamEvent::ToolApprovalRequired {
+                                approval_id: pending.id.clone(),
+                                call_id: call_id.clone(),
+                                name: "permissions".to_string(),
+                                arguments: serde_json::to_string(params).unwrap_or_else(|_| "{}".to_string()),
+                                effect: "mutating",
+                                request_kind: "permissions",
+                                request: Some(permission_request_descriptor(params)),
+                            }, &worker_events);
+                            approved = pending.wait().await.approved;
+                            yield sse_event_with_worker(&CodexStreamEvent::ToolApprovalResolved {
+                                approval_id: pending.id.clone(),
+                                call_id,
+                                decision: if approved { "approve" } else { "deny" },
+                            }, &worker_events);
+                        }
+                        if let Err(e) = proc.respond(id, permission_response(params, approved)).await {
+                            yield sse_event_with_worker(&CodexStreamEvent::Error {
+                                message: e.to_string(),
+                                usage: None,
+                                cost_usd: None,
+                            }, &worker_events);
+                            yield Ok(Event::default().data("[DONE]"));
+                            return;
+                        }
+                    }
+                }
+                "mcpServer/elicitation/request" => {
+                    if let Some(id) = rpc_request_id(&msg) {
+                        let (request_kind, request, supported) = mcp_approval_descriptor(params);
+                        let call_id = extract_string(params, &["elicitationId"]);
+                        if let Some(broker) = approval_broker.as_ref() {
+                            let mut pending = broker.request();
+                            yield sse_event_with_worker(&CodexStreamEvent::ToolApprovalRequired {
+                                approval_id: pending.id.clone(),
+                                call_id: call_id.clone(),
+                                name: format!("MCP {}", extract_string(params, &["serverName"]).unwrap_or_else(|| "server".to_string())),
+                                arguments: extract_string(params, &["message"])
+                                    .unwrap_or_else(|| serde_json::to_string(params).unwrap_or_else(|_| "{}".to_string())),
+                                effect: "unknown",
+                                request_kind,
+                                request: Some(request),
+                            }, &worker_events);
+                            let decision = pending.wait().await;
+                            let (response, accepted, validation_error) =
+                                mcp_elicitation_response(params, supported, decision);
+                            if let Some(message) = validation_error {
+                                yield sse_event_with_worker(&CodexStreamEvent::ProtocolNotice {
+                                    kind: "mcp_validation".to_string(),
+                                    message: "Codex MCP response was declined".to_string(),
+                                    detail: Some(message),
+                                }, &worker_events);
+                            }
+                            yield sse_event_with_worker(&CodexStreamEvent::ToolApprovalResolved {
+                                approval_id: pending.id.clone(),
+                                call_id,
+                                decision: if accepted { "approve" } else { "deny" },
+                            }, &worker_events);
+                            if let Err(e) = proc.respond(id, response).await {
+                                yield sse_event_with_worker(&CodexStreamEvent::Error {
+                                    message: e.to_string(),
+                                    usage: None,
+                                    cost_usd: None,
+                                }, &worker_events);
+                                yield Ok(Event::default().data("[DONE]"));
+                                return;
+                            }
+                        } else if let Err(e) = proc
+                            .respond(id, noninteractive_request_response(method).expect("known request"))
+                            .await
+                        {
+                            yield sse_event_with_worker(&CodexStreamEvent::Error {
+                                message: e.to_string(),
+                                usage: None,
+                                cost_usd: None,
+                            }, &worker_events);
+                            yield Ok(Event::default().data("[DONE]"));
+                            return;
+                        }
+                    }
+                }
+                "configWarning" | "warning" | "model/rerouted" | "model/verification" | "deprecationNotice" => {
+                    if let Some(notice) = protocol_notice(method, params) {
+                        yield sse_event_with_worker(&notice, &worker_events);
                     }
                 }
                 "item/started" => {
@@ -832,7 +1086,24 @@ fn run_stream_with_worker_events(
                     yield Ok(Event::default().data("[DONE]"));
                     return;
                 }
-                _ => {}
+                _ => {
+                    if let Some(id) = rpc_request_id(&msg) {
+                        if let Err(e) = proc.respond_error(id, -32601, "Method not found").await {
+                            yield sse_event_with_worker(&CodexStreamEvent::Error {
+                                message: e.to_string(),
+                                usage: None,
+                                cost_usd: None,
+                            }, &worker_events);
+                            yield Ok(Event::default().data("[DONE]"));
+                            return;
+                        }
+                        yield sse_event_with_worker(&CodexStreamEvent::ProtocolNotice {
+                            kind: "unsupported_request".to_string(),
+                            message: format!("Codex requested unsupported method {method}"),
+                            detail: None,
+                        }, &worker_events);
+                    }
+                }
             }
         }
     }
@@ -916,6 +1187,14 @@ fn account_worker_event_from_codex(value: &CodexStreamEvent) -> Option<AccountWo
         CodexStreamEvent::Warning { message } => Some(AccountWorkerEvent::Warning {
             message: message.clone(),
         }),
+        CodexStreamEvent::ProtocolNotice {
+            message, detail, ..
+        } => Some(AccountWorkerEvent::Warning {
+            message: detail
+                .as_deref()
+                .map(|detail| format!("{message}: {detail}"))
+                .unwrap_or_else(|| message.clone()),
+        }),
         CodexStreamEvent::Image { .. } => None,
     }
 }
@@ -929,6 +1208,14 @@ struct CodexProcess {
 
 impl CodexProcess {
     async fn start() -> Result<Self> {
+        Self::start_with_experimental(false).await
+    }
+
+    async fn start_experimental() -> Result<Self> {
+        Self::start_with_experimental(true).await
+    }
+
+    async fn start_with_experimental(experimental: bool) -> Result<Self> {
         let mut command = codex_command();
         command
             .arg("app-server")
@@ -955,25 +1242,13 @@ impl CodexProcess {
             stdout: BufReader::new(stdout).lines(),
             next_id: 1,
         };
-        proc.initialize().await?;
+        proc.initialize(experimental).await?;
         Ok(proc)
     }
 
-    async fn initialize(&mut self) -> Result<()> {
-        self.request(
-            "initialize",
-            Some(json!({
-                "clientInfo": {
-                    "name": CODEX_CLIENT_NAME,
-                    "title": CODEX_CLIENT_TITLE,
-                    "version": env!("CARGO_PKG_VERSION"),
-                },
-                "capabilities": {
-                    "experimentalApi": true,
-                },
-            })),
-        )
-        .await?;
+    async fn initialize(&mut self, experimental: bool) -> Result<()> {
+        self.request("initialize", Some(initialize_params(experimental)))
+            .await?;
         self.notify("initialized", json!({})).await
     }
 
@@ -981,13 +1256,24 @@ impl CodexProcess {
         let id = self.send_request(method, params).await?;
         loop {
             let msg = self.read_value().await?;
-            if response_id(&msg) != Some(id) {
+            if response_id(&msg) == Some(id) {
+                if let Some(error) = msg.get("error") {
+                    return Err(Error::Upstream(rpc_error_message(error)));
+                }
+                return Ok(msg.get("result").cloned().unwrap_or(Value::Null));
+            }
+            if let (Some(method), Some(request_id)) = (
+                msg.get("method").and_then(Value::as_str),
+                rpc_request_id(&msg),
+            ) {
+                if let Some(result) = noninteractive_request_response(method) {
+                    self.respond(request_id, result).await?;
+                } else {
+                    self.respond_error(request_id, -32601, "Method not found")
+                        .await?;
+                }
                 continue;
             }
-            if let Some(error) = msg.get("error") {
-                return Err(Error::Upstream(rpc_error_message(error)));
-            }
-            return Ok(msg.get("result").cloned().unwrap_or(Value::Null));
         }
     }
 
@@ -1007,9 +1293,17 @@ impl CodexProcess {
             .await
     }
 
-    async fn respond(&mut self, id: u64, result: Value) -> Result<()> {
+    async fn respond(&mut self, id: Value, result: Value) -> Result<()> {
         self.write_value(&json!({ "id": id, "result": result }))
             .await
+    }
+
+    async fn respond_error(&mut self, id: Value, code: i64, message: &str) -> Result<()> {
+        self.write_value(&json!({
+            "id": id,
+            "error": { "code": code, "message": message },
+        }))
+        .await
     }
 
     async fn write_value(&mut self, value: &Value) -> Result<()> {
@@ -1098,6 +1392,137 @@ fn clean_optional(value: Option<&str>) -> Option<String> {
         .map(str::to_string)
 }
 
+fn existing_absolute_directory(value: Option<&str>) -> Option<String> {
+    let value = clean_optional(value)?;
+    let path = PathBuf::from(&value);
+    (path.is_absolute() && path.is_dir()).then_some(value)
+}
+
+fn codex_thread_summary(thread: &Value, archived: bool) -> Option<CodexThreadSummary> {
+    Some(CodexThreadSummary {
+        id: extract_string(thread, &["id"])?,
+        name: extract_string(thread, &["name"]),
+        preview: extract_string(thread, &["preview"]).unwrap_or_default(),
+        cwd: existing_absolute_directory(extract_string(thread, &["cwd"]).as_deref()),
+        model_provider: extract_string(thread, &["modelProvider"])
+            .unwrap_or_else(|| "openai".to_string()),
+        created_at_ms: thread
+            .get("createdAt")
+            .and_then(Value::as_u64)
+            .unwrap_or_default()
+            .saturating_mul(1000),
+        updated_at_ms: thread
+            .get("updatedAt")
+            .and_then(Value::as_u64)
+            .unwrap_or_default()
+            .saturating_mul(1000),
+        archived,
+    })
+}
+
+fn recovered_thread_from_result(result: &Value) -> Result<CodexRecoveredThread> {
+    let thread = result
+        .get("thread")
+        .ok_or_else(|| Error::Upstream("Codex did not return thread data".to_string()))?;
+    let summary = codex_thread_summary(thread, false)
+        .ok_or_else(|| Error::Upstream("Codex did not return a thread id".to_string()))?;
+    let messages = recovered_messages(thread.get("turns").and_then(Value::as_array));
+    if messages.is_empty() {
+        return Err(Error::InvalidRequest(
+            "This Codex thread has no recoverable user or assistant messages".to_string(),
+        ));
+    }
+    let title = summary
+        .name
+        .as_deref()
+        .and_then(clean_optional_value)
+        .or_else(|| clean_optional_value(&summary.preview))
+        .or_else(|| {
+            messages
+                .iter()
+                .find(|message| message.role == "user")
+                .map(|message| compact_recovery_title(&message.content))
+        })
+        .unwrap_or_else(|| "Recovered Codex chat".to_string());
+    Ok(CodexRecoveredThread {
+        id: summary.id,
+        title,
+        cwd: summary.cwd,
+        created_at_ms: summary.created_at_ms,
+        updated_at_ms: summary.updated_at_ms,
+        messages,
+    })
+}
+
+fn clean_optional_value(value: &str) -> Option<String> {
+    clean_optional(Some(value))
+}
+
+fn compact_recovery_title(value: &str) -> String {
+    let compact = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    if compact.chars().count() <= 100 {
+        return compact;
+    }
+    format!("{}…", compact.chars().take(99).collect::<String>())
+}
+
+fn recovered_messages(turns: Option<&Vec<Value>>) -> Vec<CodexRecoveredMessage> {
+    let mut messages = Vec::new();
+    for item in turns
+        .into_iter()
+        .flatten()
+        .filter_map(|turn| turn.get("items").and_then(Value::as_array))
+        .flatten()
+    {
+        match item.get("type").and_then(Value::as_str) {
+            Some("userMessage") => {
+                let content = item.get("content").and_then(Value::as_array);
+                let text = content
+                    .into_iter()
+                    .flatten()
+                    .filter(|part| part.get("type").and_then(Value::as_str) == Some("text"))
+                    .filter_map(|part| extract_string(part, &["text"]))
+                    .filter(|text| !text.trim().is_empty())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let has_omitted_media = content.into_iter().flatten().any(|part| {
+                    matches!(
+                        part.get("type").and_then(Value::as_str),
+                        Some("image" | "localImage" | "audio")
+                    )
+                });
+                let content = if !text.is_empty() {
+                    text
+                } else if has_omitted_media {
+                    "[Media omitted during Codex recovery]".to_string()
+                } else {
+                    continue;
+                };
+                messages.push(CodexRecoveredMessage {
+                    role: "user",
+                    content,
+                });
+            }
+            Some("agentMessage") => {
+                if let Some(content) =
+                    extract_string(item, &["text"]).filter(|text| !text.trim().is_empty())
+                {
+                    messages.push(CodexRecoveredMessage {
+                        role: "assistant",
+                        content,
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+    messages
+}
+
+fn is_paginated_history_error(message: &str) -> bool {
+    message.to_ascii_lowercase().contains("paginated")
+}
+
 fn codex_thread_request(req: &CodexRunRequest, model: &str) -> (&'static str, Value) {
     let cwd = clean_optional(req.cwd.as_deref());
     let mut params = json!({
@@ -1184,6 +1609,445 @@ fn codex_approval_response(req: &CodexRunRequest, method: &str) -> Value {
         "acceptForSession"
     };
     json!({ "decision": decision })
+}
+
+fn permission_request_descriptor(params: &Value) -> Value {
+    json!({
+        "reason": params.get("reason").cloned().unwrap_or(Value::Null),
+        "cwd": params.get("cwd").cloned().unwrap_or(Value::Null),
+        "permissions": params.get("permissions").cloned().unwrap_or_else(|| json!({})),
+    })
+}
+
+fn granted_permissions(params: &Value) -> Value {
+    let Some(requested) = params.get("permissions").and_then(Value::as_object) else {
+        return json!({});
+    };
+    let mut granted = serde_json::Map::new();
+    for key in ["network", "fileSystem"] {
+        if let Some(value) = requested.get(key).filter(|value| !value.is_null()) {
+            granted.insert(key.to_string(), value.clone());
+        }
+    }
+    Value::Object(granted)
+}
+
+fn permission_response(params: &Value, approved: bool) -> Value {
+    json!({
+        "permissions": if approved { granted_permissions(params) } else { json!({}) },
+        "scope": "turn",
+    })
+}
+
+fn mcp_approval_descriptor(params: &Value) -> (&'static str, Value, bool) {
+    let server_name =
+        extract_string(params, &["serverName"]).unwrap_or_else(|| "MCP server".to_string());
+    let message = extract_string(params, &["message"])
+        .unwrap_or_else(|| "The MCP server requested input.".to_string());
+    match params.get("mode").and_then(Value::as_str) {
+        Some("form") => {
+            match normalize_mcp_form_schema(params.get("requestedSchema").unwrap_or(&Value::Null)) {
+                Ok(fields) => (
+                    "mcp_form",
+                    json!({ "server_name": server_name, "message": message, "fields": fields }),
+                    true,
+                ),
+                Err(reason) => (
+                    "mcp_unsupported",
+                    json!({ "server_name": server_name, "message": message, "reason": reason }),
+                    false,
+                ),
+            }
+        }
+        Some("url") => {
+            let url = extract_string(params, &["url"]).unwrap_or_default();
+            if safe_elicitation_url(&url) {
+                (
+                    "mcp_url",
+                    json!({ "server_name": server_name, "message": message, "url": url }),
+                    true,
+                )
+            } else {
+                (
+                    "mcp_unsupported",
+                    json!({ "server_name": server_name, "message": message, "reason": "Only HTTP and HTTPS URLs can be opened." }),
+                    false,
+                )
+            }
+        }
+        Some("openai/form") => (
+            "mcp_unsupported",
+            json!({ "server_name": server_name, "message": message, "reason": "OpenAI-specific MCP forms are not supported." }),
+            false,
+        ),
+        _ => (
+            "mcp_unsupported",
+            json!({ "server_name": server_name, "message": message, "reason": "Unsupported MCP elicitation mode." }),
+            false,
+        ),
+    }
+}
+
+fn normalize_mcp_form_schema(schema: &Value) -> std::result::Result<Vec<Value>, String> {
+    let object = schema
+        .as_object()
+        .ok_or_else(|| "The form schema must be an object.".to_string())?;
+    let allowed_root = ["$schema", "type", "properties", "required"];
+    if object
+        .keys()
+        .any(|key| !allowed_root.contains(&key.as_str()))
+    {
+        return Err("The form uses unsupported schema composition or constraints.".to_string());
+    }
+    if object.get("type").and_then(Value::as_str) != Some("object") {
+        return Err("The form schema must have type object.".to_string());
+    }
+    let properties = object
+        .get("properties")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "The form schema must define properties.".to_string())?;
+    let required: HashSet<&str> = match object.get("required") {
+        None => HashSet::new(),
+        Some(Value::Array(values)) => values
+            .iter()
+            .map(|value| {
+                value
+                    .as_str()
+                    .ok_or_else(|| "Required field names must be strings.".to_string())
+            })
+            .collect::<std::result::Result<_, _>>()?,
+        Some(_) => return Err("The required field list must be an array.".to_string()),
+    };
+    if required.iter().any(|name| !properties.contains_key(*name)) {
+        return Err("The form requires an unknown field.".to_string());
+    }
+
+    properties
+        .iter()
+        .map(|(name, schema)| {
+            normalize_mcp_form_field(name, schema, required.contains(name.as_str()))
+        })
+        .collect()
+}
+
+fn normalize_mcp_form_field(
+    name: &str,
+    schema: &Value,
+    required: bool,
+) -> std::result::Result<Value, String> {
+    let object = schema
+        .as_object()
+        .ok_or_else(|| format!("Field {name} must use a primitive schema."))?;
+    let allowed = [
+        "type",
+        "title",
+        "description",
+        "default",
+        "enum",
+        "enumNames",
+        "minimum",
+        "maximum",
+        "minLength",
+        "maxLength",
+    ];
+    if object.keys().any(|key| !allowed.contains(&key.as_str())) {
+        return Err(format!("Field {name} uses an unsupported schema feature."));
+    }
+    let value_type = object
+        .get("type")
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("Field {name} is missing a primitive type."))?;
+    if !matches!(value_type, "string" | "number" | "integer" | "boolean") {
+        return Err(format!("Field {name} has unsupported type {value_type}."));
+    }
+    for key in ["title", "description"] {
+        if object.get(key).is_some_and(|value| !value.is_string()) {
+            return Err(format!("Field {name} has an invalid {key}."));
+        }
+    }
+    for key in ["minimum", "maximum"] {
+        if object.get(key).is_some_and(|value| !value.is_number())
+            || (!matches!(value_type, "number" | "integer") && object.contains_key(key))
+        {
+            return Err(format!("Field {name} has an invalid {key}."));
+        }
+    }
+    for key in ["minLength", "maxLength"] {
+        if object
+            .get(key)
+            .is_some_and(|value| value.as_u64().is_none())
+            || (value_type != "string" && object.contains_key(key))
+        {
+            return Err(format!("Field {name} has an invalid {key}."));
+        }
+    }
+    if object
+        .get("minimum")
+        .and_then(Value::as_f64)
+        .is_some_and(|min| {
+            object
+                .get("maximum")
+                .and_then(Value::as_f64)
+                .is_some_and(|max| min > max)
+        })
+        || object
+            .get("minLength")
+            .and_then(Value::as_u64)
+            .is_some_and(|min| {
+                object
+                    .get("maxLength")
+                    .and_then(Value::as_u64)
+                    .is_some_and(|max| min > max)
+            })
+    {
+        return Err(format!("Field {name} has an invalid constraint range."));
+    }
+    let mut field = json!({
+        "name": name,
+        "label": object.get("title").and_then(Value::as_str).unwrap_or(name),
+        "description": object.get("description").and_then(Value::as_str),
+        "kind": value_type,
+        "required": required,
+    });
+    for (source, target) in [
+        ("default", "default"),
+        ("minimum", "minimum"),
+        ("maximum", "maximum"),
+        ("minLength", "min_length"),
+        ("maxLength", "max_length"),
+    ] {
+        if let Some(value) = object.get(source) {
+            field[target] = value.clone();
+        }
+    }
+    let enum_values = match object.get("enum") {
+        None => None,
+        Some(Value::Array(values)) => Some(values),
+        Some(_) => return Err(format!("Field {name} has an invalid enum.")),
+    };
+    let enum_names = match object.get("enumNames") {
+        None => None,
+        Some(Value::Array(values)) => Some(values),
+        Some(_) => return Err(format!("Field {name} has invalid enum labels.")),
+    };
+    if enum_names.is_some() && enum_values.is_none() {
+        return Err(format!("Field {name} has enum labels without values."));
+    }
+    if let Some(values) = enum_values {
+        if values.is_empty()
+            || values
+                .iter()
+                .any(|value| !mcp_value_matches_type(value, value_type))
+        {
+            return Err(format!("Field {name} has an invalid enum."));
+        }
+        let names = enum_names;
+        if names.is_some_and(|names| {
+            names.len() != values.len() || names.iter().any(|value| !value.is_string())
+        }) {
+            return Err(format!("Field {name} has invalid enum labels."));
+        }
+        field["kind"] = Value::String("enum".to_string());
+        field["value_type"] = Value::String(value_type.to_string());
+        field["options"] = Value::Array(
+            values
+                .iter()
+                .enumerate()
+                .map(|(index, value)| {
+                    json!({
+                        "value": value,
+                        "label": names.and_then(|names| names.get(index)).and_then(Value::as_str)
+                            .map(str::to_string)
+                            .unwrap_or_else(|| scalar_label(value)),
+                    })
+                })
+                .collect(),
+        );
+    }
+    if let Some(default) = object.get("default") {
+        validate_mcp_field_value(name, object, default)?;
+    }
+    Ok(field)
+}
+
+fn scalar_label(value: &Value) -> String {
+    value
+        .as_str()
+        .map(str::to_string)
+        .unwrap_or_else(|| value.to_string())
+}
+
+fn mcp_value_matches_type(value: &Value, value_type: &str) -> bool {
+    match value_type {
+        "string" => value.is_string(),
+        "number" => value.is_number(),
+        "integer" => value.as_i64().is_some() || value.as_u64().is_some(),
+        "boolean" => value.is_boolean(),
+        _ => false,
+    }
+}
+
+fn validate_mcp_field_value(
+    name: &str,
+    schema: &serde_json::Map<String, Value>,
+    value: &Value,
+) -> std::result::Result<(), String> {
+    let value_type = schema
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if !mcp_value_matches_type(value, value_type) {
+        return Err(format!("Field {name} must be {value_type}."));
+    }
+    if let Some(values) = schema.get("enum").and_then(Value::as_array) {
+        if !values.contains(value) {
+            return Err(format!("Field {name} must match an allowed value."));
+        }
+    }
+    if let Some(text) = value.as_str() {
+        let length = text.chars().count() as u64;
+        if schema
+            .get("minLength")
+            .and_then(Value::as_u64)
+            .is_some_and(|min| length < min)
+            || schema
+                .get("maxLength")
+                .and_then(Value::as_u64)
+                .is_some_and(|max| length > max)
+        {
+            return Err(format!("Field {name} has an invalid length."));
+        }
+    }
+    if let Some(number) = value.as_f64() {
+        if schema
+            .get("minimum")
+            .and_then(Value::as_f64)
+            .is_some_and(|min| number < min)
+            || schema
+                .get("maximum")
+                .and_then(Value::as_f64)
+                .is_some_and(|max| number > max)
+        {
+            return Err(format!("Field {name} is outside the allowed range."));
+        }
+    }
+    Ok(())
+}
+
+fn validate_mcp_form_response(
+    schema: &Value,
+    response: &Value,
+) -> std::result::Result<Value, String> {
+    let schema = schema
+        .as_object()
+        .ok_or_else(|| "Invalid form schema.".to_string())?;
+    let properties = schema
+        .get("properties")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "Invalid form properties.".to_string())?;
+    let required: HashSet<&str> = schema
+        .get("required")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect();
+    let response = response
+        .as_object()
+        .ok_or_else(|| "Form response must be an object.".to_string())?;
+    if response.keys().any(|name| !properties.contains_key(name)) {
+        return Err("Form response contains an unknown field.".to_string());
+    }
+    for name in required {
+        if !response.contains_key(name) {
+            return Err(format!("Field {name} is required."));
+        }
+    }
+    for (name, value) in response {
+        let field = properties
+            .get(name)
+            .and_then(Value::as_object)
+            .ok_or_else(|| format!("Field {name} has an invalid schema."))?;
+        validate_mcp_field_value(name, field, value)?;
+    }
+    Ok(Value::Object(response.clone()))
+}
+
+fn safe_elicitation_url(value: &str) -> bool {
+    reqwest::Url::parse(value)
+        .ok()
+        .is_some_and(|url| matches!(url.scheme(), "http" | "https"))
+}
+
+fn mcp_elicitation_response(
+    params: &Value,
+    supported: bool,
+    decision: milim_agents::ApprovalDecision,
+) -> (Value, bool, Option<String>) {
+    let declined = || json!({ "action": "decline", "content": null, "_meta": null });
+    if !supported || !decision.approved {
+        return (declined(), false, None);
+    }
+    match params.get("mode").and_then(Value::as_str) {
+        Some("form") => match decision
+            .response
+            .as_ref()
+            .ok_or_else(|| "Form values are required.".to_string())
+            .and_then(|response| {
+                validate_mcp_form_response(
+                    params.get("requestedSchema").unwrap_or(&Value::Null),
+                    response,
+                )
+            }) {
+            Ok(content) => (
+                json!({ "action": "accept", "content": content, "_meta": null }),
+                true,
+                None,
+            ),
+            Err(error) => (declined(), false, Some(error)),
+        },
+        Some("url") => (
+            json!({ "action": "accept", "content": null, "_meta": null }),
+            true,
+            None,
+        ),
+        _ => (declined(), false, None),
+    }
+}
+
+fn protocol_notice(method: &str, params: &Value) -> Option<CodexStreamEvent> {
+    let (message, detail) = match method {
+        "configWarning" | "deprecationNotice" => (
+            extract_string(params, &["summary"])
+                .unwrap_or_else(|| "Codex reported a warning".to_string()),
+            extract_string(params, &["details"]),
+        ),
+        "warning" => (
+            extract_string(params, &["message"])
+                .unwrap_or_else(|| "Codex reported a warning".to_string()),
+            None,
+        ),
+        "model/rerouted" => {
+            let from = extract_string(params, &["fromModel"])
+                .unwrap_or_else(|| "requested model".to_string());
+            let to =
+                extract_string(params, &["toModel"]).unwrap_or_else(|| "another model".to_string());
+            (
+                format!("Codex rerouted {from} to {to}"),
+                params.get("reason").map(scalar_label),
+            )
+        }
+        "model/verification" => (
+            "Codex model verification updated".to_string(),
+            params.get("verifications").map(|value| value.to_string()),
+        ),
+        _ => return None,
+    };
+    Some(CodexStreamEvent::ProtocolNotice {
+        kind: method.to_string(),
+        message,
+        detail,
+    })
 }
 
 fn image_event_from_item(item: &Value) -> Option<CodexStreamEvent> {
@@ -1466,6 +2330,45 @@ fn codex_developer_instructions() -> &'static str {
 
 fn response_id(value: &Value) -> Option<u64> {
     value.get("id").and_then(Value::as_u64)
+}
+
+fn rpc_request_id(value: &Value) -> Option<Value> {
+    value
+        .get("id")
+        .filter(|id| id.is_number() || id.is_string())
+        .cloned()
+}
+
+fn noninteractive_request_response(method: &str) -> Option<Value> {
+    match method {
+        "item/commandExecution/requestApproval" | "item/fileChange/requestApproval" => {
+            Some(json!({ "decision": "decline" }))
+        }
+        "item/permissions/requestApproval" => Some(json!({
+            "permissions": {},
+            "scope": "turn",
+        })),
+        "mcpServer/elicitation/request" => Some(json!({
+            "action": "decline",
+            "content": null,
+            "_meta": null,
+        })),
+        _ => None,
+    }
+}
+
+fn initialize_params(experimental: bool) -> Value {
+    let mut params = json!({
+        "clientInfo": {
+            "name": CODEX_CLIENT_NAME,
+            "title": CODEX_CLIENT_TITLE,
+            "version": env!("CARGO_PKG_VERSION"),
+        },
+    });
+    if experimental {
+        params["capabilities"] = json!({ "experimentalApi": true });
+    }
+    params
 }
 
 fn extract_string(value: &Value, path: &[&str]) -> Option<String> {
@@ -1815,6 +2718,169 @@ mod tests {
             "status": "inProgress"
         }))
         .is_none());
+    }
+
+    #[test]
+    fn stable_initialization_omits_experimental_capability() {
+        assert!(initialize_params(false).get("capabilities").is_none());
+        assert_eq!(
+            initialize_params(true)["capabilities"]["experimentalApi"],
+            true
+        );
+    }
+
+    #[test]
+    fn noninteractive_requests_decline_and_unknown_requests_are_unhandled() {
+        assert_eq!(
+            noninteractive_request_response("item/permissions/requestApproval").unwrap(),
+            json!({ "permissions": {}, "scope": "turn" })
+        );
+        assert_eq!(
+            noninteractive_request_response("mcpServer/elicitation/request").unwrap()["action"],
+            "decline"
+        );
+        assert!(noninteractive_request_response("future/request").is_none());
+        assert_eq!(
+            rpc_request_id(&json!({ "id": "request-1" })),
+            Some(json!("request-1"))
+        );
+    }
+
+    #[test]
+    fn permission_approval_grants_only_the_requested_profile_for_one_turn() {
+        let params = json!({
+            "permissions": {
+                "network": { "enabled": true, "domains": ["example.com"] },
+                "fileSystem": { "read": ["C:\\repo"], "write": ["C:\\repo\\out"] },
+                "unexpected": { "admin": true }
+            }
+        });
+        let approved = permission_response(&params, true);
+        assert_eq!(approved["scope"], "turn");
+        assert_eq!(
+            approved["permissions"]["network"]["domains"][0],
+            "example.com"
+        );
+        assert!(approved["permissions"].get("unexpected").is_none());
+        assert_eq!(
+            permission_response(&params, false)["permissions"],
+            json!({})
+        );
+    }
+
+    #[test]
+    fn validates_bounded_mcp_forms_and_rejects_unsupported_schema() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "name": { "type": "string", "title": "Name", "minLength": 1 },
+                "count": { "type": "integer", "minimum": 1 },
+                "enabled": { "type": "boolean", "default": true },
+                "tone": { "type": "string", "enum": ["calm", "direct"] }
+            },
+            "required": ["name", "tone"]
+        });
+        let fields = normalize_mcp_form_schema(&schema).expect("supported form");
+        assert_eq!(fields.len(), 4);
+        assert_eq!(fields[3]["kind"], "enum");
+        assert!(validate_mcp_form_response(
+            &schema,
+            &json!({ "name": "Milim", "count": 2, "enabled": false, "tone": "direct" })
+        )
+        .is_ok());
+        assert!(
+            validate_mcp_form_response(&schema, &json!({ "name": "", "tone": "loud" })).is_err()
+        );
+        assert!(normalize_mcp_form_schema(&json!({
+            "type": "object",
+            "properties": { "nested": { "type": "object" } }
+        }))
+        .is_err());
+        assert!(normalize_mcp_form_schema(&json!({
+            "type": "object",
+            "properties": {},
+            "allOf": []
+        }))
+        .is_err());
+        assert!(normalize_mcp_form_schema(&json!({
+            "type": "object",
+            "properties": {},
+            "required": "name"
+        }))
+        .is_err());
+        assert!(normalize_mcp_form_schema(&json!({
+            "type": "object",
+            "properties": { "tone": { "type": "string", "enum": "calm" } }
+        }))
+        .is_err());
+    }
+
+    #[test]
+    fn mcp_urls_and_notices_are_normalized_safely() {
+        assert!(safe_elicitation_url("https://example.com/continue"));
+        assert!(!safe_elicitation_url("file:///C:/secret"));
+        assert!(matches!(
+            protocol_notice(
+                "model/rerouted",
+                &json!({ "fromModel": "gpt-a", "toModel": "gpt-b", "reason": "capacity" })
+            ),
+            Some(CodexStreamEvent::ProtocolNotice { message, .. }) if message.contains("gpt-a") && message.contains("gpt-b")
+        ));
+    }
+
+    #[test]
+    fn recovery_keeps_only_visible_messages_and_omits_media_paths() {
+        let result = json!({ "thread": {
+            "id": "thread-1",
+            "name": "Recovered work",
+            "preview": "preview",
+            "cwd": "relative/path",
+            "modelProvider": "openai",
+            "createdAt": 10,
+            "updatedAt": 20,
+            "turns": [{ "items": [
+                { "type": "userMessage", "content": [{ "type": "localImage", "path": "C:\\secret.png" }] },
+                { "type": "reasoning", "content": ["hidden"] },
+                { "type": "agentMessage", "text": "Visible answer" },
+                { "type": "commandExecution", "command": "secret" }
+            ] }]
+        }});
+        let recovered = recovered_thread_from_result(&result).expect("recoverable thread");
+        assert_eq!(recovered.messages.len(), 2);
+        assert_eq!(
+            recovered.messages[0].content,
+            "[Media omitted during Codex recovery]"
+        );
+        assert_eq!(recovered.messages[1].content, "Visible answer");
+        assert!(recovered.cwd.is_none());
+        assert_eq!(recovered.created_at_ms, 10_000);
+    }
+
+    #[test]
+    fn paginated_fallback_is_narrow() {
+        assert!(is_paginated_history_error("thread uses paginated history"));
+        assert!(!is_paginated_history_error("thread not found"));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an installed and authenticated Codex CLI"]
+    async fn codex_app_server_smoke() {
+        let mut proc = CodexProcess::start()
+            .await
+            .expect("start stable app-server");
+        let models = proc
+            .request(
+                "model/list",
+                Some(json!({ "includeHidden": false, "limit": 1 })),
+            )
+            .await
+            .expect("model/list");
+        assert!(models.get("data").is_some());
+        let threads = proc
+            .request("thread/list", Some(json!({ "limit": 1 })))
+            .await
+            .expect("thread/list");
+        assert!(threads.get("data").is_some());
     }
 
     #[test]

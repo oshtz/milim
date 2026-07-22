@@ -171,6 +171,8 @@ pub fn build_router(state: AppState) -> Router {
         .route("/codex/rate-limits", get(routes::codex_rate_limits))
         .route("/codex/models", get(routes::codex_models))
         .route("/codex/run", post(routes::codex_run))
+        .route("/codex/threads", get(routes::codex_threads))
+        .route("/codex/threads/{id}", get(routes::codex_thread_recover))
         // Installed Claude CLI bridge (separate from Anthropic API-key providers)
         .route("/claude/status", get(routes::claude_status))
         .route("/claude/run", post(routes::claude_run))

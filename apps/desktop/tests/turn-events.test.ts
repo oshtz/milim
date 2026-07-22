@@ -1,5 +1,5 @@
 import type { BufferedStreamChunk } from "../src/sessions/store.js";
-import { accountRuntimeToolPart, runtimeWarningMessage, statusPart, toolCompletedPart, toolStartedPart } from "../src/lib/turnEvents.js";
+import { accountRuntimeToolPart, runtimeWarningMessage, statusPart, toolApprovalPart, toolCompletedPart, toolStartedPart } from "../src/lib/turnEvents.js";
 import { claimTurnGeneration, createStreamUpdateBatcher, startTurnStream } from "../src/lib/turnStream.js";
 
 function assert(condition: unknown, message: string): asserts condition {
@@ -86,6 +86,17 @@ const warning = runtimeWarningMessage("Codex not on PATH", "Install Codex");
 assert(warning.streamParts?.[0]?.kind === "event", "runtime warning should be an event part");
 equal(warning.streamParts[0].eventType, "warning", "runtime warning event should be warning");
 equal(statusPart("Error", "boom", "error").status, "error", "error status part should mark error");
+
+const permissionApproval = toolApprovalPart({
+  type: "tool_approval_required",
+  approval_id: "approval-1",
+  name: "permissions",
+  arguments: "{}",
+  request_kind: "permissions",
+  request: { reason: "Needs network", permissions: { network: { enabled: true } } },
+} as never);
+equal(permissionApproval.label, "Approve additional permissions", "permission approval should have a specific label");
+equal(permissionApproval.approvalRequest?.kind, "permissions", "permission details should survive event mapping");
 
 const appended: { sessionId: string; chunks: BufferedStreamChunk[] }[] = [];
 const batcher = createStreamUpdateBatcher("s1", {
