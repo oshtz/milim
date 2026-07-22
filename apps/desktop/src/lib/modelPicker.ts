@@ -3,12 +3,14 @@ import type { ModelInfo, ProviderInfo } from "../api";
 const PROVIDER_MODEL_PREFIX = "provider:";
 const CODEX_MODEL_PREFIX = "codex:";
 const CLAUDE_MODEL_PREFIX = "claude:";
+const OPENCODE_MODEL_PREFIX = "opencode:";
 
 export type ModelDevLane =
   | "plain-chat"
   | "milim-tools"
   | "codex-runtime"
   | "claude-runtime"
+  | "opencode-runtime"
   | "media";
 
 export type ModelDevCapability =
@@ -126,6 +128,7 @@ export function modelDevProfile(
   );
   const codex = id.startsWith(CODEX_MODEL_PREFIX);
   const claude = id.startsWith(CLAUDE_MODEL_PREFIX);
+  const opencode = id.startsWith(OPENCODE_MODEL_PREFIX);
   const provider = model ? providerForModel(model, context.providers ?? []) : null;
   const setup = modelSetupStatus(model, provider, id);
   const detailTags = model ? modelDetailTags(model, provider) : [];
@@ -133,6 +136,8 @@ export function modelDevProfile(
     ? "Codex"
     : claude
       ? "Claude CLI"
+      : opencode
+        ? "OpenCode CLI"
       : provider?.name || model?.owned_by || "Unknown provider";
 
   if (codex) {
@@ -159,6 +164,19 @@ export function modelDevProfile(
       routeDetail: context.planMode
         ? "Plan mode keeps this turn read-only."
         : "Next turn uses the installed Claude CLI runtime bridge with this thread context.",
+    };
+  }
+  if (opencode) {
+    return {
+      lane: "opencode-runtime",
+      laneLabel: "OpenCode runtime",
+      providerLabel,
+      ...setup,
+      capabilities,
+      detailTags,
+      routeDetail: context.planMode
+        ? "Plan mode keeps this turn read-only."
+        : "Next turn uses the installed OpenCode ACP runtime with this thread context.",
     };
   }
   if (media) {
@@ -234,6 +252,13 @@ function modelSetupStatus(
       setupTone: "ready",
       setupLabel: "CLI ready",
       setupDetail: "Claude appears in the picker after CLI setup.",
+    };
+  }
+  if (selectedId.startsWith(OPENCODE_MODEL_PREFIX)) {
+    return {
+      setupTone: "ready",
+      setupLabel: "CLI ready",
+      setupDetail: "OpenCode appears in the picker after CLI and provider setup.",
     };
   }
   if (!provider && model.provider_id) {

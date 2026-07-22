@@ -10,7 +10,7 @@ use tauri::{AppHandle, Manager, Wry};
 
 const PREVIEW_EVAL_TIMEOUT: Duration = Duration::from_secs(3);
 
-const PREVIEW_ACTION_JS: &str = r#"
+const PREVIEW_ACTION_JS: &str = r##"
 try {
   const rootWindow = window;
   const rootDocument = document;
@@ -57,6 +57,69 @@ try {
     const p = __milimArgs.x != null && __milimArgs.y != null ? point() : { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
     el.dispatchEvent(new MouseEvent(kind, { bubbles: true, cancelable: true, clientX: p.x, clientY: p.y, button: 0 }));
   };
+
+  const cleanupPicker = () => {
+    const picker = W.__milimPreviewPicker;
+    if (!picker) return;
+    D.removeEventListener("pointerover", picker.hover, true);
+    D.removeEventListener("click", picker.click, true);
+    D.removeEventListener("keydown", picker.key, true);
+    picker.active?.style?.removeProperty("outline");
+    W.clearTimeout(picker.timer);
+  };
+  const stableSelector = (el) => {
+    if (el.id) return "#" + W.CSS.escape(el.id);
+    const testId = el.getAttribute?.("data-testid");
+    if (testId) return '[data-testid="' + W.CSS.escape(testId) + '"]';
+    const parts = [];
+    let node = el;
+    while (node && node.nodeType === 1 && parts.length < 6) {
+      let part = node.tagName.toLowerCase();
+      const peers = node.parentElement ? Array.from(node.parentElement.children).filter((item) => item.tagName === node.tagName) : [];
+      if (peers.length > 1) part += ":nth-of-type(" + (peers.indexOf(node) + 1) + ")";
+      parts.unshift(part); node = node.parentElement;
+    }
+    return parts.join(" > ");
+  };
+
+  if (__milimAction === "annotate_start") {
+    cleanupPicker();
+    const picker = { active: null, selection: null, timer: 0 };
+    picker.hover = (event) => {
+      picker.active?.style?.removeProperty("outline");
+      picker.active = event.target instanceof W.Element ? event.target : null;
+      picker.active?.style?.setProperty("outline", "2px solid #7c5cff", "important");
+    };
+    picker.click = (event) => {
+      if (!(event.target instanceof W.Element)) return;
+      event.preventDefault(); event.stopImmediatePropagation();
+      const el = event.target; const rect = el.getBoundingClientRect();
+      picker.selection = {
+        url: W.location.href, title: D.title || "", selector: stableSelector(el),
+        tag: el.tagName.toLowerCase(), id: el.id || null,
+        testId: el.getAttribute("data-testid"), role: el.getAttribute("role"),
+        visibleText: textOf(el).slice(0, 500), outerHtml: el.outerHTML.slice(0, 2048),
+        rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
+      };
+      cleanupPicker();
+    };
+    picker.key = (event) => { if (event.key === "Escape") { cleanupPicker(); W.__milimPreviewPicker = null; } };
+    picker.timer = W.setTimeout(() => { cleanupPicker(); W.__milimPreviewPicker = null; }, 30000);
+    W.__milimPreviewPicker = picker;
+    D.addEventListener("pointerover", picker.hover, true);
+    D.addEventListener("click", picker.click, true);
+    D.addEventListener("keydown", picker.key, true);
+    return { ok: true, started: true };
+  }
+  if (__milimAction === "annotate_take") {
+    const selection = W.__milimPreviewPicker?.selection || null;
+    if (selection) W.__milimPreviewPicker = null;
+    return { ok: true, selection };
+  }
+  if (__milimAction === "annotate_cancel") {
+    cleanupPicker(); W.__milimPreviewPicker = null;
+    return { ok: true, canceled: true };
+  }
 
   if (__milimAction === "snapshot") {
     const max = Math.min(Math.max(Number(__milimArgs.max_chars) || 12000, 1000), 40000);
@@ -126,7 +189,7 @@ try {
 } catch (error) {
   return { ok: false, error: String(error?.message || error), stack: String(error?.stack || "") };
 }
-"#;
+"##;
 
 #[derive(Clone, Debug)]
 struct PreviewTarget {
@@ -298,11 +361,39 @@ fn default_preview_capabilities() -> Vec<String> {
         "key",
         "scroll",
         "logs",
+        "annotate",
         "source",
     ]
     .iter()
     .map(|capability| (*capability).to_string())
     .collect()
+}
+
+#[tauri::command]
+pub async fn preview_picker_start(
+    state: tauri::State<'_, SharedPreviewToolState>,
+) -> std::result::Result<Value, String> {
+    run_preview_action(&state, "annotate_start", json!({}))
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn preview_picker_take(
+    state: tauri::State<'_, SharedPreviewToolState>,
+) -> std::result::Result<Value, String> {
+    run_preview_action(&state, "annotate_take", json!({}))
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn preview_picker_cancel(
+    state: tauri::State<'_, SharedPreviewToolState>,
+) -> std::result::Result<Value, String> {
+    run_preview_action(&state, "annotate_cancel", json!({}))
+        .await
+        .map_err(|error| error.to_string())
 }
 
 fn capability_for_action(action: &str) -> &str {

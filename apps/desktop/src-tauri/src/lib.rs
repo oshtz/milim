@@ -141,6 +141,27 @@ struct WorkspaceFileSuggestion {
 }
 
 #[derive(serde::Serialize, Debug)]
+struct WorkspaceDirectoryEntry {
+    path: String,
+    name: String,
+    kind: &'static str,
+    size: Option<u64>,
+}
+
+#[derive(serde::Serialize, Debug)]
+struct WorkspaceDirectoryPage {
+    entries: Vec<WorkspaceDirectoryEntry>,
+    next_cursor: Option<String>,
+}
+
+#[derive(serde::Serialize, Debug)]
+struct WorkspaceReviewFile {
+    path: String,
+    content: String,
+    size: u64,
+}
+
+#[derive(serde::Serialize, Debug)]
 struct SavedArtifactFilePayload {
     path: String,
     bytes: usize,
@@ -916,6 +937,131 @@ async fn list_workspace_files(
     tokio::task::spawn_blocking(move || list_workspace_files_blocking(&workspace, &query, limit))
         .await
         .map_err(|e| format!("workspace file list task failed: {e}"))?
+}
+
+#[tauri::command]
+async fn list_workspace_directory(
+    workspace: String,
+    path: String,
+    cursor: Option<String>,
+    limit: Option<usize>,
+) -> std::result::Result<WorkspaceDirectoryPage, String> {
+    tokio::task::spawn_blocking(move || {
+        list_workspace_directory_blocking(&workspace, &path, cursor.as_deref(), limit)
+    })
+    .await
+    .map_err(|error| format!("workspace directory task failed: {error}"))?
+}
+
+fn list_workspace_directory_blocking(
+    workspace: &str,
+    path: &str,
+    cursor: Option<&str>,
+    limit: Option<usize>,
+) -> std::result::Result<WorkspaceDirectoryPage, String> {
+    let root = fs::canonicalize(workspace_root(workspace)?)
+        .map_err(|error| format!("failed to resolve working folder: {error}"))?;
+    let relative = if path.trim().is_empty() {
+        PathBuf::new()
+    } else {
+        safe_artifact_relative_path(path)?
+    };
+    let lexical = root.join(&relative);
+    let directory = fs::canonicalize(&lexical)
+        .map_err(|error| format!("failed to resolve workspace directory: {error}"))?;
+    if !directory.starts_with(&root) || directory != lexical {
+        return Err("workspace directory must not traverse a symlink or junction".to_string());
+    }
+    if !directory.is_dir() {
+        return Err("workspace path is not a directory".to_string());
+    }
+    let mut entries = Vec::new();
+    for entry in fs::read_dir(&directory)
+        .map_err(|error| format!("failed to list workspace directory: {error}"))?
+    {
+        let entry = entry.map_err(|error| format!("failed to read workspace entry: {error}"))?;
+        let file_type = entry
+            .file_type()
+            .map_err(|error| format!("failed to inspect workspace entry: {error}"))?;
+        if file_type.is_symlink() {
+            continue;
+        }
+        let entry_path = entry.path();
+        let resolved = fs::canonicalize(&entry_path)
+            .map_err(|error| format!("failed to resolve workspace entry: {error}"))?;
+        if !resolved.starts_with(&root) || resolved != entry_path {
+            continue;
+        }
+        let kind = if file_type.is_dir() {
+            "directory"
+        } else if file_type.is_file() {
+            "file"
+        } else {
+            continue;
+        };
+        let metadata = entry
+            .metadata()
+            .map_err(|error| format!("failed to inspect workspace entry: {error}"))?;
+        entries.push(WorkspaceDirectoryEntry {
+            path: workspace_relative_path(&root, &entry_path),
+            name: entry.file_name().to_string_lossy().to_string(),
+            kind,
+            size: file_type.is_file().then_some(metadata.len()),
+        });
+    }
+    entries.sort_by(|a, b| {
+        (a.kind != "directory", a.name.to_ascii_lowercase())
+            .cmp(&(b.kind != "directory", b.name.to_ascii_lowercase()))
+    });
+    let offset = cursor
+        .unwrap_or("0")
+        .parse::<usize>()
+        .map_err(|_| "invalid directory cursor".to_string())?;
+    let page_size = limit.unwrap_or(200).clamp(1, 200);
+    let total = entries.len();
+    let end = (offset + page_size).min(total);
+    let page = if offset < total {
+        entries.drain(offset..end).collect()
+    } else {
+        Vec::new()
+    };
+    Ok(WorkspaceDirectoryPage {
+        entries: page,
+        next_cursor: (end < total).then(|| end.to_string()),
+    })
+}
+
+#[tauri::command]
+async fn read_workspace_review_file(
+    workspace: String,
+    path: String,
+) -> std::result::Result<WorkspaceReviewFile, String> {
+    tokio::task::spawn_blocking(move || {
+        const MAX_REVIEW_FILE_BYTES: u64 = 2 * 1024 * 1024;
+        let target = resolve_workspace_attachment_path(&workspace, &path)?;
+        let metadata = fs::metadata(&target)
+            .map_err(|error| format!("failed to inspect review file: {error}"))?;
+        if !metadata.is_file() {
+            return Err("review path is not a file".to_string());
+        }
+        if metadata.len() > MAX_REVIEW_FILE_BYTES {
+            return Err("review file exceeds the 2 MiB limit".to_string());
+        }
+        let bytes =
+            fs::read(&target).map_err(|error| format!("failed to read review file: {error}"))?;
+        if bytes.contains(&0) {
+            return Err("binary files cannot be reviewed by line".to_string());
+        }
+        let content = String::from_utf8(bytes)
+            .map_err(|_| "binary files cannot be reviewed by line".to_string())?;
+        Ok(WorkspaceReviewFile {
+            path,
+            content,
+            size: metadata.len(),
+        })
+    })
+    .await
+    .map_err(|error| format!("workspace review task failed: {error}"))?
 }
 
 fn list_workspace_files_blocking(
@@ -2384,9 +2530,13 @@ fn send_update_progress(
 }
 
 fn update_progress_percent(downloaded_bytes: u64, total_bytes: Option<u64>) -> Option<u8> {
-    total_bytes
-        .filter(|total| *total > 0)
-        .map(|total| downloaded_bytes.saturating_mul(100).checked_div(total).unwrap_or(0).min(100) as u8)
+    total_bytes.filter(|total| *total > 0).map(|total| {
+        downloaded_bytes
+            .saturating_mul(100)
+            .checked_div(total)
+            .unwrap_or(0)
+            .min(100) as u8
+    })
 }
 
 fn should_report_update_progress(
@@ -2397,7 +2547,10 @@ fn should_report_update_progress(
 ) -> bool {
     match update_progress_percent(downloaded_bytes, total_bytes) {
         Some(percent) => Some(percent) != last_reported_percent,
-        None => downloaded_bytes.saturating_sub(last_reported_bytes) >= UPDATE_PROGRESS_UNKNOWN_STEP_BYTES,
+        None => {
+            downloaded_bytes.saturating_sub(last_reported_bytes)
+                >= UPDATE_PROGRESS_UNKNOWN_STEP_BYTES
+        }
     }
 }
 
@@ -3563,6 +3716,8 @@ pub fn run() {
             pick_attachment_files,
             read_workspace_attachment_file,
             list_workspace_files,
+            list_workspace_directory,
+            read_workspace_review_file,
             save_artifact_file,
             preview_artifact_file,
             artifact_file_status,
@@ -3577,6 +3732,9 @@ pub fn run() {
             extract_app_zip,
             apply_update,
             preview_tools::set_active_preview_target,
+            preview_tools::preview_picker_start,
+            preview_tools::preview_picker_take,
+            preview_tools::preview_picker_cancel,
             preview_webview::preview_webview_navigate,
             preview_webview::preview_webview_reload,
             preview_webview::preview_webview_history,
@@ -3614,6 +3772,38 @@ mod artifact_save_tests {
         let all = list_workspace_files_blocking(root.to_str().unwrap(), "", Some(10)).unwrap();
         assert!(!all.iter().any(|file| file.path.contains("node_modules")));
 
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn workspace_directory_pages_directories_first_and_rejects_traversal() {
+        let root = std::env::temp_dir().join(format!(
+            "milim-workspace-directory-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("z.txt"), "z").unwrap();
+        fs::write(root.join("a.txt"), "a").unwrap();
+        let first =
+            list_workspace_directory_blocking(root.to_str().unwrap(), "", None, Some(2)).unwrap();
+        assert_eq!(first.entries[0].kind, "directory");
+        assert_eq!(first.entries[1].name, "a.txt");
+        assert_eq!(first.next_cursor.as_deref(), Some("2"));
+        let second = list_workspace_directory_blocking(
+            root.to_str().unwrap(),
+            "",
+            first.next_cursor.as_deref(),
+            Some(2),
+        )
+        .unwrap();
+        assert_eq!(second.entries[0].name, "z.txt");
+        assert!(
+            list_workspace_directory_blocking(root.to_str().unwrap(), "../", None, None,).is_err()
+        );
         fs::remove_dir_all(root).ok();
     }
 
@@ -3680,7 +3870,11 @@ mod artifact_save_tests {
         ));
         fs::create_dir_all(&root).unwrap();
         let image = root.join("large.png");
-        fs::write(&image, vec![0_u8; MAX_ATTACHMENT_IMAGE_PREVIEW_BYTES as usize + 1]).unwrap();
+        fs::write(
+            &image,
+            vec![0_u8; MAX_ATTACHMENT_IMAGE_PREVIEW_BYTES as usize + 1],
+        )
+        .unwrap();
 
         let error = match read_attachment_file_blocking(&image, Some(MAX_ATTACHMENT_BYTES)) {
             Err(error) => error,
@@ -3799,8 +3993,18 @@ mod artifact_save_tests {
     #[test]
     fn updater_coalesces_known_and_unknown_download_progress() {
         assert_eq!(update_progress_percent(500, Some(1_000)), Some(50));
-        assert!(!should_report_update_progress(509, Some(1_000), 500, Some(50)));
-        assert!(should_report_update_progress(510, Some(1_000), 500, Some(50)));
+        assert!(!should_report_update_progress(
+            509,
+            Some(1_000),
+            500,
+            Some(50)
+        ));
+        assert!(should_report_update_progress(
+            510,
+            Some(1_000),
+            500,
+            Some(50)
+        ));
         assert!(!should_report_update_progress(
             UPDATE_PROGRESS_UNKNOWN_STEP_BYTES - 1,
             None,

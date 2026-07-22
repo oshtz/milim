@@ -1,12 +1,12 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type KeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent, type ReactNode } from "react";
-import { openExternalUrl, setActivePreviewTarget, type ChatArtifact, type PreviewAppPreflight, type PreviewAppStatus, type PreviewSurfaceCapability, type PreviewSurfaceKind, type PreviewSurfaceTarget } from "../api";
+import { cancelPreviewPicker, listWorkspaceDirectory, openExternalUrl, readWorkspaceReviewFile, setActivePreviewTarget, startPreviewPicker, takePreviewPicker, type ChatArtifact, type PreviewAppPreflight, type PreviewAppStatus, type PreviewSurfaceCapability, type PreviewSurfaceKind, type PreviewSurfaceTarget, type WorkspaceDirectoryEntry } from "../api";
 import type { ArtifactRevision, ArtifactRevisionGroup } from "../lib/artifactRevisions";
 import { buildArtifactPreviewDocument, previewKindForArtifact } from "../lib/artifactPreview";
 import { isFileArtifact, isPreviewableArtifact, normalizeArtifactBrowserUrl } from "../lib/artifacts";
 import type { PreviewControlActivity } from "../lib/previewActivity";
 import { listenForPreviewWebviewNavigation, movePreviewWebviewHistory, navigatePreviewWebview, reloadPreviewWebview, type PreviewWebviewLoadState } from "../lib/previewWebview";
 import { useContextMenu } from "./ContextMenu";
-import { ArrowLeft, ArrowRight, Bolt, Code, Copy, Download, ExternalLink, Eye, FileText, Globe, MoreHorizontal, Plus, Refresh, Sidebar, Square, Terminal, X } from "./icons";
+import { ArrowLeft, ArrowRight, Bolt, Code, Copy, Download, ExternalLink, Eye, FileText, Folder, Globe, MoreHorizontal, Plus, Refresh, Sidebar, Square, Terminal, X } from "./icons";
 import { Logo } from "./Logo";
 
 const Markdown = lazy(() => import("./Markdown").then((mod) => ({ default: mod.Markdown })));
@@ -82,7 +82,7 @@ const PREVIEW_PANEL_IDS: Record<PreviewTab, string> = {
 };
 const IS_TAURI = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 const APP_FLOATING_UI_SELECTOR = '[data-native-preview-blocker="true"], [data-native-preview-blocker="open"][open]';
-const DOM_PREVIEW_CAPABILITIES: PreviewSurfaceCapability[] = ["dom_snapshot", "click", "type", "key", "scroll", "logs", "source"];
+const DOM_PREVIEW_CAPABILITIES: PreviewSurfaceCapability[] = ["dom_snapshot", "click", "type", "key", "scroll", "logs", "annotate", "source"];
 
 export function nativePreviewBlockedByAppUi(root: Pick<ParentNode, "querySelector"> = document): boolean {
   return Boolean(root.querySelector(APP_FLOATING_UI_SELECTOR));
@@ -133,6 +133,7 @@ export function PreviewPanel({
   onSurfaceChange,
   modeSwitcher,
   style,
+  workspaceFolder,
 }: {
   artifact: ChatArtifact;
   artifacts?: readonly ChatArtifact[];
@@ -170,6 +171,7 @@ export function PreviewPanel({
   onSurfaceChange?: (surface: PreviewSurfaceTarget | null) => void;
   modeSwitcher?: ReactNode;
   style?: CSSProperties;
+  workspaceFolder?: string;
 }) {
   const { openContextMenu } = useContextMenu();
   const panelRef = useRef<HTMLElement | null>(null);
@@ -192,7 +194,26 @@ export function PreviewPanel({
   const [codeSplitDragging, setCodeSplitDragging] = useState(false);
   const [logResizing, setLogResizing] = useState(false);
   const [iframeReadyKey, setIframeReadyKey] = useState<string | null>(null);
+  const [workspaceBrowserOpen, setWorkspaceBrowserOpen] = useState(false);
+  const [workspaceBrowserPath, setWorkspaceBrowserPath] = useState("");
+  const [workspaceEntries, setWorkspaceEntries] = useState<WorkspaceDirectoryEntry[]>([]);
+  const [workspaceCursor, setWorkspaceCursor] = useState<string | null>(null);
+  const [workspaceReviewFile, setWorkspaceReviewFile] = useState<{ path: string; content: string } | null>(null);
+  const [workspaceLineAnchor, setWorkspaceLineAnchor] = useState<number | null>(null);
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
+  const pickerRunRef = useRef(0);
+  useEffect(() => {
+    if (!workspaceBrowserOpen || !workspaceFolder?.trim()) return;
+    let canceled = false;
+    void listWorkspaceDirectory(workspaceFolder, workspaceBrowserPath)
+      .then((page) => {
+        if (canceled) return;
+        setWorkspaceEntries(page.entries);
+        setWorkspaceCursor(page.next_cursor ?? null);
+      })
+      .catch((error) => setPreviewError(error instanceof Error ? error.message : String(error)));
+    return () => { canceled = true; };
+  }, [workspaceBrowserOpen, workspaceBrowserPath, workspaceFolder]);
   const logIdRef = useRef(0);
   const codePanelRef = useRef<HTMLDivElement | null>(null);
   const codeSourceRef = useRef<HTMLDivElement | null>(null);
@@ -451,6 +472,19 @@ export function PreviewPanel({
   useEffect(() => {
     function onMessage(event: MessageEvent) {
       if (event.source !== iframeRef.current?.contentWindow) return;
+      if (event.data?.type === "milim-preview-annotation") {
+        const body = window.prompt("Comment on selected preview element");
+        if (body?.trim()) {
+          window.dispatchEvent(new CustomEvent("milim:add-review-comment", { detail: {
+            id: `review-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+            surface: "preview",
+            body: body.trim(),
+            timestamp: Date.now(),
+            preview: event.data.value,
+          } }));
+        }
+        return;
+      }
       const entry = normalizePreviewLog(event.data, ++logIdRef.current);
       if (!entry) return;
       setLogs((current) => [...current, entry].slice(-MAX_PREVIEW_LOGS));
@@ -459,6 +493,33 @@ export function PreviewPanel({
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
   }, []);
+
+  useEffect(() => () => {
+    pickerRunRef.current += 1;
+    void cancelPreviewPicker().catch(() => undefined);
+    iframeRef.current?.contentWindow?.postMessage({ type: "milim-preview-annotation-cancel" }, "*");
+  }, [frameKey, activeTab, selectedPreviewSource]);
+
+  async function startPreviewAnnotation() {
+    if (!isUrlPreview) {
+      iframeRef.current?.contentWindow?.postMessage({ type: "milim-preview-annotation-start" }, "*");
+      return;
+    }
+    const run = ++pickerRunRef.current;
+    await startPreviewPicker();
+    for (let attempt = 0; attempt < 120 && pickerRunRef.current === run; attempt += 1) {
+      await new Promise((resolve) => window.setTimeout(resolve, 250));
+      const selection = await takePreviewPicker();
+      if (!selection) continue;
+      const body = window.prompt("Comment on selected preview element");
+      if (body?.trim()) window.dispatchEvent(new CustomEvent("milim:add-review-comment", { detail: {
+        id: `review-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+        surface: "preview", body: body.trim(), timestamp: Date.now(), preview: selection,
+      } }));
+      return;
+    }
+    await cancelPreviewPicker().catch(() => undefined);
+  }
 
   async function copySource() {
     await navigator.clipboard?.writeText(isUrlPreview ? browserUrl ?? browserInput : activeTab === "code" ? selectedSource : source);
@@ -890,6 +951,11 @@ export function PreviewPanel({
           </div>
         )}
         <div className="preview-actions preview-secondary-actions" aria-label="Inspector actions">
+          {activeTab === "preview" && previewKind === "html" && ((!isUrlPreview && iframeReadyKey === iframeSurfaceKey) || (isUrlPreview && Boolean(browserUrl))) && (
+            <button className="preview-action" title="Annotate preview element" aria-label="Annotate preview element" onClick={() => void startPreviewAnnotation()}>
+              <Eye size={14} />
+            </button>
+          )}
           {activeTab === "preview" && previewKind === "html" && !isUrlPreview && (
             <button className="preview-action" title="Reload preview" aria-label="Reload preview" onClick={() => setFrameKey((key) => key + 1)}>
               <Refresh size={14} />
@@ -1120,6 +1186,90 @@ export function PreviewPanel({
         hidden={activeTab !== "code" || isUrlPreview}
         style={codePanelStyle}
       >
+        {workspaceFolder?.trim() ? (
+          <section className="workspace-review-browser" aria-label="Workspace files">
+            <div className="workspace-review-head">
+              <button type="button" onClick={() => setWorkspaceBrowserOpen((open) => !open)}>
+                <Folder size={13} /> Workspace
+              </button>
+              {workspaceBrowserOpen && workspaceBrowserPath ? (
+                <button type="button" onClick={() => {
+                  const parts = workspaceBrowserPath.split("/").filter(Boolean);
+                  parts.pop(); setWorkspaceBrowserPath(parts.join("/")); setWorkspaceReviewFile(null);
+                }}>Back</button>
+              ) : null}
+              {workspaceBrowserOpen ? <span>{workspaceBrowserPath || "/"}</span> : null}
+            </div>
+            {workspaceBrowserOpen ? (
+              <div className="workspace-review-body">
+                <div className="workspace-review-tree">
+                  {workspaceEntries.map((entry) => (
+                    <button type="button" key={entry.path} onClick={() => {
+                      if (entry.kind === "directory") {
+                        setWorkspaceBrowserPath(entry.path); setWorkspaceReviewFile(null);
+                      } else {
+                        void readWorkspaceReviewFile(workspaceFolder, entry.path)
+                          .then((file) => { setWorkspaceReviewFile(file); setWorkspaceLineAnchor(null); })
+                          .catch((error) => setPreviewError(error instanceof Error ? error.message : String(error)));
+                      }
+                    }}>
+                      {entry.kind === "directory" ? <Folder size={12} /> : <FileText size={12} />}
+                      {entry.name}
+                    </button>
+                  ))}
+                  {workspaceCursor ? (
+                    <button type="button" onClick={() => void listWorkspaceDirectory(workspaceFolder, workspaceBrowserPath, workspaceCursor).then((page) => {
+                      setWorkspaceEntries((current) => [...current, ...page.entries]);
+                      setWorkspaceCursor(page.next_cursor ?? null);
+                    })}>Load more</button>
+                  ) : null}
+                </div>
+                {workspaceReviewFile ? (
+                  <div className="workspace-review-file" aria-label={workspaceReviewFile.path}>
+                    <strong>{workspaceReviewFile.path}</strong>
+                    {workspaceReviewFile.content.split(/\r?\n/).map((line, index) => {
+                      const lineNumber = index + 1;
+                      return (
+                        <button
+                          type="button"
+                          className={workspaceLineAnchor === lineNumber ? "selected" : ""}
+                          key={lineNumber}
+                          onClick={(event) => {
+                            if (!event.shiftKey || workspaceLineAnchor == null) {
+                              setWorkspaceLineAnchor(lineNumber); return;
+                            }
+                            const startLine = Math.min(workspaceLineAnchor, lineNumber);
+                            const endLine = Math.max(workspaceLineAnchor, lineNumber);
+                            const body = window.prompt("Review comment");
+                            if (!body?.trim()) return;
+                            const selectedText = workspaceReviewFile.content.split(/\r?\n/).slice(startLine - 1, endLine).join("\n");
+                            window.dispatchEvent(new CustomEvent("milim:add-review-comment", { detail: {
+                              id: `review-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+                              surface: "workspace", filePath: workspaceReviewFile.path, side: "new",
+                              startLine, endLine, selectedText, body: body.trim(), timestamp: Date.now(),
+                            } }));
+                            setWorkspaceLineAnchor(null);
+                          }}
+                          onDoubleClick={() => {
+                            const body = window.prompt("Review comment");
+                            if (!body?.trim()) return;
+                            window.dispatchEvent(new CustomEvent("milim:add-review-comment", { detail: {
+                              id: `review-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+                              surface: "workspace", filePath: workspaceReviewFile.path, side: "new",
+                              startLine: lineNumber, endLine: lineNumber, selectedText: line, body: body.trim(), timestamp: Date.now(),
+                            } }));
+                          }}
+                        >
+                          <span>{lineNumber}</span><code>{line || " "}</code>
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+          </section>
+        ) : null}
         {codeFiles.length > 1 && (
           <label className="preview-file-select">
             <span>File</span>

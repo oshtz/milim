@@ -338,10 +338,10 @@ function LandingPage() {
           <HeroBackgroundEffect />
           <div className="hero-copy">
             <h1>milim</h1>
-            <p className="hero-line"><TyperText text="A model-agnostic development app for people who use more than one model." delay={0.27} /></p>
+            <p className="hero-line"><TyperText text="Your local control plane for coding agents." delay={0.27} /></p>
             <p className="hero-subline">
-              Development chat, instant model switching, tools, memory, artifacts, previews, and privacy controls
-              <br className="desktop-copy-break" /> in one MIT-licensed desktop app.{" "}
+              Use your own models and subscriptions, keep one canonical thread, review the diff, and ship.
+              <br className="desktop-copy-break" /> One MIT-licensed desktop app.{" "}
               <a className="copy-doc-link" href={DOCS_URL}>Read the docs</a>.
             </p>
             <div className="hero-actions" aria-label="Download milim">
@@ -362,7 +362,7 @@ function LandingPage() {
               one dev thread.
             </h2>
             <p>
-              Choose a model, pick a folder, ask for an edit or test, switch models, and keep the project state intact.
+              Use your own models and subscriptions, keep one canonical thread, review the diff, and ship.
             </p>
           </div>
           <div className="feature-grid">

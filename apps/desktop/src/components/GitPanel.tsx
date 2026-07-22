@@ -13,6 +13,7 @@ import { createPortal } from "react-dom";
 import {
   claudeRuntimeModel,
   codexRuntimeModel,
+  opencodeRuntimeModel,
   completeChat,
   getWorkspaceGitStatus,
   listModelsDetailed,
@@ -22,8 +23,10 @@ import {
   setWorkspace,
   streamClaudeRun,
   streamCodexRun,
+  streamOpenCodeRun,
   type ClaudeRunEvent,
   type CodexRunEvent,
+  type OpenCodeRunEvent,
   type WorkspaceGitAction,
   type WorkspaceGitActionResult,
   type WorkspaceGitDiffScope,
@@ -479,13 +482,14 @@ async function generateAccountRuntimeCommitMessage(
 ): Promise<string | null> {
   const codexModel = codexRuntimeModel(preferredModel);
   const claudeModel = claudeRuntimeModel(preferredModel);
-  if (!codexModel && !claudeModel) return null;
+  const opencodeModel = opencodeRuntimeModel(preferredModel);
+  if (!codexModel && !claudeModel && !opencodeModel) return null;
 
   let response = "";
   let runtimeError = "";
   let runtimeWarning = "";
   const prompt = `${COMMIT_MESSAGE_SYSTEM_PROMPT}\n\n${commitMessageContext(status, diff)}`;
-  const onEvent = (event: CodexRunEvent | ClaudeRunEvent) => {
+  const onEvent = (event: CodexRunEvent | ClaudeRunEvent | OpenCodeRunEvent) => {
     if (event.type === "token" && event.text) response += event.text;
     else if (event.type === "warning") runtimeWarning = event.message;
     else if (event.type === "error") runtimeError = event.message;
@@ -515,6 +519,15 @@ async function generateAccountRuntimeCommitMessage(
       },
       onEvent,
     );
+  } else if (opencodeModel) {
+    await streamOpenCodeRun({
+      model: opencodeModel,
+      prompt,
+      cwd: folder.trim() || undefined,
+      tool_approval_policy: "review",
+      tool_approval_grant: false,
+      plan_mode: true,
+    }, onEvent);
   }
 
   if (runtimeWarning) throw new Error(runtimeWarning);
@@ -523,7 +536,7 @@ async function generateAccountRuntimeCommitMessage(
   const message = cleanGeneratedCommitMessage(response);
   if (!message)
     throw new Error(
-      `${codexModel ? "Codex" : "Claude CLI"} returned an empty commit message.`,
+      `${codexModel ? "Codex" : claudeModel ? "Claude CLI" : "OpenCode CLI"} returned an empty commit message.`,
     );
   return message;
 }
@@ -622,6 +635,7 @@ export function GitPanel({
   const [diffSearchIndex, setDiffSearchIndex] = useState(0);
   const [diffScope, setDiffScope] = useState<WorkspaceGitDiffScope>("all");
   const [diffBase, setDiffBase] = useState("");
+  const [reviewAnchor, setReviewAnchor] = useState<{ sectionId: string; index: number } | null>(null);
   const [pendingDiffFile, setPendingDiffFile] = useState<{
     path: string;
     index: number;
@@ -1386,6 +1400,31 @@ export function GitPanel({
   }
 
   function renderDiffView() {
+    const addReviewComment = (row: DiffRow, index: number, section: DiffSection | undefined, shift: boolean) => {
+      if (!section || !["add", "delete", "context"].includes(row.kind)) return;
+      let start = index;
+      if (shift && reviewAnchor?.sectionId === section.id) start = Math.min(reviewAnchor.index, index);
+      const end = shift && reviewAnchor?.sectionId === section.id ? Math.max(reviewAnchor.index, index) : index;
+      const rows = renderedDiffRows.slice(start, end + 1).filter((candidate) => ["add", "delete", "context"].includes(candidate.kind));
+      const body = window.prompt("Review comment");
+      if (!body?.trim()) { setReviewAnchor({ sectionId: section.id, index }); return; }
+      const side = row.kind === "delete" ? "old" : "new";
+      const lineNumbers = rows
+        .map((candidate) => Number(side === "old" ? candidate.oldNo : candidate.newNo))
+        .filter((value) => Number.isFinite(value) && value > 0);
+      window.dispatchEvent(new CustomEvent("milim:add-review-comment", { detail: {
+        id: `review-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+        surface: "diff",
+        filePath: section.path,
+        side,
+        startLine: Math.min(...lineNumbers),
+        endLine: Math.max(...lineNumbers),
+        selectedText: rows.map((candidate) => candidate.text).join("\n"),
+        body: body.trim(),
+        timestamp: Date.now(),
+      } }));
+      setReviewAnchor(null);
+    };
     return (
       <div
         className="git-diff-view"
@@ -1410,6 +1449,12 @@ export function GitPanel({
                 row.kind === "file" ? sectionIndex : undefined
               }
               data-match-index={matchIndex}
+              onClick={(event) => {
+                if (["add", "delete", "context"].includes(row.kind) && section) {
+                  setReviewAnchor({ sectionId: section.id, index });
+                  if (event.shiftKey) addReviewComment(row, index, section, true);
+                }
+              }}
             >
               <span
                 className="git-diff-gutter old"
@@ -1440,9 +1485,22 @@ export function GitPanel({
                   </small>
                 </button>
               ) : (
-                <code>
-                  {renderDiffText(row, index, renderedDiffRows, diffSearch)}
-                </code>
+                <>
+                  <code>
+                    {renderDiffText(row, index, renderedDiffRows, diffSearch)}
+                  </code>
+                  {["add", "delete", "context"].includes(row.kind) && section ? (
+                    <button
+                      type="button"
+                      className="git-diff-comment"
+                      title="Add review comment (Shift-click another line for a range)"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        addReviewComment(row, index, section, event.shiftKey);
+                      }}
+                    >+</button>
+                  ) : null}
+                </>
               )}
             </div>
           );
@@ -1652,6 +1710,37 @@ export function GitPanel({
         setPendingDiffFile(null);
       } else setCommandResult(null);
       setNotice(error instanceof Error ? error.message : "Git command failed");
+    } finally {
+      setCommandBusy(null);
+    }
+  }
+
+  async function createOrOpenPullRequest() {
+    if (!readyStatus) return;
+    setCommandBusy("pr_status");
+    try {
+      const existing = await runWorkspaceGitAction("pr_status");
+      if (existing.ok) {
+        const summary = JSON.parse(existing.stdout) as { url?: string };
+        if (summary.url) await openExternalUrl(summary.url);
+        return;
+      }
+      if (!existing.message.includes("No pull request")) throw new Error(existing.message);
+      const prefill = JSON.parse(existing.stdout || "{}") as { title?: string; baseRefName?: string };
+      const title = window.prompt("Pull request title", prefill.title || readyStatus.recent_commits[0]?.subject || readyStatus.branch || "Changes");
+      if (!title?.trim()) return;
+      const base = window.prompt("Base branch", prefill.baseRefName || "main");
+      if (!base?.trim()) return;
+      const body = window.prompt("Pull request body", "") ?? "";
+      const created = await runWorkspaceGitAction("pr_create", {
+        title: title.trim(), body, base: base.trim(), draft: true,
+      });
+      setCommandResult(created);
+      if (!created.ok) throw new Error(created.message);
+      const url = created.stdout.trim().split(/\s+/).find((value) => /^https?:\/\//.test(value));
+      if (url) await openExternalUrl(url);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
     } finally {
       setCommandBusy(null);
     }
@@ -1936,6 +2025,19 @@ export function GitPanel({
             >
               <Lightbulb size={13} />
               <span>Agent review</span>
+            </button>
+          )}
+
+          {forceExpanded && readyStatus.remote && (
+            <button
+              className="git-action"
+              type="button"
+              title="Open the current GitHub PR or create a draft PR"
+              disabled={Boolean(commandBusy)}
+              onClick={() => void createOrOpenPullRequest()}
+            >
+              <GitLogo size={13} />
+              <span>{commandBusy === "pr_status" ? "PR..." : "Pull request"}</span>
             </button>
           )}
 

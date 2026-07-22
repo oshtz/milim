@@ -9,6 +9,12 @@ order: 30
 updated: 2026-07-22
 ---
 
+Milim is your local control plane for coding agents: use your own models and subscriptions, keep one canonical thread, review the diff, and ship.
+
+Git-backed New Chat flows keep the current checkout by default and offer a separate isolated worktree. Isolated threads execute from `~/.milim/runtime/threads/<thread-id>` on a retained `milim/thread-<short-id>` branch while continuing to group under the original project. Uncommitted changes in the original checkout are excluded. Archive preserves the worktree; deletion removes a clean worktree or asks before force-discarding dirty state, and never deletes its branch.
+
+The Code inspector can browse the effective workspace on demand, rejects traversal and symlink/junction escapes, and reviews UTF-8 files up to 2 MiB. Workspace and unified-diff lines accept one-line or Shift-selected range comments; comments remain editable in the composer tray and are sent as bounded structured context. The Git inspector opens the current branch PR or creates a GitHub draft after commit and publish prerequisites are met. Ready DOM previews expose an annotation crosshair that captures bounded element metadata without screenshots or complete DOM persistence.
+
 Milim has one model-agnostic workbench. Project, Agent, MCP, media, memory, sandbox, schedule, and computer-use features are always discoverable, with advanced tools collapsed until needed. The sidebar Tools launcher opens MCP servers, Skills, Schedules, and the media manager from one persistent place. The Tauri process starts the embedded backend, connects persisted MCP servers, and runs schedules in the background. The model picker loads cached models while one startup task refreshes enabled chat providers, then reconciles automatically; Codex and Claude discovery remain independent from provider availability. Background schedule completions and mobile relay events use shared app notices so they remain visible outside their settings panels. Closing the desktop window hides it to the system tray so those background services keep running; use the tray menu to reopen or quit.
 
 ## Interface modes

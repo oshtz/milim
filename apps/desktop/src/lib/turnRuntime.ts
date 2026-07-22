@@ -16,6 +16,7 @@ import type {
   ChildThreadInfo,
   ClaudeRunEvent,
   CodexRunEvent,
+  OpenCodeRunEvent,
   ContextSnapshot,
   MemoryNotice,
   ModelInfo,
@@ -117,7 +118,7 @@ function contextSnapshot(
 }
 
 type ChatStreamEventPart = Extract<ChatStreamPart, { kind: "event" }>;
-type AccountRuntimeEvent = CodexRunEvent | ClaudeRunEvent;
+type AccountRuntimeEvent = CodexRunEvent | ClaudeRunEvent | OpenCodeRunEvent;
 type AccountRuntimeImageEvent = Extract<CodexRunEvent, { type: "image" }>;
 type StreamCodexRunFn = (
   request: {
@@ -151,6 +152,21 @@ type StreamClaudeRunFn = (
     images?: AccountRuntimeImage[];
   },
   onEvent: (event: ClaudeRunEvent) => void,
+  signal?: AbortSignal,
+) => Promise<void>;
+type StreamOpenCodeRunFn = (
+  request: {
+    model: string;
+    prompt: string;
+    cwd?: string;
+    session_id?: string;
+    tool_approval_policy?: ToolApprovalMode;
+    tool_approval_grant?: boolean;
+    interactive_tool_approval?: boolean;
+    plan_mode?: boolean;
+    images?: AccountRuntimeImage[];
+  },
+  onEvent: (event: OpenCodeRunEvent) => void,
   signal?: AbortSignal,
 ) => Promise<void>;
 type StreamChatFn = (
@@ -505,6 +521,7 @@ export function createAccountRuntimeEventHandler({
   captureRuntimeMetrics,
   captureProviderLimit,
   setCodexThreadId,
+  setOpenCodeSessionId = () => {},
   appendImage,
   onNativeWorker,
   runRef,
@@ -522,6 +539,7 @@ export function createAccountRuntimeEventHandler({
   }) => void;
   captureProviderLimit?: (limit?: ProviderLimitInfo) => void;
   setCodexThreadId?: (threadId: string) => void;
+  setOpenCodeSessionId?: (sessionId: string) => void;
   appendImage?: (event: AccountRuntimeImageEvent) => void;
   onNativeWorker?: (lifecycle: AccountNativeWorkerLifecycle) => void;
   runRef?: { current: RunTrace | null };
@@ -586,12 +604,18 @@ export function createAccountRuntimeEventHandler({
         snapshot?.();
       } else if (event.type === "thread") {
         setCodexThreadId?.(event.thread_id);
+      } else if (event.type === "session") {
+        setOpenCodeSessionId?.(event.session_id);
       } else if (event.type === "image") {
         appendImage?.(event);
       } else if (event.type === "native_worker") {
         onNativeWorker?.(event.lifecycle);
       } else if (event.type === "rate_limit") {
         captureProviderLimit?.(event.limit);
+      } else if (event.type === "protocol_notice") {
+        flush();
+        appendStreamEvent(statusPart(event.message, event.detail ?? undefined, "warning"));
+        snapshot?.();
       } else if (event.type === "done") {
         captureRuntimeMetrics(event);
       } else if (event.type === "warning") {
@@ -612,10 +636,6 @@ export async function runModelChatTurn({
   prepareOutbound,
   beginAssistant,
   streamChat,
-      } else if (event.type === "protocol_notice") {
-        flush();
-        appendStreamEvent(statusPart(event.message, event.detail ?? undefined, "warning"));
-        snapshot?.();
   model,
   append,
   signal,
@@ -748,6 +768,13 @@ type RunAccountRuntimeTurnParams = {
       hadSession: boolean;
       stream: StreamClaudeRunFn;
     }
+  | {
+      kind: "opencode";
+      sessionId?: string;
+      hadSession: boolean;
+      stream: StreamOpenCodeRunFn;
+      setSessionId: (sessionId: string) => void;
+    }
 );
 
 export async function runAccountRuntimeTurn(
@@ -830,6 +857,7 @@ export async function runAccountRuntimeTurn(
     captureProviderLimit,
     onNativeWorker,
     setCodexThreadId: params.kind === "codex" ? params.setThreadId : undefined,
+    setOpenCodeSessionId: params.kind === "opencode" ? params.setSessionId : undefined,
     appendImage: params.kind === "codex" ? params.appendImage : undefined,
   });
   const input = accountRuntimeInputFromMessages(outbound);
@@ -856,7 +884,7 @@ export async function runAccountRuntimeTurn(
       events.handle,
       signal,
     );
-  } else {
+  } else if (params.kind === "claude") {
     await params.stream(
       {
         model,
@@ -870,6 +898,22 @@ export async function runAccountRuntimeTurn(
         interactive_tool_approval: toolApproval === "review" && !planMode && !toolApprovalGrant,
         plan_mode: planMode,
         allow_session_recovery: allowClaudeSessionRecovery,
+      },
+      events.handle,
+      signal,
+    );
+  } else {
+    await params.stream(
+      {
+        model,
+        prompt: input.prompt,
+        images: input.images,
+        cwd: workspace,
+        session_id: params.sessionId,
+        tool_approval_policy: toolApproval,
+        tool_approval_grant: toolApprovalGrant,
+        interactive_tool_approval: toolApproval === "review" && !planMode && !toolApprovalGrant,
+        plan_mode: planMode,
       },
       events.handle,
       signal,
@@ -902,7 +946,9 @@ export async function runAccountRuntimeTurn(
       statusPart(
         params.kind === "codex"
           ? "Codex not on PATH"
-          : "Claude CLI not on PATH",
+          : params.kind === "claude"
+            ? "Claude CLI not on PATH"
+            : "OpenCode CLI not on PATH",
         events.state.warning,
         "warning",
       ),
@@ -929,12 +975,15 @@ export async function runAccountRuntimeTurn(
 export async function runSelectedAccountRuntimeTurn({
   codexModel,
   claudeModel,
+  opencodeModel,
   accountRuntime,
   setCodexThreadId,
   appendImage,
   ensureClaudeSessionId,
+  setOpenCodeSessionId = () => {},
   streamCodexRun,
   streamClaudeRun,
+  streamOpenCodeRun,
   ...common
 }: Omit<
   RunAccountRuntimeTurnParams,
@@ -946,20 +995,26 @@ export async function runSelectedAccountRuntimeTurn({
   | "appendImage"
   | "sessionId"
   | "hadSession"
+  | "setSessionId"
 > & {
   codexModel?: string | null;
   claudeModel?: string | null;
+  opencodeModel?: string | null;
   accountRuntime?: {
     codexThreadId?: string | null;
     codexLastSyncedMessageId?: string | null;
     claudeSessionId?: string | null;
     claudeLastSyncedMessageId?: string | null;
+    opencodeSessionId?: string | null;
+    opencodeLastSyncedMessageId?: string | null;
   } | null;
   setCodexThreadId: (threadId: string) => void;
   appendImage?: (event: AccountRuntimeImageEvent) => void;
   ensureClaudeSessionId: () => string;
+  setOpenCodeSessionId?: (sessionId: string) => void;
   streamCodexRun: StreamCodexRunFn;
   streamClaudeRun: StreamClaudeRunFn;
+  streamOpenCodeRun?: StreamOpenCodeRunFn;
 }): Promise<null | { status: "done" | "skipped"; error?: string }> {
   if (codexModel) {
     return runAccountRuntimeTurn({
@@ -984,6 +1039,21 @@ export async function runSelectedAccountRuntimeTurn({
       lastSyncedMessageId:
         accountRuntime?.claudeLastSyncedMessageId ?? undefined,
       stream: streamClaudeRun,
+    });
+  }
+  if (opencodeModel) {
+    if (!streamOpenCodeRun)
+      throw new Error("OpenCode runtime bridge is unavailable.");
+    return runAccountRuntimeTurn({
+      ...common,
+      kind: "opencode",
+      model: opencodeModel,
+      hadSession: Boolean(accountRuntime?.opencodeSessionId),
+      sessionId: accountRuntime?.opencodeSessionId ?? undefined,
+      lastSyncedMessageId:
+        accountRuntime?.opencodeLastSyncedMessageId ?? undefined,
+      stream: streamOpenCodeRun,
+      setSessionId: setOpenCodeSessionId,
     });
   }
   return null;

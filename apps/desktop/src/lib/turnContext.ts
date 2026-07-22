@@ -71,6 +71,7 @@ export type TurnSetupResult =
       title: string;
       codexModel: string | null;
       claudeModel: string | null;
+      opencodeModel: string | null;
     }
   | { ok: false; error: string };
 
@@ -144,8 +145,10 @@ export function resolveTurnSetup({
   requireModel,
   codexRuntimeModel,
   claudeRuntimeModel,
+  opencodeRuntimeModel = () => null,
   isCodexModel,
   isClaudeModel,
+  isOpenCodeModel = () => false,
 }: {
   sessionId: string;
   selectedModel?: string;
@@ -156,8 +159,10 @@ export function resolveTurnSetup({
   requireModel: () => string | null;
   codexRuntimeModel: (model: string) => string | null;
   claudeRuntimeModel: (model: string) => string | null;
+  opencodeRuntimeModel?: (model: string) => string | null;
   isCodexModel: (model: string) => boolean;
   isClaudeModel: (model: string) => boolean;
+  isOpenCodeModel?: (model: string) => boolean;
 }): TurnSetupResult {
   const session = sessions.find((item) => item.id === sessionId);
   const activeAgent = settings.activeAgentId
@@ -175,12 +180,15 @@ export function resolveTurnSetup({
   const model = resolvedModel.model;
   const codexModel = codexRuntimeModel(model);
   const claudeModel = claudeRuntimeModel(model);
+  const opencodeModel = opencodeRuntimeModel(model);
   const runtimeError = accountRuntimeSelectionError({
     model,
     codexModel,
     claudeModel,
+    opencodeModel,
     isCodexModel,
     isClaudeModel,
+    isOpenCodeModel,
   });
   if (runtimeError) return { ok: false, error: runtimeError };
   return {
@@ -192,6 +200,7 @@ export function resolveTurnSetup({
     title: session?.title ?? activeTitle,
     codexModel,
     claudeModel,
+    opencodeModel,
   };
 }
 
@@ -199,19 +208,25 @@ export function accountRuntimeSelectionError({
   model,
   codexModel,
   claudeModel,
+  opencodeModel,
   isCodexModel,
   isClaudeModel,
+  isOpenCodeModel = () => false,
 }: {
   model: string;
   codexModel?: string | null;
   claudeModel?: string | null;
+  opencodeModel?: string | null;
   isCodexModel: (model: string) => boolean;
   isClaudeModel: (model: string) => boolean;
+  isOpenCodeModel?: (model: string) => boolean;
 }): string | null {
   if (isCodexModel(model) && !codexModel)
     return "Choose a concrete Codex model.";
   if (isClaudeModel(model) && !claudeModel)
     return "Choose a concrete Claude CLI model.";
+  if (isOpenCodeModel(model) && !opencodeModel)
+    return "Choose a concrete OpenCode model.";
   return null;
 }
 
@@ -220,7 +235,7 @@ export function accountRuntimeNotReadyTurn({
   ready,
   conversation,
 }: {
-  kind: "codex" | "claude";
+  kind: "codex" | "claude" | "opencode";
   ready: { ok: true } | { ok: false; message: string; warning?: boolean };
   conversation: ChatMessage[];
 }): null | {
@@ -229,12 +244,17 @@ export function accountRuntimeNotReadyTurn({
   error: string;
 } {
   if (ready.ok === true) return null;
-  const label =
-    kind === "codex" ? "Codex not on PATH" : "Claude CLI not on PATH";
+  const label = kind === "codex"
+    ? "Codex not on PATH"
+    : kind === "claude"
+      ? "Claude CLI not on PATH"
+      : "OpenCode CLI not on PATH";
   const content =
     kind === "codex"
       ? "Codex is not ready. Check the login notice and resend when it completes."
-      : "Claude CLI is not ready. Check the login notice and resend when it is signed in.";
+      : kind === "claude"
+        ? "Claude CLI is not ready. Check the login notice and resend when it is signed in."
+        : "OpenCode CLI is not ready. Configure a provider in OpenCode, then refresh models.";
   return {
     status: ready.warning ? "skipped" : "error",
     messages: [
@@ -250,15 +270,19 @@ export function accountRuntimeNotReadyTurn({
 export async function accountRuntimeNotReadyForTurn({
   codexModel,
   claudeModel,
+  opencodeModel,
   conversation,
   ensureCodexAccount,
   ensureClaudeAccount,
+  ensureOpenCodeAccount = async () => ({ ok: true as const }),
 }: {
   codexModel?: string | null;
   claudeModel?: string | null;
+  opencodeModel?: string | null;
   conversation: ChatMessage[];
   ensureCodexAccount: () => Promise<AccountRuntimeReady>;
   ensureClaudeAccount: () => Promise<AccountRuntimeReady>;
+  ensureOpenCodeAccount?: () => Promise<AccountRuntimeReady>;
 }): Promise<null | {
   status: "skipped" | "error";
   messages: ChatMessage[];
@@ -274,6 +298,12 @@ export async function accountRuntimeNotReadyForTurn({
     return accountRuntimeNotReadyTurn({
       kind: "claude",
       ready: await ensureClaudeAccount(),
+      conversation,
+    });
+  if (opencodeModel)
+    return accountRuntimeNotReadyTurn({
+      kind: "opencode",
+      ready: await ensureOpenCodeAccount(),
       conversation,
     });
   return null;

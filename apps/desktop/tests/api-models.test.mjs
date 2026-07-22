@@ -52,7 +52,7 @@ assert.match(
 assert.match(claudePicker, /finally \{[\s\S]*clearTimeout\(timer\);[\s\S]*\}/);
 assert.match(
   api,
-  /Promise\.all\(\[\s*listProviderModelsForPicker\(\),\s*listCodexModelsForPicker\(\),\s*listClaudeModelsForPicker\(\),\s*\]\)/,
+  /Promise\.all\(\[\s*listProviderModelsForPicker\(\),\s*listCodexModelsForPicker\(\),\s*listClaudeModelsForPicker\(\),\s*listOpenCodeModelsForPicker\(\),\s*\]\)/,
 );
 assert.match(
   api,

@@ -83,6 +83,67 @@ const PREVIEW_LOG_BRIDGE = `
   addEventListener("unhandledrejection", (event) => {
     send({ level: "error", message: "Unhandled rejection: " + format(event.reason), stack: event.reason?.stack });
   });
+  let annotation = null;
+  const selector = (element) => {
+    if (element.id) return "#" + CSS.escape(element.id);
+    const testId = element.getAttribute("data-testid");
+    if (testId) return '[data-testid="' + CSS.escape(testId) + '"]';
+    const parts = [];
+    let node = element;
+    while (node && node.nodeType === 1 && parts.length < 6) {
+      let part = node.tagName.toLowerCase();
+      const siblings = node.parentElement ? [...node.parentElement.children].filter((item) => item.tagName === node.tagName) : [];
+      if (siblings.length > 1) part += ":nth-of-type(" + (siblings.indexOf(node) + 1) + ")";
+      parts.unshift(part);
+      node = node.parentElement;
+    }
+    return parts.join(" > ");
+  };
+  const stopAnnotation = () => {
+    if (!annotation) return;
+    removeEventListener("pointerover", annotation.hover, true);
+    removeEventListener("click", annotation.click, true);
+    removeEventListener("keydown", annotation.key, true);
+    annotation.active?.style.removeProperty("outline");
+    clearTimeout(annotation.timer);
+    annotation = null;
+  };
+  const startAnnotation = () => {
+    stopAnnotation();
+    const state = { active: null, timer: 0 };
+    state.hover = (event) => {
+      state.active?.style.removeProperty("outline");
+      state.active = event.target instanceof Element ? event.target : null;
+      state.active?.style.setProperty("outline", "2px solid #7c5cff", "important");
+    };
+    state.click = (event) => {
+      if (!(event.target instanceof Element)) return;
+      event.preventDefault(); event.stopImmediatePropagation();
+      const element = event.target;
+      const rect = element.getBoundingClientRect();
+      parent.postMessage({ type: "milim-preview-annotation", value: {
+        url: location.href, title: document.title, selector: selector(element),
+        tag: element.tagName.toLowerCase(), id: element.id || undefined,
+        testId: element.getAttribute("data-testid") || undefined,
+        role: element.getAttribute("role") || undefined,
+        visibleText: (element.innerText || element.textContent || "").trim().slice(0, 500),
+        outerHtml: element.outerHTML.slice(0, 2048),
+        rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
+      } }, "*");
+      stopAnnotation();
+    };
+    state.key = (event) => { if (event.key === "Escape") stopAnnotation(); };
+    state.timer = setTimeout(stopAnnotation, 30000);
+    annotation = state;
+    addEventListener("pointerover", state.hover, true);
+    addEventListener("click", state.click, true);
+    addEventListener("keydown", state.key, true);
+  };
+  addEventListener("message", (event) => {
+    if (event.data?.type === "milim-preview-annotation-start") startAnnotation();
+    if (event.data?.type === "milim-preview-annotation-cancel") stopAnnotation();
+  });
+  addEventListener("pagehide", stopAnnotation);
 })();`;
 const PREVIEW_SCROLL_STYLE = `
 html,

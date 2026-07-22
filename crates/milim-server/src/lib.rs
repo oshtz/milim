@@ -11,6 +11,7 @@ pub mod companion;
 mod error;
 pub mod mcp_bridge;
 pub mod media_library;
+mod opencode_bridge;
 pub mod preview_runtime;
 pub mod privacy;
 pub mod providers;
@@ -170,12 +171,16 @@ pub fn build_router(state: AppState) -> Router {
         .route("/codex/logout", post(routes::codex_logout))
         .route("/codex/rate-limits", get(routes::codex_rate_limits))
         .route("/codex/models", get(routes::codex_models))
-        .route("/codex/run", post(routes::codex_run))
         .route("/codex/threads", get(routes::codex_threads))
         .route("/codex/threads/{id}", get(routes::codex_thread_recover))
+        .route("/codex/run", post(routes::codex_run))
         // Installed Claude CLI bridge (separate from Anthropic API-key providers)
         .route("/claude/status", get(routes::claude_status))
         .route("/claude/run", post(routes::claude_run))
+        // User-installed OpenCode ACP runtime
+        .route("/opencode/status", get(routes::opencode_status))
+        .route("/opencode/models", get(routes::opencode_models))
+        .route("/opencode/run", post(routes::opencode_run))
         .route(
             "/internal/claude-approvals/{run_id}/mcp",
             post(routes::claude_approval_mcp),

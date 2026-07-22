@@ -23,7 +23,7 @@ export interface HotSwapAssessment {
   parity: HotSwapParity;
   issues: HotSwapIssue[];
   requiresConfirmation: boolean;
-  nativeRuntime?: "codex" | "claude";
+  nativeRuntime?: "codex" | "claude" | "opencode";
   nativeSessionStale: boolean;
 }
 
@@ -44,10 +44,11 @@ function worstParity(issues: HotSwapIssue[]): HotSwapParity {
   );
 }
 
-function runtimeKind(model: string): "codex" | "claude" | undefined {
+function runtimeKind(model: string): "codex" | "claude" | "opencode" | undefined {
   const value = model.trim().toLowerCase();
   if (value.startsWith("codex:")) return "codex";
   if (value.startsWith("claude:")) return "claude";
+  if (value.startsWith("opencode:")) return "opencode";
   return undefined;
 }
 
@@ -59,14 +60,20 @@ function hasImagePixels(messages: readonly ChatMessage[]): boolean {
 
 export function nativeRuntimeIsStale(
   session: Pick<Session, "messages" | "accountRuntime">,
-  kind: "codex" | "claude",
+  kind: "codex" | "claude" | "opencode",
 ): boolean {
   const runtime = session.accountRuntime;
-  const sessionId = kind === "codex" ? runtime?.codexThreadId : runtime?.claudeSessionId;
+  const sessionId = kind === "codex"
+    ? runtime?.codexThreadId
+    : kind === "claude"
+      ? runtime?.claudeSessionId
+      : runtime?.opencodeSessionId;
   if (!sessionId) return false;
   const cursor = kind === "codex"
     ? runtime?.codexLastSyncedMessageId
-    : runtime?.claudeLastSyncedMessageId;
+    : kind === "claude"
+      ? runtime?.claudeLastSyncedMessageId
+      : runtime?.opencodeLastSyncedMessageId;
   if (!cursor) return true;
   const index = session.messages.findIndex((message) => message.id === cursor);
   if (index < 0) return true;

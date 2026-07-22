@@ -4,6 +4,7 @@ import {
   discoverLocalProviders,
   getClaudeStatus,
   getCodexAccount,
+  getOpenCodeStatus,
   isCliPathWarningMessage,
   isOpenRouterProvider,
   listCodexThreads,
@@ -18,6 +19,7 @@ import {
   type CodexAccountResponse,
   type CodexLoginEvent,
   type CodexThreadSummary,
+  type OpenCodeStatusResponse,
   type ProviderDiscovery,
   type ProviderInfo,
   type ProviderKind,
@@ -187,6 +189,9 @@ export function ProvidersManager({ onClose }: { onClose: () => void }) {
     tone: StatusTone;
     message: string;
   } | null>(null);
+  const [openCodeStatus, setOpenCodeStatus] = useState<OpenCodeStatusResponse | null>(null);
+  const [openCodeBusy, setOpenCodeBusy] = useState(false);
+  const [openCodeNote, setOpenCodeNote] = useState<{ tone: StatusTone; message: string } | null>(null);
   const [discoveries, setDiscoveries] = useState<ProviderDiscovery[]>([]);
   const [note, setNote] = useState<string | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
@@ -196,6 +201,7 @@ export function ProvidersManager({ onClose }: { onClose: () => void }) {
     void refresh();
     void refreshCodexAccount();
     void refreshClaudeStatus();
+    void refreshOpenCodeStatus();
   }, []);
 
   function edit(p: ProviderInfo | "new") {
@@ -276,6 +282,22 @@ export function ProvidersManager({ onClose }: { onClose: () => void }) {
       }
     } finally {
       setClaudeBusy(false);
+    }
+  }
+
+  async function refreshOpenCodeStatus(showNote = false) {
+    setOpenCodeBusy(true);
+    try {
+      const status = await getOpenCodeStatus();
+      setOpenCodeStatus(status);
+      if (showNote) setOpenCodeNote(status.available && status.authenticated
+        ? { tone: "ready", message: `OpenCode connected with ${status.models?.length ?? 0} configured models.` }
+        : { tone: status.available ? "warning" : "error", message: status.error || "Install OpenCode and configure a provider, then refresh." });
+    } catch (error) {
+      setOpenCodeStatus(null);
+      if (showNote) setOpenCodeNote({ tone: "error", message: error instanceof Error ? error.message : "OpenCode status check failed." });
+    } finally {
+      setOpenCodeBusy(false);
     }
   }
 
@@ -647,7 +669,7 @@ export function ProvidersManager({ onClose }: { onClose: () => void }) {
             <div className="providers-section-head">
               <h4 id="provider-account-title">Account runtimes</h4>
               <p>
-                Codex and the installed Claude CLI use their own signed-in
+                Codex, the installed Claude CLI, and OpenCode use their own
                 desktop tooling.
               </p>
               <p>
@@ -705,6 +727,20 @@ export function ProvidersManager({ onClose }: { onClose: () => void }) {
                   </button>
                 </div>
               </div>
+              <div className={"provider-account-card " + (openCodeStatus?.available && openCodeStatus.authenticated ? "ready" : "off")}>
+                <div className="provider-account-main">
+                  <span className={"provider-status-dot " + (openCodeStatus?.available && openCodeStatus.authenticated ? "ready" : "off")} />
+                  <div>
+                    <strong>Installed OpenCode CLI</strong>
+                    <span>{openCodeStatus?.available
+                      ? `${openCodeStatus.models?.length ?? 0} configured model${openCodeStatus.models?.length === 1 ? "" : "s"}`
+                      : "Install OpenCode separately and configure its providers."}</span>
+                  </div>
+                </div>
+                <button className="btn-ghost" type="button" onClick={() => void refreshOpenCodeStatus(true)} disabled={openCodeBusy}>
+                  {openCodeBusy ? "Checking..." : "Refresh"}
+                </button>
+              </div>
               <div
                 className={
                   "provider-account-card " + (claudeReady ? "ready" : "off")
@@ -747,6 +783,7 @@ export function ProvidersManager({ onClose }: { onClose: () => void }) {
                 {claudeNote.message}
               </p>
             )}
+            {openCodeNote && <p className={"provider-note " + openCodeNote.tone}>{openCodeNote.message}</p>}
           </section>
 
           <section

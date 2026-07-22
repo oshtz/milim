@@ -17,6 +17,7 @@ import { sessionRecencyLabel } from "../lib/sessionRecency.js";
 import { chatExportFilename, sessionExportPayload } from "../lib/threadExport";
 import { DEFAULT_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH, MIN_SIDEBAR_WIDTH, normalizeSidebarWidth, useUiPreferences } from "../ui/store";
 import { GitPanel } from "./GitPanel";
+import { runWorkspaceGitAction, setWorkspace } from "../api";
 import { useContextMenu } from "./ContextMenu";
 import { Archive, ArrowUp, Bolt, Calendar, ChevronDown, Cube, Download, Folder, FolderOpen, Gear, GitBranch, Image, Lightbulb, MoreHorizontal, Pin, Plus, Search, Sidebar as PanelIcon } from "./icons";
 
@@ -426,6 +427,34 @@ export function Sidebar({
     setConfirmArchiveId(null);
   }
 
+  async function createIsolatedChat() {
+    const store = useSessions.getState();
+    const projectFolder = store.getSettings(store.activeId).folder.trim();
+    if (!projectFolder) return;
+    const id = store.newChat(store.getSettings(store.activeId));
+    try {
+      await setWorkspace(projectFolder);
+      const result = await runWorkspaceGitAction("create_thread_worktree", {
+        thread_id: id,
+      });
+      if (!result.ok || !result.worktree)
+        throw new Error(result.message || "Could not create the isolated worktree.");
+      store.setThreadWorkspace(id, {
+        mode: "worktree",
+        projectFolder,
+        worktreeFolder: result.worktree,
+        branch: result.stdout.trim() || undefined,
+        baseCommit: result.head,
+        createdAt: Date.now(),
+      });
+      await setWorkspace(result.worktree);
+      focusComposerSoon();
+      setQuery("");
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : String(error));
+    }
+  }
+
   function createChatInSection(sectionId: string) {
     const { activeId, getSettings, newChat } = useSessions.getState();
     const folder = folderFromSectionId(sectionId);
@@ -736,10 +765,22 @@ export function Sidebar({
     "--sidebar-width": `${resolvedSidebarWidth}px`,
   } as CSSProperties;
   const newChatButton = (
-    <button className="new-chat" title="New chat" onClick={createChat}>
-      <Plus size={16} />
-      <span>New chat</span>
-    </button>
+    <div className="new-chat-actions">
+      <button className="new-chat" title="New chat in current checkout" onClick={createChat}>
+        <Plus size={16} />
+        <span>New chat</span>
+      </button>
+      {activeFolder ? (
+        <button
+          className="new-chat new-chat-isolated"
+          title="New isolated worktree (uncommitted changes in the current checkout are excluded)"
+          onClick={() => void createIsolatedChat()}
+        >
+          <GitBranch size={15} />
+          <span>Isolated</span>
+        </button>
+      ) : null}
+    </div>
   );
 
   function resizeSidebar(width: number) {

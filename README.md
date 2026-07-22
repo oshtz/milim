@@ -1,6 +1,8 @@
 # milim
 
-milim is a model-agnostic software development desktop app for people who switch between models, providers, and subscriptions constantly. It embeds a Rust backend with a local HTTP API, supports OpenAI-compatible, Ollama-compatible, and Anthropic-compatible routes, and brings provider-agnostic dev chat, encrypted provider management, Codex and bring-your-own Claude CLI account runtimes, agents/tools, memory/RAG, media generation, artifact workflows, and outbound privacy controls into one app.
+**Your local control plane for coding agents.** Use your own models and subscriptions, keep one canonical thread, review the diff, and ship.
+
+Milim embeds a Rust backend with a local HTTP API and brings provider-agnostic dev chat, encrypted provider management, Codex, Claude CLI, and OpenCode account runtimes, opt-in isolated thread worktrees, review comments, GitHub draft PR creation, agents/tools, memory/RAG, artifact previews, and outbound privacy controls into one app.
 
 Desktop release artifacts currently target Windows and macOS. Linux packaging is intentionally disabled, but the Rust server and Tauri app remain source-buildable on supported platforms.
 
@@ -85,6 +87,7 @@ Claude CLI integration boundaries:
 | Ollama chat/generate/tags/embeddings | `POST /api/chat`, `POST /api/generate`, `GET /api/tags`, `POST /api/embed`, `POST /api/embeddings` |
 | Anthropic messages | `POST /anthropic/v1/messages`, `POST /anthropic/messages`, `POST /v1/messages` |
 | Provider registry | `GET/POST /providers`, `GET /providers/discover`, `DELETE /providers/{id}` |
+| OpenCode account runtime | `GET /opencode/status`, `GET /opencode/models`, `POST /opencode/run` |
 | Media generation and library | `GET /media/models`, `GET /media/model-schema`, `GET /media/status`, authenticated `GET /media/content`, `POST /media/generate`, `GET /media/library`, `POST /media/library/{id}/refresh`, `GET /media/library/{id}/content/{index}`, `DELETE /media/library/{id}` |
 | MCP | `GET /mcp/tools`, `POST /mcp/call`, host-only `POST /mcp/apps/resources/read` and `POST /mcp/apps/tools/call`, ephemeral `GET /mcp/apps/views/{id}`, `GET/POST /mcp/servers`, `POST /mcp/servers/test`, `POST /mcp/servers/{id}/test`, `DELETE /mcp/servers/{id}` |
 | Agents and Worker Runs | `POST /agents/run`, `GET/POST /agents`, `GET/PUT/DELETE /agents/{id}`, `POST /agents/{id}/run`, preferred `/worker-runs/*` including task retry, and compatibility `/threads/*` routes |

@@ -26,6 +26,7 @@ import {
   inferAttachmentMime,
   generateMedia,
   getClaudeStatus,
+  getOpenCodeStatus,
   getCodexAccount,
   getMobileCompanionStatus,
   getWorkspaceGitStatus,
@@ -37,6 +38,7 @@ import {
   isClaudeModel,
   isCliPathWarningMessage,
   isCodexModel,
+  isOpenCodeModel,
   listWorkspaceFiles,
   loadStartupModels,
   listModelsDetailed,
@@ -79,6 +81,8 @@ import {
   streamClaudeRun,
   streamCodexDeviceLogin,
   streamCodexRun,
+  streamOpenCodeRun,
+  opencodeRuntimeModel,
   wireMessageContent,
   mediaProviders,
   type AgentEvent,
@@ -96,6 +100,7 @@ import {
   type ClaudeRunEvent,
   type CodexLoginEvent,
   type CodexRunEvent,
+  type OpenCodeRunEvent,
   type MediaGenerationResult,
   type MediaKind,
   type MediaModelSchema,
@@ -112,6 +117,7 @@ import {
   type PreviewAppStatus,
   type PreviewAppStartOptions,
   type PreviewSurfaceTarget,
+  type ReviewComment,
   type ProviderInfo,
   type ReasoningEffort,
   type RunStep,
@@ -866,6 +872,20 @@ function blankBrowserPreviewSelection(): PreviewSelection {
   return { artifact, artifacts: [artifact], previewDeferred: false };
 }
 
+function blankWorkspaceReviewSelection(): PreviewSelection {
+  const artifact: ChatArtifact = {
+    id: "workspace-review",
+    kind: "text",
+    title: "Workspace",
+    mime: "text/plain",
+    content: "Select a workspace file above to review it.",
+    size: 0,
+    language: "txt",
+    disposition: "inline",
+  };
+  return { artifact, artifacts: [artifact], previewDeferred: false };
+}
+
 function emptyBrowserSession(): InspectorBrowserSession {
   return { url: null, input: "", history: [], historyIndex: -1 };
 }
@@ -1362,6 +1382,11 @@ function MessageRowView({
               </Suspense>
             )}
             {renderMessageAttachments(m.attachments)}
+            {m.reviewComments?.length ? (
+              <div className="message-review-count">
+                {m.reviewComments.length} review comment{m.reviewComments.length === 1 ? "" : "s"}
+              </div>
+            ) : null}
           </>
         )}
       </div>
@@ -3141,6 +3166,7 @@ export function ChatView({
   const [pendingAttachments, setPendingAttachments] = useState<
     ChatAttachment[]
   >([]);
+  const [reviewCommentsBySession, setReviewCommentsBySession] = useState<Record<string, ReviewComment[]>>({});
   const [, setPreviewSelection] =
     useState<PreviewSelection | null>(null);
   const [activePreviewSurface, setActivePreviewSurface] =
@@ -3191,6 +3217,29 @@ export function ChatView({
     useSessions.persist.hasHydrated(),
   );
   const activeId = useSessions((s) => s.activeId);
+  const pendingReviewComments = reviewCommentsBySession[activeId] ?? [];
+  const setPendingReviewComments = useCallback((next: ReviewComment[] | ((current: ReviewComment[]) => ReviewComment[])) => {
+    setReviewCommentsBySession((current) => ({
+      ...current,
+      [activeId]: typeof next === "function" ? next(current[activeId] ?? []) : next,
+    }));
+  }, [activeId]);
+  useEffect(() => {
+    const add = (event: Event) => {
+      const comment = (event as CustomEvent<ReviewComment>).detail;
+      if (!comment?.id || !comment.body?.trim()) return;
+      setPendingReviewComments((current) => {
+        const next = [...current, comment].slice(0, 20);
+        if (new TextEncoder().encode(JSON.stringify(next)).byteLength > 64 * 1024) {
+          setChatNotice({ tone: "error", message: "Review context is limited to 64 KiB per send." });
+          return current;
+        }
+        return next;
+      });
+    };
+    window.addEventListener("milim:add-review-comment", add);
+    return () => window.removeEventListener("milim:add-review-comment", add);
+  }, [setPendingReviewComments]);
   const sessionSummariesSelector = useMemo(
     createChatSessionSummariesSelector,
     [],
@@ -5033,7 +5082,8 @@ export function ChatView({
   function openArtifactSidePanel(tab: "preview" | "code" = "preview") {
     const selection =
       activeArtifactSelection ??
-      latestPreviewSelection;
+      latestPreviewSelection ??
+      (tab === "code" && folder.trim() ? blankWorkspaceReviewSelection() : null);
     if (!selection) return;
     rememberInspectorInvoker();
     clearPreviewCloseTimer();
@@ -5086,7 +5136,7 @@ export function ChatView({
   ];
   const visiblePreviewSelection =
     inspectorTab === "code"
-      ? activeArtifactSelection
+      ? (activeArtifactSelection ?? (folder.trim() ? blankWorkspaceReviewSelection() : null))
       : activeInspectorPreviewSource === "artifact"
         ? activeArtifactSelection
         : activeInspectorPreviewSource === "app"
@@ -5234,7 +5284,9 @@ export function ChatView({
       ? "codex"
       : target.id.startsWith("claude:")
         ? "claude"
-        : null;
+        : target.id.startsWith("opencode:")
+          ? "opencode"
+          : null;
     if (kind && nativeSessionMode === "fresh") {
       useSessions.getState().clearAccountRuntimeKind(activeId, kind);
     } else if (kind && nativeSessionMode === "resume") {
@@ -5246,6 +5298,10 @@ export function ChatView({
       } else if (kind === "claude" && runtime?.claudeSessionId && !runtime.claudeLastSyncedMessageId) {
         useSessions.getState().setAccountRuntime(activeId, {
           claudeLastSyncedMessageId: "__milim_hot_swap_full__",
+        });
+      } else if (kind === "opencode" && runtime?.opencodeSessionId && !runtime.opencodeLastSyncedMessageId) {
+        useSessions.getState().setAccountRuntime(activeId, {
+          opencodeLastSyncedMessageId: "__milim_hot_swap_full__",
         });
       }
     }
@@ -5738,6 +5794,7 @@ export function ChatView({
     const baseline = summarizeThreadMetricsBreakdown(sourceMessages).lifetime;
     const codexModel = codexRuntimeModel(model);
     const claudeModel = claudeRuntimeModel(model);
+    const opencodeModel = opencodeRuntimeModel(model);
     const summaryStartedAt = Date.now();
     const selectedProvider = providers.find(
       (item) => providerOwnsModel(item, model),
@@ -5746,6 +5803,8 @@ export function ChatView({
       ? "Codex"
       : claudeModel
         ? "Local Claude CLI"
+        : opencodeModel
+          ? "Local OpenCode CLI"
         : selectedProvider?.name;
     const summaryReasoningEffort =
       compactionSummaryReasoningEffort(selectedProvider);
@@ -5785,6 +5844,15 @@ export function ChatView({
           promptMessages,
           options.folder,
           options.reasoningEffort,
+          options.signal,
+        );
+      } else if (opencodeModel) {
+        const ready = await ensureOpenCodeAccount();
+        if (!ready.ok) throw new Error(ready.message);
+        summary = await summarizeWithOpenCode(
+          opencodeModel,
+          promptMessages,
+          options.folder,
           options.signal,
         );
       } else {
@@ -5915,6 +5983,35 @@ export function ChatView({
     if (error) throw new Error(error);
     if (warning) throw new Error(warning);
     return { content: text, usage, costUsd };
+  }
+
+  async function summarizeWithOpenCode(
+    model: string,
+    promptMessages: ChatMessage[],
+    folder: string,
+    signal?: AbortSignal,
+  ): Promise<CompactionSummaryResult> {
+    let text = "";
+    let error: string | null = null;
+    let warning: string | null = null;
+    let usage: TokenUsage | undefined;
+    const runtimeInput = accountRuntimeInputFromMessages(promptMessages);
+    await streamOpenCodeRun({
+      model,
+      prompt: runtimeInput.prompt,
+      cwd: folder.trim() || undefined,
+      images: runtimeInput.images,
+      tool_approval_policy: "guarded",
+      plan_mode: true,
+    }, (ev: OpenCodeRunEvent) => {
+      if (ev.type === "token" && ev.text) text += ev.text;
+      else if (ev.type === "warning") warning = ev.message;
+      else if (ev.type === "error") error = ev.message;
+      else if (ev.type === "done") usage = ev.usage;
+    }, signal);
+    if (error) throw new Error(error);
+    if (warning) throw new Error(warning);
+    return { content: text, usage };
   }
 
   async function compactThreadManually() {
@@ -6306,6 +6403,7 @@ export function ChatView({
       );
       const codexModel = codexRuntimeModel(turnModel);
       const claudeModel = claudeRuntimeModel(turnModel);
+      const opencodeModel = opencodeRuntimeModel(turnModel);
       const runtimeInput = accountRuntimeInputFromMessages(decisionMessages);
       let content = "";
       if (codexModel) {
@@ -6354,6 +6452,24 @@ export function ChatView({
         );
         if (claudeWarning) throw new Error(claudeWarning);
         if (claudeError) throw new Error(claudeError);
+      } else if (opencodeModel) {
+        let runtimeError: string | null = null;
+        let runtimeWarning: string | null = null;
+        await streamOpenCodeRun({
+          model: opencodeModel,
+          prompt: runtimeInput.prompt,
+          images: runtimeInput.images,
+          cwd: folder.trim() || undefined,
+          tool_approval_policy: "review",
+          tool_approval_grant: false,
+          plan_mode: false,
+        }, (ev: OpenCodeRunEvent) => {
+          if (ev.type === "token" && ev.text) content += ev.text;
+          else if (ev.type === "warning") runtimeWarning = ev.message;
+          else if (ev.type === "error") runtimeError = ev.message;
+        }, controller.signal);
+        if (runtimeWarning) throw new Error(runtimeWarning);
+        if (runtimeError) throw new Error(runtimeError);
       } else {
         content = await completeChat(turnModel, decisionMessages, {
           signal: controller.signal,
@@ -7315,6 +7431,24 @@ export function ChatView({
     }
   }
 
+  async function ensureOpenCodeAccount(): Promise<AccountRuntimeReady> {
+    try {
+      const status = await getOpenCodeStatus();
+      if (status.available && status.authenticated) return { ok: true };
+      const message = status.available
+        ? "OpenCode has no configured models. Configure a provider with the OpenCode CLI, then refresh models."
+        : `OpenCode CLI is unavailable: ${status.error || "install OpenCode separately and make sure `opencode` is on PATH."}`;
+      const warning = isCliPathWarningMessage(message);
+      setChatNotice({ tone: warning ? "warning" : "error", message });
+      return { ok: false, message, warning };
+    } catch (e) {
+      const message = `OpenCode CLI is unavailable: ${e instanceof Error ? e.message : String(e)}`;
+      const warning = isCliPathWarningMessage(message);
+      setChatNotice({ tone: warning ? "warning" : "error", message });
+      return { ok: false, message, warning };
+    }
+  }
+
   /** Stream the assistant's reply to a conversation that ends with a user turn. */
   async function runTurn(
     convo: ChatMessage[],
@@ -7340,8 +7474,10 @@ export function ChatView({
       requireModel: requireChatModel,
       codexRuntimeModel,
       claudeRuntimeModel,
+      opencodeRuntimeModel,
       isCodexModel,
       isClaudeModel,
+      isOpenCodeModel,
     });
     if (!turnSetup.ok) {
       setChatNotice({ tone: "error", message: turnSetup.error });
@@ -7378,6 +7514,7 @@ export function ChatView({
     const turnTitle = turnSetup.title;
     const codexModel = turnSetup.codexModel;
     const claudeModel = turnSetup.claudeModel;
+    const opencodeModel = turnSetup.opencodeModel;
     const store = useSessions.getState();
     const controller = claimTurnGeneration({
       sessionId: id,
@@ -7396,9 +7533,11 @@ export function ChatView({
       notReady = await accountRuntimeNotReadyForTurn({
         codexModel,
         claudeModel,
+        opencodeModel,
         conversation: convo,
         ensureCodexAccount,
         ensureClaudeAccount,
+        ensureOpenCodeAccount,
       });
     } catch (e) {
       releaseTurnGeneration({
@@ -7603,13 +7742,14 @@ export function ChatView({
       });
 
     try {
-      if (codexModel || claudeModel) {
+      if (codexModel || claudeModel || opencodeModel) {
         const accountRuntime = useSessions
           .getState()
           .sessions.find((session) => session.id === id)?.accountRuntime;
         const accountResult = await runSelectedAccountRuntimeTurn({
           codexModel,
           claudeModel,
+          opencodeModel,
           accountRuntime,
           promptContext,
           conversation: assistantStart.state.activeConversation,
@@ -7662,8 +7802,11 @@ export function ChatView({
           },
           ensureClaudeSessionId: () =>
             useSessions.getState().ensureClaudeSessionId(id),
+          setOpenCodeSessionId: (sessionId) =>
+            store.setAccountRuntime(id, { opencodeSessionId: sessionId }),
           streamCodexRun,
           streamClaudeRun,
+          streamOpenCodeRun,
           signal: controller.signal,
           models: pickerModels,
           runRef,
@@ -7788,6 +7931,10 @@ export function ChatView({
           store.setAccountRuntime(id, {
             claudeLastSyncedMessageId: assistantMessageId,
           });
+        } else if (opencodeModel) {
+          store.setAccountRuntime(id, {
+            opencodeLastSyncedMessageId: assistantMessageId,
+          });
         }
       }
       if (assistantStart.state.started && pendingHotSwap?.toModel === turnModel) {
@@ -7836,7 +7983,7 @@ export function ChatView({
 
   function send() {
     const text = input.trim();
-    if (!text && pendingAttachments.length === 0) return;
+    if (!text && pendingAttachments.length === 0 && pendingReviewComments.length === 0) return;
     if (compactionInFlightRef.current) {
       setChatNotice({
         tone: "info",
@@ -7845,6 +7992,10 @@ export function ChatView({
       return;
     }
     if (busy) {
+      if (pendingReviewComments.length) {
+        setChatNotice({ tone: "info", message: "Wait for the current reply before sending review comments." });
+        return;
+      }
       if (goalComposerMode) {
         setChatNotice({
           tone: "info",
@@ -7910,10 +8061,19 @@ export function ChatView({
     const selectedModel = requireChatModel();
     if (!selectedModel) return;
     const attachments = pendingAttachments;
+    const reviewComments = pendingReviewComments;
     setInput("");
     setPendingAttachments([]);
+    setPendingReviewComments([]);
+    const conversation = appendUserTurn(messages, text, attachments);
+    if (reviewComments.length) {
+      conversation[conversation.length - 1] = {
+        ...conversation[conversation.length - 1],
+        reviewComments,
+      };
+    }
     void runTurnAndDrain(
-      appendUserTurn(messages, text, attachments),
+      conversation,
       selectedModel,
     );
   }
@@ -8439,6 +8599,34 @@ export function ChatView({
 
   async function deleteThreadWithRetryCleanup(sessionId: string) {
     const session = useSessions.getState().sessions.find((item) => item.id === sessionId);
+    const isolated = session?.threadWorkspace?.mode === "worktree"
+      ? session.threadWorkspace
+      : null;
+    if (isolated) {
+      try {
+        await setWorkspace(isolated.projectFolder);
+        let result = await runWorkspaceGitAction("remove_thread_worktree", {
+          thread_id: sessionId,
+        });
+        if (!result.ok && result.message.includes("uncommitted changes")) {
+          const discard = window.confirm(
+            `${result.message}\n\nForce-discard the worktree? The branch will be retained.`,
+          );
+          if (!discard) return;
+          result = await runWorkspaceGitAction("remove_thread_worktree", {
+            thread_id: sessionId,
+            force: true,
+          });
+        }
+        if (!result.ok) throw new Error(result.message);
+      } catch (error) {
+        setChatNotice({
+          tone: "error",
+          message: `Thread was kept because worktree cleanup failed: ${error instanceof Error ? error.message : String(error)}`,
+        });
+        return;
+      }
+    }
     const retry = session?.retryWorkspace;
     if (retry) {
       try {
@@ -8517,7 +8705,9 @@ export function ChatView({
           ? "codex"
           : nextModel.startsWith("claude:")
             ? "claude"
-            : null;
+            : nextModel.startsWith("opencode:")
+              ? "opencode"
+              : null;
         if (session && kind && nativeRuntimeIsStale(session, kind)) {
           useSessions.getState().clearAccountRuntimeKind(activeId, kind);
         }
@@ -8772,9 +8962,7 @@ export function ChatView({
     debugPreviewControlActivity ??
     streamPreviewControlActivity ??
     recentPreviewControlActivity;
-  const canOpenArtifactPanel = Boolean(
-    activeArtifactSelection,
-  );
+  const canOpenArtifactPanel = Boolean(activeArtifactSelection || folder.trim());
 
   function openPreviewInspector() {
     rememberInspectorInvoker();
@@ -9097,6 +9285,28 @@ export function ChatView({
                 }
                 onRemove={(id) => removeQueuedMessage(activeId, id)}
               />
+              {pendingReviewComments.length ? (
+                <div className="review-comment-tray" aria-label="Pending review comments">
+                  <span>{pendingReviewComments.length} review comment{pendingReviewComments.length === 1 ? "" : "s"}</span>
+                  {pendingReviewComments.map((comment) => (
+                    <button
+                      type="button"
+                      key={comment.id}
+                      title={comment.body}
+                      onClick={() => {
+                        const body = window.prompt("Edit review comment", comment.body);
+                        if (body === null) return;
+                        setPendingReviewComments((current) => body.trim()
+                          ? current.map((item) => item.id === comment.id ? { ...item, body: body.trim() } : item)
+                          : current.filter((item) => item.id !== comment.id));
+                      }}
+                    >
+                      {comment.filePath || comment.preview?.selector || "Preview"}:{comment.startLine ?? "element"}
+                    </button>
+                  ))}
+                  <button type="button" onClick={() => setPendingReviewComments([])}>Clear</button>
+                </div>
+              ) : null}
               <Composer
                 value={input}
                 onChange={setInput}
@@ -9340,6 +9550,7 @@ export function ChatView({
                   controlActivity={previewControlActivity}
                   onSurfaceChange={setActivePreviewSurface}
                   modeSwitcher={inspectorTabSwitcher}
+                  workspaceFolder={folder}
                 />
               )
             )}

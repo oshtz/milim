@@ -1,4 +1,4 @@
-import type { ChatAttachment, ChatMessage } from "../api.js";
+import type { ChatAttachment, ChatMessage, ReviewComment } from "../api.js";
 import {
   assertValidImageAttachment,
   OMITTED_IMAGE_NOTE,
@@ -55,10 +55,33 @@ export function wireMessageContent(
     message.attachments,
     imageNote,
   );
-  if (!attachmentContext) return message.content;
-  return message.content
-    ? `${message.content}\n\n${attachmentContext}`
-    : attachmentContext;
+  const reviewContext = reviewCommentsToPromptContext(message.reviewComments);
+  return [message.content, attachmentContext, reviewContext].filter(Boolean).join("\n\n");
+}
+
+export function reviewCommentsToPromptContext(comments?: ReviewComment[]): string {
+  if (!comments?.length) return "";
+  const selected = comments.slice(0, 20).map((comment) => ({
+    surface: comment.surface,
+    path: comment.filePath,
+    side: comment.side,
+    lines: comment.startLine
+      ? { start: comment.startLine, end: comment.endLine ?? comment.startLine }
+      : undefined,
+    selected_text: comment.selectedText?.slice(0, 8_192),
+    comment: comment.body,
+    preview: comment.preview,
+  }));
+  let json = JSON.stringify(selected);
+  if (new TextEncoder().encode(json).byteLength > 64 * 1024) {
+    while (selected.length && new TextEncoder().encode(json).byteLength > 64 * 1024) {
+      selected.pop();
+      json = JSON.stringify(selected);
+    }
+  }
+  return selected.length
+    ? `<milim_review_context>${json}</milim_review_context>`
+    : "";
 }
 
 function imageAttachments(attachments?: ChatAttachment[]): ChatAttachment[] {
@@ -78,10 +101,11 @@ function wireImageMessageText(message: ChatMessage): string {
     textAttachments,
     "",
   );
-  if (!attachmentContext) return message.content;
-  return message.content
-    ? `${message.content}\n\n${attachmentContext}`
-    : attachmentContext;
+  return [
+    message.content,
+    attachmentContext,
+    reviewCommentsToPromptContext(message.reviewComments),
+  ].filter(Boolean).join("\n\n");
 }
 
 export function wireMessages(messages: ChatMessage[]): WireChatMessage[] {

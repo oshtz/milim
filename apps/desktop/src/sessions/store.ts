@@ -133,6 +133,15 @@ export interface ThreadSettings {
   goal: GoalSettings;
 }
 
+export interface ThreadWorkspace {
+  mode: "current" | "worktree";
+  projectFolder: string;
+  worktreeFolder: string;
+  branch?: string;
+  baseCommit?: string;
+  createdAt: number;
+}
+
 type ThreadSettingsPatch = Partial<Omit<ThreadSettings, "goal">> & {
   goal?: Partial<GoalSettings>;
   reasoningEffort?: ReasoningEffort;
@@ -156,11 +165,14 @@ export interface Session {
   artifactPanelTab?: SessionArtifactPanelTab;
   previewRuntime?: SessionPreviewRuntime;
   settings?: ThreadSettings;
+  threadWorkspace?: ThreadWorkspace;
   accountRuntime?: {
     codexThreadId?: string;
     codexLastSyncedMessageId?: string;
     claudeSessionId?: string;
     claudeLastSyncedMessageId?: string;
+    opencodeSessionId?: string;
+    opencodeLastSyncedMessageId?: string;
   };
   pendingHotSwap?: PendingHotSwap;
   retryWorkspace?: RetryWorkspace;
@@ -334,6 +346,10 @@ function normalizeAccountRuntime(
     typeof raw.claudeSessionId === "string" && raw.claudeSessionId.trim()
       ? raw.claudeSessionId.trim()
       : undefined;
+  const opencodeSessionId =
+    typeof raw.opencodeSessionId === "string" && raw.opencodeSessionId.trim()
+      ? raw.opencodeSessionId.trim()
+      : undefined;
   const codexLastSyncedMessageId =
     codexThreadId &&
     typeof raw.codexLastSyncedMessageId === "string" &&
@@ -346,12 +362,20 @@ function normalizeAccountRuntime(
     raw.claudeLastSyncedMessageId.trim()
       ? raw.claudeLastSyncedMessageId.trim()
       : undefined;
-  return codexThreadId || claudeSessionId
+  const opencodeLastSyncedMessageId =
+    opencodeSessionId &&
+    typeof raw.opencodeLastSyncedMessageId === "string" &&
+    raw.opencodeLastSyncedMessageId.trim()
+      ? raw.opencodeLastSyncedMessageId.trim()
+      : undefined;
+  return codexThreadId || claudeSessionId || opencodeSessionId
     ? {
         codexThreadId,
         codexLastSyncedMessageId,
         claudeSessionId,
         claudeLastSyncedMessageId,
+        opencodeSessionId,
+        opencodeLastSyncedMessageId,
       }
     : undefined;
 }
@@ -690,8 +714,34 @@ function folderListFromSessions(sessions: Session[]): string[] {
   );
 }
 
-export function sessionProjectFolder(session: Pick<Session, "settings" | "retryWorkspace">): string {
-  return session.retryWorkspace?.originalFolder || session.settings?.folder || "";
+export function sessionProjectFolder(session: Pick<Session, "settings" | "retryWorkspace" | "threadWorkspace">): string {
+  return session.retryWorkspace?.originalFolder
+    || (session.threadWorkspace?.mode === "worktree"
+      ? session.threadWorkspace.projectFolder
+      : session.settings?.folder)
+    || session.settings?.folder
+    || "";
+}
+
+function normalizeThreadWorkspace(value: unknown, effectiveFolder: string): ThreadWorkspace {
+  const raw = value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+  const mode = raw.mode === "worktree" ? "worktree" : "current";
+  const projectFolder = typeof raw.projectFolder === "string" && raw.projectFolder.trim()
+    ? raw.projectFolder.trim()
+    : effectiveFolder;
+  const worktreeFolder = mode === "worktree" && typeof raw.worktreeFolder === "string" && raw.worktreeFolder.trim()
+    ? raw.worktreeFolder.trim()
+    : effectiveFolder;
+  return {
+    mode,
+    projectFolder,
+    worktreeFolder,
+    ...(typeof raw.branch === "string" && raw.branch.trim() ? { branch: raw.branch.trim() } : {}),
+    ...(typeof raw.baseCommit === "string" && raw.baseCommit.trim() ? { baseCommit: raw.baseCommit.trim() } : {}),
+    createdAt: timestamp(raw.createdAt) ?? Date.now(),
+  };
 }
 
 function timestamp(value: unknown): number | undefined {
@@ -891,6 +941,7 @@ function freshSession(settings?: ThreadSettingsPatch): Session {
     title: "New chat",
     messages: [],
     settings: { ...normalizedSettings, goal: DEFAULT_GOAL_SETTINGS },
+    threadWorkspace: normalizeThreadWorkspace(undefined, normalizedSettings.folder),
     createdAt: t,
     updatedAt: t,
   };
@@ -1144,6 +1195,10 @@ function normalizeSessionArtifacts(session: Session): Session {
       legacyArtifactTab,
     ) ?? (legacyOpen === true ? "preview" : undefined),
     previewRuntime: normalizePreviewRuntime(session.previewRuntime),
+    threadWorkspace: normalizeThreadWorkspace(
+      session.threadWorkspace,
+      session.settings?.folder ?? "",
+    ),
     accountRuntime: normalizeAccountRuntime(session.accountRuntime),
     pendingHotSwap: normalizePendingHotSwap(session.pendingHotSwap),
     retryWorkspace: normalizeRetryWorkspace(session.retryWorkspace),
@@ -1555,7 +1610,7 @@ interface SessionState {
   unreadSessionIds: string[];
   queuedMessagesBySession: Record<string, QueuedMessage[]>;
   sidebar: SessionSidebarState;
-  newChat: (settings?: ThreadSettingsPatch) => void;
+  newChat: (settings?: ThreadSettingsPatch) => string;
   forkSession: (id: string, throughMessageIndex?: number) => string | null;
   importSession: (
     session: Partial<Omit<Session, "settings">> & {
@@ -1594,6 +1649,7 @@ interface SessionState {
   clearQueuedMessages: (id: string) => void;
   addProjectFolder: (folder: string) => void;
   setSessionFolder: (id: string, folder: string) => void;
+  setThreadWorkspace: (id: string, workspace: ThreadWorkspace) => void;
   toggleSessionPinned: (id: string) => void;
   toggleSidebarSectionCollapsed: (id: string) => void;
   toggleSidebarSectionPinned: (id: string) => void;
@@ -1691,7 +1747,7 @@ interface SessionState {
     runtime: Partial<NonNullable<Session["accountRuntime"]>>,
   ) => void;
   clearAccountRuntime: (id: string) => void;
-  clearAccountRuntimeKind: (id: string, kind: "codex" | "claude") => void;
+  clearAccountRuntimeKind: (id: string, kind: "codex" | "claude" | "opencode") => void;
   setPendingHotSwap: (id: string, pending?: PendingHotSwap) => void;
   setRetryWorkspace: (id: string, retry?: RetryWorkspace) => void;
   ensureClaudeSessionId: (id: string) => string;
@@ -1728,7 +1784,7 @@ export const useSessions = create<SessionState>()(
             : normalizedSettings;
           if (cur && cur.messages.length === 0) {
             if (settings) get().updateSettings(cur.id, nextSettings);
-            return;
+            return cur.id;
           }
           const s = freshSession(nextSettings);
           set((st) => ({
@@ -1746,6 +1802,7 @@ export const useSessions = create<SessionState>()(
               [s, ...st.sessions],
             ),
           }));
+          return s.id;
         },
 
         forkSession: (id, throughMessageIndex) => {
@@ -2377,6 +2434,7 @@ export const useSessions = create<SessionState>()(
             const normalized = normalizeProjectFolder(folder);
             const sessions = st.sessions.map((s) =>
               s.id === id
+                && s.threadWorkspace?.mode !== "worktree"
                 ? {
                     ...s,
                     settings: resetApprovalForFolderChange(
@@ -2385,6 +2443,15 @@ export const useSessions = create<SessionState>()(
                         ...s.settings,
                         folder: normalized,
                       }),
+                    ),
+                    threadWorkspace: normalizeThreadWorkspace(
+                      {
+                        ...s.threadWorkspace,
+                        mode: "current",
+                        projectFolder: normalized,
+                        worktreeFolder: normalized,
+                      },
+                      normalized,
                     ),
                     updatedAt: Date.now(),
                   }
@@ -2398,6 +2465,40 @@ export const useSessions = create<SessionState>()(
                   ...st.sidebar,
                   projectFolders: normalized
                     ? [normalized, ...st.sidebar.projectFolders]
+                    : st.sidebar.projectFolders,
+                },
+                sessions,
+              ),
+            };
+          }),
+
+        setThreadWorkspace: (id, workspace) =>
+          set((st) => {
+            const normalized = normalizeThreadWorkspace(
+              workspace,
+              workspace.worktreeFolder,
+            );
+            const sessions = st.sessions.map((session) =>
+              session.id === id
+                ? {
+                    ...session,
+                    threadWorkspace: normalized,
+                    settings: normalizeSettings({
+                      ...session.settings,
+                      folder: normalized.worktreeFolder,
+                    }),
+                    updatedAt: Date.now(),
+                  }
+                : session,
+            );
+            return {
+              sessions,
+              projects: upsertProject(st.projects, normalized.projectFolder),
+              sidebar: normalizeSidebarState(
+                {
+                  ...st.sidebar,
+                  projectFolders: normalized.projectFolder
+                    ? [normalized.projectFolder, ...st.sidebar.projectFolders]
                     : st.sidebar.projectFolders,
                 },
                 sessions,
@@ -3060,10 +3161,21 @@ export const useSessions = create<SessionState>()(
                   ? {
                       claudeSessionId: current.claudeSessionId,
                       claudeLastSyncedMessageId: current.claudeLastSyncedMessageId,
+                      opencodeSessionId: current.opencodeSessionId,
+                      opencodeLastSyncedMessageId: current.opencodeLastSyncedMessageId,
+                    }
+                  : kind === "claude"
+                  ? {
+                      codexThreadId: current.codexThreadId,
+                      codexLastSyncedMessageId: current.codexLastSyncedMessageId,
+                      opencodeSessionId: current.opencodeSessionId,
+                      opencodeLastSyncedMessageId: current.opencodeLastSyncedMessageId,
                     }
                   : {
                       codexThreadId: current.codexThreadId,
                       codexLastSyncedMessageId: current.codexLastSyncedMessageId,
+                      claudeSessionId: current.claudeSessionId,
+                      claudeLastSyncedMessageId: current.claudeLastSyncedMessageId,
                     },
               );
               return { ...s, accountRuntime, updatedAt: Date.now() };
@@ -3112,32 +3224,45 @@ export const useSessions = create<SessionState>()(
 
         updateSettings: (id, settings) =>
           set((st) => {
+            const target = st.sessions.find((session) => session.id === id);
+            const guardedSettings = target?.threadWorkspace?.mode === "worktree" && "folder" in settings
+              ? { ...settings, folder: target.threadWorkspace.worktreeFolder }
+              : settings;
             const nextFolder =
-              "folder" in settings
-                ? normalizeProjectFolder(settings.folder)
+              "folder" in guardedSettings
+                ? normalizeProjectFolder(guardedSettings.folder)
                 : null;
             const sessions = st.sessions.map((s) =>
               s.id === id
                 ? (() => {
-                    const merged = { ...s.settings, ...settings };
-                    if ("goal" in settings) {
+                    const merged = { ...s.settings, ...guardedSettings };
+                    if ("goal" in guardedSettings) {
                       merged.goal = {
                         ...(s.settings?.goal ?? DEFAULT_GOAL_SETTINGS),
-                        ...(settings.goal ?? {}),
+                        ...(guardedSettings.goal ?? {}),
                       };
                     }
                     const normalized = normalizeSettings(merged);
                     return {
                       ...s,
                       settings:
-                        "folder" in settings
+                        "folder" in guardedSettings
                           ? resetApprovalForFolderChange(
                               s.settings?.folder,
                               normalized,
                             )
                           : normalized,
+                      threadWorkspace:
+                        "folder" in guardedSettings && s.threadWorkspace?.mode !== "worktree"
+                          ? normalizeThreadWorkspace({
+                              ...s.threadWorkspace,
+                              mode: "current",
+                              projectFolder: normalized.folder,
+                              worktreeFolder: normalized.folder,
+                            }, normalized.folder)
+                          : s.threadWorkspace,
                       pendingHotSwap:
-                        "model" in settings && settings.model !== s.settings?.model
+                        "model" in guardedSettings && guardedSettings.model !== s.settings?.model
                           ? undefined
                           : s.pendingHotSwap,
                       updatedAt: Date.now(),

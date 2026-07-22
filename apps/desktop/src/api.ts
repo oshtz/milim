@@ -40,6 +40,24 @@ export interface WorkspaceFileSuggestion {
   size: number;
 }
 
+export interface WorkspaceDirectoryEntry {
+  path: string;
+  name: string;
+  kind: "directory" | "file";
+  size?: number | null;
+}
+
+export interface WorkspaceDirectoryPage {
+  entries: WorkspaceDirectoryEntry[];
+  next_cursor?: string | null;
+}
+
+export interface WorkspaceReviewFile {
+  path: string;
+  content: string;
+  size: number;
+}
+
 export type ChatArtifactKind = "code" | "json" | "csv" | "table" | "text";
 export type ChatArtifactDisposition = "file" | "inline" | "preview";
 
@@ -126,6 +144,7 @@ export type PreviewSurfaceCapability =
   | "key"
   | "scroll"
   | "logs"
+  | "annotate"
   | "source";
 
 export interface PreviewSurfaceTarget {
@@ -199,6 +218,30 @@ export interface ChatApprovalRequest {
   detail?: string;
 }
 
+export interface ReviewComment {
+  id: string;
+  surface: "workspace" | "diff" | "preview";
+  filePath?: string;
+  side?: "old" | "new";
+  startLine?: number;
+  endLine?: number;
+  selectedText?: string;
+  body: string;
+  timestamp: number;
+  preview?: {
+    url: string;
+    title?: string;
+    selector: string;
+    tag: string;
+    id?: string;
+    testId?: string;
+    role?: string;
+    visibleText?: string;
+    outerHtml?: string;
+    rect?: { x: number; y: number; width: number; height: number };
+  };
+}
+
 export interface ChatMessage {
   id?: string;
   role: string;
@@ -209,6 +252,7 @@ export interface ChatMessage {
   compaction?: ChatCompactionCheckpoint;
   plan?: { status: "proposed" | "executed"; executedAt?: number };
   approval?: ChatApprovalRequest;
+  reviewComments?: ReviewComment[];
   artifacts?: ChatArtifact[];
   memories?: MemoryNotice[];
   /** UI-only ordered stream transcript of assistant text, reasoning, and events. */
@@ -289,6 +333,7 @@ export type ChatStreamPart =
       toolArguments?: string;
       approvalId?: string;
       approvalStatus?: "pending" | "approved" | "denied" | "canceled";
+      approvalRequest?: ToolApprovalRequest;
     };
 
 export type RunStatus = "running" | "done" | "stopped" | "aborted" | "error";
@@ -333,7 +378,6 @@ export interface RunTrace {
   workspace?: string;
   sourceSessionId?: string;
   iterations?: number;
-      approvalRequest?: ToolApprovalRequest;
   status: RunStatus;
   error?: string;
   context?: ContextSnapshot;
@@ -489,6 +533,48 @@ export async function listWorkspaceFiles(
     workspace,
     query,
     limit,
+  });
+}
+
+export async function startPreviewPicker(): Promise<void> {
+  if (!inTauri) return;
+  await invoke("preview_picker_start");
+}
+
+export async function takePreviewPicker(): Promise<Record<string, unknown> | null> {
+  if (!inTauri) return null;
+  const result = await invoke<{ selection?: Record<string, unknown> | null }>("preview_picker_take");
+  return result.selection ?? null;
+}
+
+export async function cancelPreviewPicker(): Promise<void> {
+  if (!inTauri) return;
+  await invoke("preview_picker_cancel");
+}
+
+export async function listWorkspaceDirectory(
+  workspace: string,
+  path = "",
+  cursor?: string,
+  limit = 200,
+): Promise<WorkspaceDirectoryPage> {
+  if (!inTauri || !workspace.trim()) return { entries: [] };
+  return await invoke<WorkspaceDirectoryPage>("list_workspace_directory", {
+    workspace,
+    path,
+    cursor,
+    limit,
+  });
+}
+
+export async function readWorkspaceReviewFile(
+  workspace: string,
+  path: string,
+): Promise<WorkspaceReviewFile> {
+  if (!inTauri) throw new Error("Workspace review is only available in the desktop app.");
+  return await invoke<WorkspaceReviewFile>("read_workspace_review_file", {
+    workspace,
+    path,
   });
 }
 
@@ -1334,6 +1420,8 @@ export interface ModelReasoningMetadata {
 
 export const CODEX_MODEL_PREFIX = "codex:";
 export const CLAUDE_MODEL_PREFIX = "claude:";
+export const OPENCODE_MODEL_PREFIX = "opencode:";
+export type AccountRuntimeKind = "codex" | "claude" | "opencode";
 
 export function isCodexModel(model: string): boolean {
   return model.trim().toLowerCase().startsWith(CODEX_MODEL_PREFIX);
@@ -1343,8 +1431,19 @@ export function isClaudeModel(model: string): boolean {
   return model.trim().toLowerCase().startsWith(CLAUDE_MODEL_PREFIX);
 }
 
+export function isOpenCodeModel(model: string): boolean {
+  return model.trim().toLowerCase().startsWith(OPENCODE_MODEL_PREFIX);
+}
+
 export function isAccountRuntimeModel(model: string): boolean {
-  return isCodexModel(model) || isClaudeModel(model);
+  return isCodexModel(model) || isClaudeModel(model) || isOpenCodeModel(model);
+}
+
+export function accountRuntimeKind(model: string): AccountRuntimeKind | null {
+  if (isCodexModel(model)) return "codex";
+  if (isClaudeModel(model)) return "claude";
+  if (isOpenCodeModel(model)) return "opencode";
+  return null;
 }
 
 export function codexRuntimeModel(model: string): string | null {
@@ -1358,6 +1457,13 @@ export function claudeRuntimeModel(model: string): string | null {
   const trimmed = model.trim();
   return trimmed.toLowerCase().startsWith(CLAUDE_MODEL_PREFIX)
     ? trimmed.slice(CLAUDE_MODEL_PREFIX.length).trim() || null
+    : null;
+}
+
+export function opencodeRuntimeModel(model: string): string | null {
+  const trimmed = model.trim();
+  return trimmed.toLowerCase().startsWith(OPENCODE_MODEL_PREFIX)
+    ? trimmed.slice(OPENCODE_MODEL_PREFIX.length).trim() || null
     : null;
 }
 
@@ -1407,12 +1513,13 @@ async function listProviderModelsForPicker(): Promise<ModelInfo[]> {
 
 /** Models with their provider (`owned_by`) for grouping in the picker. */
 export async function listModelsDetailed(): Promise<ModelInfo[]> {
-  const [providerModels, codexModels, claudeModels] = await Promise.all([
+  const [providerModels, codexModels, claudeModels, openCodeModels] = await Promise.all([
     listProviderModelsForPicker(),
     listCodexModelsForPicker(),
     listClaudeModelsForPicker(),
+    listOpenCodeModelsForPicker(),
   ]);
-  return [...providerModels, ...codexModels, ...claudeModels];
+  return [...providerModels, ...codexModels, ...claudeModels, ...openCodeModels];
 }
 
 export async function loadStartupModels(
@@ -1596,6 +1703,31 @@ export interface CodexAccountResponse {
   } | null;
 }
 
+export interface CodexThreadSummary {
+  id: string;
+  name?: string | null;
+  preview: string;
+  cwd?: string | null;
+  model_provider: string;
+  created_at_ms: number;
+  updated_at_ms: number;
+  archived: boolean;
+}
+
+export interface CodexThreadPage {
+  data: CodexThreadSummary[];
+  next_cursor?: string | null;
+}
+
+export interface CodexRecoveredThread {
+  id: string;
+  title: string;
+  cwd?: string | null;
+  created_at_ms: number;
+  updated_at_ms: number;
+  messages: Array<{ role: "user" | "assistant"; content: string }>;
+}
+
 export interface ClaudeStatusResponse {
   available: boolean;
   authenticated: boolean;
@@ -1608,6 +1740,14 @@ export interface ClaudeStatusResponse {
   };
   models?: string[];
   model_capabilities?: Record<string, { image_input?: boolean }>;
+  error?: string | null;
+}
+
+export interface OpenCodeStatusResponse {
+  available: boolean;
+  authenticated: boolean;
+  version?: string | null;
+  models?: string[];
   error?: string | null;
 }
 
@@ -1655,6 +1795,7 @@ export type CodexRunEvent =
       cost_usd?: number;
     }
   | { type: "native_worker"; lifecycle: AccountNativeWorkerLifecycle }
+  | { type: "protocol_notice"; kind: string; message: string; detail?: string | null }
   | { type: "warning"; message: string }
   | { type: "error"; message: string; usage?: TokenUsage; cost_usd?: number };
 
@@ -1676,6 +1817,24 @@ export type ClaudeRunEvent =
   | { type: "native_worker"; lifecycle: AccountNativeWorkerLifecycle }
   | { type: "warning"; message: string }
   | { type: "session_recovery_required"; message: string }
+  | { type: "error"; message: string; usage?: TokenUsage; cost_usd?: number };
+
+export type OpenCodeRunEvent =
+  | { type: "session"; session_id: string; model: string }
+  | { type: "token"; text: string }
+  | { type: "reasoning"; text: string }
+  | ToolApprovalEvent
+  | {
+      type: "tool";
+      id: string;
+      name: string;
+      status: ChatStreamEventStatus;
+      label?: string | null;
+      detail?: string | null;
+      icon?: ChatStreamEventIcon | null;
+    }
+  | { type: "done"; status: string; usage?: TokenUsage; cost_usd?: number }
+  | { type: "warning"; message: string }
   | { type: "error"; message: string; usage?: TokenUsage; cost_usd?: number };
 
 export interface AccountNativeWorkerLifecycle {
@@ -1703,31 +1862,6 @@ export async function getCodexAccount(
   signal?: AbortSignal,
 ): Promise<CodexAccountResponse> {
   const url = new URL(`${BASE}/codex/account`);
-export interface CodexThreadSummary {
-  id: string;
-  name?: string | null;
-  preview: string;
-  cwd?: string | null;
-  model_provider: string;
-  created_at_ms: number;
-  updated_at_ms: number;
-  archived: boolean;
-}
-
-export interface CodexThreadPage {
-  data: CodexThreadSummary[];
-  next_cursor?: string | null;
-}
-
-export interface CodexRecoveredThread {
-  id: string;
-  title: string;
-  cwd?: string | null;
-  created_at_ms: number;
-  updated_at_ms: number;
-  messages: Array<{ role: "user" | "assistant"; content: string }>;
-}
-
   if (refresh) url.searchParams.set("refresh", "true");
   return await parseJsonResponse<CodexAccountResponse>(
     await authFetch(url, signal ? { signal } : undefined),
@@ -1746,6 +1880,28 @@ export async function getCodexRateLimits(): Promise<unknown> {
   return await parseJsonResponse<unknown>(
     await authFetch(`${BASE}/codex/rate-limits`),
     "Codex rate limit check failed",
+  );
+}
+
+export async function listCodexThreads(options: {
+  cursor?: string;
+  search?: string;
+  archived?: boolean;
+} = {}): Promise<CodexThreadPage> {
+  const url = new URL(`${BASE}/codex/threads`);
+  if (options.cursor) url.searchParams.set("cursor", options.cursor);
+  if (options.search?.trim()) url.searchParams.set("search", options.search.trim());
+  if (options.archived) url.searchParams.set("archived", "true");
+  return await parseJsonResponse<CodexThreadPage>(
+    await authFetch(url),
+    "Codex chat recovery failed",
+  );
+}
+
+export async function recoverCodexThread(id: string): Promise<CodexRecoveredThread> {
+  return await parseJsonResponse<CodexRecoveredThread>(
+    await authFetch(`${BASE}/codex/threads/${encodeURIComponent(id)}`),
+    "Codex chat recovery failed",
   );
 }
 
@@ -1781,6 +1937,29 @@ async function listClaudeModelsForPicker(): Promise<ModelInfo[]> {
   }
 }
 
+async function listOpenCodeModelsForPicker(): Promise<ModelInfo[]> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(
+    () => ctrl.abort(),
+    ACCOUNT_RUNTIME_PICKER_TIMEOUT_MS,
+  );
+  try {
+    const status = await getOpenCodeStatus(ctrl.signal);
+    if (!status.available || !status.authenticated) return [];
+    return (status.models ?? [])
+      .filter((model) => model.trim())
+      .map((model) => ({
+        id: `${OPENCODE_MODEL_PREFIX}${model.trim()}`,
+        owned_by: "Local OpenCode CLI",
+        capabilities: { imageInput: true, toolUse: true },
+      }));
+  } catch {
+    return [];
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function getClaudeStatus(
   signal?: AbortSignal,
 ): Promise<ClaudeStatusResponse> {
@@ -1790,12 +1969,20 @@ export async function getClaudeStatus(
   );
 }
 
+export async function getOpenCodeStatus(
+  signal?: AbortSignal,
+): Promise<OpenCodeStatusResponse> {
+  return await parseJsonResponse<OpenCodeStatusResponse>(
+    await authFetch(`${BASE}/opencode/status`, signal ? { signal } : undefined),
+    "OpenCode CLI status check failed",
+  );
+}
+
 export async function streamCodexDeviceLogin(
   onEvent: (ev: CodexLoginEvent) => void,
   signal?: AbortSignal,
   method: "chatgpt" | "chatgpt_device_code" = "chatgpt",
 ): Promise<void> {
-  | { type: "protocol_notice"; kind: string; message: string; detail?: string | null }
   const path =
     method === "chatgpt_device_code"
       ? "/codex/login/chatgpt-device"
@@ -1879,32 +2066,38 @@ export async function streamClaudeRun(
   await streamJsonSse(resp, onEvent);
 }
 
+export async function streamOpenCodeRun(
+  request: {
+    model: string;
+    prompt: string;
+    cwd?: string;
+    session_id?: string;
+    tool_approval_policy?: ToolApprovalMode;
+    tool_approval_grant?: boolean;
+    interactive_tool_approval?: boolean;
+    plan_mode?: boolean;
+    images?: AccountRuntimeImageInput[];
+  },
+  onEvent: (ev: OpenCodeRunEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const resp = await authFetch(`${BASE}/opencode/run`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(request),
+    signal,
+  });
+  if (!resp.ok || !resp.body)
+    throw new Error(
+      await responseErrorMessage(resp, `OpenCode CLI run HTTP ${resp.status}`),
+    );
+  await streamJsonSse(resp, onEvent);
+}
+
 async function streamJsonSse<T>(
   resp: Response,
   onEvent: (ev: T) => void,
 ): Promise<void> {
-export async function listCodexThreads(options: {
-  cursor?: string;
-  search?: string;
-  archived?: boolean;
-} = {}): Promise<CodexThreadPage> {
-  const url = new URL(`${BASE}/codex/threads`);
-  if (options.cursor) url.searchParams.set("cursor", options.cursor);
-  if (options.search?.trim()) url.searchParams.set("search", options.search.trim());
-  if (options.archived) url.searchParams.set("archived", "true");
-  return await parseJsonResponse<CodexThreadPage>(
-    await authFetch(url),
-    "Codex chat recovery failed",
-  );
-}
-
-export async function recoverCodexThread(id: string): Promise<CodexRecoveredThread> {
-  return await parseJsonResponse<CodexRecoveredThread>(
-    await authFetch(`${BASE}/codex/threads/${encodeURIComponent(id)}`),
-    "Codex chat recovery failed",
-  );
-}
-
   const reader = resp.body?.getReader();
   if (!reader) return;
   const decoder = new TextDecoder();
@@ -2660,6 +2853,8 @@ export type ToolApprovalEvent =
       name: string;
       arguments: string;
       effect: "read_only" | "mutating" | "command" | "unknown";
+      request_kind?: ToolApprovalRequestKind;
+      request?: Record<string, unknown>;
     }
   | {
       type: "tool_approval_resolved";
@@ -2667,6 +2862,36 @@ export type ToolApprovalEvent =
       call_id?: string;
       decision: "approve" | "deny";
     };
+
+export type ToolApprovalRequestKind =
+  | "command"
+  | "file_change"
+  | "permissions"
+  | "mcp_form"
+  | "mcp_url"
+  | "mcp_unsupported";
+
+export interface McpApprovalField {
+  name: string;
+  label: string;
+  description?: string | null;
+  kind: "string" | "number" | "integer" | "boolean" | "enum";
+  value_type?: "string" | "number" | "integer" | "boolean";
+  required: boolean;
+  default?: unknown;
+  minimum?: number;
+  maximum?: number;
+  min_length?: number;
+  max_length?: number;
+  options?: Array<{ value: string | number | boolean; label: string }>;
+}
+
+export type ToolApprovalRequest =
+  | { kind: "command" | "file_change" }
+  | { kind: "permissions"; reason?: string | null; cwd?: string | null; permissions?: unknown }
+  | { kind: "mcp_form"; server_name: string; message: string; fields: McpApprovalField[] }
+  | { kind: "mcp_url"; server_name: string; message: string; url: string }
+  | { kind: "mcp_unsupported"; server_name: string; message: string; reason: string };
 
 // ----- Providers (LLM remotes and media credentials) -----
 
@@ -2853,8 +3078,6 @@ export interface MediaModelListOptions {
 
 export interface MediaSchemaControlOption {
   label: string;
-      request_kind?: ToolApprovalRequestKind;
-      request?: Record<string, unknown>;
   value: unknown;
 }
 
@@ -2863,36 +3086,6 @@ export interface MediaSchemaControl {
   label: string;
   kind: "select" | "number" | string;
   path: string[];
-export type ToolApprovalRequestKind =
-  | "command"
-  | "file_change"
-  | "permissions"
-  | "mcp_form"
-  | "mcp_url"
-  | "mcp_unsupported";
-
-export interface McpApprovalField {
-  name: string;
-  label: string;
-  description?: string | null;
-  kind: "string" | "number" | "integer" | "boolean" | "enum";
-  value_type?: "string" | "number" | "integer" | "boolean";
-  required: boolean;
-  default?: unknown;
-  minimum?: number;
-  maximum?: number;
-  min_length?: number;
-  max_length?: number;
-  options?: Array<{ value: string | number | boolean; label: string }>;
-}
-
-export type ToolApprovalRequest =
-  | { kind: "command" | "file_change" }
-  | { kind: "permissions"; reason?: string | null; cwd?: string | null; permissions?: unknown }
-  | { kind: "mcp_form"; server_name: string; message: string; fields: McpApprovalField[] }
-  | { kind: "mcp_url"; server_name: string; message: string; url: string }
-  | { kind: "mcp_unsupported"; server_name: string; message: string; reason: string };
-
   description?: string;
   options?: MediaSchemaControlOption[];
   default?: unknown;
@@ -3250,7 +3443,11 @@ export type WorkspaceGitAction =
   | "restore_checkpoint"
   | "create_retry_worktree"
   | "apply_retry_worktree"
-  | "remove_retry_worktree";
+  | "remove_retry_worktree"
+  | "create_thread_worktree"
+  | "remove_thread_worktree"
+  | "pr_status"
+  | "pr_create";
 
 export type WorkspaceGitDiffScope =
   | "all"
@@ -3277,6 +3474,16 @@ export interface WorkspaceGitActionResult {
   conflicts?: string[];
 }
 
+export interface PullRequestSummary {
+  number: number;
+  title: string;
+  url: string;
+  state: string;
+  isDraft: boolean;
+  baseRefName: string;
+  headRefName: string;
+}
+
 export async function getWorkspaceGitStatus(): Promise<WorkspaceGitStatus | null> {
   try {
     const r = await authFetch(`${BASE}/workspace/git`);
@@ -3298,6 +3505,7 @@ export async function getWorkspaceContext(): Promise<WorkspaceContext | null> {
 export async function resolveToolApproval(
   approvalId: string,
   decision: "approve" | "deny",
+  responseBody?: Record<string, unknown>,
 ): Promise<void> {
   const response = await authFetch(`${BASE}/tool-approvals/${encodeURIComponent(approvalId)}`, {
     method: "POST",
@@ -3318,6 +3526,12 @@ export async function runWorkspaceGitAction(
     diff_base?: string;
     branch?: string;
     worktree?: string;
+    thread_id?: string;
+    force?: boolean;
+    title?: string;
+    body?: string;
+    base?: string;
+    draft?: boolean;
   } = {},
 ): Promise<WorkspaceGitActionResult> {
   const r = await authFetch(`${BASE}/workspace/git/action`, {
@@ -3505,7 +3719,6 @@ export async function registerGraphMemory(
     const memoryModel =
       input.model && isUsableChatModel(input.model) ? input.model : "default";
     const r = await authFetch(`${BASE}/memory/register`, {
-  responseBody?: Record<string, unknown>,
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({

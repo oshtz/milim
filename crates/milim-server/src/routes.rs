@@ -3387,6 +3387,58 @@ pub(crate) async fn claude_status(
     Ok(Json(status).into_response())
 }
 
+/// `GET /opencode/status` - installed OpenCode CLI and configured-model state.
+pub(crate) async fn opencode_status(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    peer: Peer,
+) -> Result<Response, ApiError> {
+    authorize(&st, &headers, peer_addr(peer))?;
+    Ok(Json(crate::opencode_bridge::status().await.map_err(ApiError)?).into_response())
+}
+
+/// `GET /opencode/models` - models exposed by the installed OpenCode CLI.
+pub(crate) async fn opencode_models(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    peer: Peer,
+) -> Result<Response, ApiError> {
+    authorize(&st, &headers, peer_addr(peer))?;
+    Ok(Json(crate::opencode_bridge::models().await.map_err(ApiError)?).into_response())
+}
+
+/// `POST /opencode/run` - create or resume one OpenCode ACP session turn.
+pub(crate) async fn opencode_run(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    peer: Peer,
+    Json(mut req): Json<crate::opencode_bridge::OpenCodeRunRequest>,
+) -> Result<Response, ApiError> {
+    authorize(&st, &headers, peer_addr(peer))?;
+    if req.cwd.trim().is_empty() {
+        return Err(ApiError(Error::InvalidRequest(
+            "OpenCode requires a workspace folder".to_string(),
+        )));
+    }
+    if req.prompt.trim().is_empty() && req.images.is_empty() {
+        return Err(ApiError(Error::InvalidRequest(
+            "OpenCode requires a prompt or at least one image".to_string(),
+        )));
+    }
+    req.prompt = account_runtime_workspace_prompt(&st, Some(&req.cwd), &req.prompt, "agents");
+    let (prompt, redactions) =
+        account_runtime_prompt_for_remote(&st, &req.prompt, "OpenCode").map_err(ApiError)?;
+    account_runtime_images_for_remote(&st, &req.images, "OpenCode").map_err(ApiError)?;
+    req.prompt = prompt;
+    Ok(Sse::new(crate::opencode_bridge::run_stream(
+        req,
+        redactions,
+        Some(st.tool_approvals.clone()),
+    ))
+    .keep_alive(KeepAlive::default())
+    .into_response())
+}
+
 /// `POST /claude/run` - run an installed Claude CLI turn as a separate account runtime.
 pub(crate) async fn claude_run(
     State(st): State<AppState>,
@@ -4053,6 +4105,18 @@ pub(crate) struct WorkspaceGitActionRequest {
     branch: Option<String>,
     #[serde(default)]
     worktree: Option<String>,
+    #[serde(default)]
+    thread_id: Option<String>,
+    #[serde(default)]
+    force: bool,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    body: Option<String>,
+    #[serde(default)]
+    base: Option<String>,
+    #[serde(default)]
+    draft: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -4285,6 +4349,10 @@ pub(crate) async fn workspace_git_action(
             | "create_retry_worktree"
             | "apply_retry_worktree"
             | "remove_retry_worktree"
+            | "create_thread_worktree"
+            | "remove_thread_worktree"
+            | "pr_status"
+            | "pr_create"
     ) {
         return Err(ApiError(Error::InvalidRequest(format!(
             "unsupported git action: {action}"
@@ -4296,9 +4364,13 @@ pub(crate) async fn workspace_git_action(
         .root()
         .join("runtime")
         .join("hot-swap");
+    let thread_root = milim_core::paths::Paths::resolve()
+        .root()
+        .join("runtime")
+        .join("threads");
     req.action = action;
     let result = tokio::task::spawn_blocking(move || {
-        workspace_git_action_blocking(folder, req, hot_swap_root)
+        workspace_git_action_blocking(folder, req, hot_swap_root, thread_root)
     })
     .await
     .map_err(|e| ApiError(Error::Other(format!("git action task failed: {e}"))))?;
@@ -4675,6 +4747,7 @@ fn workspace_git_action_blocking(
     folder: Option<PathBuf>,
     request: WorkspaceGitActionRequest,
     hot_swap_root: PathBuf,
+    thread_root: PathBuf,
 ) -> WorkspaceGitActionResponse {
     const OUTPUT_LIMIT: usize = 24_000;
     let WorkspaceGitActionRequest {
@@ -4687,6 +4760,12 @@ fn workspace_git_action_blocking(
         diff_base,
         branch,
         worktree,
+        thread_id,
+        force,
+        title,
+        body,
+        base,
+        draft,
     } = request;
 
     let status = workspace_git_status_blocking(folder);
@@ -4730,6 +4809,23 @@ fn workspace_git_action_blocking(
     }
     if action == "remove_retry_worktree" {
         return workspace_git_remove_retry_worktree_action(&root, worktree, &hot_swap_root);
+    }
+    if action == "create_thread_worktree" {
+        return workspace_git_create_thread_worktree_action(
+            &root,
+            &status,
+            thread_id,
+            &thread_root,
+        );
+    }
+    if action == "remove_thread_worktree" {
+        return workspace_git_remove_thread_worktree_action(&root, thread_id, force, &thread_root);
+    }
+    if action == "pr_status" {
+        return workspace_git_pr_status_action(&root, &status);
+    }
+    if action == "pr_create" {
+        return workspace_git_pr_create_action(&root, &status, title, body, base, draft);
     }
     if matches!(action.as_str(), "commit" | "commit_push") {
         return workspace_git_commit_action(&root, &action, &status, message, stage_all);
@@ -5634,6 +5730,430 @@ fn workspace_git_remove_retry_worktree_action(
             output_error_text(&output)
         },
     )
+}
+
+fn valid_thread_runtime_id(thread_id: Option<String>) -> Result<String, String> {
+    let value = thread_id.unwrap_or_default().trim().to_string();
+    if value.is_empty()
+        || value.len() > 128
+        || !value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+    {
+        return Err("A valid thread id is required.".to_string());
+    }
+    Ok(value)
+}
+
+fn workspace_git_create_thread_worktree_action(
+    root: &FsPath,
+    status: &WorkspaceGitStatus,
+    thread_id: Option<String>,
+    thread_root: &FsPath,
+) -> WorkspaceGitActionResponse {
+    let thread_id = match valid_thread_runtime_id(thread_id) {
+        Ok(value) => value,
+        Err(message) => {
+            return workspace_git_action_message("create_thread_worktree", "", false, &message)
+        }
+    };
+    if status.head.is_none() {
+        return workspace_git_action_message(
+            "create_thread_worktree",
+            "git worktree add",
+            false,
+            "An initial commit is required before creating an isolated worktree.",
+        );
+    }
+    if let Err(error) = std::fs::create_dir_all(thread_root) {
+        return workspace_git_action_message(
+            "create_thread_worktree",
+            "",
+            false,
+            &format!("Failed to create the thread runtime directory: {error}"),
+        );
+    }
+    let target = thread_root.join(&thread_id);
+    if target.exists() {
+        return workspace_git_action_message(
+            "create_thread_worktree",
+            "",
+            false,
+            "This thread already has a runtime worktree.",
+        );
+    }
+    let short_id: String = thread_id.chars().take(8).collect();
+    let branch = format!("milim/thread-{short_id}");
+    let target_text = target.to_string_lossy().to_string();
+    let args = [
+        "worktree",
+        "add",
+        "-b",
+        branch.as_str(),
+        target_text.as_str(),
+        "HEAD",
+    ];
+    let output = match git_output(root, &args) {
+        Ok(output) => output,
+        Err(error) => {
+            return workspace_git_action_message(
+                "create_thread_worktree",
+                &git_command_text(&args),
+                false,
+                &error,
+            )
+        }
+    };
+    let ok = output.status.success();
+    let mut response = workspace_git_combined_response(
+        "create_thread_worktree",
+        &git_command_text(&args),
+        ok,
+        String::from_utf8_lossy(&output.stdout).to_string(),
+        String::from_utf8_lossy(&output.stderr).to_string(),
+        output.status.code(),
+        if ok {
+            "Isolated thread worktree created. Uncommitted changes in the original checkout were not included.".to_string()
+        } else {
+            output_error_text(&output)
+        },
+    );
+    if ok {
+        response.root = Some(root.to_string_lossy().to_string());
+        response.worktree = Some(target_text);
+        response.head = git_text(root, &["rev-parse", "HEAD"]);
+        response.stdout = branch;
+    }
+    response
+}
+
+fn workspace_git_remove_thread_worktree_action(
+    root: &FsPath,
+    thread_id: Option<String>,
+    force: bool,
+    thread_root: &FsPath,
+) -> WorkspaceGitActionResponse {
+    let thread_id = match valid_thread_runtime_id(thread_id) {
+        Ok(value) => value,
+        Err(message) => {
+            return workspace_git_action_message("remove_thread_worktree", "", false, &message)
+        }
+    };
+    let runtime_root = match std::fs::canonicalize(thread_root) {
+        Ok(path) => path,
+        Err(error) => {
+            return workspace_git_action_message(
+                "remove_thread_worktree",
+                "",
+                false,
+                &format!("Thread runtime is unavailable: {error}"),
+            )
+        }
+    };
+    let target = match std::fs::canonicalize(thread_root.join(thread_id)) {
+        Ok(path) if path.starts_with(&runtime_root) => path,
+        _ => {
+            return workspace_git_action_message(
+                "remove_thread_worktree",
+                "",
+                false,
+                "Thread worktree is outside Milim's runtime directory or no longer exists.",
+            )
+        }
+    };
+    if git_common_dir(root) != git_common_dir(&target) {
+        return workspace_git_action_message(
+            "remove_thread_worktree",
+            "",
+            false,
+            "Thread worktree does not belong to the selected repository.",
+        );
+    }
+    if !force {
+        let dirty = git_text(&target, &["status", "--porcelain"]).unwrap_or_default();
+        if !dirty.trim().is_empty() {
+            return workspace_git_action_message(
+                "remove_thread_worktree", "git worktree remove", false,
+                "The isolated worktree has uncommitted changes. Confirm force-discard to delete it; its branch will be retained.",
+            );
+        }
+    }
+    let target_text = target.to_string_lossy().to_string();
+    let mut args = vec!["worktree", "remove"];
+    if force {
+        args.push("--force");
+    }
+    args.push(target_text.as_str());
+    let output = match git_output(root, &args) {
+        Ok(output) => output,
+        Err(error) => {
+            return workspace_git_action_message(
+                "remove_thread_worktree",
+                &git_command_text(&args),
+                false,
+                &error,
+            )
+        }
+    };
+    workspace_git_combined_response(
+        "remove_thread_worktree",
+        &git_command_text(&args),
+        output.status.success(),
+        String::from_utf8_lossy(&output.stdout).to_string(),
+        String::from_utf8_lossy(&output.stderr).to_string(),
+        output.status.code(),
+        if output.status.success() {
+            "Thread worktree removed. Its branch was retained.".to_string()
+        } else {
+            output_error_text(&output)
+        },
+    )
+}
+
+fn gh_output(root: &FsPath, args: &[&str]) -> Result<Output, String> {
+    Command::new("gh")
+        .current_dir(root)
+        .args(args)
+        .output()
+        .map_err(|error| format!("Failed to run GitHub CLI: {error}"))
+}
+
+fn workspace_git_pr_prerequisite(
+    root: &FsPath,
+    status: &WorkspaceGitStatus,
+) -> Result<String, String> {
+    let remote = git_text(root, &["remote", "get-url", "origin"])
+        .ok_or_else(|| "A GitHub origin remote is required.".to_string())?;
+    if !remote.to_ascii_lowercase().contains("github.com") {
+        return Err("PR creation currently requires a GitHub origin remote.".to_string());
+    }
+    let branch = status
+        .branch
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| "A named branch is required.".to_string())?;
+    if status.upstream.is_none() {
+        return Err("Publish the branch before creating a PR.".to_string());
+    }
+    let auth = gh_output(root, &["auth", "status"])?;
+    if !auth.status.success() {
+        return Err("GitHub CLI is not authenticated. Run `gh auth login`.".to_string());
+    }
+    Ok(branch)
+}
+
+fn workspace_git_pr_status_action(
+    root: &FsPath,
+    status: &WorkspaceGitStatus,
+) -> WorkspaceGitActionResponse {
+    if let Err(message) = workspace_git_pr_prerequisite(root, status) {
+        return workspace_git_action_message("pr_status", "gh pr view --json", false, &message);
+    }
+    let args = [
+        "pr",
+        "view",
+        "--json",
+        "number,title,url,state,isDraft,baseRefName,headRefName",
+    ];
+    let output = match gh_output(root, &args) {
+        Ok(output) => output,
+        Err(error) => {
+            return workspace_git_action_message("pr_status", "gh pr view --json", false, &error)
+        }
+    };
+    let ok = output.status.success();
+    let mut stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    if !ok {
+        let base = git_text(
+            root,
+            &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+        )
+        .and_then(|value| value.strip_prefix("origin/").map(str::to_string))
+        .unwrap_or_else(|| "main".to_string());
+        let title = git_text(root, &["log", "-1", "--pretty=%s"]).unwrap_or_default();
+        stdout = json!({ "exists": false, "baseRefName": base, "title": title }).to_string();
+    }
+    workspace_git_combined_response(
+        "pr_status",
+        "gh pr view --json",
+        ok,
+        stdout,
+        String::from_utf8_lossy(&output.stderr).to_string(),
+        output.status.code(),
+        if ok {
+            "Pull request found.".to_string()
+        } else {
+            "No pull request exists for this branch.".to_string()
+        },
+    )
+}
+
+fn workspace_git_pr_create_action(
+    root: &FsPath,
+    status: &WorkspaceGitStatus,
+    title: Option<String>,
+    body: Option<String>,
+    base: Option<String>,
+    draft: bool,
+) -> WorkspaceGitActionResponse {
+    let branch = match workspace_git_pr_prerequisite(root, status) {
+        Ok(value) => value,
+        Err(message) => {
+            return workspace_git_action_message("pr_create", "gh pr create", false, &message)
+        }
+    };
+    let title = title.unwrap_or_default().trim().to_string();
+    let body = body.unwrap_or_default();
+    let base = base.unwrap_or_default().trim().to_string();
+    let base = if base.is_empty() {
+        git_text(
+            root,
+            &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+        )
+        .and_then(|value| value.strip_prefix("origin/").map(str::to_string))
+        .unwrap_or_else(|| "main".to_string())
+    } else {
+        base
+    };
+    if title.is_empty() {
+        return workspace_git_action_message(
+            "pr_create",
+            "gh pr create",
+            false,
+            "PR title is required.",
+        );
+    }
+    if branch == base {
+        return workspace_git_action_message(
+            "pr_create",
+            "gh pr create",
+            false,
+            "Create the PR from a non-default branch.",
+        );
+    }
+    let ahead = git_text(
+        root,
+        &["rev-list", "--count", &format!("origin/{base}..HEAD")],
+    )
+    .and_then(|value| value.parse::<u64>().ok())
+    .unwrap_or(0);
+    if ahead == 0 {
+        return workspace_git_action_message(
+            "pr_create",
+            "gh pr create",
+            false,
+            "Commit changes on this branch before creating a PR.",
+        );
+    }
+    let mut args = vec![
+        "pr",
+        "create",
+        "--title",
+        title.as_str(),
+        "--body",
+        body.as_str(),
+        "--base",
+        base.as_str(),
+        "--head",
+        branch.as_str(),
+    ];
+    if draft {
+        args.push("--draft");
+    }
+    let output = match gh_output(root, &args) {
+        Ok(output) => output,
+        Err(error) => {
+            return workspace_git_action_message("pr_create", "gh pr create", false, &error)
+        }
+    };
+    workspace_git_combined_response(
+        "pr_create",
+        "gh pr create",
+        output.status.success(),
+        String::from_utf8_lossy(&output.stdout).to_string(),
+        String::from_utf8_lossy(&output.stderr).to_string(),
+        output.status.code(),
+        if output.status.success() {
+            "Draft pull request created.".to_string()
+        } else {
+            output_error_text(&output)
+        },
+    )
+}
+
+#[cfg(test)]
+mod git_control_plane_tests {
+    use super::*;
+
+    #[test]
+    fn thread_worktree_lifecycle_keeps_branch_and_guards_dirty_state() {
+        let base = std::env::temp_dir().join(format!("milim-thread-worktree-{}", gen_id("test")));
+        let repo = base.join("repo");
+        let runtime = base.join("runtime");
+        std::fs::create_dir_all(&repo).unwrap();
+        assert!(git_output(&repo, &["init"]).unwrap().status.success());
+        std::fs::write(repo.join("README.md"), "hello").unwrap();
+        assert!(git_output(&repo, &["add", "README.md"])
+            .unwrap()
+            .status
+            .success());
+        assert!(git_output(
+            &repo,
+            &[
+                "-c",
+                "user.name=Milim Test",
+                "-c",
+                "user.email=milim@example.invalid",
+                "commit",
+                "-m",
+                "initial",
+            ]
+        )
+        .unwrap()
+        .status
+        .success());
+        let status = workspace_git_status_blocking(Some(repo.clone()));
+        let created = workspace_git_create_thread_worktree_action(
+            &repo,
+            &status,
+            Some("thread_12345678".into()),
+            &runtime,
+        );
+        assert!(created.ok, "{}", created.message);
+        let worktree = PathBuf::from(created.worktree.unwrap());
+        assert!(worktree.is_dir());
+        std::fs::write(worktree.join("dirty.txt"), "dirty").unwrap();
+        let blocked = workspace_git_remove_thread_worktree_action(
+            &repo,
+            Some("thread_12345678".into()),
+            false,
+            &runtime,
+        );
+        assert!(!blocked.ok);
+        assert!(blocked.message.contains("uncommitted changes"));
+        let removed = workspace_git_remove_thread_worktree_action(
+            &repo,
+            Some("thread_12345678".into()),
+            true,
+            &runtime,
+        );
+        assert!(removed.ok, "{}", removed.message);
+        assert!(
+            git_text(&repo, &["branch", "--list", "milim/thread-thread_1"])
+                .unwrap_or_default()
+                .contains("milim/thread-thread_1")
+        );
+        std::fs::remove_dir_all(base).ok();
+    }
+
+    #[test]
+    fn thread_runtime_ids_reject_paths() {
+        assert!(valid_thread_runtime_id(Some("../../outside".into())).is_err());
+        assert_eq!(
+            valid_thread_runtime_id(Some("abc_DEF-123".into())).unwrap(),
+            "abc_DEF-123"
+        );
+    }
 }
 
 fn append_git_output(stdout: &mut String, stderr: &mut String, output: &Output) {
@@ -9959,6 +10479,8 @@ fn tools_available(policy: &ToolRunPolicy) -> bool {
 #[derive(Deserialize)]
 pub(crate) struct ToolApprovalDecision {
     decision: String,
+    #[serde(default)]
+    response: Option<Value>,
 }
 
 pub(crate) async fn tool_approval_resolve(
@@ -10293,8 +10815,6 @@ fn worker_run_event_name(status: milim_agents::WorkerRunStatus) -> &'static str 
         milim_agents::WorkerRunStatus::Proposed => "proposed",
         milim_agents::WorkerRunStatus::Running => "started",
         milim_agents::WorkerRunStatus::Done | milim_agents::WorkerRunStatus::Partial => "done",
-    #[serde(default)]
-    response: Option<Value>,
         milim_agents::WorkerRunStatus::Stopped | milim_agents::WorkerRunStatus::Error => "error",
     }
 }

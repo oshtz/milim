@@ -1,8 +1,14 @@
 # Account Runtimes
 
-Milim can use signed-in Codex and bring-your-own Claude CLI tools as chat runtimes. These are separate from saved OpenAI-compatible, Anthropic, Gemini, Replicate, and fal provider records. The privacy gate scans, redacts, or blocks text before either account runtime receives it. Image pixels cannot be scanned or redacted, so account-runtime images require Privacy Off.
+Milim can use signed-in Codex, bring-your-own Claude CLI, and OpenCode CLI tools as chat runtimes. These are separate from saved provider records. The privacy gate scans, redacts, or blocks text before any account runtime receives it. Image pixels cannot be scanned or redacted, so account-runtime images require Privacy Off.
 
-After a Milim chat has a native Codex thread id or Claude session id, Milim lets that runtime own prior context. Later turns send the current per-turn context plus the latest user message instead of replaying the visible Milim transcript or auto-compacting it first. Manual `/compact` still creates a visible Milim checkpoint, but its summary call is ephemeral and the stored native runtime id is cleared afterward.
+After a Milim chat has a native Codex thread id, Claude session id, or OpenCode session id, Milim lets that runtime own prior context. Later turns send the current per-turn context plus the latest user message instead of replaying the visible Milim transcript or auto-compacting it first. Manual `/compact` still creates a visible Milim checkpoint, but its summary call is ephemeral and the stored native runtime id is cleared afterward.
+
+## OpenCode
+
+Milim invokes the user-installed `opencode acp` process once per turn and speaks ACP v1 JSON-RPC over stdio. `GET /opencode/status` and `GET /opencode/models` discover configured models without refreshing OpenCode's network cache; `POST /opencode/run` creates or resumes the native session, applies the exact selected model, streams normalized events, and forwards permission requests to Milim's one-shot approval cards. Plan, Guarded, Review, and Open map to a Milim-owned permission overlay. Guarded and Review refuse to run when `opencode debug config` shows that higher-precedence configuration weakened the promised policy.
+
+OpenCode remains responsible for its providers, credentials, instructions, and plugins. Milim does not bundle the CLI or read its credentials. Images use the existing outbound privacy gate and require Privacy Off.
 
 CLI calls to an authenticated standalone server should pass `--token` or set `MILIM_API_TOKEN`; desktop account-runtime calls use the desktop app's per-launch bearer token internally.
 

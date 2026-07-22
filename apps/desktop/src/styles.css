@@ -1260,11 +1260,14 @@ body.sidebar-pointer-dragging .session-section-title {
   height: 30px;
   margin-top: 0;
 }
-.sidebar-inner > .new-chat {
+.sidebar-inner > .new-chat,
+.sidebar-inner > .new-chat-actions {
   flex: none;
   width: 100%;
   margin-top: 11px;
 }
+.new-chat-actions { display: flex; gap: 6px; }
+.new-chat-actions .new-chat-isolated { flex: 0 1 84px; padding-inline: 8px; }
 .new-chat {
   display: flex;
   align-items: center;
@@ -1294,6 +1297,43 @@ body.sidebar-pointer-dragging .session-section-title {
   border-color: var(--border-secondary);
   color: var(--primary-text);
 }
+
+.review-comment-tray {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 6px 9px;
+  color: var(--secondary-text);
+  font-size: 12px;
+}
+.review-comment-tray button,
+.git-diff-comment {
+  border: 1px solid var(--border-primary);
+  border-radius: 6px;
+  background: var(--chip-bg);
+  color: var(--primary-text);
+  cursor: pointer;
+}
+.review-comment-tray button { padding: 3px 7px; }
+.message-review-count { margin-top: 6px; font-size: 11px; color: var(--secondary-text); }
+.git-diff-comment { width: 20px; height: 20px; margin: 1px 5px; opacity: 0; }
+.git-diff-row:hover .git-diff-comment,
+.git-diff-comment:focus-visible { opacity: 1; }
+.workspace-review-browser { border-bottom: 1px solid var(--border-primary); max-height: 46%; overflow: auto; }
+.workspace-review-head { display: flex; align-items: center; gap: 6px; padding: 6px; }
+.workspace-review-head button,
+.workspace-review-tree button { display: flex; align-items: center; gap: 5px; border: 0; background: transparent; color: var(--primary-text); cursor: pointer; }
+.workspace-review-head span { color: var(--secondary-text); font-size: 11px; }
+.workspace-review-body { display: grid; grid-template-columns: minmax(120px, 30%) 1fr; min-height: 120px; border-top: 1px solid var(--border-primary); }
+.workspace-review-tree { display: flex; flex-direction: column; align-items: stretch; padding: 5px; border-right: 1px solid var(--border-primary); overflow: auto; }
+.workspace-review-tree button { padding: 4px; text-align: left; }
+.workspace-review-file { overflow: auto; }
+.workspace-review-file > strong { display: block; position: sticky; top: 0; padding: 5px 8px; background: var(--panel-bg); z-index: 1; }
+.workspace-review-file > button { display: grid; grid-template-columns: 38px 1fr; width: 100%; padding: 0; border: 0; background: transparent; color: var(--primary-text); text-align: left; cursor: pointer; }
+.workspace-review-file > button.selected { background: color-mix(in srgb, var(--accent) 15%, transparent); }
+.workspace-review-file > button span { padding: 1px 6px; color: var(--secondary-text); text-align: right; user-select: none; }
+.workspace-review-file > button code { padding: 1px 6px; white-space: pre; }
 
 .sidebar-search {
   display: flex;
@@ -5643,32 +5683,6 @@ html[data-dark="true"] .preview-control-cursor {
   border-radius: 9px;
   background: color-mix(in srgb, var(--surface-raised) 82%, transparent);
 }
-.stream-approval-arguments {
-  flex: 1 0 100%;
-  max-height: 180px;
-  margin: 2px 0 0;
-  padding: 7px 9px;
-  overflow: auto;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  border-radius: 6px;
-  background: var(--surface);
-  color: var(--secondary-text);
-  font: 11.5px/1.45 var(--mono);
-}
-.stream-diff-stat {
-  display: inline-block;
-  font-weight: 750;
-  animation: stream-stat-pop var(--motion-standard) var(--motion-ease-out) both;
-}
-.stream-diff-stat.added {
-  color: var(--success);
-}
-.stream-diff-stat.removed {
-  color: var(--error);
-}
-.stream-diff-stat.live {
-  animation: stream-stat-pop var(--motion-standard) var(--motion-ease-out) both;
 .stream-approval-body {
   display: grid;
   flex: 1 0 100%;
@@ -5709,6 +5723,32 @@ html[data-dark="true"] .preview-control-cursor {
 .stream-approval-error {
   color: var(--error) !important;
 }
+.stream-approval-arguments {
+  flex: 1 0 100%;
+  max-height: 180px;
+  margin: 2px 0 0;
+  padding: 7px 9px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--secondary-text);
+  font: 11.5px/1.45 var(--mono);
+}
+.stream-diff-stat {
+  display: inline-block;
+  font-weight: 750;
+  animation: stream-stat-pop var(--motion-standard) var(--motion-ease-out) both;
+}
+.stream-diff-stat.added {
+  color: var(--success);
+}
+.stream-diff-stat.removed {
+  color: var(--error);
+}
+.stream-diff-stat.live {
+  animation: stream-stat-pop var(--motion-standard) var(--motion-ease-out) both;
 }
 .stream-event-running .stream-event-icon {
   color: var(--accent-light);

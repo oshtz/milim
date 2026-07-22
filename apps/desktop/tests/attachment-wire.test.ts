@@ -128,3 +128,25 @@ assert.throws(
   () => accountRuntimeInputFromMessages(oversizedCurrent),
   /This message contains too much image data/,
 );
+
+const reviewMessage: ChatMessage = {
+  role: "user",
+  content: "Please address the review.",
+  reviewComments: Array.from({ length: 24 }, (_, index) => ({
+    id: `review-${index}`,
+    surface: "diff" as const,
+    filePath: "src/app.ts",
+    side: "new" as const,
+    startLine: index + 1,
+    endLine: index + 1,
+    selectedText: `line ${index + 1}`,
+    body: `Comment ${index + 1}`,
+    timestamp: index + 1,
+  })),
+};
+const reviewWire = wireMessageContent(reviewMessage);
+assert.match(reviewWire, /<milim_review_context>/);
+const reviewJson = reviewWire.match(/<milim_review_context>(.*)<\/milim_review_context>/)?.[1];
+assert(reviewJson);
+assert.equal(JSON.parse(reviewJson).length, 20);
+assert.equal(reviewMessage.reviewComments?.length, 24);
